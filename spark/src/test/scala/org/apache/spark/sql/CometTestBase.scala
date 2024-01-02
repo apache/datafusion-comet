@@ -23,9 +23,7 @@ import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
-import org.scalactic.source.Position
 import org.scalatest.BeforeAndAfterEach
-import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
@@ -35,6 +33,7 @@ import org.apache.parquet.hadoop.ParquetWriter
 import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
+import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, SparkPlan, WholeStageCodegenExec}
@@ -65,26 +64,16 @@ abstract class CometTestBase
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    conf.set("spark.shuffle.manager", shuffleManager)
+    conf.set(SQLConf.ANSI_ENABLED.key, "false")
+    conf.set(SHUFFLE_MANAGER, shuffleManager)
+    conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
+    conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
+    conf.set(CometConf.COMET_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf
-  }
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key -> "2g",
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1g",
-        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "1g",
-        SQLConf.ANSI_ENABLED.key -> "false") {
-        testFun
-      }
-    }
   }
 
   /**

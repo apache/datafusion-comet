@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.util.Map
 
+import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
 class Native extends NativeBase {
@@ -38,6 +39,9 @@ class Native extends NativeBase {
    *   the bytes of serialized SparkPlan.
    * @param metrics
    *   the native metrics of SparkPlan.
+   * @param taskMemoryManager
+   *   the task-level memory manager that is responsible for tracking memory usage across JVM and
+   *   native side.
    * @return
    *   the address to native query plan.
    */
@@ -46,7 +50,8 @@ class Native extends NativeBase {
       configMap: Map[String, String],
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
-      metrics: CometMetricNode): Long
+      metrics: CometMetricNode,
+      taskMemoryManager: CometTaskMemoryManager): Long
 
   /**
    * Execute a native query plan based on given input Arrow arrays.

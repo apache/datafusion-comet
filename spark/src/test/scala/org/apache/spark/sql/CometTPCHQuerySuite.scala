@@ -25,9 +25,11 @@ import java.nio.file.{Files, Paths}
 import scala.collection.JavaConverters._
 
 import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.util.{fileToString, resourceToString, stringToFile}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.StaticSQLConf.SPARK_SESSION_EXTENSIONS
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 
 import org.apache.comet.CometConf
@@ -87,10 +89,11 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with SQLQueryTestH
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
+    conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
   }
 
   protected override def createSparkSession: TestSparkSession = {

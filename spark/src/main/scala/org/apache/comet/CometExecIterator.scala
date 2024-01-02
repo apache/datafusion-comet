@@ -54,7 +54,13 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val configs = createNativeConf
-    nativeLib.createPlan(id, configs, cometBatchIterators, protobufQueryPlan, nativeMetrics)
+    nativeLib.createPlan(
+      id,
+      configs,
+      cometBatchIterators,
+      protobufQueryPlan,
+      nativeMetrics,
+      new CometTaskMemoryManager)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -83,6 +89,12 @@ class CometExecIterator(
     val conf = SparkEnv.get.conf
 
     val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+    // Only enable unified memory manager when off-heap mode is enabled. Otherwise,
+    // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
+    // and `memory_fraction` below.
+    result.put(
+      "use_unified_memory_manager",
+      String.valueOf(conf.get("spark.memory.offHeap.enabled", "false")))
     result.put("memory_limit", String.valueOf(maxMemory))
     result.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))

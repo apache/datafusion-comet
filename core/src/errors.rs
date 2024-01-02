@@ -101,7 +101,11 @@ pub enum CometError {
         #[from]
         source: std::num::ParseFloatError,
     },
-
+    #[error(transparent)]
+    BoolFormat {
+        #[from]
+        source: std::str::ParseBoolError,
+    },
     #[error(transparent)]
     Format {
         #[from]
