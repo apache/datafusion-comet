@@ -19,12 +19,11 @@
 
 package org.apache.comet
 
-import java.util.HashMap
-
 import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -45,36 +44,31 @@ class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
     protobufQueryPlan: Array[Byte],
-    configs: HashMap[String, String],
     nativeMetrics: CometMetricNode)
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
-  private val plan = nativeLib.createPlan(id, configs, protobufQueryPlan, nativeMetrics)
+  private val plan = {
+    val configs = createNativeConf
+    nativeLib.createPlan(id, configs, protobufQueryPlan, nativeMetrics)
+  }
   private val nativeUtil = new NativeUtil
   private var nextBatch: Option[ColumnarBatch] = None
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
   private def peekNext(): ExecutionState = {
-    val result = nativeLib.peekNext(plan)
-    val flag = result(0)
-
-    if (flag == 0) Pending
-    else if (flag == 1) {
-      val numRows = result(1)
-      val addresses = result.slice(2, result.length)
-      Batch(numRows = numRows.toInt, addresses = addresses)
-    } else {
-      throw new IllegalStateException(s"Invalid native flag: $flag")
-    }
+    convertNativeResult(nativeLib.peekNext(plan))
   }
 
   private def executeNative(
       input: Array[Array[Long]],
       finishes: Array[Boolean],
       numRows: Int): ExecutionState = {
-    val result = nativeLib.executePlan(plan, input, finishes, numRows)
+    convertNativeResult(nativeLib.executePlan(plan, input, finishes, numRows))
+  }
+
+  private def convertNativeResult(result: Array[Long]): ExecutionState = {
     val flag = result(0)
     if (flag == -1) EOF
     else if (flag == 0) Pending
@@ -85,6 +79,29 @@ class CometExecIterator(
     } else {
       throw new IllegalStateException(s"Invalid native flag: $flag")
     }
+  }
+
+  /**
+   * Creates a new configuration map to be passed to the native side.
+   */
+  private def createNativeConf: java.util.HashMap[String, String] = {
+    val result = new java.util.HashMap[String, String]()
+    val conf = SparkEnv.get.conf
+
+    val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+    result.put("memory_limit", String.valueOf(maxMemory))
+    result.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
+    result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
+    result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
+
+    // Strip mandatory prefix spark. which is not required for DataFusion session params
+    conf.getAll.foreach {
+      case (k, v) if k.startsWith("spark.datafusion") =>
+        result.put(k.replaceFirst("spark\\.", ""), v)
+      case _ =>
+    }
+
+    result
   }
 
   /** Execution result from Comet native */
