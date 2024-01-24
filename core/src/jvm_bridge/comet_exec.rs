@@ -18,7 +18,7 @@
 use jni::{
     errors::Result as JniResult,
     objects::{JClass, JStaticMethodID},
-    signature::{JavaType, Primitive},
+    signature::{Primitive, ReturnType},
     JNIEnv,
 };
 
@@ -27,75 +27,83 @@ use super::get_global_jclass;
 /// A struct that holds all the JNI methods and fields for JVM CometExec object.
 pub struct CometExec<'a> {
     pub class: JClass<'a>,
-    pub method_get_bool: JStaticMethodID<'a>,
-    pub method_get_bool_ret: JavaType,
-    pub method_get_byte: JStaticMethodID<'a>,
-    pub method_get_byte_ret: JavaType,
-    pub method_get_short: JStaticMethodID<'a>,
-    pub method_get_short_ret: JavaType,
-    pub method_get_int: JStaticMethodID<'a>,
-    pub method_get_int_ret: JavaType,
-    pub method_get_long: JStaticMethodID<'a>,
-    pub method_get_long_ret: JavaType,
-    pub method_get_float: JStaticMethodID<'a>,
-    pub method_get_float_ret: JavaType,
-    pub method_get_double: JStaticMethodID<'a>,
-    pub method_get_double_ret: JavaType,
-    pub method_get_decimal: JStaticMethodID<'a>,
-    pub method_get_decimal_ret: JavaType,
-    pub method_get_string: JStaticMethodID<'a>,
-    pub method_get_string_ret: JavaType,
-    pub method_get_binary: JStaticMethodID<'a>,
-    pub method_get_binary_ret: JavaType,
-    pub method_is_null: JStaticMethodID<'a>,
-    pub method_is_null_ret: JavaType,
+    pub method_get_bool: JStaticMethodID,
+    pub method_get_bool_ret: ReturnType,
+    pub method_get_byte: JStaticMethodID,
+    pub method_get_byte_ret: ReturnType,
+    pub method_get_short: JStaticMethodID,
+    pub method_get_short_ret: ReturnType,
+    pub method_get_int: JStaticMethodID,
+    pub method_get_int_ret: ReturnType,
+    pub method_get_long: JStaticMethodID,
+    pub method_get_long_ret: ReturnType,
+    pub method_get_float: JStaticMethodID,
+    pub method_get_float_ret: ReturnType,
+    pub method_get_double: JStaticMethodID,
+    pub method_get_double_ret: ReturnType,
+    pub method_get_decimal: JStaticMethodID,
+    pub method_get_decimal_ret: ReturnType,
+    pub method_get_string: JStaticMethodID,
+    pub method_get_string_ret: ReturnType,
+    pub method_get_binary: JStaticMethodID,
+    pub method_get_binary_ret: ReturnType,
+    pub method_is_null: JStaticMethodID,
+    pub method_is_null_ret: ReturnType,
 }
 
 impl<'a> CometExec<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometScalarSubquery";
 
-    pub fn new(env: &JNIEnv<'a>) -> JniResult<CometExec<'a>> {
+    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometExec<'a>> {
         // Get the global class reference
         let class = get_global_jclass(env, Self::JVM_CLASS)?;
 
         Ok(CometExec {
-            class,
             method_get_bool: env
-                .get_static_method_id(class, "getBoolean", "(JJ)Z")
+                .get_static_method_id(Self::JVM_CLASS, "getBoolean", "(JJ)Z")
                 .unwrap(),
-            method_get_bool_ret: JavaType::Primitive(Primitive::Boolean),
-            method_get_byte: env.get_static_method_id(class, "getByte", "(JJ)B").unwrap(),
-            method_get_byte_ret: JavaType::Primitive(Primitive::Byte),
+            method_get_bool_ret: ReturnType::Primitive(Primitive::Boolean),
+            method_get_byte: env
+                .get_static_method_id(Self::JVM_CLASS, "getByte", "(JJ)B")
+                .unwrap(),
+            method_get_byte_ret: ReturnType::Primitive(Primitive::Byte),
             method_get_short: env
-                .get_static_method_id(class, "getShort", "(JJ)S")
+                .get_static_method_id(Self::JVM_CLASS, "getShort", "(JJ)S")
                 .unwrap(),
-            method_get_short_ret: JavaType::Primitive(Primitive::Short),
-            method_get_int: env.get_static_method_id(class, "getInt", "(JJ)I").unwrap(),
-            method_get_int_ret: JavaType::Primitive(Primitive::Int),
-            method_get_long: env.get_static_method_id(class, "getLong", "(JJ)J").unwrap(),
-            method_get_long_ret: JavaType::Primitive(Primitive::Long),
+            method_get_short_ret: ReturnType::Primitive(Primitive::Short),
+            method_get_int: env
+                .get_static_method_id(Self::JVM_CLASS, "getInt", "(JJ)I")
+                .unwrap(),
+            method_get_int_ret: ReturnType::Primitive(Primitive::Int),
+            method_get_long: env
+                .get_static_method_id(Self::JVM_CLASS, "getLong", "(JJ)J")
+                .unwrap(),
+            method_get_long_ret: ReturnType::Primitive(Primitive::Long),
             method_get_float: env
-                .get_static_method_id(class, "getFloat", "(JJ)F")
+                .get_static_method_id(Self::JVM_CLASS, "getFloat", "(JJ)F")
                 .unwrap(),
-            method_get_float_ret: JavaType::Primitive(Primitive::Float),
+            method_get_float_ret: ReturnType::Primitive(Primitive::Float),
             method_get_double: env
-                .get_static_method_id(class, "getDouble", "(JJ)D")
+                .get_static_method_id(Self::JVM_CLASS, "getDouble", "(JJ)D")
                 .unwrap(),
-            method_get_double_ret: JavaType::Primitive(Primitive::Double),
+            method_get_double_ret: ReturnType::Primitive(Primitive::Double),
             method_get_decimal: env
-                .get_static_method_id(class, "getDecimal", "(JJ)[B")
+                .get_static_method_id(Self::JVM_CLASS, "getDecimal", "(JJ)[B")
                 .unwrap(),
-            method_get_decimal_ret: JavaType::Array(Box::new(JavaType::Primitive(Primitive::Byte))),
+            method_get_decimal_ret: ReturnType::Array,
             method_get_string: env
-                .get_static_method_id(class, "getString", "(JJ)Ljava/lang/String;")
+                .get_static_method_id(Self::JVM_CLASS, "getString", "(JJ)Ljava/lang/String;")
                 .unwrap(),
-            method_get_string_ret: JavaType::Object("java/lang/String".to_owned()),
+            method_get_string_ret: ReturnType::Object,
             method_get_binary: env
-                .get_static_method_id(class, "getBinary", "(JJ)[B")
+                .get_static_method_id(Self::JVM_CLASS, "getBinary", "(JJ)[B")
                 .unwrap(),
-            method_get_binary_ret: JavaType::Array(Box::new(JavaType::Primitive(Primitive::Byte))),
-            method_is_null: env.get_static_method_id(class, "isNull", "(JJ)Z").unwrap(),
-            method_is_null_ret: JavaType::Primitive(Primitive::Boolean),
+            method_get_binary_ret: ReturnType::Array,
+            method_is_null: env
+                .get_static_method_id(Self::JVM_CLASS, "isNull", "(JJ)Z")
+                .unwrap(),
+            method_is_null_ret: ReturnType::Primitive(Primitive::Boolean),
+            class,
         })
     }
 }

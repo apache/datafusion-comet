@@ -45,7 +45,7 @@ use once_cell::sync::OnceCell;
 
 pub use data_type::*;
 
-use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
+use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 mod errors;
@@ -64,15 +64,15 @@ static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(
-    env: JNIEnv,
+    e: JNIEnv,
     _: JClass,
     log_conf_path: JString,
 ) {
     // Initialize the error handling to capture panic backtraces
     errors::init();
 
-    try_unwrap_or_throw(env, || {
-        let path: String = env.get_string(log_conf_path)?.into();
+    try_unwrap_or_throw(&e, |mut env| {
+        let path: String = env.get_string(&log_conf_path)?.into();
 
         // empty path means there is no custom log4rs config file provided, so fallback to use
         // the default configuration

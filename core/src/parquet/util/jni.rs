@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use jni::{
     errors::Result as JNIResult,
-    objects::{JMethodID, JString},
-    sys::{jboolean, jint, jobjectArray, jstring},
+    objects::{JObjectArray, JString},
+    sys::{jboolean, jint, jobjectArray},
     JNIEnv,
 };
 
@@ -33,7 +33,7 @@ use parquet::{
 /// Convert primitives from Spark side into a `ColumnDescriptor`.
 #[allow(clippy::too_many_arguments)]
 pub fn convert_column_descriptor(
-    env: &JNIEnv,
+    env: &mut JNIEnv,
     physical_type_id: jint,
     logical_type_id: jint,
     max_dl: jint,
@@ -114,12 +114,13 @@ impl TypePromotionInfo {
     }
 }
 
-fn convert_column_path(env: &JNIEnv, path: jobjectArray) -> JNIResult<ColumnPath> {
-    let array_len = env.get_array_length(path)?;
+fn convert_column_path(env: &mut JNIEnv, path: jobjectArray) -> JNIResult<ColumnPath> {
+    let path_array = unsafe { JObjectArray::from_raw(path) };
+    let array_len = env.get_array_length(&path_array)?;
     let mut res: Vec<String> = Vec::new();
     for i in 0..array_len {
-        let p: JString = (env.get_object_array_element(path, i)?.into_inner() as jstring).into();
-        res.push(env.get_string(p)?.into());
+        let p: JString = env.get_object_array_element(&path_array, i)?.into();
+        res.push(env.get_string(&p)?.into());
     }
     Ok(ColumnPath::new(res))
 }
@@ -183,17 +184,4 @@ fn fix_type_length(t: &PhysicalType, type_length: i32) -> i32 {
         PhysicalType::INT96 => 12,
         _ => type_length,
     }
-}
-
-fn get_method_id<'a>(env: &'a JNIEnv, class: &'a str, method: &str, sig: &str) -> JMethodID<'a> {
-    // first verify the class exists
-    let _ = env
-        .find_class(class)
-        .unwrap_or_else(|_| panic!("Class '{}' not found", class));
-    env.get_method_id(class, method, sig).unwrap_or_else(|_| {
-        panic!(
-            "Method '{}' with signature '{}' of class '{}' not found",
-            method, sig, class
-        )
-    })
 }

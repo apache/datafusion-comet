@@ -48,7 +48,7 @@ serde = { version = "1", features = ["derive"] }
 lazy_static = "1.4.0"
 prost = "0.12.1"
 thrift = "0.17"
-jni = "0.19"
+jni = "0.21"
 byteorder = "1.4.3"
 snap = "1.1"
 brotli = "3.3"
@@ -81,7 +81,7 @@ prost-build = "0.9.0"
 [dev-dependencies]
 pprof = { version = "0.13.0", features = ["flamegraph"] }
 criterion = "0.5.1"
-jni = { version = "0.19", features = ["invocation"] }
+jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "7"
 
