@@ -122,6 +122,9 @@ pub enum CometError {
         #[from]
         source: DataFusionError,
     },
+
+    #[error("{class}: {msg}")]
+    JavaException { class: String, msg: String },
 }
 
 pub fn init() {
