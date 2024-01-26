@@ -184,7 +184,7 @@ impl jni::errors::ToException for CometError {
                 msg: self.to_string(),
             },
             _other => Exception {
-                class: "org/apache/comet/CometRuntimeException".to_string(),
+                class: "org/apache/comet/CometNativeException".to_string(),
                 msg: self.to_string(),
             },
         }
