@@ -33,7 +33,7 @@ _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
 ## Debugging for Advanced Developers
 
 Add a `.lldbinit` to comet/core. This is not strictly necessary but will be useful if you want to
-use advanced `lldb` debugging. A sample `.lldbinit` is provided in the comet/core directory
+use advanced `lldb` debugging.
 
 ### In Intellij
 
