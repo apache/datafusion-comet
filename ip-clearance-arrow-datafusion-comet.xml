@@ -1,244 +1,259 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <document>
-  <properties>
-    <title>XYZ Codebase Intellectual Property (IP) Clearance Status</title>
-  </properties>
-  <body>
-    <section id="Codebase+IP+Clearance+TEMPLATE">
-      <title>Codebase IP Clearance TEMPLATE</title>
-      <pre>-----8-&lt;---- cut here -------8-&lt;---- cut here -------8-&lt;---- cut here-------8-&lt;----</pre>
-      <section id='premable'>
-        <title>Preamble</title>
-      <p>This document (or rather the source of it)
-        is the template for recording IP clearance on new
-codebases. Please store the completed document in this Incubator
-repository using a filename that reflects your project.</p>
-      <p>One of the Incubator's roles is to ensure that proper attention is
-paid to intellectual property. From time to time, an external
-codebase is brought into the ASF that is not a separate project, but
-still represents a substantial contribution that was not developed
-within the ASF's source control system. This is a short form of the
-Incubation checklist, designed to allow code to be imported with
-alacrity while still providing for oversight.</p>
-      <p>This form is not for new projects. The intent is to simply help to
-ensure, and record, that due diligence (Software Grant, Individual CLA, Corporate
-CLA, license and dependencies) has been paid to the incoming code, so
-that it can be merged into an existing project/module.</p>
-      <p>Either an Individual CLA or Corporate CLA is preferred to a Software Grant.
-All authors must sign an Individual CLA; or all owners of IP must sign
-one of the three documents and send to secretary (reference
-<a href="http://www.apache.org/licenses/#clas">ASF Licenses</a>).</p>
-      <p>The receiving PMC is responsible for doing the work. The Incubator is
-simply the repository of the needed information. Once a PMC directly
-checks-in a filled-out short form, everything is done.</p>
-      <p>All PMCs must handle incoming code in this way. Any code that was
-developed outside of the ASF SVN repository must be processed like
-this, even if the external developer is an ASF committer.</p>
-      </section>
-      <section id='process'>
-        <title>Process</title>
-          <ol>
-            <li>
-IP Clearance processing must be executed either by an Officer
-or a Member of the ASF. <em>If you are not an Officer or a Member,
-please contact your project chair who will find an appropriate
-volunteer.</em> Incubator karma is also required. Please request
-karma from the incubator pmc if you do not have it.
-            </li>
-            <li>
-(Optional) <em>Commit an outline <a href='#form-filling'>form</a>,
-filling those parts which can be (at this stage)</em>.
-            </li>
-            <li>
-A software grant must be provided to the ASF. This grant can either be
-done by the ASF Corporate CLA (via Schedule B) or the Software Grant
-Agreement. The completed and signed grant must be emailed to
-secretary@apache.org
-            </li>
-            <li>
-Receipt of the software grant form <strong>must</strong> be acknowledged
-by an Officer of the ASF by recording in the correct file (<em>grants.txt</em> for a License Grant
-or <em>cclas.txt</em> for a Corporate CLA). In most normal circumstances,
-the officer should be the ASF Secretary, who must be provided a copy of
-the grant or CCLA in any case (if not originally sent or Emailed
-to him).
-            </li>
-            <li>
-<strong>Note:</strong> the grant form <strong>must</strong> be acknowledged
-before continuing. If the source is referenced by checksum in the grant,
-commit the canonical tarball for the donated code into the incubator
-drop area (/repos/asf/incubator/donations) together with a checksum
-and a detached signature. This will ensure that apache has a legal record of
-the grant.
-            </li>
-            <li>
-Complete and commit the <a href='#form-filling'>completed form</a>.
-            </li>
-            <li>
-Post a message to general@incubator prefixed [IP CLEARANCE] asking for
-clearance to be checked. Sign off is by lazy consensus so wait at least
-72 hours for a -1.
-            </li>
-            <li>
-Post a [RESULT] to close the thread and let the project know that the
-code has been cleared for import.
-            </li>
-          </ol>
-      </section>
-      <section id='form-filling'>
-        <title>Filling The Form</title>
-      <p>What to do to set it up:</p>
-      <ul>
-        <li>copy this file and re-name it according to
-incubator/public/trunk/content/ip-clearance/${project-codebase}.xml</li>
-        <li>add a row to the table at
-incubator/public/trunk/content/ip-clearance/index.xml</li>
-        <li>make a snapshot of the source code available for review</li>
-      </ul>
-      <p>The snapshot should not last long in place before it is moved to the
-successful incubation area. The sole purpose is to ensure that IP is
-cleared so that the codebase can be merged into the ASF SVN.</p>
-      <p>For this file:</p>
-      <ul>
-        <li>substitute the XYZ name with the real one</li>
-        <li>fill in the description</li>
-        <li>fill in the work items</li>
-        <li>remove this notice</li>
-        <li>set a proper "title" element for the html page</li>
-      </ul>
-      <p>When a work item is done, place the date in the supplied space.</p>
-      <p><em>On the first edit of this file, please delete this notice.</em></p>
-      </section>
-      <pre>-----8-&lt;---- cut here -------8-&lt;---- cut here -------8-&lt;---- cut here-------8-&lt;----</pre>
-    </section>
-    <section id="XYZ+Codebase+Intellectual+Property+%28IP%29+Clearance+Status">
-      <title>XYZ Codebase Intellectual Property (IP) Clearance Status</title>
-    </section>
-    <section id="Description">
-      <title>Description</title>
-      <p>Describe the incoming codebase, including whether it is a large set
-of patches, new functional modules, etc.</p>
-    </section>
-    <section id="Project+info">
-      <title>Project info</title>
-      <ul>
-        <li>Which PMC will be responsible for the code</li>
-      </ul>
-      <ul>
-        <li>Into which existing project/module</li>
-      </ul>
-      <ul>
-        <li>Officer or member managing donation:</li>
-      </ul>
-      <p>
-        <em>Completed tasks are shown by the completion date (YYYY-MM-dd).</em>
-      </p>
-      <section id="Identify+the+codebase">
-        <title>Identify the codebase</title>
-        <table>
-          <tr>
-            <th>date</th>
-            <th>item</th>
-          </tr>
-          <tr>
-            <td>....-..-..</td>
-            <td>If applicable, make sure that any associated name does not
-                already exist and is not already trademarked for an existing software
-                product.</td>
-          </tr>
-        </table>
-        <p>
-MD5 or SHA1 sum for donated software:  (<em>Note versioned software used to calculate sum in parentheses</em>).
-        </p>
-        <section id="Copyright">
-          <title>Copyright</title>
-          <table>
-            <tr>
-              <th>date</th>
-              <th>item</th>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Check and make sure that the papers that transfer rights to
-                  the ASF been received. It is only necessary to transfer
-                  rights for the package, the core code, and any new code
-                  produced by the project.</td>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Check and make sure that the files that have been donated
-                  have been updated to reflect the new ASF copyright.</td>
-            </tr>
-          </table>
-          <p>
-Identify name recorded for software grant: <em>the name of the grant as recorded
-in the foundation/officers area, in either grants.txt or cclas.txt, so that the 
-grant can be easily identified. If recorded in the grants.txt document, use the 
-"for" or title. If recorded in the cclas.txt document, use the company name
-(field 2 without submitter name) and the "form on file" name (field 4, without 
-any people's names).</em>
-          </p>
+    <properties>
+        <title>Apache Arrow DataFusion Comet Codebase Intellectual Property (IP) Clearance Status</title>
+    </properties>
+    <body>
+        <section id="Codebase+IP+Clearance+TEMPLATE">
+            <title>Codebase IP Clearance for Apache Arrow DataFusion Comet</title>
         </section>
-        <section id="Verify+distribution+rights">
-          <title>Verify distribution rights</title>
-            <p>
-Corporations and individuals holding existing distribution rights:
+        <section id="XYZ+Codebase+Intellectual+Property+%28IP%29+Clearance+Status">
+            <title>Apache Arrow DataFusion Comet Codebase Intellectual Property (IP) Clearance Status</title>
+        </section>
+        <section id="Description">
+            <title>Description</title>
+            <p>Apache Arrow DataFusion Comet is a Spark native engine powered by Apache Arrow DataFusion and the Rust
+                implementation of Apache Arrow. It is being donated as a new repository within the Apache Arrow project
+                and consists of approximately 6,000 lines of code.
             </p>
-            <ul>
-<li>
-<em>For individuals, use the name as recorded on the committers page</em>
-</li>
-            </ul>
-          <table>
-            <tr>
-              <th>date</th>
-              <th>item</th>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Check that all active committers have a signed CLA on
-                  record.</td>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Remind active committers that they are responsible for
-                  ensuring that a Corporate CLA is recorded if such is
-                  required to authorize their contributions under their
-                  individual CLA.</td>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Check and make sure that for all items included with the
-                  distribution that is not under the Apache license, we have
-                  the right to combine with Apache-licensed code and
-                  redistribute.</td>
-            </tr>
-            <tr>
-              <td>....-..-..</td>
-              <td>Check and make sure that all items depended upon by the
-                  project is covered by one or more of the following approved
-                  licenses: Apache, BSD, Artistic, MIT/X, MIT/W3C, MPL 1.1, or
-                  something with essentially the same terms.</td>
-            </tr>
-          </table>
-          <p>Generally, the result of checking off these items will be a
-             Software Grant, CLA, and Corporate CLA for ASF licensed code,
-             which must have no dependencies upon items whose licenses that
-             are incompatible with the Apache License.</p>
         </section>
-      </section>
-      <section id="Organizational+acceptance+of+responsibility+for+the+project">
-        <title>Organizational acceptance of responsibility for the project
-</title>
-        <p>
-Related VOTEs:
-        </p>
-        <ul>
-          <li><em>The VOTE thread accepting the donation may happen either
-before or after IP clearance. Adoption by lazy concensus is acceptable but
-not recommended.</em></li>
-        </ul>
-      </section>
-    </section>
-  </body>
+        <section id="Project+info">
+            <title>Project info</title>
+            <ul>
+                <li>The Apache Arrow PMC will be responsible for the code</li>
+            </ul>
+            <ul>
+                <li>It will be integrated into the Apache Arrow project in a new repository</li>
+            </ul>
+            <ul>
+                <li>Officer or member managing donation: Andy Grove (Apache Arrow PMC Member)</li>
+            </ul>
+            <p>
+                <em>Completed tasks are shown by the completion date (YYYY-MM-dd).</em>
+            </p>
+            <section id="Identify+the+codebase">
+                <title>Identify the codebase</title>
+                <table>
+                    <tr>
+                        <th>date</th>
+                        <th>item</th>
+                    </tr>
+                    <tr>
+                        <td>2024-02-03</td>
+                        <td>A United States Trademark Search shows that there are a number of wordmark trademarks for
+                            COMET in computer software, but none conflict with the scope of the Apache Arrow DataFusion
+                            Comet project.
+
+                            There are a few that mention data analytics, but in the context of analyzing specific types
+                            of data (e.g. education data and website analytics) as part of a hosted service, and none of
+                            them are related to building a Spark native engine.
+
+                            <b>COMET INFORMATICS LLC (LIMITED LIABILITY COMPANY; NEW YORK, USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Providing on-line, non-downloadable, web-based computer software applications
+                            and an on-line interactive database for temporary use for use by educational institutions
+                            and not-for-profit organizations for the collection, centralized storage, analysis, and
+                            reporting of qualitative and quantitative data or information related to children or
+                            students, teachers or child professionals, principals or program directors, schools or
+                            programs, and/or school districts or communities.
+
+                            <b>Comet ML, Inc. (CORPORATION; DELAWARE, USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Computer services, namely, hosting and maintaining an on-line web site and
+                            platform for others for collaboratively brainstorming, developing, managing, planning,
+                            coordinating, modifying, tracking, testing, reviewing, publishing and archiving digital
+                            computer programs including machine learning and artificial intelligence, documentation,
+                            technical, documents, contracts, sprints, stories, bugs and issues; consulting services in
+                            the field of artificial intelligence; consulting services in the field of design, selection,
+                            implementation and use of computer hardware and software systems for others; IT consulting
+                            services.
+
+                            <b>University Corporation for AtmosphericResearch (CORPORATION; COLORADO, USA)</b>
+
+                            Class 009
+                            026 038.
+                            G &amp; S: IC 009: computer software, printed documentation, audio tapes, video tapes and
+                            compact discs all containing meteorological training and educational information all sold as
+                            a unit.
+
+                            <b>Advanced Medical Predictive Devices, Diagnostics and Displays, Inc. (CORPORATION; VIRGINIA,
+                            USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Software as a service (SAAS) services featuring software for assessing risk
+                            of certain sub-acute medical conditions.
+
+                            <b>Cox Enterprises, Inc. (CORPORATION; DELAWARE, USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Software as a service (SAAS) services, namely, providing online
+                            non-downloadable computer software for data collection, data analytics, and audience
+                            measurement and insight, and compiling demographic, lifestyle, and/or behavioral data of
+                            existing and potential consumers, and segmentation and distribution of such data; and
+                            providing non-downloadable software platforms, algorithms and interfaces for social media
+                            and website monitoring, data mining, news monitoring, customer relations monitoring,
+                            consumer/customer sentiment monitoring, brand monitoring, determination of data
+                            relationships, data storage services, and extraction of content; providing online
+                            non-downloadable software to perform internet marketing, website traffic optimization, and
+                            business research and intelligence by utilizing data analytics, retail analytics, stream
+                            processing and analytics, large volume data processing, user conversion optimization,
+                            customer analysis, website visitor analysis and website analysis; providing online
+                            non-downloadable software for developing, launching, displaying, editing, managing,
+                            measuring, tracking and analyzing advertisements and sales and advertising campaigns.
+
+                            <b>C/HCA, Inc. (CORPORATION; DELAWARE, USA)</b>
+
+                            Class 009
+                            021 026 038 036 023.
+                            G &amp; S: IC 009: Medical care outcome reporting software for the healthcare industry.
+
+                            <b>LAKELAND CARE, INC. (CORPORATION; MICHIGAN, USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Providing on-line non-downloadable software for physicians to view continuing
+                            education courses and to track physicians' continuing medical education credits.
+
+                            <b>Parsons Corproration (CORPORATION; DELAWARE, USA)</b>
+
+                            Class 009
+                            026 038 021 036 023.
+                            G &amp; S: IC 009: Computer software for use in energy assessment and capital planning, namely,
+                            a software application for collecting and recording data about the current energy condition,
+                            adequacy, inventory and usage of a building, and for calculating the Energy Utilization
+                            Index, Carbon Footprint, and LEED compliance, and that is able to predict future conditions
+                            through life cycling.
+
+                            <b>Affinity Solutions, Inc. (CORPORATION; DELAWARE, USA)</b>
+
+                            Class 042
+                            100 101.
+                            G &amp; S: IC 042: Providing online non-downloadable software for enabling users to review,
+                            analyze, report and export processed data from a secure, curated database of
+                            consumer-permissioned purchase data and to combine, compare and match such data with data
+                            from the user's proprietary datasets and third-party datasets, all in the field of curated
+                            consumer-permissioned purchase data; providing online non-downloadable software for
+                            facilitating and streamlining the creation of data solutions for strategies, insight, and
+                            guidance on marketing and consumer behavior in a secure and private cloud environment, all
+                            in the field of curated consumer-permissioned purchase data; providing online
+                            non-downloadable software featuring algorithms and step-by-step processes for enabling users
+                            to leverage purchase data, media viewing data, identity graph data and data analytic methods
+                            in order to connect deterministic purchase-behavior activity to media viewing behaviors for
+                            the purposes of planning, optimizing and measuring the effectiveness of media-based
+                            advertising.
+                        </td>
+                    </tr>
+                </table>
+                <p>
+                    MD5 or SHA1 sum for donated software: (<em>Note versioned software used to calculate sum in
+                    parentheses</em>).
+                </p>
+                <section id="Copyright">
+                    <title>Copyright</title>
+                    <table>
+                        <tr>
+                            <th>date</th>
+                            <th>item</th>
+                        </tr>
+                        <tr>
+                            <td>2024-02-03</td>
+                            <td>Check and make sure that the papers that transfer rights to the ASF been received. It is
+                                only necessary to transfer rights for the package, the core code, and any new code
+                                produced by the project.
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>2024-01-07</td>
+                            <td>The changes in the <a href="https://github.com/apache/arrow-datafusion-comet/pull/1">donation PR</a>
+                                include adding the ASF copyright, verified manually as well as by the automated
+                                RAT check (<a href="https://github.com/apache/arrow-datafusion-comet/pull/1#issuecomment-1913367405">link</a>).
+                            </td>
+                        </tr>
+                    </table>
+                    <p>
+                        Identify name recorded for software grant:
+                        <em>the name of the grant as recorded
+                            in the foundation/officers area, in either grants.txt or cclas.txt, so that the
+                            grant can be easily identified. If recorded in the grants.txt document, use the
+                            "for" or title. If recorded in the cclas.txt document, use the company name
+                            (field 2 without submitter name) and the "form on file" name (field 4, without
+                            any people's names).
+                        </em>
+                    </p>
+                </section>
+                <section id="Verify+distribution+rights">
+                    <title>Verify distribution rights</title>
+                    <p>
+                        Corporations and individuals holding existing distribution rights:
+                    </p>
+                    <ul>
+                        <li>
+                            <em>For individuals, use the name as recorded on the committers page</em>
+                        </li>
+                    </ul>
+                    <table>
+                        <tr>
+                            <th>date</th>
+                            <th>item</th>
+                        </tr>
+                        <tr>
+                            <td>....-..-..</td>
+                            <td>Check that all active committers have a signed CLA on
+                                record.
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>....-..-..</td>
+                            <td>Remind active committers that they are responsible for
+                                ensuring that a Corporate CLA is recorded if such is
+                                required to authorize their contributions under their
+                                individual CLA.
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>....-..-..</td>
+                            <td>Check and make sure that for all items included with the
+                                distribution that is not under the Apache license, we have
+                                the right to combine with Apache-licensed code and
+                                redistribute.
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>....-..-..</td>
+                            <td>Check and make sure that all items depended upon by the
+                                project is covered by one or more of the following approved
+                                licenses: Apache, BSD, Artistic, MIT/X, MIT/W3C, MPL 1.1, or
+                                something with essentially the same terms.
+                            </td>
+                        </tr>
+                    </table>
+                    <p>Generally, the result of checking off these items will be a
+                        Software Grant, CLA, and Corporate CLA for ASF licensed code,
+                        which must have no dependencies upon items whose licenses that
+                        are incompatible with the Apache License.
+                    </p>
+                </section>
+            </section>
+            <section id="Organizational+acceptance+of+responsibility+for+the+project">
+                <title>Organizational acceptance of responsibility for the project
+                </title>
+                <p>
+                    Related VOTEs:
+                </p>
+                <ul>
+                    <li>
+                        <em>The VOTE thread accepting the donation:
+                            <a href="https://lists.apache.org/thread/sk70pkhwmt8vgn0thtr04qg4mpqsgfvx">https://lists.apache.org/thread/sk70pkhwmt8vgn0thtr04qg4mpqsgfvx</a>
+                        </em>
+                    </li>
+                </ul>
+            </section>
+        </section>
+    </body>
 </document>
