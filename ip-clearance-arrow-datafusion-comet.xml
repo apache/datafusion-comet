@@ -225,11 +225,13 @@
                             </td>
                         </tr>
                         <tr>
-                            <td>....-..-..</td>
+                            <td>2024-02-03</td>
                             <td>Check and make sure that all items depended upon by the
                                 project is covered by one or more of the following approved
                                 licenses: Apache, BSD, Artistic, MIT/X, MIT/W3C, MPL 1.1, or
-                                something with essentially the same terms.
+                                something with essentially the same terms (see
+                                <a href="https://github.com/apache/arrow-datafusion-comet/pull/1#issuecomment-1925444681">here</a>
+                                and <a href="https://github.com/apache/arrow-datafusion-comet/pull/1#issuecomment-1925445213"></a>).
                             </td>
                         </tr>
                     </table>
