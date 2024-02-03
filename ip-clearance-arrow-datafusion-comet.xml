@@ -209,11 +209,11 @@
                             </td>
                         </tr>
                         <tr>
-                            <td>....-..-..</td>
+                            <td>2024-02-03</td>
                             <td>Remind active committers that they are responsible for
                                 ensuring that a Corporate CLA is recorded if such is
                                 required to authorize their contributions under their
-                                individual CLA.
+                                individual CLA (<a href="https://github.com/apache/arrow-datafusion-comet/pull/2/files#r1477120675">link</a>).
                             </td>
                         </tr>
                         <tr>
