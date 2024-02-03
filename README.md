@@ -20,7 +20,7 @@ under the License.
 # Apache Arrow DataFusion Comet
 
 Comet is an Apache Spark plugin that uses [Apache Arrow DataFusion](https://arrow.apache.org/datafusion/)
-as native runtime to achieve dramatic improvement in terms of query efficiency and query runtime.
+as native runtime to achieve improvement in terms of query efficiency and query runtime.
 
 On a high level, Comet aims to support:
 - a native Parquet implementation, including both reader and writer
