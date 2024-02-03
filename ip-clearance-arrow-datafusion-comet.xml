@@ -151,8 +151,8 @@
                     </tr>
                 </table>
                 <p>
-                    MD5 or SHA1 sum for donated software: (<em>Note versioned software used to calculate sum in
-                    parentheses</em>).
+                    The code is provided in the form of a GitHub Pull Request at
+                    <a href="https://github.com/apache/arrow-datafusion-comet/pull/1">https://github.com/apache/arrow-datafusion-comet/pull/1</a>.
                 </p>
                 <section id="Copyright">
                     <title>Copyright</title>
@@ -194,7 +194,7 @@
                     </p>
                     <ul>
                         <li>
-                            <em>For individuals, use the name as recorded on the committers page</em>
+                            <em>Apple</em>
                         </li>
                     </ul>
                     <table>
@@ -217,11 +217,11 @@
                             </td>
                         </tr>
                         <tr>
-                            <td>....-..-..</td>
+                            <td>2024-02-03</td>
                             <td>Check and make sure that for all items included with the
                                 distribution that is not under the Apache license, we have
                                 the right to combine with Apache-licensed code and
-                                redistribute.
+                                redistribute (Does not apply in this case).
                             </td>
                         </tr>
                         <tr>
