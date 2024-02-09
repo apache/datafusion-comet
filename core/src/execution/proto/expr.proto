@@ -1,0 +1,454 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+
+
+syntax = "proto3";
+
+package spark.spark_expression;
+
+option java_package = "org.apache.comet.serde";
+
+// The basic message representing a Spark expression.
+message Expr {
+  oneof expr_struct {
+    Literal literal = 2;
+    BoundReference bound = 3;
+    Add add = 4;
+    Subtract subtract = 5;
+    Multiply multiply = 6;
+    Divide divide = 7;
+    Cast cast = 8;
+    Equal eq = 9;
+    NotEqual neq = 10;
+    GreaterThan gt = 11;
+    GreaterThanEqual gt_eq = 12;
+    LessThan lt = 13;
+    LessThanEqual lt_eq = 14;
+    IsNull is_null = 15;
+    IsNotNull is_not_null = 16;
+    And and = 17;
+    Or or = 18;
+    SortOrder sort_order = 19;
+    Substring substring = 20;
+    StringSpace string_space = 21;
+    Hour hour = 22;
+    Minute minute = 23;
+    Second second = 24;
+    CheckOverflow check_overflow = 25;
+    Like like = 26;
+    StartsWith startsWith = 27;
+    EndsWith endsWith = 28;
+    Contains contains = 29;
+    // RLike rlike = 30;
+    ScalarFunc scalarFunc = 31;
+    EqualNullSafe eqNullSafe = 32;
+    NotEqualNullSafe neqNullSafe = 33;
+    BitwiseAnd bitwiseAnd = 34;
+    BitwiseOr bitwiseOr = 35;
+    BitwiseXor bitwiseXor = 36;
+    Remainder remainder = 37;
+    CaseWhen caseWhen = 38;
+    In in = 39;
+    Not not = 40;
+    Negative negative = 41;
+    BitwiseShiftRight bitwiseShiftRight = 42;
+    BitwiseShiftLeft bitwiseShiftLeft = 43;
+    IfExpr if = 44;
+    NormalizeNaNAndZero normalize_nan_and_zero = 45;
+    TruncDate truncDate = 46;
+    TruncTimestamp truncTimestamp = 47;
+    BitwiseNot bitwiseNot = 48;
+    Abs abs = 49;
+    Subquery subquery = 50;
+  }
+}
+
+message AggExpr {
+  oneof expr_struct {
+    Count count = 2;
+    Sum sum = 3;
+    Min min = 4;
+    Max max = 5;
+    Avg avg = 6;
+  }
+}
+
+message Count {
+   repeated Expr children = 1;
+}
+
+message Sum {
+   Expr child = 1;
+   DataType datatype = 2;
+   bool fail_on_error = 3;
+}
+
+message Min {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message Max {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message Avg {
+  Expr child = 1;
+  DataType datatype = 2;
+  DataType sum_datatype = 3;
+  bool fail_on_error = 4; // currently unused (useful for deciding Ansi vs Legacy mode)
+}
+
+message Literal {
+  oneof value {
+    bool bool_val = 1;
+    // Protobuf doesn't provide int8 and int16, we put them into int32 and convert
+    // to int8 and int16 when deserializing.
+    int32 byte_val = 2;
+    int32 short_val = 3;
+    int32 int_val = 4;
+    int64 long_val = 5;
+    float float_val = 6;
+    double double_val = 7;
+    string string_val = 8;
+    bytes bytes_val = 9;
+    bytes decimal_val = 10;
+   }
+
+   DataType datatype = 11;
+   bool is_null = 12;
+}
+
+message Add {
+  Expr left = 1;
+  Expr right = 2;
+  bool fail_on_error = 3;
+  DataType return_type = 4;
+}
+
+message Subtract {
+  Expr left = 1;
+  Expr right = 2;
+  bool fail_on_error = 3;
+  DataType return_type = 4;
+}
+
+message Multiply {
+  Expr left = 1;
+  Expr right = 2;
+  bool fail_on_error = 3;
+  DataType return_type = 4;
+}
+
+message Divide {
+  Expr left = 1;
+  Expr right = 2;
+  bool fail_on_error = 3;
+  DataType return_type = 4;
+}
+
+message Remainder {
+  Expr left = 1;
+  Expr right = 2;
+  bool fail_on_error = 3;
+  DataType return_type = 4;
+}
+
+message Cast {
+  Expr child = 1;
+  DataType datatype = 2;
+  string timezone = 3;
+}
+
+message Equal {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message NotEqual {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message EqualNullSafe {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message NotEqualNullSafe {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message GreaterThan {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message GreaterThanEqual {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message LessThan {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message LessThanEqual {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message And {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message Or {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message IsNull {
+  Expr child = 1;
+}
+
+message IsNotNull {
+  Expr child = 1;
+}
+
+// Bound to a particular vector array in input batch.
+message BoundReference {
+  int32 index = 1;
+  DataType datatype = 2;
+}
+
+message SortOrder {
+  Expr child = 1;
+  SortDirection direction = 2;
+  NullOrdering null_ordering = 3;
+}
+
+message Substring {
+  Expr child = 1;
+  int32 start = 2;
+  int32 len = 3;
+}
+
+message StringSpace {
+  Expr child = 1;
+}
+
+message Hour {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message Minute {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message Second {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message CheckOverflow {
+  Expr child = 1;
+  DataType datatype = 2;
+  bool fail_on_error = 3;
+}
+
+message Like {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+// message RLike {
+//   Expr left = 1;
+//   Expr right = 2;
+// }
+
+message StartsWith {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message EndsWith {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message Contains {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message ScalarFunc {
+  string func = 1;
+  repeated Expr args = 2;
+  DataType return_type = 3;
+}
+
+message BitwiseAnd {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message BitwiseOr {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message BitwiseXor {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message BitwiseShiftRight {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message BitwiseShiftLeft {
+  Expr left = 1;
+  Expr right = 2;
+}
+
+message CaseWhen {
+  // The expr field is added to be consistent with CaseExpr definition in DataFusion.
+  // This field is not really used. When constructing a CaseExpr, this expr field
+  // is always set to None. The reason that we always set this expr field to None
+  // is because Spark parser converts the expr to a EqualTo conditions. After the
+  // conversion, we don't see this expr any more so it's always None.
+  Expr expr = 1;
+  repeated Expr when = 2;
+  repeated Expr then = 3;
+  Expr else_expr = 4;
+}
+
+message In {
+  Expr in_value = 1;
+  repeated Expr lists = 2;
+  bool negated = 3;
+}
+
+message NormalizeNaNAndZero {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message Not {
+  Expr child = 1;
+}
+
+message Negative {
+  Expr child = 1;
+}
+
+message IfExpr {
+  Expr if_expr = 1;
+  Expr true_expr = 2;
+  Expr false_expr = 3;
+}
+
+message TruncDate {
+  Expr child = 1;
+  Expr format = 2;
+}
+
+message TruncTimestamp {
+  Expr format = 1;
+  Expr child = 2;
+  string timezone = 3;
+}
+
+message BitwiseNot {
+  Expr child = 1;
+}
+
+message Abs {
+  Expr child = 1;
+}
+
+message Subquery {
+  int64 id = 1;
+  DataType datatype = 2;
+}
+
+enum SortDirection {
+  Ascending = 0;
+  Descending = 1;
+}
+
+enum NullOrdering {
+  NullsFirst = 0;
+  NullsLast = 1;
+}
+
+message DataType {
+  enum DataTypeId {
+    BOOL = 0;
+    INT8 = 1;
+    INT16 = 2;
+    INT32 = 3;
+    INT64 = 4;
+    FLOAT = 5;
+    DOUBLE = 6;
+    STRING = 7;
+    BYTES = 8;
+    TIMESTAMP = 9;
+    DECIMAL = 10;
+    TIMESTAMP_NTZ = 11;
+    DATE = 12;
+    NULL = 13;
+    LIST = 14;
+    STRUCT = 15;
+  }
+  DataTypeId type_id = 1;
+
+  message DataTypeInfo {
+    oneof datatype_struct {
+      DecimalInfo decimal = 2;
+      ListInfo list = 3;
+      StructInfo struct = 4;
+    }
+  }
+
+  message DecimalInfo {
+    int32 precision = 1;
+    int32 scale = 2;
+  }
+
+  message ListInfo {
+    DataType element_type = 1;
+    bool contains_null = 2;
+  }
+
+  message StructInfo {
+    repeated string field_names = 1;
+    repeated DataType field_datatypes = 2;
+    repeated bool field_nullable = 3;
+  }
+
+  DataTypeInfo type_info = 2;
+}
+
