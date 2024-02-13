@@ -54,6 +54,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def castTest(inputs: Seq[String], toType: DataType) {
+    //TODO create true temp file and delete after test completes
     val filename = s"/tmp/castTest_${System.currentTimeMillis()}.parquet"
     inputs.toDF("str").write.mode(SaveMode.Overwrite).parquet(filename)
     val df = spark.read.parquet(filename)
