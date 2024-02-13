@@ -29,8 +29,21 @@ import scala.util.Random
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  ignore("cast string to bool") {
+    castTest(Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", ""), DataTypes.BooleanType)
+    fuzzTest("truefalseTRUEFALSEyesno10 \t\r\n", 8, DataTypes.BooleanType)
+  }
+
   ignore("cast string to short") {
     fuzzTest("0123456789e+- \t\r\n", 8, DataTypes.ShortType)
+  }
+
+  ignore("cast string to float") {
+    fuzzTest("0123456789e+- \t\r\n", 8, DataTypes.FloatType)
+  }
+
+  ignore("cast string to double") {
+    fuzzTest("0123456789e+- \t\r\n", 8, DataTypes.DoubleType)
   }
 
   ignore("cast string to date") {
