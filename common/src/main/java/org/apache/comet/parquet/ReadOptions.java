@@ -48,6 +48,16 @@ public class ReadOptions {
       "comet.parquet.read.io.mergeRanges.delta";
   private static final int COMET_IO_MERGE_RANGES_DELTA_DEFAULT = 1 << 23; // 8 MB
 
+  // In the parallel reader, if the read ranges submitted are skewed in sizes, this
+  // option will cause the reader to break up larger read ranges into smaller ranges
+  // to reduce the skew. This will result in a slightly larger number of connections
+  // opened to the file system but may give improved performance.
+  // The option is off by default.
+  public static final String BOSON_IO_ADJUST_READRANGE_SKEW =
+      "boson.parquet.read.io.adjust.readRange.skew";
+
+  private static final boolean BOSON_IO_ADJUST_READRANGE_SKEW_DEFAULT = false;
+
   // Max number of concurrent tasks we expect. Used to autoconfigure S3 client connections
   public static final int S3A_MAX_EXPECTED_PARALLELISM = 32;
   // defined in hadoop-aws - org.apache.hadoop.fs.s3a.Constants.MAXIMUM_CONNECTIONS
@@ -63,16 +73,19 @@ public class ReadOptions {
   private final int parallelIOThreadPoolSize;
   private final boolean ioMergeRanges;
   private final int ioMergeRangesDelta;
+  private final boolean adjustReadRangeSkew;
 
   ReadOptions(
       boolean parallelIOEnabled,
       int parallelIOThreadPoolSize,
       boolean ioMergeRanges,
-      int ioMergeRangesDelta) {
+      int ioMergeRangesDelta,
+      boolean adjustReadRangeSkew) {
     this.parallelIOEnabled = parallelIOEnabled;
     this.parallelIOThreadPoolSize = parallelIOThreadPoolSize;
     this.ioMergeRanges = ioMergeRanges;
     this.ioMergeRangesDelta = ioMergeRangesDelta;
+    this.adjustReadRangeSkew = adjustReadRangeSkew;
   }
 
   public boolean isParallelIOEnabled() {
@@ -91,6 +104,10 @@ public class ReadOptions {
     return ioMergeRangesDelta;
   }
 
+  public boolean adjustReadRangesSkew() {
+    return adjustReadRangeSkew;
+  }
+
   public static Builder builder(Configuration conf) {
     return new Builder(conf);
   }
@@ -106,6 +123,7 @@ public class ReadOptions {
     private int parallelIOThreadPoolSize;
     private boolean ioMergeRanges;
     private int ioMergeRangesDelta;
+    private boolean adjustReadRangeSkew;
 
     /**
      * Whether to enable Parquet parallel IO when reading row groups. If true, Parquet reader will
@@ -137,9 +155,18 @@ public class ReadOptions {
       return this;
     }
 
+    public Builder adjustReadRangeSkew(boolean adjustReadRangeSkew) {
+      this.adjustReadRangeSkew = adjustReadRangeSkew;
+      return this;
+    }
+
     public ReadOptions build() {
       return new ReadOptions(
-          parallelIOEnabled, parallelIOThreadPoolSize, ioMergeRanges, ioMergeRangesDelta);
+          parallelIOEnabled,
+          parallelIOThreadPoolSize,
+          ioMergeRanges,
+          ioMergeRangesDelta,
+          adjustReadRangeSkew);
     }
 
     public Builder(Configuration conf) {
@@ -152,6 +179,8 @@ public class ReadOptions {
       this.ioMergeRanges = conf.getBoolean(COMET_IO_MERGE_RANGES, COMET_IO_MERGE_RANGES_DEFAULT);
       this.ioMergeRangesDelta =
           conf.getInt(COMET_IO_MERGE_RANGES_DELTA, COMET_IO_MERGE_RANGES_DELTA_DEFAULT);
+      this.adjustReadRangeSkew =
+          conf.getBoolean(BOSON_IO_ADJUST_READRANGE_SKEW, BOSON_IO_ADJUST_READRANGE_SKEW_DEFAULT);
       // override some S3 defaults
       setS3Config();
     }
