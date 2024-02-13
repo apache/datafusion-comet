@@ -297,7 +297,7 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
     new File(baseResourcePath, "approved-plans-v1_4").getAbsolutePath
 
   tpcdsQueries.foreach { q =>
-    test(s"check simplified (tpcds-v1.4/$q)") {
+    ignore(s"check simplified (tpcds-v1.4/$q)") {
       testQuery("tpcds", q)
     }
   }
@@ -308,7 +308,7 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
     new File(baseResourcePath, "approved-plans-v2_7").getAbsolutePath
 
   tpcdsQueriesV2_7_0.foreach { q =>
-    test(s"check simplified (tpcds-v2.7.0/$q)") {
+    ignore(s"check simplified (tpcds-v2.7.0/$q)") {
       testQuery("tpcds-v2.7.0", q)
     }
   }

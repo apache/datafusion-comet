@@ -1,0 +1,112 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR Build
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    paths-ignore:
+      - "doc/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "doc/**"
+      - "**.md"
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: 17
+
+jobs:
+  linux-rust-test:
+    name: Rust test (amd64)
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: nightly
+          jdk-version: ${{env.JAVA_VERSION}}
+
+      - name: Check cargo fmt
+        run: |
+          cd core
+          cargo fmt --all -- --check --color=never
+
+      - name: Check cargo clippy
+        run: |
+          cd core
+          cargo clippy --color=never -- -D warnings
+
+      - name: Check compilation
+        run: |
+          cd core
+          cargo check --benches
+
+      - name: Setup JAVA_HOME
+        run: |
+          echo "JAVA_HOME=/usr/lib/jvm/java-${{env.JAVA_VERSION}}-openjdk-amd64" >> $GITHUB_ENV
+
+      - name: Build common module (pre-requisite for Rust tests)
+        run: |
+          cd common
+          ../mvnw clean compile -DskipTests
+
+      - name: Run cargo test
+        run: |
+          cd core
+          # This is required to run some JNI related tests on the Rust side
+          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_HOME/lib:$JAVA_HOME/lib/server cargo test
+
+  linux-java-test:
+    name: Java test (amd64)
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: nightly
+          jdk-version: ${{env.JAVA_VERSION}}
+
+      - name: Run cargo build
+        run: |
+          cd core
+          cargo build
+
+      - name: Setup JAVA_HOME
+        run: |
+          echo "JAVA_HOME=/usr/lib/jvm/java-${{env.JAVA_VERSION}}-openjdk-amd64" >> $GITHUB_ENV
+
+      - name: Run Maven compile
+        run: |
+          ./mvnw compile test-compile scalafix:scalafix -Psemanticdb
+
+      - name: Run tests
+        run: |
+          SPARK_HOME=`pwd` ./mvnw clean install
