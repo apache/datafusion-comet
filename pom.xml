@@ -740,7 +740,6 @@ under the License.
       </plugins>
     </pluginManagement>
     <plugins>
-      <!--
       <plugin>
         <groupId>org.scalastyle</groupId>
         <artifactId>scalastyle-maven-plugin</artifactId>
@@ -778,7 +777,6 @@ under the License.
           </execution>
         </executions>
       </plugin>
-      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
