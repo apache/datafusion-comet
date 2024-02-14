@@ -224,6 +224,7 @@ under the License.
             </goals>
             <configuration>
               <trimStackTrace>false</trimStackTrace>
+              <argLine>-ea ${extraJavaTestArgs}</argLine>
             </configuration>
           </execution>
         </executions>

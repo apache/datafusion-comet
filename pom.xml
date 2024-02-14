@@ -64,6 +64,26 @@ under the License.
 
     <!-- Reverse default (skip installation), and then enable only for child modules -->
     <maven.deploy.skip>true</maven.deploy.skip>
+
+    <!-- For testing with JDK 17 -->
+    <extraJavaTestArgs>
+      -XX:+IgnoreUnrecognizedVMOptions
+      --add-opens=java.base/java.lang=ALL-UNNAMED
+      --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+      --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+      --add-opens=java.base/java.io=ALL-UNNAMED
+      --add-opens=java.base/java.net=ALL-UNNAMED
+      --add-opens=java.base/java.nio=ALL-UNNAMED
+      --add-opens=java.base/java.util=ALL-UNNAMED
+      --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+      --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+      --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+      --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+      --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+      --add-opens=java.base/sun.security.action=ALL-UNNAMED
+      --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+      -Djdk.reflect.useDirectMethodHandle=false
+    </extraJavaTestArgs>
   </properties>
 
   <dependencyManagement>
@@ -623,6 +643,7 @@ under the License.
             <filereports>SparkTestSuite.txt</filereports>
             <stderr/>
             <tagsToExclude>org.apache.comet.IntegrationTestSuite</tagsToExclude>
+            <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
             <systemProperties>
               <!-- emit test logs to target/unit-tests.log -->
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
@@ -664,6 +685,7 @@ under the License.
             <systemProperties>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
             </systemProperties>
+            <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
           </configuration>
         </plugin>
         <plugin>
