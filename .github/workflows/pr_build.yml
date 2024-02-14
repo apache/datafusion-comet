@@ -70,6 +70,14 @@ jobs:
         run: |
           echo "JAVA_HOME=/usr/lib/jvm/java-${{env.JAVA_VERSION}}-openjdk-amd64" >> $GITHUB_ENV
 
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
       - name: Build common module (pre-requisite for Rust tests)
         run: |
           cd common
@@ -79,7 +87,7 @@ jobs:
         run: |
           cd core
           # This is required to run some JNI related tests on the Rust side
-          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_HOME/lib:$JAVA_HOME/lib/server cargo test
+          RUST_BACKTRACE=1 LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_HOME/lib:$JAVA_HOME/lib/server cargo test
 
   linux-java-test:
     name: Java test (amd64)
@@ -102,6 +110,14 @@ jobs:
       - name: Setup JAVA_HOME
         run: |
           echo "JAVA_HOME=/usr/lib/jvm/java-${{env.JAVA_VERSION}}-openjdk-amd64" >> $GITHUB_ENV
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Run Maven compile
         run: |
