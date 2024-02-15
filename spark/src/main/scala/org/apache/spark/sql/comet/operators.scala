@@ -33,11 +33,11 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import com.google.common.base.Objects
+
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, CometSparkSessionExtensions}
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-
-import com.google.common.base.Objects
 
 /**
  * A Comet physical operator

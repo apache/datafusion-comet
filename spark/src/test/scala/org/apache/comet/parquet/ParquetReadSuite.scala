@@ -47,10 +47,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import com.google.common.primitives.UnsignedLong
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
-
-import com.google.common.primitives.UnsignedLong
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._

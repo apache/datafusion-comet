@@ -32,10 +32,10 @@ import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.vectorized._
 
+import com.google.common.base.Objects
+
 import org.apache.comet.MetricsSupport
 import org.apache.comet.shims.ShimCometBatchScanExec
-
-import com.google.common.base.Objects
 
 case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
     extends DataSourceV2ScanExecBase
