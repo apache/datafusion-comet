@@ -820,6 +820,7 @@ under the License.
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
             <exclude>.git/**</exclude>
+            <exclude>.github/**</exclude>
             <exclude>.gitignore</exclude>
             <exclude>.gitmodules</exclude>
             <exclude>**/.idea/**</exclude>
