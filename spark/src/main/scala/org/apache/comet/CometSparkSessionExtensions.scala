@@ -295,6 +295,7 @@ class CometSparkSessionExtensions
             case Some(nativeOp) =>
               val cometOp = CometUnionExec(u, u.children)
               CometSinkPlaceHolder(nativeOp, u, cometOp)
+            case None => u
           }
 
         case op =>
