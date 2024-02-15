@@ -144,11 +144,15 @@ class CometTPCDSQuerySuite
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf.set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
+    conf.set(
+      "spark.shuffle.manager",
+      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
     conf
   }
 

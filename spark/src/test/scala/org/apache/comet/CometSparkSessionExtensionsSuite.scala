@@ -142,4 +142,42 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
       CometSparkSessionExtensions
         .getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 10))
   }
+
+  test("Comet shuffle memory factor") {
+    val conf = new SparkConf()
+
+    val sqlConf = new SQLConf
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.key, "0.2")
+
+    // Minimum Comet memory overhead is 384MB
+    assert(
+      CometSparkSessionExtensions.getCometShuffleMemorySize(conf, sqlConf) ==
+        getBytesFromMib((384 * 0.2).toLong))
+
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD_FACTOR.key, "0.5")
+    assert(
+      CometSparkSessionExtensions.getCometShuffleMemorySize(conf, sqlConf) ==
+        getBytesFromMib((1024 * 0.5 * 0.2).toLong))
+  }
+
+  test("Comet shuffle memory") {
+    val conf = new SparkConf()
+    val sqlConf = new SQLConf
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "512m")
+
+    assert(
+      CometSparkSessionExtensions
+        .getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(512))
+  }
+
+  test("Comet shuffle memory cannot be larger than Comet memory overhead") {
+    val conf = new SparkConf()
+    val sqlConf = new SQLConf
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "10g")
+    assert(
+      CometSparkSessionExtensions
+        .getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(1024))
+  }
 }

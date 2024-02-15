@@ -40,6 +40,11 @@ object CometExecBenchmark extends CometBenchmarkBase {
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
       .set("spark.executor.memoryOverhead", "10g")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      .set("spark.comet.columnar.shuffle.async.thread.num", "7")
+      .set("spark.comet.columnar.shuffle.spill.threshold", "30000")
 
     val sparkSession = SparkSession.builder
       .config(conf)
@@ -52,6 +57,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "10g")
+    sparkSession.conf.set(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "10g")
     // TODO: support dictionary encoding in vectorized execution
     sparkSession.conf.set("parquet.enable.dictionary", "false")
     sparkSession.conf.set("spark.sql.shuffle.partitions", "2")
@@ -123,7 +129,9 @@ object CometExecBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
             spark.sql(
               "SELECT (SELECT max(col1) AS parquetV1Table FROM parquetV1Table) AS a, " +
                 "col2, col3 FROM parquetV1Table")

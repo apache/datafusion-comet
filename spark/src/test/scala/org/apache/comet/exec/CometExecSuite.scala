@@ -21,16 +21,21 @@ package org.apache.comet.exec
 
 import scala.util.Random
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame, DataFrameWriter, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
-import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec}
-import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, UnionExec}
+import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.functions.{date_add, expr}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
@@ -39,6 +44,15 @@ import org.apache.comet.CometConf
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
+
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+        testFun
+      }
+    }
+  }
 
   test("scalar subquery") {
     val dataTypes =
@@ -56,41 +70,45 @@ class CometExecSuite extends CometTestBase {
         "BINARY",
         "DECIMAL(38, 10)")
     dataTypes.map { subqueryType =>
-      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
-        var column1 = s"CAST(max(_1) AS $subqueryType)"
-        if (subqueryType == "BINARY") {
-          // arrow-rs doesn't support casting integer to binary yet.
-          // We added it to upstream but it's not released yet.
-          column1 = "CAST(CAST(max(_1) AS STRING) AS BINARY)"
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+          var column1 = s"CAST(max(_1) AS $subqueryType)"
+          if (subqueryType == "BINARY") {
+            // arrow-rs doesn't support casting integer to binary yet.
+            // We added it to upstream but it's not released yet.
+            column1 = "CAST(CAST(max(_1) AS STRING) AS BINARY)"
+          }
+
+          val df1 = sql(s"SELECT (SELECT $column1 FROM tbl) AS a, _1, _2 FROM tbl")
+          checkSparkAnswerAndOperator(df1)
+
+          var column2 = s"CAST(_1 AS $subqueryType)"
+          if (subqueryType == "BINARY") {
+            // arrow-rs doesn't support casting integer to binary yet.
+            // We added it to upstream but it's not released yet.
+            column2 = "CAST(CAST(_1 AS STRING) AS BINARY)"
+          }
+
+          val df2 = sql(s"SELECT _1, _2 FROM tbl WHERE $column2 > (SELECT $column1 FROM tbl)")
+          checkSparkAnswerAndOperator(df2)
+
+          // Non-correlated exists subquery will be rewritten to scalar subquery
+          val df3 = sql(
+            "SELECT * FROM tbl WHERE EXISTS " +
+              s"(SELECT $column2 FROM tbl WHERE _1 > 1)")
+          checkSparkAnswerAndOperator(df3)
+
+          // Null value
+          column1 = s"CAST(NULL AS $subqueryType)"
+          if (subqueryType == "BINARY") {
+            column1 = "CAST(CAST(NULL AS STRING) AS BINARY)"
+          }
+
+          val df4 = sql(s"SELECT (SELECT $column1 FROM tbl LIMIT 1) AS a, _1, _2 FROM tbl")
+          checkSparkAnswerAndOperator(df4)
         }
-
-        val df1 = sql(s"SELECT (SELECT $column1 FROM tbl) AS a, _1, _2 FROM tbl")
-        checkSparkAnswerAndOperator(df1)
-
-        var column2 = s"CAST(_1 AS $subqueryType)"
-        if (subqueryType == "BINARY") {
-          // arrow-rs doesn't support casting integer to binary yet.
-          // We added it to upstream but it's not released yet.
-          column2 = "CAST(CAST(_1 AS STRING) AS BINARY)"
-        }
-
-        val df2 = sql(s"SELECT _1, _2 FROM tbl WHERE $column2 > (SELECT $column1 FROM tbl)")
-        checkSparkAnswerAndOperator(df2)
-
-        // Non-correlated exists subquery will be rewritten to scalar subquery
-        val df3 = sql(
-          "SELECT * FROM tbl WHERE EXISTS " +
-            s"(SELECT $column2 FROM tbl WHERE _1 > 1)")
-        checkSparkAnswerAndOperator(df3)
-
-        // Null value
-        column1 = s"CAST(NULL AS $subqueryType)"
-        if (subqueryType == "BINARY") {
-          column1 = "CAST(CAST(NULL AS STRING) AS BINARY)"
-        }
-
-        val df4 = sql(s"SELECT (SELECT $column1 FROM tbl LIMIT 1) AS a, _1, _2 FROM tbl")
-        checkSparkAnswerAndOperator(df4)
       }
     }
   }
@@ -122,6 +140,68 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test(
+    "fix: ReusedExchangeExec + CometShuffleExchangeExec under QueryStageExec " +
+      "should be CometRoot") {
+    val tableName = "table1"
+    val dim = "dim"
+
+    withSQLConf(
+      SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withTable(tableName, dim) {
+
+        sql(
+          s"CREATE TABLE $tableName (id BIGINT, price FLOAT, date DATE, ts TIMESTAMP) USING parquet " +
+            "PARTITIONED BY (id)")
+        sql(s"CREATE TABLE $dim (id BIGINT, date DATE) USING parquet")
+
+        spark
+          .range(1, 100)
+          .withColumn("date", date_add(expr("DATE '1970-01-01'"), expr("CAST(id % 4 AS INT)")))
+          .withColumn("ts", expr("TO_TIMESTAMP(date)"))
+          .withColumn("price", expr("CAST(id AS FLOAT)"))
+          .select("id", "price", "date", "ts")
+          .coalesce(1)
+          .write
+          .mode(SaveMode.Append)
+          .partitionBy("id")
+          .saveAsTable(tableName)
+
+        spark
+          .range(1, 10)
+          .withColumn("date", expr("DATE '1970-01-02'"))
+          .select("id", "date")
+          .coalesce(1)
+          .write
+          .mode(SaveMode.Append)
+          .saveAsTable(dim)
+
+        val query =
+          s"""
+             |SELECT $tableName.id, sum(price) as sum_price
+             |FROM $tableName, $dim
+             |WHERE $tableName.id = $dim.id AND $tableName.date = $dim.date
+             |GROUP BY $tableName.id HAVING sum(price) > (
+             |  SELECT sum(price) * 0.0001 FROM $tableName, $dim WHERE $tableName.id = $dim.id AND $tableName.date = $dim.date
+             |  )
+             |ORDER BY sum_price
+             |""".stripMargin
+
+        val df = sql(query)
+        checkSparkAnswer(df)
+        val exchanges = stripAQEPlan(df.queryExecution.executedPlan).collect {
+          case s: CometShuffleExchangeExec if s.shuffleType == CometColumnarShuffle =>
+            s
+            s
+        }
+        assert(exchanges.length == 4)
+      }
+    }
+  }
+
   test("expand operator") {
     val data1 = (0 until 1000)
       .map(_ % 5) // reduce value space to trigger dictionary encoding
@@ -131,7 +211,7 @@ class CometExecSuite extends CometTestBase {
     Seq(data1, data2).foreach { tableData =>
       withParquetTable(tableData, "tbl") {
         val df = sql("SELECT _1, _2, SUM(_3) FROM tbl GROUP BY _1, _2 GROUPING SETS ((_1), (_2))")
-        checkSparkAnswerAndOperator(df, classOf[HashAggregateExec], classOf[ShuffleExchangeExec])
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -265,12 +345,14 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("final aggregation") {
-    withParquetTable(
-      (0 until 100)
-        .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
-      "tbl") {
-      val df = sql("SELECT _2, COUNT(*) FROM tbl GROUP BY _2")
-      checkSparkAnswerAndOperator(df, classOf[HashAggregateExec], classOf[ShuffleExchangeExec])
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withParquetTable(
+        (0 until 100)
+          .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
+        "tbl") {
+        val df = sql("SELECT _2, COUNT(*) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
@@ -278,6 +360,18 @@ class CometExecSuite extends CometTestBase {
     withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
       val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("global sort (columnar shuffle only)") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+        val df = sql("SELECT * FROM tbl").sort($"_1".desc)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
@@ -315,6 +409,22 @@ class CometExecSuite extends CometTestBase {
             val query = df.sortWithinPartitions(colOrder)
             checkSparkAnswerAndOperator(query)
           }
+        }
+      }
+    }
+  }
+
+  test("limit") {
+    Seq("true", "false").foreach { columnarShuffle =>
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle) {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
+          val df = sql("SELECT * FROM tbl_a")
+            .repartition(10, $"_1")
+            .limit(2)
+            .sort($"_2".desc)
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -384,7 +494,7 @@ class CometExecSuite extends CometTestBase {
         .write
         .saveAsTable("t1")
       val query = sql("SELECT count(1) FROM t1")
-      checkSparkAnswerAndOperator(query, classOf[HashAggregateExec], classOf[ShuffleExchangeExec])
+      checkSparkAnswerAndOperator(query)
     }
   }
 
@@ -526,10 +636,7 @@ class CometExecSuite extends CometTestBase {
         "parquet.enable.dictionary" -> dictionary) {
         withParquetTable(Seq((Long.MaxValue, 1), (Long.MaxValue, 2)), "tbl") {
           val df = sql("SELECT sum(_1) FROM tbl")
-          checkSparkAnswerAndOperator(
-            df,
-            classOf[HashAggregateExec],
-            classOf[ShuffleExchangeExec])
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -635,11 +742,19 @@ class CometExecSuite extends CometTestBase {
     val df2 =
       (0 until 50).map(i => (i % 7, i % 11, i.toString)).toDF("i", "j", "k").as("df2")
 
-    val BucketedTableTestSpec(bucketSpecLeft, numPartitionsLeft, _, _, _) =
-      bucketedTableTestSpecLeft
+    val BucketedTableTestSpec(
+      bucketSpecLeft,
+      numPartitionsLeft,
+      shuffleLeft,
+      sortLeft,
+      numOutputPartitionsLeft) = bucketedTableTestSpecLeft
 
-    val BucketedTableTestSpec(bucketSpecRight, numPartitionsRight, _, _, _) =
-      bucketedTableTestSpecRight
+    val BucketedTableTestSpec(
+      bucketSpecRight,
+      numPartitionsRight,
+      shuffleRight,
+      sortRight,
+      numOutputPartitionsRight) = bucketedTableTestSpecRight
 
     withTable("bucketed_table1", "bucketed_table2") {
       withBucket(df1.repartition(numPartitionsLeft).write.format("parquet"), bucketSpecLeft)
@@ -749,12 +864,7 @@ class CometExecSuite extends CometTestBase {
       assert(rdd.partitions.length == 10)
 
       val coalesced = df.coalesce(2).select($"l" + 1).sortWithinPartitions($"l")
-      checkSparkAnswerAndOperator(
-        coalesced,
-        classOf[ProjectExec],
-        classOf[SortExec],
-        classOf[CoalesceExec],
-        classOf[ShuffleExchangeExec])
+      checkSparkAnswerAndOperator(coalesced)
     }
   }
 
@@ -773,26 +883,96 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("coalesce") {
-    withTable("t1") {
-      (0 until 5)
-        .map(i => (i, (i + 1).toLong))
-        .toDF("l", "b")
-        .write
-        .saveAsTable("t1")
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withTable("t1") {
+        (0 until 5)
+          .map(i => (i, (i + 1).toLong))
+          .toDF("l", "b")
+          .write
+          .saveAsTable("t1")
 
-      val df = sql("SELECT * FROM t1")
-        .sortWithinPartitions($"l".desc)
-        .repartition(10, $"l")
+        val df = sql("SELECT * FROM t1")
+          .sortWithinPartitions($"l".desc)
+          .repartition(10, $"l")
 
-      val rdd = df.rdd
-      assert(rdd.getNumPartitions == 10)
+        val rdd = df.rdd
+        assert(rdd.getNumPartitions == 10)
 
-      val coalesced = df.coalesce(2)
-      checkSparkAnswerAndOperator(coalesced, classOf[CoalesceExec], classOf[ShuffleExchangeExec])
+        val coalesced = df.coalesce(2)
+        checkSparkAnswerAndOperator(coalesced)
 
-      val coalescedRdd = coalesced.rdd
-      assert(coalescedRdd.getNumPartitions == 2)
+        val coalescedRdd = coalesced.rdd
+        assert(coalescedRdd.getNumPartitions == 2)
+      }
     }
+  }
+
+  test("TakeOrderedAndProjectExec") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df1 = spark.sql("""
+            |SELECT a, b, ROW_NUMBER() OVER(ORDER BY a, b) AS rn
+            |FROM t1 LIMIT 3
+            |""".stripMargin)
+
+          assert(df1.rdd.getNumPartitions == 1)
+          checkSparkAnswerAndOperator(df1, classOf[WindowExec])
+
+          val df2 = spark.sql("""
+            |SELECT b, RANK() OVER(ORDER BY a, b) AS rk, DENSE_RANK(b) OVER(ORDER BY a, b) AS s
+            |FROM t1 LIMIT 2
+            |""".stripMargin)
+          assert(df2.rdd.getNumPartitions == 1)
+          checkSparkAnswerAndOperator(df2, classOf[WindowExec], classOf[ProjectExec])
+
+          // Other Comet native operator can take input from `CometTakeOrderedAndProjectExec`.
+          val df3 = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3").groupBy($"a").sum("b")
+          checkSparkAnswerAndOperator(df3)
+        }
+      })
+  }
+
+  test("TakeOrderedAndProjectExec without sorting") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.EliminateSorts") {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df = spark
+            .table("t1")
+            .select("a", "b")
+            .sortWithinPartitions("b", "a")
+            .orderBy("b")
+            .select($"b" + 1, $"a")
+            .limit(3)
+
+          val takeOrdered = stripAQEPlan(df.queryExecution.executedPlan).collect {
+            case b: CometTakeOrderedAndProjectExec => b
+          }
+          assert(takeOrdered.length == 1)
+          assert(takeOrdered.head.orderingSatisfies)
+
+          checkSparkAnswerAndOperator(df)
+        }
+      })
   }
 }
 

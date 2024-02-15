@@ -1,0 +1,933 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Utils for supporting native sort-based columnar shuffle.
+
+use crate::{
+    errors::CometError,
+    execution::{
+        datafusion::shuffle_writer::{compute_checksum, write_ipc_compressed, ChecksumAlgorithm},
+        shuffle::list::{append_list_element, SparkUnsafeArray},
+        utils::bytes_to_i128,
+    },
+};
+use arrow::compute::cast;
+use arrow_array::{
+    builder::{
+        ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
+        Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
+        Int64Builder, Int8Builder, ListBuilder, StringBuilder, StringDictionaryBuilder,
+        StructBuilder, TimestampMicrosecondBuilder,
+    },
+    types::Int32Type,
+    Array, ArrayRef, RecordBatch,
+};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use jni::sys::{jint, jlong};
+use std::{
+    fs::OpenOptions,
+    io::{Cursor, Seek, SeekFrom, Write},
+    str::from_utf8,
+    sync::Arc,
+};
+
+const WORD_SIZE: i64 = 8;
+const MAX_LONG_DIGITS: u8 = 18;
+const LIST_BUILDER_CAPACITY: usize = 100;
+
+/// A common trait for Spark Unsafe classes that can be used to access the underlying data,
+/// e.g., `UnsafeRow` and `UnsafeArray`. This defines a set of methods that can be used to
+/// access the underlying data with index.
+pub trait SparkUnsafeObject {
+    /// Returns the address of the row.
+    fn get_row_addr(&self) -> i64;
+
+    /// Returns the offset of the element at the given index.
+    fn get_element_offset(&self, index: usize, element_size: usize) -> *const u8;
+
+    /// Returns the offset and length of the element at the given index.
+    #[inline]
+    fn get_offset_and_len(&self, index: usize) -> (i32, i32) {
+        let offset_and_size = self.get_long(index);
+        let offset = (offset_and_size >> 32) as i32;
+        let len = offset_and_size as i32;
+        (offset, len)
+    }
+
+    /// Returns boolean value at the given index of the object.
+    fn get_boolean(&self, index: usize) -> bool {
+        let addr = self.get_element_offset(index, 1);
+        unsafe { *addr != 0 }
+    }
+
+    /// Returns byte value at the given index of the object.
+    fn get_byte(&self, index: usize) -> i8 {
+        let addr = self.get_element_offset(index, 1);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
+        i8::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns short value at the given index of the object.
+    fn get_short(&self, index: usize) -> i16 {
+        let addr = self.get_element_offset(index, 2);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
+        i16::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns integer value at the given index of the object.
+    fn get_int(&self, index: usize) -> i32 {
+        let addr = self.get_element_offset(index, 4);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
+        i32::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns long value at the given index of the object.
+    fn get_long(&self, index: usize) -> i64 {
+        let addr = self.get_element_offset(index, 8);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
+        i64::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns float value at the given index of the object.
+    fn get_float(&self, index: usize) -> f32 {
+        let addr = self.get_element_offset(index, 4);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
+        f32::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns double value at the given index of the object.
+    fn get_double(&self, index: usize) -> f64 {
+        let addr = self.get_element_offset(index, 8);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
+        f64::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns string value at the given index of the object.
+    fn get_string(&self, index: usize) -> &str {
+        let (offset, len) = self.get_offset_and_len(index);
+        let addr = self.get_row_addr() + offset as i64;
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
+
+        from_utf8(slice).unwrap()
+    }
+
+    /// Returns binary value at the given index of the object.
+    fn get_binary(&self, index: usize) -> &[u8] {
+        let (offset, len) = self.get_offset_and_len(index);
+        let addr = self.get_row_addr() + offset as i64;
+        unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) }
+    }
+
+    /// Returns date value at the given index of the object.
+    fn get_date(&self, index: usize) -> i32 {
+        let addr = self.get_element_offset(index, 4);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
+        i32::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns timestamp value at the given index of the object.
+    fn get_timestamp(&self, index: usize) -> i64 {
+        let addr = self.get_element_offset(index, 8);
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
+        i64::from_le_bytes(slice.try_into().unwrap())
+    }
+
+    /// Returns decimal value at the given index of the object.
+    fn get_decimal(&self, index: usize, precision: u8) -> i128 {
+        if precision <= MAX_LONG_DIGITS {
+            self.get_long(index) as i128
+        } else {
+            let slice = self.get_binary(index);
+            bytes_to_i128(slice)
+        }
+    }
+
+    /// Returns struct value at the given index of the object.
+    fn get_struct(&self, index: usize, num_fields: usize) -> SparkUnsafeRow {
+        let (offset, len) = self.get_offset_and_len(index);
+        let mut row = SparkUnsafeRow::new_with_num_fields(num_fields);
+        row.point_to(self.get_row_addr() + offset as i64, len);
+
+        row
+    }
+
+    /// Returns array value at the given index of the object.
+    fn get_array(&self, index: usize) -> SparkUnsafeArray {
+        let (offset, len) = self.get_offset_and_len(index);
+        SparkUnsafeArray::new(self.get_row_addr() + offset as i64, len)
+    }
+}
+
+pub struct SparkUnsafeRow {
+    row_addr: i64,
+    row_size: i32,
+    row_bitset_width: i64,
+}
+
+impl SparkUnsafeObject for SparkUnsafeRow {
+    fn get_row_addr(&self) -> i64 {
+        self.row_addr
+    }
+
+    fn get_element_offset(&self, index: usize, _: usize) -> *const u8 {
+        (self.row_addr + self.row_bitset_width + (index * 8) as i64) as *const u8
+    }
+}
+
+impl SparkUnsafeRow {
+    fn new(schema: &Vec<DataType>) -> Self {
+        Self {
+            row_addr: -1,
+            row_size: -1,
+            row_bitset_width: Self::get_row_bitset_width(schema.len()) as i64,
+        }
+    }
+
+    /// Calculate the width of the bitset for the row in bytes.
+    /// The logic is from Spark `UnsafeRow.calculateBitSetWidthInBytes`.
+    #[inline]
+    pub const fn get_row_bitset_width(num_fields: usize) -> usize {
+        ((num_fields + 63) / 64) * 8
+    }
+
+    pub fn new_with_num_fields(num_fields: usize) -> Self {
+        Self {
+            row_addr: -1,
+            row_size: -1,
+            row_bitset_width: Self::get_row_bitset_width(num_fields) as i64,
+        }
+    }
+
+    /// Points the row to the given slice.
+    pub fn point_to_slice(&mut self, slice: &[u8]) {
+        self.row_addr = slice.as_ptr() as i64;
+        self.row_size = slice.len() as i32;
+    }
+
+    /// Points the row to the given address with specified row size.
+    fn point_to(&mut self, row_addr: i64, row_size: i32) {
+        self.row_addr = row_addr;
+        self.row_size = row_size;
+    }
+
+    pub fn get_row_size(&self) -> i32 {
+        self.row_size
+    }
+
+    /// Returns true if the null bit at the given index of the row is set.
+    #[inline]
+    pub(crate) fn is_null_at(&self, index: usize) -> bool {
+        unsafe {
+            let mask: i64 = 1i64 << (index & 0x3f);
+            let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *const i64;
+            let word: i64 = *word_offset;
+            (word & mask) != 0
+        }
+    }
+
+    /// Unsets the null bit at the given index of the row, i.e., set the bit to 0 (not null).
+    pub fn set_not_null_at(&mut self, index: usize) {
+        unsafe {
+            let mask: i64 = 1i64 << (index & 0x3f);
+            let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
+            let word: i64 = *word_offset;
+            *word_offset = word & !mask;
+        }
+    }
+}
+
+macro_rules! downcast_builder {
+    ($builder_type:ty, $builder:expr) => {
+        $builder.into_box_any().downcast::<$builder_type>().unwrap()
+    };
+}
+
+/// Appends field of row to the given struct builder. `dt` is the data type of the field.
+/// `struct_builder` is the struct builder of the row. `row` is the row that contains the field.
+/// `idx` is the index of the field in the row.
+#[allow(clippy::redundant_closure_call)]
+pub(crate) fn append_field(
+    dt: &DataType,
+    struct_builder: &mut StructBuilder,
+    row: &SparkUnsafeRow,
+    idx: usize,
+) {
+    /// A macro for generating code of appending value into field builder of Arrow struct builder.
+    macro_rules! append_field_to_builder {
+        ($builder_type:ty, $accessor:expr) => {{
+            let field_builder = struct_builder.field_builder::<$builder_type>(idx).unwrap();
+            let is_null = row.is_null_at(idx);
+
+            if is_null {
+                field_builder.append_null();
+            } else {
+                $accessor(field_builder);
+            }
+        }};
+    }
+
+    /// A macro for generating code of appending value into list field builder of Arrow struct
+    /// builder.
+    macro_rules! append_list_field_to_builder {
+        ($builder_type:ty, $element_dt:expr) => {{
+            let field_builder = struct_builder
+                .field_builder::<ListBuilder<$builder_type>>(idx)
+                .unwrap();
+            let is_null = row.is_null_at(idx);
+
+            if is_null {
+                field_builder.append_null();
+            } else {
+                append_list_element::<$builder_type>(
+                    $element_dt,
+                    field_builder,
+                    &row.get_array(idx),
+                )
+                .unwrap()
+            }
+        }};
+    }
+
+    match dt {
+        DataType::Boolean => {
+            append_field_to_builder!(BooleanBuilder, |builder: &mut BooleanBuilder| builder
+                .append_value(row.get_boolean(idx)));
+        }
+        DataType::Int8 => {
+            append_field_to_builder!(Int8Builder, |builder: &mut Int8Builder| builder
+                .append_value(row.get_byte(idx)));
+        }
+        DataType::Int16 => {
+            append_field_to_builder!(Int16Builder, |builder: &mut Int16Builder| builder
+                .append_value(row.get_short(idx)));
+        }
+        DataType::Int32 => {
+            append_field_to_builder!(Int32Builder, |builder: &mut Int32Builder| builder
+                .append_value(row.get_int(idx)));
+        }
+        DataType::Int64 => {
+            append_field_to_builder!(Int64Builder, |builder: &mut Int64Builder| builder
+                .append_value(row.get_long(idx)));
+        }
+        DataType::Float32 => {
+            append_field_to_builder!(Float32Builder, |builder: &mut Float32Builder| builder
+                .append_value(row.get_float(idx)));
+        }
+        DataType::Float64 => {
+            append_field_to_builder!(Float64Builder, |builder: &mut Float64Builder| builder
+                .append_value(row.get_double(idx)));
+        }
+        DataType::Date32 => {
+            append_field_to_builder!(Date32Builder, |builder: &mut Date32Builder| builder
+                .append_value(row.get_date(idx)));
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            append_field_to_builder!(
+                TimestampMicrosecondBuilder,
+                |builder: &mut TimestampMicrosecondBuilder| builder
+                    .append_value(row.get_timestamp(idx))
+            );
+        }
+        DataType::Binary => {
+            append_field_to_builder!(BinaryBuilder, |builder: &mut BinaryBuilder| builder
+                .append_value(row.get_binary(idx)));
+        }
+        DataType::Utf8 => {
+            append_field_to_builder!(StringBuilder, |builder: &mut StringBuilder| builder
+                .append_value(row.get_string(idx)));
+        }
+        DataType::Decimal128(p, _) => {
+            append_field_to_builder!(Decimal128Builder, |builder: &mut Decimal128Builder| builder
+                .append_value(row.get_decimal(idx, *p)));
+        }
+        DataType::Struct(fields) => {
+            append_field_to_builder!(StructBuilder, |builder: &mut StructBuilder| {
+                let nested_row = row.get_struct(idx, fields.len());
+                builder.append(true);
+                for (field_idx, field) in fields.into_iter().enumerate() {
+                    append_field(field.data_type(), builder, &nested_row, field_idx);
+                }
+            });
+        }
+        DataType::List(field) => match field.data_type() {
+            DataType::Boolean => {
+                append_list_field_to_builder!(BooleanBuilder, field.data_type());
+            }
+            DataType::Int8 => {
+                append_list_field_to_builder!(Int8Builder, field.data_type());
+            }
+            DataType::Int16 => {
+                append_list_field_to_builder!(Int16Builder, field.data_type());
+            }
+            DataType::Int32 => {
+                append_list_field_to_builder!(Int32Builder, field.data_type());
+            }
+            DataType::Int64 => {
+                append_list_field_to_builder!(Int64Builder, field.data_type());
+            }
+            DataType::Float32 => {
+                append_list_field_to_builder!(Float32Builder, field.data_type());
+            }
+            DataType::Float64 => {
+                append_list_field_to_builder!(Float64Builder, field.data_type());
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                append_list_field_to_builder!(TimestampMicrosecondBuilder, field.data_type());
+            }
+            DataType::Date32 => {
+                append_list_field_to_builder!(Date32Builder, field.data_type());
+            }
+            DataType::Binary => {
+                append_list_field_to_builder!(BinaryBuilder, field.data_type());
+            }
+            DataType::Utf8 => {
+                append_list_field_to_builder!(StringBuilder, field.data_type());
+            }
+            DataType::Struct(_) => {
+                append_list_field_to_builder!(StructBuilder, field.data_type());
+            }
+            DataType::Decimal128(_, _) => {
+                append_list_field_to_builder!(Decimal128Builder, field.data_type());
+            }
+            _ => unreachable!("Unsupported data type of struct field: {:?}", dt),
+        },
+        _ => {
+            unreachable!("Unsupported data type of struct field: {:?}", dt)
+        }
+    }
+}
+
+/// Appends column of rows to the given array builder.
+#[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
+pub(crate) fn append_columns(
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    row_start: usize,
+    row_end: usize,
+    schema: &Vec<DataType>,
+    column_idx: usize,
+    builder: &mut Box<dyn ArrayBuilder>,
+    prefer_dictionary_ratio: f64,
+) {
+    /// A macro for generating code of appending values into Arrow array builders.
+    macro_rules! append_column_to_builder {
+        ($builder_type:ty, $accessor:expr) => {{
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<$builder_type>()
+                .unwrap();
+            let mut row = SparkUnsafeRow::new(schema);
+
+            for i in row_start..row_end {
+                let row_addr = unsafe { *row_addresses_ptr.add(i) };
+                let row_size = unsafe { *row_sizes_ptr.add(i) };
+                row.point_to(row_addr, row_size);
+
+                let is_null = row.is_null_at(column_idx);
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    $accessor(builder, &row, column_idx);
+                }
+            }
+        }};
+    }
+
+    /// A macro for generating code of appending values into Arrow `ListBuilder`.
+    macro_rules! append_column_to_list_builder {
+        ($builder_type:ty, $element_dt:expr) => {{
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<$builder_type>>()
+                .unwrap();
+            let mut row = SparkUnsafeRow::new(schema);
+
+            for i in row_start..row_end {
+                let row_addr = unsafe { *row_addresses_ptr.add(i) };
+                let row_size = unsafe { *row_sizes_ptr.add(i) };
+                row.point_to(row_addr, row_size);
+
+                let is_null = row.is_null_at(column_idx);
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    append_list_element::<$builder_type>(
+                        $element_dt,
+                        builder,
+                        &row.get_array(column_idx),
+                    )
+                    .unwrap()
+                }
+            }
+        }};
+    }
+
+    let dt = &schema[column_idx];
+
+    match dt {
+        DataType::Boolean => {
+            append_column_to_builder!(
+                BooleanBuilder,
+                |builder: &mut BooleanBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_boolean(idx))
+            );
+        }
+        DataType::Int8 => {
+            append_column_to_builder!(
+                Int8Builder,
+                |builder: &mut Int8Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_byte(idx))
+            );
+        }
+        DataType::Int16 => {
+            append_column_to_builder!(
+                Int16Builder,
+                |builder: &mut Int16Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_short(idx))
+            );
+        }
+        DataType::Int32 => {
+            append_column_to_builder!(
+                Int32Builder,
+                |builder: &mut Int32Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_int(idx))
+            );
+        }
+        DataType::Int64 => {
+            append_column_to_builder!(
+                Int64Builder,
+                |builder: &mut Int64Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_long(idx))
+            );
+        }
+        DataType::Float32 => {
+            append_column_to_builder!(
+                Float32Builder,
+                |builder: &mut Float32Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_float(idx))
+            );
+        }
+        DataType::Float64 => {
+            append_column_to_builder!(
+                Float64Builder,
+                |builder: &mut Float64Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_double(idx))
+            );
+        }
+        DataType::Decimal128(p, _) => {
+            append_column_to_builder!(
+                Decimal128Builder,
+                |builder: &mut Decimal128Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_decimal(idx, *p))
+            );
+        }
+        DataType::Utf8 => {
+            if prefer_dictionary_ratio > 1.0 {
+                append_column_to_builder!(
+                    StringDictionaryBuilder<Int32Type>,
+                    |builder: &mut StringDictionaryBuilder<Int32Type>,
+                     row: &SparkUnsafeRow,
+                     idx| builder.append_value(row.get_string(idx))
+                );
+            } else {
+                append_column_to_builder!(
+                    StringBuilder,
+                    |builder: &mut StringBuilder, row: &SparkUnsafeRow, idx| builder
+                        .append_value(row.get_string(idx))
+                );
+            }
+        }
+        DataType::Binary => {
+            if prefer_dictionary_ratio > 1.0 {
+                append_column_to_builder!(
+                    BinaryDictionaryBuilder<Int32Type>,
+                    |builder: &mut BinaryDictionaryBuilder<Int32Type>,
+                     row: &SparkUnsafeRow,
+                     idx| builder.append_value(row.get_binary(idx))
+                );
+            } else {
+                append_column_to_builder!(
+                    BinaryBuilder,
+                    |builder: &mut BinaryBuilder, row: &SparkUnsafeRow, idx| builder
+                        .append_value(row.get_binary(idx))
+                );
+            }
+        }
+        DataType::Date32 => {
+            append_column_to_builder!(
+                Date32Builder,
+                |builder: &mut Date32Builder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_date(idx))
+            );
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            append_column_to_builder!(
+                TimestampMicrosecondBuilder,
+                |builder: &mut TimestampMicrosecondBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_timestamp(idx))
+            );
+        }
+        DataType::List(field) => match field.data_type() {
+            DataType::Boolean => {
+                append_column_to_list_builder!(BooleanBuilder, field.data_type());
+            }
+            DataType::Int8 => {
+                append_column_to_list_builder!(Int8Builder, field.data_type());
+            }
+            DataType::Int16 => {
+                append_column_to_list_builder!(Int16Builder, field.data_type());
+            }
+            DataType::Int32 => {
+                append_column_to_list_builder!(Int32Builder, field.data_type());
+            }
+            DataType::Int64 => {
+                append_column_to_list_builder!(Int64Builder, field.data_type());
+            }
+            DataType::Float32 => {
+                append_column_to_list_builder!(Float32Builder, field.data_type());
+            }
+            DataType::Float64 => {
+                append_column_to_list_builder!(Float64Builder, field.data_type());
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                append_column_to_list_builder!(TimestampMicrosecondBuilder, field.data_type());
+            }
+            DataType::Date32 => {
+                append_column_to_list_builder!(Date32Builder, field.data_type());
+            }
+            DataType::Binary => {
+                append_column_to_list_builder!(BinaryBuilder, field.data_type());
+            }
+            DataType::Utf8 => {
+                append_column_to_list_builder!(StringBuilder, field.data_type());
+            }
+            DataType::Struct(_) => {
+                append_column_to_list_builder!(StructBuilder, field.data_type());
+            }
+            DataType::Decimal128(_, _) => {
+                append_column_to_list_builder!(Decimal128Builder, field.data_type());
+            }
+            _ => unreachable!("Unsupported data type of list element: {:?}", dt),
+        },
+        DataType::Struct(fields) => {
+            append_column_to_builder!(
+                StructBuilder,
+                |builder: &mut StructBuilder, row: &SparkUnsafeRow, idx| {
+                    let nested_row = row.get_struct(idx, fields.len());
+                    builder.append(true);
+                    for (idx, field) in fields.into_iter().enumerate() {
+                        append_field(field.data_type(), builder, &nested_row, idx);
+                    }
+                }
+            );
+        }
+        _ => {
+            unreachable!("Unsupported data type of column: {:?}", dt)
+        }
+    }
+}
+
+fn make_builders(
+    dt: &DataType,
+    row_num: usize,
+    prefer_dictionary_ratio: f64,
+) -> Result<Box<dyn ArrayBuilder>, CometError> {
+    let builder: Box<dyn ArrayBuilder> = match dt {
+        DataType::Boolean => Box::new(BooleanBuilder::with_capacity(row_num)),
+        DataType::Int8 => Box::new(Int8Builder::with_capacity(row_num)),
+        DataType::Int16 => Box::new(Int16Builder::with_capacity(row_num)),
+        DataType::Int32 => Box::new(Int32Builder::with_capacity(row_num)),
+        DataType::Int64 => Box::new(Int64Builder::with_capacity(row_num)),
+        DataType::Float32 => Box::new(Float32Builder::with_capacity(row_num)),
+        DataType::Float64 => Box::new(Float64Builder::with_capacity(row_num)),
+        DataType::Decimal128(_, _) => {
+            Box::new(Decimal128Builder::with_capacity(row_num).with_data_type(dt.clone()))
+        }
+        DataType::Utf8 => {
+            if prefer_dictionary_ratio > 1.0 {
+                Box::new(StringDictionaryBuilder::<Int32Type>::with_capacity(
+                    row_num / 2,
+                    row_num,
+                    1024,
+                ))
+            } else {
+                Box::new(StringBuilder::with_capacity(row_num, 1024))
+            }
+        }
+        DataType::Binary => {
+            if prefer_dictionary_ratio > 1.0 {
+                Box::new(BinaryDictionaryBuilder::<Int32Type>::with_capacity(
+                    row_num / 2,
+                    row_num,
+                    1024,
+                ))
+            } else {
+                Box::new(BinaryBuilder::with_capacity(row_num, 1024))
+            }
+        }
+        DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
+        }
+        DataType::List(field) => {
+            // Disable dictionary encoding for array element
+            let value_builder = make_builders(field.data_type(), LIST_BUILDER_CAPACITY, 1.0)?;
+            match field.data_type() {
+                DataType::Boolean => {
+                    let builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Int8 => {
+                    let builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Int16 => {
+                    let builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Int32 => {
+                    let builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Int64 => {
+                    let builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Float32 => {
+                    let builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Float64 => {
+                    let builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Decimal128(_, _) => {
+                    let builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    let builder = downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Date32 => {
+                    let builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Binary => {
+                    let builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Utf8 => {
+                    let builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                DataType::Struct(_) => {
+                    let builder = downcast_builder!(StructBuilder, value_builder);
+                    Box::new(ListBuilder::new(*builder))
+                }
+                // TODO: nested list is not supported. Due to the design of `ListBuilder`, it has
+                // a `T: ArrayBuilder` as type parameter. It makes hard to construct an arbitrarily
+                // nested `ListBuilder`.
+                DataType::List(_) => {
+                    return Err(CometError::Internal(
+                        "list of list is not supported type".to_string(),
+                    ))
+                }
+                _ => {
+                    return Err(CometError::Internal(format!(
+                        "Unsupported type: {:?}",
+                        field.data_type()
+                    )))
+                }
+            }
+        }
+        DataType::Struct(fields) => {
+            let field_builders = fields
+                .iter()
+                // Disable dictionary encoding for struct fields
+                .map(|field| make_builders(field.data_type(), row_num, 1.0))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Box::new(StructBuilder::new(fields.clone(), field_builders))
+        }
+        _ => return Err(CometError::Internal(format!("Unsupported type: {:?}", dt))),
+    };
+
+    Ok(builder)
+}
+
+/// Processes a sorted row partition and writes the result to the given output path.
+#[allow(clippy::too_many_arguments)]
+pub fn process_sorted_row_partition(
+    row_num: usize,
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    schema: &Vec<DataType>,
+    output_path: String,
+    prefer_dictionary_ratio: f64,
+    checksum_enabled: bool,
+    checksum_algo: i32,
+    current_checksum: Option<u32>,
+) -> Result<(i64, Option<u32>), CometError> {
+    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+    schema.iter().try_for_each(|dt| {
+        make_builders(dt, row_num, prefer_dictionary_ratio)
+            .map(|builder| data_builders.push(builder))?;
+        Ok::<(), CometError>(())
+    })?;
+
+    // Appends rows to the array builders.
+    let mut row_start: usize = 0;
+    // TODO: We can tune this parameter automatically based on row size and cache size.
+    let row_step = 10;
+    while row_start < row_num {
+        let row_end = std::cmp::min(row_start + row_step, row_num);
+
+        // For each column, iterating over rows and appending values to corresponding array builder.
+        for (idx, builder) in data_builders.iter_mut().enumerate() {
+            append_columns(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                row_start,
+                row_end,
+                schema,
+                idx,
+                builder,
+                prefer_dictionary_ratio,
+            );
+        }
+
+        row_start = row_end;
+    }
+
+    // Writes a record batch generated from the array builders to the output file.
+    let array_refs: Result<Vec<ArrayRef>, _> = data_builders
+        .iter_mut()
+        .zip(schema.iter())
+        .map(|(builder, datatype)| builder_to_array(builder, datatype, prefer_dictionary_ratio))
+        .collect();
+    let batch = make_batch(array_refs?);
+
+    let mut frozen: Vec<u8> = vec![];
+    let mut cursor = Cursor::new(&mut frozen);
+    cursor.seek(SeekFrom::End(0))?;
+    let written = write_ipc_compressed(&batch, &mut cursor)?;
+
+    let checksum = if checksum_enabled {
+        let checksum = match checksum_algo {
+            0 => ChecksumAlgorithm::CRC32(current_checksum),
+            1 => ChecksumAlgorithm::Adler32(current_checksum),
+            _ => {
+                return Err(CometError::Internal(
+                    "Unsupported checksum algorithm".to_string(),
+                ))
+            }
+        };
+
+        match compute_checksum(&mut cursor, &checksum)? {
+            ChecksumAlgorithm::CRC32(checksum) => checksum,
+            ChecksumAlgorithm::Adler32(checksum) => checksum,
+        }
+    } else {
+        None
+    };
+
+    let mut output_data = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_path)?;
+
+    output_data.write_all(&frozen)?;
+
+    Ok((written as i64, checksum))
+}
+
+fn builder_to_array(
+    builder: &mut Box<dyn ArrayBuilder>,
+    datatype: &DataType,
+    prefer_dictionary_ratio: f64,
+) -> Result<ArrayRef, CometError> {
+    match datatype {
+        // We don't have redundant dictionary values which are not referenced by any key.
+        // So the reasonable ratio must be larger than 1.0.
+        DataType::Utf8 if prefer_dictionary_ratio > 1.0 => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<StringDictionaryBuilder<Int32Type>>()
+                .unwrap();
+
+            let dict_array = builder.finish();
+            let num_keys = dict_array.keys().len();
+            let num_values = dict_array.values().len();
+
+            if num_keys as f64 > num_values as f64 * prefer_dictionary_ratio {
+                // The number of keys in the dictionary is less than a ratio of the number of
+                // values. The dictionary is efficient, so we return it directly.
+                Ok(Arc::new(dict_array))
+            } else {
+                // If the dictionary is not efficient, we convert it to a plain string array.
+                Ok(cast(&dict_array, &DataType::Utf8)?)
+            }
+        }
+        DataType::Binary if prefer_dictionary_ratio > 1.0 => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<BinaryDictionaryBuilder<Int32Type>>()
+                .unwrap();
+
+            let dict_array = builder.finish();
+            let num_keys = dict_array.keys().len();
+            let num_values = dict_array.values().len();
+
+            if num_keys as f64 > num_values as f64 * prefer_dictionary_ratio {
+                // The number of keys in the dictionary is less than a ratio of the number of
+                // values. The dictionary is efficient, so we return it directly.
+                Ok(Arc::new(dict_array))
+            } else {
+                // If the dictionary is not efficient, we convert it to a plain string array.
+                Ok(cast(&dict_array, &DataType::Binary)?)
+            }
+        }
+        _ => Ok(builder.finish()),
+    }
+}
+
+fn make_batch(arrays: Vec<ArrayRef>) -> RecordBatch {
+    let mut dict_id = 0;
+    let fields = arrays
+        .iter()
+        .enumerate()
+        .map(|(i, array)| match array.data_type() {
+            DataType::Dictionary(_, _) => {
+                let field = Field::new_dict(
+                    format!("c{}", i),
+                    array.data_type().clone(),
+                    true,
+                    dict_id,
+                    false,
+                );
+                dict_id += 1;
+                field
+            }
+            _ => Field::new(format!("c{}", i), array.data_type().clone(), true),
+        })
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(schema, arrays).unwrap()
+}

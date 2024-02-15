@@ -113,3 +113,7 @@ harness = false
 name = "hash"
 harness = false
 
+[[bench]]
+name = "row_columnar"
+harness = false
+

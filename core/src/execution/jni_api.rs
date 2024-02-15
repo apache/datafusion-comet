@@ -48,14 +48,15 @@ use crate::{
     errors::{try_unwrap_or_throw, CometError},
     execution::{
         datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
-        serde::to_arrow_datatype, spark_operator::Operator,
+        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        spark_operator::Operator,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
 use futures::stream::StreamExt;
 use jni::{
     objects::{AutoArray, GlobalRef},
-    sys::{jbooleanArray, jobjectArray},
+    sys::{jboolean, jbooleanArray, jdouble, jintArray, jobjectArray, jstring},
 };
 use tokio::runtime::Runtime;
 
@@ -504,4 +505,83 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+#[no_mangle]
+/// Used by Comet shuffle external sorter to write sorted records to disk.
+pub extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
+    env: JNIEnv,
+    _class: JClass,
+    row_addresses: jlongArray,
+    row_sizes: jintArray,
+    serialized_datatypes: jobjectArray,
+    file_path: jstring,
+    prefer_dictionary_ratio: jdouble,
+    checksum_enabled: jboolean,
+    checksum_algo: jint,
+    current_checksum: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(env, || {
+        let row_num = env.get_array_length(row_addresses)? as usize;
+
+        let data_types = convert_datatype_arrays(&env, serialized_datatypes)?;
+
+        let row_addresses = env.get_long_array_elements(row_addresses, ReleaseMode::NoCopyBack)?;
+        let row_sizes = env.get_int_array_elements(row_sizes, ReleaseMode::NoCopyBack)?;
+
+        let row_addresses_ptr = row_addresses.as_ptr();
+        let row_sizes_ptr = row_sizes.as_ptr();
+
+        let output_path: String = env.get_string(JString::from(file_path)).unwrap().into();
+
+        let checksum_enabled = checksum_enabled == 1;
+        let current_checksum = if current_checksum == i64::MIN {
+            // Initial checksum is not available.
+            None
+        } else {
+            Some(current_checksum as u32)
+        };
+
+        let (written_bytes, checksum) = process_sorted_row_partition(
+            row_num,
+            row_addresses_ptr,
+            row_sizes_ptr,
+            &data_types,
+            output_path,
+            prefer_dictionary_ratio,
+            checksum_enabled,
+            checksum_algo,
+            current_checksum,
+        )?;
+
+        let checksum = if let Some(checksum) = checksum {
+            checksum as i64
+        } else {
+            // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
+            // checksum is not available.
+            i64::MIN
+        };
+
+        let long_array = env.new_long_array(2)?;
+        env.set_long_array_region(long_array, 0, &[written_bytes, checksum])?;
+
+        Ok(long_array)
+    })
+}
+
+#[no_mangle]
+/// Used by Comet shuffle external sorter to sort in-memory row partition ids.
+pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
+    env: JNIEnv,
+    _class: JClass,
+    address: jlong,
+    size: jlong,
+) {
+    try_unwrap_or_throw(env, || {
+        // SAFETY: JVM unsafe memory allocation is aligned with long.
+        let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
+        array.rdxsort();
+
+        Ok(())
+    })
 }

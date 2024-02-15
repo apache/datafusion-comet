@@ -68,6 +68,7 @@ use crate::{
                 NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
+            shuffle_writer::ShuffleWriterExec,
         },
         operators::{CopyExec, ExecutionError, InputBatch, ScanExec},
         serde::to_arrow_datatype,
@@ -752,6 +753,23 @@ impl PhysicalPlanner {
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan = ScanExec::new(input_batch, fields);
                 Ok((vec![scan.clone()], Arc::new(scan)))
+            }
+            OpStruct::ShuffleWriter(writer) => {
+                assert!(children.len() == 1);
+                let (scans, child) = self.create_plan(&children[0], input_batches)?;
+
+                let partitioning = self
+                    .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
+
+                Ok((
+                    scans,
+                    Arc::new(ShuffleWriterExec::try_new(
+                        child,
+                        partitioning,
+                        writer.output_data_file.clone(),
+                        writer.output_index_file.clone(),
+                    )?),
+                ))
             }
             OpStruct::Expand(expand) => {
                 assert!(children.len() == 1);

@@ -257,6 +257,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
       "spark.sql.readSideCharPadding" -> "false",
@@ -278,11 +279,15 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   protected override def createSparkSession: TestSparkSession = {
     val conf = super.sparkConf
     conf.set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
+    conf.set(
+      "spark.shuffle.manager",
+      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
     new TestSparkSession(new SparkContext("local[1]", this.getClass.getCanonicalName, conf))
   }

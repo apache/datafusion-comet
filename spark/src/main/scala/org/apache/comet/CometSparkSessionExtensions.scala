@@ -29,17 +29,20 @@ import org.apache.spark.sql.SparkSessionExtensions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isSchemaSupported}
+import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -125,6 +128,30 @@ class CometSparkSessionExtensions
   }
 
   case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+    private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
+      plan.transformUp {
+        case s: ShuffleExchangeExec
+            if isCometPlan(s.child) && !isCometColumnarShuffleEnabled(conf) &&
+              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning) =>
+          logInfo("Comet extension enabled for Native Shuffle")
+
+          // Switch to use Decimal128 regardless of precision, since Arrow native execution
+          // doesn't support Decimal32 and Decimal64 yet.
+          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+          CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+
+        // Arrow shuffle for regular Spark operators (not Comet) and Comet operators (if configured)
+        case s: ShuffleExchangeExec
+            if (!s.child.supportsColumnar || isCometPlan(
+              s.child)) && isCometColumnarShuffleEnabled(conf) &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output) =>
+          logInfo("Comet extension enabled for JVM Columnar Shuffle")
+          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+      }
+    }
+
+    private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
+
     private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
     // spotless:off
@@ -137,7 +164,7 @@ class CometSparkSessionExtensions
      * 1. The child(ren) of the current node `p` cannot be converted to native
      *   In this case, we'll simply return the original Spark plan, since Comet native
      *   execution cannot start from an arbitrary Spark operator (unless it is special node
-     *   such as scan or sink such as union etc., which are wrapped by
+     *   such as scan or sink such as shuffle exchange, union etc., which are wrapped by
      *   `CometScanWrapper` and `CometSinkPlaceHolder` respectively).
      *
      * 2. The child(ren) of the current node `p` can be converted to native
@@ -288,6 +315,20 @@ class CometSparkSessionExtensions
               c
           }
 
+        case s: TakeOrderedAndProjectExec
+            if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
+              && isCometShuffleEnabled(conf) &&
+              CometTakeOrderedAndProjectExec.isSupported(s.projectList, s.sortOrder, s.child) =>
+          // TODO: support offset for Spark 3.4
+          QueryPlanSerde.operator2Proto(s) match {
+            case Some(nativeOp) =>
+              val cometOp =
+                CometTakeOrderedAndProjectExec(s, s.limit, s.sortOrder, s.projectList, s.child)
+              CometSinkPlaceHolder(nativeOp, s, cometOp)
+            case None =>
+              s
+          }
+
         case u: UnionExec
             if isCometOperatorEnabled(conf, "union") &&
               u.children.forall(isCometNative) =>
@@ -295,7 +336,46 @@ class CometSparkSessionExtensions
             case Some(nativeOp) =>
               val cometOp = CometUnionExec(u, u.children)
               CometSinkPlaceHolder(nativeOp, u, cometOp)
-            case None => u
+          }
+
+        // Native shuffle for Comet operators
+        case s: ShuffleExchangeExec
+            if isCometShuffleEnabled(conf) &&
+              !isCometColumnarShuffleEnabled(conf) &&
+              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning) =>
+          logInfo("Comet extension enabled for Native Shuffle")
+
+          val newOp = transform1(s)
+          newOp match {
+            case Some(nativeOp) =>
+              // Switch to use Decimal128 regardless of precision, since Arrow native execution
+              // doesn't support Decimal32 and Decimal64 yet.
+              conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+              val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+              CometSinkPlaceHolder(nativeOp, s, cometOp)
+            case None =>
+              s
+          }
+
+        // Arrow shuffle for regular Spark operators (not Comet) and Comet operators
+        // (if configured)
+        case s: ShuffleExchangeExec
+            if isCometShuffleEnabled(conf) && isCometColumnarShuffleEnabled(conf) &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output) =>
+          logInfo("Comet extension enabled for JVM Columnar Shuffle")
+
+          val newOp = QueryPlanSerde.operator2Proto(s)
+          newOp match {
+            case Some(nativeOp) =>
+              s.child match {
+                case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
+                  val cometOp = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+                  CometSinkPlaceHolder(nativeOp, s, cometOp)
+                case _ =>
+                  s
+              }
+            case None =>
+              s
           }
 
         case op =>
@@ -316,8 +396,12 @@ class CometSparkSessionExtensions
       if (!isCometEnabled(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
-        // Comet exec is disabled
-        plan
+        // Comet exec is disabled, but for Spark shuffle, we still can use Comet Arrow shuffle
+        if (isCometShuffleEnabled(conf)) {
+          applyCometShuffle(plan)
+        } else {
+          plan
+        }
       } else {
         var newPlan = transform(plan)
 
@@ -405,12 +489,21 @@ object CometSparkSessionExtensions extends Logging {
     conf.getConfString(operatorFlag, "false").toBoolean || isCometAllOperatorEnabled(conf)
   }
 
+  private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) &&
+      (conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
     COMET_SCAN_ENABLED.get(conf)
   }
 
   private[comet] def isCometExecEnabled(conf: SQLConf): Boolean = {
     COMET_EXEC_ENABLED.get(conf)
+  }
+
+  private[comet] def isCometColumnarShuffleEnabled(conf: SQLConf): Boolean = {
+    COMET_COLUMNAR_SHUFFLE_ENABLED.get(conf)
   }
 
   private[comet] def isCometAllOperatorEnabled(conf: SQLConf): Boolean = {
@@ -469,5 +562,24 @@ object CometSparkSessionExtensions extends Logging {
   /** Calculates required memory overhead in bytes per executor process for Comet. */
   def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
+  }
+
+  /** Calculates required shuffle memory size in bytes per executor process for Comet. */
+  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf): Long = {
+    val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
+
+    val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
+    val cometShuffleMemoryFromConf = COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.get(conf)
+
+    val shuffleMemorySize =
+      cometShuffleMemoryFromConf.getOrElse((overheadFactor * cometMemoryOverhead).toLong)
+    if (shuffleMemorySize > cometMemoryOverhead) {
+      logWarning(
+        s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
+          s"$cometMemoryOverhead, using Comet memory overhead instead.")
+      ByteUnit.MiB.toBytes(cometMemoryOverhead)
+    } else {
+      ByteUnit.MiB.toBytes(shuffleMemorySize)
+    }
   }
 }
