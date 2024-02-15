@@ -19,15 +19,19 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
-import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.types.{DataType, DataTypes}
+import java.nio.file.Files
 
 import scala.util.Random
 
+import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.types.{DataType, DataTypes}
+
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  private val tempDir = Files.createTempDirectory("CometCastSuite")
 
   ignore("cast long to short") {
     castTest(generateLongs, DataTypes.ShortType)
@@ -46,7 +50,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast string to bool") {
-    castTest(Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "").toDF("a"), DataTypes.BooleanType)
+    castTest(
+      Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "").toDF("a"),
+      DataTypes.BooleanType)
     fuzzCastFromString("truefalseTRUEFALSEyesno10 \t\r\n", 8, DataTypes.BooleanType)
   }
 
@@ -83,7 +89,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def genString(r: Random, chars: String, maxLen: Int): String = {
     val len = r.nextInt(maxLen)
-    Range(0,len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
+    Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
   }
 
   private def fuzzCastFromString(chars: String, maxLen: Int, toType: DataType) {
@@ -99,8 +105,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def roundtripParquet(df: DataFrame): DataFrame = {
-    // TODO create true temp file and delete after test completes
-    val filename = s"/tmp/castTest_${System.currentTimeMillis()}.parquet"
+    val filename = tempDir.resolve(s"castTest_${System.currentTimeMillis()}.parquet").toString
     df.write.mode(SaveMode.Overwrite).parquet(filename)
     spark.read.parquet(filename)
   }
