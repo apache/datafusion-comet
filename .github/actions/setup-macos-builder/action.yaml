@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Prepare Builder
+name: Prepare Builder for MacOS
 description: 'Prepare Build Environment'
 inputs:
   rust-version:
@@ -26,20 +26,31 @@ inputs:
     description: 'jdk version to install (e.g., 17)'
     required: true
     default: '17'
+  architecture:
+    description: 'OS architecture for the JDK'
+    required: true
+    default: 'x64'
 runs:
   using: "composite"
   steps:
     - name: Install Build Dependencies
       shell: bash
       run: |
-        apt-get update
-        apt-get install -y protobuf-compiler
+        # Install protobuf
+        mkdir -p $HOME/d/protoc
+        cd $HOME/d/protoc
+        export PROTO_ZIP="protoc-21.4-osx-aarch_64.zip"
+        curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+        unzip $PROTO_ZIP
+        echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
+        export PATH=$PATH:$HOME/d/protoc/bin
 
     - name: Install JDK 17
       uses: actions/setup-java@v4
       with:
         distribution: 'adopt'
         java-version: '17'
+        architecture: ${{inputs.architecture}}
 
     - name: Set JAVA_HOME
       shell: bash
