@@ -1698,6 +1698,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         if (scanTypes.length == op.output.length) {
           scanBuilder.addAllFields(scanTypes.asJava)
+
+          // Sink operators don't have children
+          result.clearChildren()
+
           Some(result.setScan(scanBuilder).build())
         } else {
           // There are unsupported scan type
