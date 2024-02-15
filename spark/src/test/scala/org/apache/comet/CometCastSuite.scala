@@ -31,7 +31,13 @@ import org.apache.spark.sql.types.{DataType, DataTypes}
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private val tempDir = Files.createTempDirectory("CometCastSuite")
+  private lazy val tempDir = {
+    val tmp = Files.createTempDirectory("CometCastSuite")
+    if (!tmp.toFile.exists()) {
+      assert(tmp.toFile.mkdirs())
+    }
+    tmp
+  }
 
   ignore("cast long to short") {
     castTest(generateLongs, DataTypes.ShortType)
