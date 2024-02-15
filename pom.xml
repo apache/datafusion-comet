@@ -49,7 +49,7 @@ under the License.
     <spark.version>3.4.2</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
-    <protobuf.version>3.17.3</protobuf.version>
+    <protobuf.version>3.19.6</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>14.0.2</arrow.version>
@@ -64,6 +64,26 @@ under the License.
 
     <!-- Reverse default (skip installation), and then enable only for child modules -->
     <maven.deploy.skip>true</maven.deploy.skip>
+
+    <!-- For testing with JDK 17 -->
+    <extraJavaTestArgs>
+      -XX:+IgnoreUnrecognizedVMOptions
+      --add-opens=java.base/java.lang=ALL-UNNAMED
+      --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+      --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+      --add-opens=java.base/java.io=ALL-UNNAMED
+      --add-opens=java.base/java.net=ALL-UNNAMED
+      --add-opens=java.base/java.nio=ALL-UNNAMED
+      --add-opens=java.base/java.util=ALL-UNNAMED
+      --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+      --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+      --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+      --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+      --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+      --add-opens=java.base/sun.security.action=ALL-UNNAMED
+      --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+      -Djdk.reflect.useDirectMethodHandle=false
+    </extraJavaTestArgs>
   </properties>
 
   <dependencyManagement>
@@ -623,6 +643,7 @@ under the License.
             <filereports>SparkTestSuite.txt</filereports>
             <stderr/>
             <tagsToExclude>org.apache.comet.IntegrationTestSuite</tagsToExclude>
+            <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
             <systemProperties>
               <!-- emit test logs to target/unit-tests.log -->
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
@@ -664,6 +685,7 @@ under the License.
             <systemProperties>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
             </systemProperties>
+            <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
           </configuration>
         </plugin>
         <plugin>
@@ -718,7 +740,6 @@ under the License.
       </plugins>
     </pluginManagement>
     <plugins>
-      <!--
       <plugin>
         <groupId>org.scalastyle</groupId>
         <artifactId>scalastyle-maven-plugin</artifactId>
@@ -756,7 +777,6 @@ under the License.
           </execution>
         </executions>
       </plugin>
-      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>

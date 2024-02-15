@@ -22,27 +22,27 @@ all: core jvm
 core:
 	cd core && cargo build
 jvm:
-	mvn clean package -DskipTests $(PROFILES)
+	./mvnw clean package -DskipTests $(PROFILES)
 test:
-	mvn clean
+	./mvnw clean
 	# We need to compile CometException so that the cargo test can pass
-	mvn compile -pl common -DskipTests $(PROFILES)
+	./mvnw compile -pl common -DskipTests $(PROFILES)
 	cd core && cargo build && \
 	LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli && \
 	DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli \
 	RUST_BACKTRACE=1 cargo test
-	SPARK_HOME=`pwd` COMET_CONF_DIR=$(shell pwd)/conf RUST_BACKTRACE=1 mvn verify $(PROFILES)
+	SPARK_HOME=`pwd` COMET_CONF_DIR=$(shell pwd)/conf RUST_BACKTRACE=1 ./mvnw verify $(PROFILES)
 clean:
 	cd core && cargo clean
-	mvn clean
+	./mvnw clean
 	rm -rf .dist
 bench:
 	cd core && LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli && \
 	DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli \
 	RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(filter-out $@,$(MAKECMDGOALS))
 format:
-	mvn compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
-	mvn spotless:apply $(PROFILES)
+	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
+	./mvnw spotless:apply $(PROFILES)
 
 core-amd64:
 	rustup target add x86_64-apple-darwin
@@ -75,11 +75,11 @@ release-linux: clean
 	cd core && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --features nightly --release
 	cd core && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --features nightly --release
 	cd core && RUSTFLAGS="-Ctarget-cpu=native -Ctarget-feature=-prefer-256-bit" cargo build --features nightly --release
-	mvn install -Prelease -DskipTests $(PROFILES)
+	./mvnw install -Prelease -DskipTests $(PROFILES)
 release:
 	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo build --features nightly --release
-	mvn install -Prelease -DskipTests $(PROFILES)
+	./mvnw install -Prelease -DskipTests $(PROFILES)
 benchmark-%: clean release
-	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g' .mvn exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
+	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
 .DEFAULT:
 	@: # ignore arguments provided to benchmarks e.g. "make benchmark-foo -- --bar", we do not want to treat "--bar" as target
