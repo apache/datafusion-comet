@@ -119,19 +119,21 @@ object CometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
-    .doc("Whether to enable Comet native shuffle. By default, this config is false. " +
-      "Note that this requires setting 'spark.shuffle.manager' to" +
-      "'org.apache.spark.sql.comet.execution.CometShuffleManager'. 'spark.shuffle.manager' must " +
-      "be set before starting the Spark application and cannot be changed during the application")
-    .booleanConf
-    .createWithDefault(false)
+  val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
+      .doc(
+        "Whether to enable Comet native shuffle. By default, this config is false. " +
+          "Note that this requires setting 'spark.shuffle.manager' to " +
+          "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
+          "'spark.shuffle.manager' must be set before starting the Spark application and " +
+          "cannot be changed during the application.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] = conf(
     "spark.comet.columnar.shuffle.enabled")
     .doc(
-      "Force Comet to only use Arrow-based shuffle for CometScan and Spark regular operators. " +
+      "Force Comet to only use columnar shuffle for CometScan and Spark regular operators. " +
         "If this is enabled, Comet native shuffle will not be enabled but only Arrow shuffle. " +
         "By default, this config is false.")
     .booleanConf
@@ -167,7 +169,7 @@ object CometConf {
         "By default, this config is 100. This is the upper bound of total number of shuffle " +
         "threads per executor. In other words, if the number of cores * the number of shuffle " +
         "threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than " +
-        "than this config. Comet will use this config as the number of shuffle threads per " +
+        "this config. Comet will use this config as the number of shuffle threads per " +
         "executor instead.")
       .intConf
       .createWithDefault(100)
@@ -179,7 +181,7 @@ object CometConf {
         "Number of rows to be spilled used for Comet columnar shuffle. " +
           "For every configured number of rows, a new spill file will be created. " +
           "Higher value means more memory requirement to buffer shuffle data before " +
-          "flushing to disk. As Comet uses Arrow-based shuffle which is columnar format, " +
+          "flushing to disk. As Comet uses columnar shuffle which is columnar format, " +
           "higher value usually helps to improve shuffle data compression ratio. This is " +
           "internal config for testing purpose or advanced tuning. By default, " +
           "this config is Int.Max.")

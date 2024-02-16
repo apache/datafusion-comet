@@ -140,7 +140,8 @@ class CometSparkSessionExtensions
           conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
           CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
 
-        // Arrow shuffle for regular Spark operators (not Comet) and Comet operators (if configured)
+        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
+        // (if configured)
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(
               s.child)) && isCometColumnarShuffleEnabled(conf) &&
@@ -315,20 +316,6 @@ class CometSparkSessionExtensions
               c
           }
 
-        case s: TakeOrderedAndProjectExec
-            if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
-              && isCometShuffleEnabled(conf) &&
-              CometTakeOrderedAndProjectExec.isSupported(s.projectList, s.sortOrder, s.child) =>
-          // TODO: support offset for Spark 3.4
-          QueryPlanSerde.operator2Proto(s) match {
-            case Some(nativeOp) =>
-              val cometOp =
-                CometTakeOrderedAndProjectExec(s, s.limit, s.sortOrder, s.projectList, s.child)
-              CometSinkPlaceHolder(nativeOp, s, cometOp)
-            case None =>
-              s
-          }
-
         case u: UnionExec
             if isCometOperatorEnabled(conf, "union") &&
               u.children.forall(isCometNative) =>
@@ -357,7 +344,7 @@ class CometSparkSessionExtensions
               s
           }
 
-        // Arrow shuffle for regular Spark operators (not Comet) and Comet operators
+        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
         // (if configured)
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) && isCometColumnarShuffleEnabled(conf) &&
@@ -396,7 +383,7 @@ class CometSparkSessionExtensions
       if (!isCometEnabled(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
-        // Comet exec is disabled, but for Spark shuffle, we still can use Comet Arrow shuffle
+        // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
         if (isCometShuffleEnabled(conf)) {
           applyCometShuffle(plan)
         } else {
