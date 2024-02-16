@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import java.nio.file.Files
+import java.io.File
 
 import scala.util.Random
 
@@ -30,14 +30,6 @@ import org.apache.spark.sql.types.{DataType, DataTypes}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
-
-  private lazy val tempDir = {
-    val tmp = Files.createTempDirectory("CometCastSuite")
-    if (!tmp.toFile.exists()) {
-      assert(tmp.toFile.mkdirs())
-    }
-    tmp
-  }
 
   ignore("cast long to short") {
     castTest(generateLongs, DataTypes.ShortType)
@@ -105,13 +97,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def castTest(input: DataFrame, toType: DataType) {
-    val df = roundtripParquet(input)
-      .withColumn("converted", col("a").cast(toType))
-    checkSparkAnswer(df)
+    withTempPath { dir =>
+      val df = roundtripParquet(input, dir)
+        .withColumn("converted", col("a").cast(toType))
+      checkSparkAnswer(df)
+    }
   }
 
-  private def roundtripParquet(df: DataFrame): DataFrame = {
-    val filename = tempDir.resolve(s"castTest_${System.currentTimeMillis()}.parquet").toString
+  private def roundtripParquet(df: DataFrame, tempDir: File): DataFrame = {
+    val filename = new File(tempDir, s"castTest_${System.currentTimeMillis()}.parquet").toString
     df.write.mode(SaveMode.Overwrite).parquet(filename)
     spark.read.parquet(filename)
   }
