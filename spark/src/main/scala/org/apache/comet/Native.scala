@@ -83,6 +83,9 @@ class Native extends NativeBase {
    *   the ratio of total values to distinct values in a string column that makes the writer to
    *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
    *   will be used when writing columns of string type.
+   * @param batchSize
+   *   the batch size on the native side to buffer outputs during the row to columnar conversion
+   *   before writing them out to disk.
    * @param checksumEnabled
    *   whether to compute checksum of written file.
    * @param checksumAlgo
@@ -99,6 +102,7 @@ class Native extends NativeBase {
       datatypes: Array[Array[Byte]],
       file: String,
       preferDictionaryRatio: Double,
+      batchSize: Int,
       checksumEnabled: Boolean,
       checksumAlgo: Int,
       currentChecksum: Long): Array[Long]

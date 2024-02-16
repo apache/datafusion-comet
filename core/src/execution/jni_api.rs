@@ -438,6 +438,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     serialized_datatypes: jobjectArray,
     file_path: jstring,
     prefer_dictionary_ratio: jdouble,
+    batch_size: jlong,
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
@@ -470,6 +471,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 
         let (written_bytes, checksum) = process_sorted_row_partition(
             row_num,
+            batch_size as usize,
             row_addresses_ptr,
             row_sizes_ptr,
             &data_types,
