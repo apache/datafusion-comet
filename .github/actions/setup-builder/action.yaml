@@ -39,7 +39,7 @@ runs:
       uses: actions/setup-java@v4
       with:
         distribution: 'adopt'
-        java-version: '17'
+        java-version: ${{inputs.jdk-version}}
 
     - name: Set JAVA_HOME
       shell: bash

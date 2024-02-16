@@ -36,6 +36,7 @@ on:
 
 env:
   JAVA_VERSION: 17
+  RUST_VERSION: nightly
 
 jobs:
   linux-rust-test:
@@ -48,7 +49,7 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
 
       - uses: actions/checkout@v4
@@ -65,9 +66,8 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
-          architecture: x64
 
       - uses: actions/checkout@v4
       - name: Java test steps
@@ -82,9 +82,8 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
-          architecture: x64
 
       - uses: actions/checkout@v4
       - name: Rust test steps
@@ -98,9 +97,8 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
-          architecture: x64
 
       - uses: actions/checkout@v4
       - name: Java test steps
@@ -114,9 +112,10 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
-          architecture: aarch64
+          jdk-architecture: aarch64
+          protoc-architecture: aarch_64
 
       - uses: actions/checkout@v4
       - name: Rust test steps
@@ -130,9 +129,10 @@ jobs:
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
-          rust-version: nightly
+          rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{env.JAVA_VERSION}}
-          architecture: aarch64
+          jdk-architecture: aarch64
+          protoc-architecture: aarch_64
 
       - uses: actions/checkout@v4
       - name: Java test steps

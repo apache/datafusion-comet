@@ -26,10 +26,15 @@ inputs:
     description: 'jdk version to install (e.g., 17)'
     required: true
     default: '17'
-  architecture:
+  jdk-architecture:
     description: 'OS architecture for the JDK'
     required: true
     default: 'x64'
+  protoc-architecture:
+    description: 'OS architecture for protobuf compiler'
+    required: true
+    default: 'x86_64'
+
 runs:
   using: "composite"
   steps:
@@ -39,7 +44,7 @@ runs:
         # Install protobuf
         mkdir -p $HOME/d/protoc
         cd $HOME/d/protoc
-        export PROTO_ZIP="protoc-21.4-osx-aarch_64.zip"
+        export PROTO_ZIP="protoc-21.4-osx-${{inputs.protoc-architecture}}.zip"
         curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
         unzip $PROTO_ZIP
         echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
@@ -49,8 +54,8 @@ runs:
       uses: actions/setup-java@v4
       with:
         distribution: 'adopt'
-        java-version: '17'
-        architecture: ${{inputs.architecture}}
+        java-version: ${{inputs.jdk-version}}
+        architecture: ${{inputs.jdk-architecture}}
 
     - name: Set JAVA_HOME
       shell: bash
