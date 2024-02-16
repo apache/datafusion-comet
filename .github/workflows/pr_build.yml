@@ -76,7 +76,7 @@ jobs:
 
   macos-rust-test:
     name: Rust test (macos)
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
@@ -91,7 +91,7 @@ jobs:
 
   macos-java-test:
     name: Java test (macos)
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
