@@ -90,11 +90,13 @@ class CometDriverPlugin extends DriverPlugin with Logging {
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled
+   * Comet native execution is enabled and/or Comet shuffle is enabled
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    conf.getBoolean(CometConf.COMET_ENABLED.key, true) &&
-    conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
+    conf.getBoolean(CometConf.COMET_ENABLED.key, true) && (
+      conf.getBoolean(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, false) ||
+        conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
+    )
   }
 }
 

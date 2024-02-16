@@ -77,7 +77,7 @@ object CometConf {
       "The amount of additional memory to be allocated per executor process for Comet, in MiB. " +
         "This config is optional. If this is not specified, it will be set to " +
         "`spark.comet.memory.overhead.factor` * `spark.executor.memory`. " +
-        "This is memory that accounts for things like Comet native execution, etc.")
+        "This is memory that accounts for things like Comet native execution, Comet shuffle, etc.")
     .bytesConf(ByteUnit.MiB)
     .createOptional
 
@@ -118,6 +118,112 @@ object CometConf {
           "That being said, if this config is enabled, separate configs are ignored.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
+      .doc(
+        "Whether to enable Comet native shuffle. By default, this config is false. " +
+          "Note that this requires setting 'spark.shuffle.manager' to " +
+          "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
+          "'spark.shuffle.manager' must be set before starting the Spark application and " +
+          "cannot be changed during the application.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.columnar.shuffle.enabled")
+    .doc(
+      "Force Comet to only use columnar shuffle for CometScan and Spark regular operators. " +
+        "If this is enabled, Comet native shuffle will not be enabled but only Arrow shuffle. " +
+        "By default, this config is false.")
+    .booleanConf
+    .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_CODEC: ConfigEntry[String] = conf(
+    s"$COMET_EXEC_CONFIG_PREFIX.shuffle.codec")
+    .doc(
+      "The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported.")
+    .stringConf
+    .createWithDefault("zstd")
+
+  val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.columnar.shuffle.async.enabled")
+    .doc(
+      "Whether to enable asynchronous shuffle for Arrow-based shuffle. By default, this config " +
+        "is false.")
+    .booleanConf
+    .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
+    conf("spark.comet.columnar.shuffle.async.thread.num")
+      .doc("Number of threads used for Comet async columnar shuffle per shuffle task. " +
+        "By default, this config is 3. Note that more threads means more memory requirement to " +
+        "buffer shuffle data before flushing to disk. Also, more threads may not always " +
+        "improve performance, and should be set based on the number of cores available.")
+      .intConf
+      .createWithDefault(3)
+
+  val COMET_EXEC_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
+    conf("spark.comet.columnar.shuffle.async.max.thread.num")
+      .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
+        "By default, this config is 100. This is the upper bound of total number of shuffle " +
+        "threads per executor. In other words, if the number of cores * the number of shuffle " +
+        "threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than " +
+        "this config. Comet will use this config as the number of shuffle threads per " +
+        "executor instead.")
+      .intConf
+      .createWithDefault(100)
+  }
+
+  val COMET_EXEC_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
+    conf("spark.comet.columnar.shuffle.spill.threshold")
+      .doc(
+        "Number of rows to be spilled used for Comet columnar shuffle. " +
+          "For every configured number of rows, a new spill file will be created. " +
+          "Higher value means more memory requirement to buffer shuffle data before " +
+          "flushing to disk. As Comet uses columnar shuffle which is columnar format, " +
+          "higher value usually helps to improve shuffle data compression ratio. This is " +
+          "internal config for testing purpose or advanced tuning. By default, " +
+          "this config is Int.Max.")
+      .internal()
+      .intConf
+      .createWithDefault(Int.MaxValue)
+
+  val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
+    conf("spark.comet.columnar.shuffle.memorySize")
+      .doc(
+        "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
+          "Note that this config is only used when `spark.comet.columnar.shuffle.enabled` is " +
+          "true. Once allocated memory size reaches this config, the current batch will be " +
+          "flushed to disk immediately. If this is not configured, Comet will use " +
+          "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
+          "shuffle memory size. If final calculated value is larger than Comet memory " +
+          "overhead, Comet will use Comet memory overhead as shuffle memory size.")
+      .bytesConf(ByteUnit.MiB)
+      .createOptional
+
+  val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
+    conf("spark.comet.columnar.shuffle.memory.factor")
+      .doc(
+        "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
+          "Comet memory size is specified by `spark.comet.memoryOverhead` or " +
+          "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`. " +
+          "By default, this config is 1.0.")
+      .doubleConf
+      .checkValue(
+        factor => factor > 0,
+        "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
+      .createWithDefault(1.0)
+
+  val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
+    "spark.comet.shuffle.preferDictionary.ratio")
+    .doc("The ratio of total values to distinct values in a string column to decide whether to " +
+      "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
+      "this config, dictionary encoding will be used on shuffling string column. This config " +
+      "is effective if it is higher than 1.0. By default, this config is 10.0. Note that this " +
+      "config is only used when 'spark.comet.columnar.shuffle.enabled' is true.")
+    .doubleConf
+    .createWithDefault(10.0)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")

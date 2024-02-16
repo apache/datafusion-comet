@@ -15,10 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native execution through DataFusion
-
-mod expressions;
-mod operators;
-pub mod planner;
-pub(crate) mod shuffle_writer;
-mod spark_hash;
+mod list;
+pub mod row;

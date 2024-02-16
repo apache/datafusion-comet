@@ -38,7 +38,8 @@ message Operator {
     Sort sort = 103;
     HashAggregate hash_agg = 104;
     Limit limit = 105;
-    Expand expand = 106;
+    ShuffleWriter shuffle_writer = 106;
+    Expand expand = 107;
   }
 }
 
@@ -69,6 +70,12 @@ message HashAggregate {
 message Limit {
   int32 limit = 1;
   int32 offset = 2;
+}
+
+message ShuffleWriter {
+  spark.spark_partitioning.Partitioning partitioning = 1;
+  string output_data_file = 3;
+  string output_index_file = 4;
 }
 
 enum AggregateMode {

@@ -70,6 +70,13 @@ allowed_expr+="|log4j2.properties"
 allowed_expr+="|comet-git-info.properties"
 # For some reason org/apache/spark/sql directory is also included, but with no content
 allowed_expr+="|^org/apache/spark/$"
+# Some shuffle related classes are spark-private, e.g. TempShuffleBlockId, ShuffleWriteMetricsReporter,
+# so these classes which use shuffle classes have to be in org/apache/spark.
+allowed_expr+="|^org/apache/spark/shuffle/$"
+allowed_expr+="|^org/apache/spark/shuffle/sort/$"
+allowed_expr+="|^org/apache/spark/shuffle/sort/CometShuffleExternalSorter.*$"
+allowed_expr+="|^org/apache/spark/shuffle/sort/RowPartition.class$"
+allowed_expr+="|^org/apache/spark/shuffle/comet/.*$"
 allowed_expr+="|^org/apache/spark/sql/$"
 allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"

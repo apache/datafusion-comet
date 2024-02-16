@@ -104,4 +104,49 @@ class Native extends NativeBase {
    *   the address to native query plan.
    */
   @native def releasePlan(plan: Long): Unit
+
+  /**
+   * Used by Comet shuffle external sorter to write sorted records to disk.
+   *
+   * @param addresses
+   *   the array of addresses of Spark unsafe rows.
+   * @param rowSizes
+   *   the row sizes of Spark unsafe rows.
+   * @param datatypes
+   *   the datatypes of fields in Spark unsafe rows.
+   * @param file
+   *   the file path to write to.
+   * @param preferDictionaryRatio
+   *   the ratio of total values to distinct values in a string column that makes the writer to
+   *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
+   *   will be used when writing columns of string type.
+   * @param checksumEnabled
+   *   whether to compute checksum of written file.
+   * @param checksumAlgo
+   *   the checksum algorithm to use. 0 for CRC32, 1 for Adler32.
+   * @param currentChecksum
+   *   the current checksum of the file. As the checksum is computed incrementally, this is used
+   *   to resume the computation of checksum for previous written data.
+   * @return
+   *   [the number of bytes written to disk, the checksum]
+   */
+  @native def writeSortedFileNative(
+      addresses: Array[Long],
+      rowSizes: Array[Int],
+      datatypes: Array[Array[Byte]],
+      file: String,
+      preferDictionaryRatio: Double,
+      checksumEnabled: Boolean,
+      checksumAlgo: Int,
+      currentChecksum: Long): Array[Long]
+
+  /**
+   * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
+   *
+   * @param addr
+   *   the address of the array of compacted partition ids.
+   * @param size
+   *   the size of the array.
+   */
+  @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
 }
