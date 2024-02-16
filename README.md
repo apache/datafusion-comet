@@ -31,7 +31,7 @@ On a high level, Comet aims to support:
 
 The following diagram illustrates the architecture of Comet:
 
-<a href="url"><img src="doc/comet-overview.png" align="center" height="600" width="750" ></a>
+<a href="doc/comet-overview.png"><img src="doc/comet-overview.png" align="center" height="600" width="750" ></a>
 
 ## Current Status
 
