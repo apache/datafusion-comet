@@ -19,13 +19,13 @@
 runs:
   using: "composite"
   steps:
-    - name: Check cargo fmt
+    - name: Check Cargo fmt
       shell: bash
       run: |
         cd core
         cargo fmt --all -- --check --color=never
 
-    - name: Check cargo clippy
+    - name: Check Cargo clippy
       shell: bash
       run: |
         cd core
@@ -51,7 +51,7 @@ runs:
         cd common
         ../mvnw clean compile -DskipTests
 
-    - name: Run cargo test
+    - name: Run Cargo test
       shell: bash
       run: |
         cd core
