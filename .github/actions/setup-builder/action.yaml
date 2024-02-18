@@ -38,7 +38,9 @@ runs:
     - name: Install JDK ${{inputs.jdk-version}}
       uses: actions/setup-java@v4
       with:
-        distribution: 'adopt'
+        # distribution is chosen to be zulu as it still offers JDK 8 with Silicon support, which
+        # is not available in the adopt distribution
+        distribution: 'zulu'
         java-version: ${{inputs.jdk-version}}
 
     - name: Set JAVA_HOME
