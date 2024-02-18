@@ -292,14 +292,18 @@ class CometSparkSessionExtensions
           newOp match {
             case Some(nativeOp) =>
               val modes = aggExprs.map(_.mode).distinct
-              assert(modes.length == 1)
+              // The aggExprs could be empty. For example, if the aggregate functions only have
+              // distinct aggregate functions or only have group by, the aggExprs is empty and
+              // modes is empty too. If aggExprs is not empty, we need to verify all the aggregates
+              // have the same mode.
+              assert(modes.length == 1 || modes.length == 0)
               CometHashAggregateExec(
                 nativeOp,
                 op,
                 groupingExprs,
                 aggExprs,
                 child.output,
-                modes.head,
+                if (modes.nonEmpty) Some(modes.head) else None,
                 child)
             case None =>
               op
