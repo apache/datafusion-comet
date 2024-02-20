@@ -66,6 +66,30 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
 
   import testImplicits._
 
+  test("RoundRobinPartitioning is supported by columnar shuffle") {
+    withSQLConf(
+      // AQE has `ShuffleStage` which is a leaf node which blocks
+      // collecting `CometShuffleExchangeExec` node.
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+        val shuffled = df
+          .select($"_1" + 1 as ("a"))
+          .filter($"a" > 4)
+          .repartition(10)
+          .limit(2)
+
+        checkAnswer(shuffled, Row(5) :: Nil)
+        val cometShuffleExecs = checkCometExchange(shuffled, 1, false)
+
+        cometShuffleExecs(0).outputPartitioning.getClass.getName
+          .contains("RoundRobinPartitioning")
+      }
+    }
+  }
+
   test("columnar shuffle on array") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
