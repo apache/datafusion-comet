@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer};
+use arrow::{
+    array::BooleanBufferBuilder,
+    buffer::{BooleanBuffer, NullBuffer},
+};
 use arrow_array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
@@ -314,6 +317,25 @@ fn ensure_bit_capacity(builder: &mut BooleanBufferBuilder, capacity: usize) {
     }
 }
 
+/// Build a boolean buffer from the state and reset the state, based on the emit_to
+/// strategy.
+fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> BooleanBuffer {
+    let bool_state: BooleanBuffer = state.finish();
+
+    match emit_to {
+        EmitTo::All => bool_state,
+        EmitTo::First(n) => {
+            // split off the first N values in bool_state
+            let first_n_bools: BooleanBuffer = bool_state.iter().take(*n).collect();
+            // reset the existing seen buffer
+            for seen in bool_state.iter().skip(*n) {
+                state.append(seen);
+            }
+            first_n_bools
+        }
+    }
+}
+
 impl GroupsAccumulator for SumDecimalGroupsAccumulator {
     fn update_batch(
         &mut self,
@@ -350,18 +372,13 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> DFResult<ArrayRef> {
-        // TODO: we do not support group-by ordering yet, but should fix here once it is supported
-        assert!(
-            matches!(emit_to, EmitTo::All),
-            "EmitTo::First is not supported"
-        );
         // For each group:
         //   1. if `is_empty` is true, it means either there is no value or all values for the group
         //      are null, in this case we'll return null
         //   2. if `is_empty` is false, but `null_state` is true, it means there's an overflow. In
         //      non-ANSI mode Spark returns null.
-        let nulls = self.is_not_null.finish();
-        let is_empty = self.is_empty.finish();
+        let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
+        let is_empty = build_bool_state(&mut self.is_empty, &emit_to);
         let x = (!&is_empty).bitand(&nulls);
 
         let result = emit_to.take_needed(&mut self.sum);
@@ -372,19 +389,14 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
     }
 
     fn state(&mut self, emit_to: EmitTo) -> DFResult<Vec<ArrayRef>> {
-        // TODO: we do not support group-by ordering yet, but should fix here once it is supported
-        assert!(
-            matches!(emit_to, EmitTo::All),
-            "EmitTo::First is not supported"
-        );
-        let nulls = self.is_not_null.finish();
+        let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
         let nulls = Some(NullBuffer::new(nulls));
 
         let sum = emit_to.take_needed(&mut self.sum);
         let sum = Decimal128Array::new(sum.into(), nulls.clone())
             .with_data_type(self.result_type.clone());
 
-        let is_empty = self.is_empty.finish();
+        let is_empty = build_bool_state(&mut self.is_empty, &emit_to);
         let is_empty = BooleanArray::new(is_empty, None);
 
         Ok(vec![

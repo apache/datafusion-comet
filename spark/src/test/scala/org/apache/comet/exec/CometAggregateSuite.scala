@@ -25,8 +25,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.sum
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
@@ -35,6 +38,24 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  test("SUM decimal supports emit.first") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 10000, 10, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            checkSparkAnswer(sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
+          }
+        }
+      }
+    }
+  }
 
   test("Fix NPE in partial decimal sum") {
     val table = "tbl"
