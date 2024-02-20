@@ -40,16 +40,18 @@ runs:
     - name: Cache Maven dependencies
       uses: actions/cache@v4
       with:
-        path: ~/.m2/repository
-        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-rust-maven-${{ hashFiles('**/pom.xml') }}
         restore-keys: |
-          ${{ runner.os }}-maven-
+          ${{ runner.os }}-rust-maven-
 
     - name: Build common module (pre-requisite for Rust tests)
       shell: bash
       run: |
         cd common
-        ../mvnw clean compile -DskipTests
+        ../mvnw -B clean compile -DskipTests
 
     - name: Run Cargo test
       shell: bash
