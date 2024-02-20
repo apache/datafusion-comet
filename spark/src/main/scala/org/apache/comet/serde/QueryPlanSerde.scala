@@ -1377,6 +1377,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case In(value, list) =>
         in(value, list, inputs, false)
 
+      case InSet(value, hset) =>
+        val valueDataType = value.dataType
+        val list = hset.map { setVal =>
+          Literal(setVal, valueDataType)
+        }.toSeq
+        // Change `InSet` to `In` expression
+        // We do Spark `InSet` optimization in native (DataFusion) side.
+        in(value, list, inputs, false)
+
       case Not(In(value, list)) =>
         in(value, list, inputs, true)
 
