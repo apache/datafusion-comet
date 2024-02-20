@@ -24,11 +24,9 @@ use arrow_array::{
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
 use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::Accumulator;
+use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
 use datafusion_common::{not_impl_err, DataFusionError, Result, ScalarValue};
-use datafusion_physical_expr::{
-    expressions::format_state_name, AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr,
-};
+use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
 use arrow_array::ArrowNativeTypeOp;
@@ -214,7 +212,7 @@ impl AvgDecimalAccumulator {
 }
 
 impl Accumulator for AvgDecimalAccumulator {
-    fn state(&self) -> Result<Vec<ScalarValue>> {
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
             ScalarValue::Decimal128(self.sum, self.sum_precision, self.sum_scale),
             ScalarValue::from(self.count),
@@ -266,7 +264,7 @@ impl Accumulator for AvgDecimalAccumulator {
         Ok(())
     }
 
-    fn evaluate(&self) -> Result<ScalarValue> {
+    fn evaluate(&mut self) -> Result<ScalarValue> {
         fn make_decimal128(value: Option<i128>, precision: u8, scale: i8) -> ScalarValue {
             ScalarValue::Decimal128(value, precision, scale)
         }
