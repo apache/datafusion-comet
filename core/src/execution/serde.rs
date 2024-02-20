@@ -29,7 +29,7 @@ use crate::{
     },
 };
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
-use arrow_schema::Field;
+use arrow_schema::{Field, Fields};
 use prost::Message;
 use std::{io::Cursor, sync::Arc};
 
@@ -115,6 +115,34 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                     info.contains_null,
                 );
                 ArrowDataType::List(Arc::new(field))
+            }
+            _ => unreachable!(),
+        },
+        DataTypeId::Map => match dt_value
+            .type_info
+            .as_ref()
+            .unwrap()
+            .datatype_struct
+            .as_ref()
+            .unwrap()
+        {
+            DatatypeStruct::Map(info) => {
+                let key_field = Field::new(
+                    "key",
+                    to_arrow_datatype(info.key_type.as_ref().unwrap()),
+                    false,
+                );
+                let value_field = Field::new(
+                    "value",
+                    to_arrow_datatype(info.value_type.as_ref().unwrap()),
+                    info.value_contains_null,
+                );
+                let struct_field = Field::new(
+                    "entries",
+                    ArrowDataType::Struct(Fields::from(vec![key_field, value_field])),
+                    false,
+                );
+                ArrowDataType::Map(Arc::new(struct_field), false)
             }
             _ => unreachable!(),
         },

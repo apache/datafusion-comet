@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, StructInfo}
+import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.shims.ShimQueryPlanSerde
 
@@ -85,7 +85,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case _: DateType => 12
       case _: NullType => 13
       case _: ArrayType => 14
-      case _: StructType => 15
+      case _: MapType => 15
+      case _: StructType => 16
       case dt =>
         emitWarning(s"Cannot serialize Spark data type: $dt")
         return None
@@ -117,6 +118,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         list.setContainsNull(a.containsNull)
 
         info.setList(list)
+        builder.setTypeInfo(info.build()).build()
+
+      case m: MapType =>
+        val keyType = serializeDataType(m.keyType)
+        if (keyType.isEmpty) {
+          return None
+        }
+
+        val valueType = serializeDataType(m.valueType)
+        if (valueType.isEmpty) {
+          return None
+        }
+
+        val info = DataTypeInfo.newBuilder()
+        val map = MapInfo.newBuilder()
+        map.setKeyType(keyType.get)
+        map.setValueType(valueType.get)
+        map.setValueContainsNull(m.valueContainsNull)
+
+        info.setMap(map)
         builder.setTypeInfo(info.build()).build()
 
       case s: StructType =>
@@ -1764,6 +1785,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
       case ArrayType(elementType, _) =>
         supportedDataType(elementType)
+      case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
+      case MapType(_, MapType(_, _, _), _) => false
+      case MapType(keyType, valueType, _) =>
+        supportedDataType(keyType) && supportedDataType(valueType)
       case _ =>
         false
     }

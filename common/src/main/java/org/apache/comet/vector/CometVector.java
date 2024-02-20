@@ -25,6 +25,7 @@ import java.math.BigInteger;
 import org.apache.arrow.vector.FixedWidthVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
@@ -206,6 +207,8 @@ public abstract class CometVector extends ColumnVector {
       ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
     if (vector instanceof StructVector) {
       return new CometStructVector(vector, useDecimal128);
+    } else if (vector instanceof MapVector) {
+      return new CometMapVector(vector, useDecimal128);
     } else if (vector instanceof ListVector) {
       return new CometListVector(vector, useDecimal128);
     } else {

@@ -87,6 +87,355 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("columnar shuffle on map") {
+    def genTuples[K](num: Int, keys: Seq[K]): Seq[(
+        Int,
+        Map[K, Boolean],
+        Map[K, Byte],
+        Map[K, Short],
+        Map[K, Int],
+        Map[K, Long],
+        Map[K, Float],
+        Map[K, Double],
+        Map[K, java.sql.Date],
+        Map[K, java.sql.Timestamp],
+        Map[K, java.math.BigDecimal],
+        Map[K, Array[Byte]],
+        Map[K, String])] = {
+      (0 until num).map(i =>
+        (
+          i + 1,
+          Map(keys(0) -> (i > 10), keys(1) -> (i > 20)),
+          Map(keys(0) -> i.toByte, keys(1) -> (i + 1).toByte),
+          Map(keys(0) -> i.toShort, keys(1) -> (i + 1).toShort),
+          Map(keys(0) -> i, keys(1) -> (i + 1)),
+          Map(keys(0) -> i.toLong, keys(1) -> (i + 1).toLong),
+          Map(keys(0) -> i.toFloat, keys(1) -> (i + 1).toFloat),
+          Map(keys(0) -> i.toDouble, keys(1) -> (i + 1).toDouble),
+          Map(
+            keys(0) -> new java.sql.Date(i.toLong),
+            keys(1) -> new java.sql.Date((i + 1).toLong)),
+          Map(
+            keys(0) -> new java.sql.Timestamp(i.toLong),
+            keys(1) -> new java.sql.Timestamp((i + 1).toLong)),
+          Map(
+            keys(0) -> new java.math.BigDecimal(i.toLong),
+            keys(1) -> new java.math.BigDecimal((i + 1).toLong)),
+          Map(keys(0) -> i.toString.getBytes(), keys(1) -> (i + 1).toString.getBytes()),
+          Map(keys(0) -> i.toString, keys(1) -> (i + 1).toString)))
+    }
+
+    Seq(10, 201).foreach { numPartitions =>
+      Seq("1.0", "10.0").foreach { ratio =>
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          // Boolean key
+          withParquetTable(genTuples(50, Seq(true, false)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Byte key
+          withParquetTable(genTuples(50, Seq(0.toByte, 1.toByte)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Short key
+          withParquetTable(genTuples(50, Seq(0.toShort, 1.toShort)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Int key
+          withParquetTable(genTuples(50, Seq(0, 1)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Long key
+          withParquetTable(genTuples(50, Seq(0.toLong, 1.toLong)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Float key
+          withParquetTable(genTuples(50, Seq(0.toFloat, 1.toFloat)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Double key
+          withParquetTable(genTuples(50, Seq(0.toDouble, 1.toDouble)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Date key
+          withParquetTable(
+            genTuples(50, Seq(new java.sql.Date(0.toLong), new java.sql.Date(1.toLong))),
+            "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Timestamp key
+          withParquetTable(
+            genTuples(
+              50,
+              Seq(new java.sql.Timestamp(0.toLong), new java.sql.Timestamp(1.toLong))),
+            "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Decimal key
+          withParquetTable(
+            genTuples(
+              50,
+              Seq(new java.math.BigDecimal(0.toLong), new java.math.BigDecimal(1.toLong))),
+            "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // String key
+          withParquetTable(genTuples(50, Seq(0.toString, 1.toString)), "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+
+          // Binary key
+          withParquetTable(
+            genTuples(50, Seq(0.toString.getBytes(), 1.toString.getBytes())),
+            "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 10)
+              .repartition(
+                numPartitions,
+                $"_2",
+                $"_3",
+                $"_4",
+                $"_5",
+                $"_6",
+                $"_7",
+                $"_8",
+                $"_9",
+                $"_10",
+                $"_11",
+                $"_12",
+                $"_13")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+        }
+      }
+    }
+  }
+
   test("columnar shuffle on array") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
