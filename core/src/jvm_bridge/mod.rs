@@ -205,6 +205,8 @@ pub struct JVMClasses<'a> {
     pub class_get_name_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getMessage"
     pub throwable_get_message_method: JMethodID,
+    /// Cached method ID for "java.lang.Throwable#getCause"
+    pub throwable_get_cause_method: JMethodID,
 
     /// The CometMetricNode class. Used for updating the metrics.
     pub comet_metric_node: CometMetricNode<'a>,
@@ -213,6 +215,7 @@ pub struct JVMClasses<'a> {
 }
 
 unsafe impl<'a> Send for JVMClasses<'a> {}
+
 unsafe impl<'a> Sync for JVMClasses<'a> {}
 
 /// Keeps global references to JVM classes. Used for JNI calls to JVM.
@@ -241,10 +244,16 @@ impl JVMClasses<'_> {
                 .get_method_id(clazz, "getMessage", "()Ljava/lang/String;")
                 .unwrap();
 
+            let clazz = env.find_class("java/lang/Throwable").unwrap();
+            let throwable_get_cause_method = env
+                .get_method_id(clazz, "getCause", "()Ljava/lang/Throwable;")
+                .unwrap();
+
             JVMClasses {
                 object_get_class_method,
                 class_get_name_method,
                 throwable_get_message_method,
+                throwable_get_cause_method,
                 comet_metric_node: CometMetricNode::new(env).unwrap(),
                 comet_exec: CometExec::new(env).unwrap(),
             }
@@ -277,6 +286,79 @@ pub(crate) fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError
     Ok(result)
 }
 
+/// get the class name of the exception by:
+///  1. get the `Class` object of the input `throwable` via `Object#getClass` method
+///  2. get the exception class name via calling `Class#getName` on the above object
+fn get_throwable_class_name(
+    env: &mut JNIEnv,
+    jvm_classes: &JVMClasses,
+    throwable: &JThrowable,
+) -> CometResult<String> {
+    unsafe {
+        let class_obj = env
+            .call_method_unchecked(
+                throwable,
+                jvm_classes.object_get_class_method,
+                ReturnType::Object,
+                &[],
+            )?
+            .l()?;
+        let class_name = env
+            .call_method_unchecked(
+                class_obj,
+                jvm_classes.class_get_name_method,
+                ReturnType::Object,
+                &[],
+            )?
+            .l()?
+            .into();
+        let class_name_str = env.get_string(&class_name)?.into();
+
+        Ok(class_name_str)
+    }
+}
+
+/// Get the exception message via calling `Throwable#getMessage` on the throwable object
+fn get_throwable_message(
+    env: &mut JNIEnv,
+    jvm_classes: &JVMClasses,
+    throwable: &JThrowable,
+) -> CometResult<String> {
+    unsafe {
+        let message = env
+            .call_method_unchecked(
+                throwable,
+                jvm_classes.throwable_get_message_method,
+                ReturnType::Object,
+                &[],
+            )?
+            .l()?
+            .into();
+        let message_str = env.get_string(&message)?.into();
+
+        let cause: JThrowable = env
+            .call_method_unchecked(
+                throwable,
+                jvm_classes.throwable_get_cause_method,
+                ReturnType::Object,
+                &[],
+            )?
+            .l()?
+            .into();
+
+        if !cause.is_null() {
+            let cause_class_name = get_throwable_class_name(env, jvm_classes, &cause)?;
+            let cause_message = get_throwable_message(env, jvm_classes, &cause)?;
+            Ok(format!(
+                "{}\nCaused by: {}: {}",
+                message_str, cause_class_name, cause_message
+            ))
+        } else {
+            Ok(message_str)
+        }
+    }
+}
+
 /// Given a `JThrowable` which is thrown from calling a Java method on the native side,
 /// this converts it into a `CometError::JavaException` with the exception class name
 /// and exception message. This error can then be populated to the JVM side to let
@@ -285,46 +367,12 @@ pub(crate) fn convert_exception(
     env: &mut JNIEnv,
     throwable: &JThrowable,
 ) -> CometResult<CometError> {
-    unsafe {
-        let cache = JVMClasses::get();
+    let cache = JVMClasses::get();
+    let exception_class_name_str = get_throwable_class_name(env, cache, throwable)?;
+    let message_str = get_throwable_message(env, cache, throwable)?;
 
-        // get the class name of the exception by:
-        //  1. get the `Class` object of the input `throwable` via `Object#getClass` method
-        //  2. get the exception class name via calling `Class#getName` on the above object
-        let class_obj = env
-            .call_method_unchecked(
-                throwable,
-                cache.object_get_class_method,
-                ReturnType::Object,
-                &[],
-            )?
-            .l()?;
-        let exception_class_name = env
-            .call_method_unchecked(
-                class_obj,
-                cache.class_get_name_method,
-                ReturnType::Object,
-                &[],
-            )?
-            .l()?
-            .into();
-        let exception_class_name_str = env.get_string(&exception_class_name)?.into();
-
-        // get the exception message via calling `Throwable#getMessage` on the throwable object
-        let message = env
-            .call_method_unchecked(
-                throwable,
-                cache.throwable_get_message_method,
-                ReturnType::Object,
-                &[],
-            )?
-            .l()?
-            .into();
-        let message_str = env.get_string(&message)?.into();
-
-        Ok(CometError::JavaException {
-            class: exception_class_name_str,
-            msg: message_str,
-        })
-    }
+    Ok(CometError::JavaException {
+        class: exception_class_name_str,
+        msg: message_str,
+    })
 }
