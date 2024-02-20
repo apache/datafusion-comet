@@ -93,7 +93,7 @@ impl PhysicalExpr for Subquery {
         let mut env = JVMClasses::get_env();
 
         unsafe {
-            let is_null = jni_static_call!(env,
+            let is_null = jni_static_call!(&mut env,
                 comet_exec.is_null(self.exec_context_id, self.id) -> jboolean
             )?;
 
@@ -105,50 +105,50 @@ impl PhysicalExpr for Subquery {
 
             match &self.data_type {
                 DataType::Boolean => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_bool(self.exec_context_id, self.id) -> jboolean
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(r > 0))))
                 }
                 DataType::Int8 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_byte(self.exec_context_id, self.id) -> jbyte
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(r))))
                 }
                 DataType::Int16 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_short(self.exec_context_id, self.id) -> jshort
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(r))))
                 }
                 DataType::Int32 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_int(self.exec_context_id, self.id) -> jint
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(r))))
                 }
                 DataType::Int64 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_long(self.exec_context_id, self.id) -> jlong
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(r))))
                 }
                 DataType::Float32 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_float(self.exec_context_id, self.id) -> f32
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Float32(Some(r))))
                 }
                 DataType::Float64 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_double(self.exec_context_id, self.id) -> f64
                     )?;
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Float64(Some(r))))
                 }
                 DataType::Decimal128(p, s) => {
-                    let bytes = jni_static_call!(env,
+                    let bytes = jni_static_call!(&mut env,
                         comet_exec.get_decimal(self.exec_context_id, self.id) -> BinaryWrapper
                     )?;
                     let bytes: &JByteArray = bytes.get().into();
@@ -161,14 +161,14 @@ impl PhysicalExpr for Subquery {
                     )))
                 }
                 DataType::Date32 => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_int(self.exec_context_id, self.id) -> jint
                     )?;
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Date32(Some(r))))
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                    let r = jni_static_call!(env,
+                    let r = jni_static_call!(&mut env,
                         comet_exec.get_long(self.exec_context_id, self.id) -> jlong
                     )?;
 
@@ -178,7 +178,7 @@ impl PhysicalExpr for Subquery {
                     )))
                 }
                 DataType::Utf8 => {
-                    let string = jni_static_call!(env,
+                    let string = jni_static_call!(&mut env,
                         comet_exec.get_string(self.exec_context_id, self.id) -> StringWrapper
                     )?;
 
@@ -186,7 +186,7 @@ impl PhysicalExpr for Subquery {
                     Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(string))))
                 }
                 DataType::Binary => {
-                    let bytes = jni_static_call!(env,
+                    let bytes = jni_static_call!(&mut env,
                         comet_exec.get_binary(self.exec_context_id, self.id) -> BinaryWrapper
                     )?;
                     let bytes: &JByteArray = bytes.get().into();
