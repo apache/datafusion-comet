@@ -16,4 +16,5 @@
 // under the License.
 
 mod list;
+mod map;
 pub mod row;

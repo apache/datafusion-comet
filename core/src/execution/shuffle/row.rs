@@ -21,7 +21,10 @@ use crate::{
     errors::CometError,
     execution::{
         datafusion::shuffle_writer::{compute_checksum, write_ipc_compressed, ChecksumAlgorithm},
-        shuffle::list::{append_list_element, SparkUnsafeArray},
+        shuffle::{
+            list::{append_list_element, SparkUnsafeArray},
+            map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
+        },
         utils::bytes_to_i128,
     },
 };
@@ -30,7 +33,7 @@ use arrow_array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-        Int64Builder, Int8Builder, ListBuilder, StringBuilder, StringDictionaryBuilder,
+        Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
         StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
@@ -47,7 +50,7 @@ use std::{
 
 const WORD_SIZE: i64 = 8;
 const MAX_LONG_DIGITS: u8 = 18;
-const LIST_BUILDER_CAPACITY: usize = 100;
+const NESTED_TYPE_BUILDER_CAPACITY: usize = 100;
 
 /// A common trait for Spark Unsafe classes that can be used to access the underlying data,
 /// e.g., `UnsafeRow` and `UnsafeArray`. This defines a set of methods that can be used to
@@ -170,6 +173,11 @@ pub trait SparkUnsafeObject {
         let (offset, len) = self.get_offset_and_len(index);
         SparkUnsafeArray::new(self.get_row_addr() + offset as i64, len)
     }
+
+    fn get_map(&self, index: usize) -> SparkUnsafeMap {
+        let (offset, len) = self.get_offset_and_len(index);
+        SparkUnsafeMap::new(self.get_row_addr() + offset as i64, len)
+    }
 }
 
 pub struct SparkUnsafeRow {
@@ -256,6 +264,18 @@ macro_rules! downcast_builder {
     };
 }
 
+macro_rules! downcast_builder_ref {
+    ($builder_type:ty, $builder:expr) => {
+        $builder
+            .as_any_mut()
+            .downcast_mut::<$builder_type>()
+            .unwrap()
+    };
+}
+
+// Expose the macro for other modules.
+pub(crate) use downcast_builder_ref;
+
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
 /// `struct_builder` is the struct builder of the row. `row` is the row that contains the field.
 /// `idx` is the index of the field in the row.
@@ -276,6 +296,28 @@ pub(crate) fn append_field(
                 field_builder.append_null();
             } else {
                 $accessor(field_builder);
+            }
+        }};
+    }
+
+    /// The macros for generating code of appending value into Map field builder of Arrow struct
+    /// builder.
+    macro_rules! append_map_element {
+        ($key_builder_type:ty, $value_builder_type:ty, $field:expr) => {{
+            let field_builder = struct_builder
+                .field_builder::<MapBuilder<$key_builder_type, $value_builder_type>>(idx)
+                .unwrap();
+            let is_null = row.is_null_at(idx);
+
+            if is_null {
+                field_builder.append(false).unwrap();
+            } else {
+                append_map_elements::<$key_builder_type, $value_builder_type>(
+                    $field,
+                    field_builder,
+                    &row.get_map(idx),
+                )
+                .unwrap();
             }
         }};
     }
@@ -363,6 +405,533 @@ pub(crate) fn append_field(
                 }
             });
         }
+        DataType::Map(field, _) => {
+            let (key_dt, value_dt, _) = get_map_key_value_dt(field).unwrap();
+
+            // macro cannot expand to match arm
+            match (key_dt, value_dt) {
+                (DataType::Boolean, DataType::Boolean) => {
+                    append_map_element!(BooleanBuilder, BooleanBuilder, field);
+                }
+                (DataType::Boolean, DataType::Int8) => {
+                    append_map_element!(BooleanBuilder, Int8Builder, field);
+                }
+                (DataType::Boolean, DataType::Int16) => {
+                    append_map_element!(BooleanBuilder, Int16Builder, field);
+                }
+                (DataType::Boolean, DataType::Int32) => {
+                    append_map_element!(BooleanBuilder, Int32Builder, field);
+                }
+                (DataType::Boolean, DataType::Int64) => {
+                    append_map_element!(BooleanBuilder, Int64Builder, field);
+                }
+                (DataType::Boolean, DataType::Float32) => {
+                    append_map_element!(BooleanBuilder, Float32Builder, field);
+                }
+                (DataType::Boolean, DataType::Float64) => {
+                    append_map_element!(BooleanBuilder, Float64Builder, field);
+                }
+                (DataType::Boolean, DataType::Date32) => {
+                    append_map_element!(BooleanBuilder, Date32Builder, field);
+                }
+                (DataType::Boolean, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(BooleanBuilder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Boolean, DataType::Binary) => {
+                    append_map_element!(BooleanBuilder, BinaryBuilder, field);
+                }
+                (DataType::Boolean, DataType::Utf8) => {
+                    append_map_element!(BooleanBuilder, StringBuilder, field);
+                }
+                (DataType::Boolean, DataType::Decimal128(_, _)) => {
+                    append_map_element!(BooleanBuilder, Decimal128Builder, field);
+                }
+                (DataType::Boolean, DataType::Struct(_)) => {
+                    append_map_element!(BooleanBuilder, StructBuilder, field);
+                }
+                (DataType::Int8, DataType::Boolean) => {
+                    append_map_element!(Int8Builder, BooleanBuilder, field);
+                }
+                (DataType::Int8, DataType::Int8) => {
+                    append_map_element!(Int8Builder, Int8Builder, field);
+                }
+                (DataType::Int8, DataType::Int16) => {
+                    append_map_element!(Int8Builder, Int16Builder, field);
+                }
+                (DataType::Int8, DataType::Int32) => {
+                    append_map_element!(Int8Builder, Int32Builder, field);
+                }
+                (DataType::Int8, DataType::Int64) => {
+                    append_map_element!(Int8Builder, Int64Builder, field);
+                }
+                (DataType::Int8, DataType::Float32) => {
+                    append_map_element!(Int8Builder, Float32Builder, field);
+                }
+                (DataType::Int8, DataType::Float64) => {
+                    append_map_element!(Int8Builder, Float64Builder, field);
+                }
+                (DataType::Int8, DataType::Date32) => {
+                    append_map_element!(Int8Builder, Date32Builder, field);
+                }
+                (DataType::Int8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Int8Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Int8, DataType::Binary) => {
+                    append_map_element!(Int8Builder, BinaryBuilder, field);
+                }
+                (DataType::Int8, DataType::Utf8) => {
+                    append_map_element!(Int8Builder, StringBuilder, field);
+                }
+                (DataType::Int8, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Int8Builder, Decimal128Builder, field);
+                }
+                (DataType::Int8, DataType::Struct(_)) => {
+                    append_map_element!(Int8Builder, StructBuilder, field);
+                }
+                (DataType::Int16, DataType::Boolean) => {
+                    append_map_element!(Int16Builder, BooleanBuilder, field);
+                }
+                (DataType::Int16, DataType::Int8) => {
+                    append_map_element!(Int16Builder, Int8Builder, field);
+                }
+                (DataType::Int16, DataType::Int16) => {
+                    append_map_element!(Int16Builder, Int16Builder, field);
+                }
+                (DataType::Int16, DataType::Int32) => {
+                    append_map_element!(Int16Builder, Int32Builder, field);
+                }
+                (DataType::Int16, DataType::Int64) => {
+                    append_map_element!(Int16Builder, Int64Builder, field);
+                }
+                (DataType::Int16, DataType::Float32) => {
+                    append_map_element!(Int16Builder, Float32Builder, field);
+                }
+                (DataType::Int16, DataType::Float64) => {
+                    append_map_element!(Int16Builder, Float64Builder, field);
+                }
+                (DataType::Int16, DataType::Date32) => {
+                    append_map_element!(Int16Builder, Date32Builder, field);
+                }
+                (DataType::Int16, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Int16Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Int16, DataType::Binary) => {
+                    append_map_element!(Int16Builder, BinaryBuilder, field);
+                }
+                (DataType::Int16, DataType::Utf8) => {
+                    append_map_element!(Int16Builder, StringBuilder, field);
+                }
+                (DataType::Int16, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Int16Builder, Decimal128Builder, field);
+                }
+                (DataType::Int16, DataType::Struct(_)) => {
+                    append_map_element!(Int16Builder, StructBuilder, field);
+                }
+                (DataType::Int32, DataType::Boolean) => {
+                    append_map_element!(Int32Builder, BooleanBuilder, field);
+                }
+                (DataType::Int32, DataType::Int8) => {
+                    append_map_element!(Int32Builder, Int8Builder, field);
+                }
+                (DataType::Int32, DataType::Int16) => {
+                    append_map_element!(Int32Builder, Int16Builder, field);
+                }
+                (DataType::Int32, DataType::Int32) => {
+                    append_map_element!(Int32Builder, Int32Builder, field);
+                }
+                (DataType::Int32, DataType::Int64) => {
+                    append_map_element!(Int32Builder, Int64Builder, field);
+                }
+                (DataType::Int32, DataType::Float32) => {
+                    append_map_element!(Int32Builder, Float32Builder, field);
+                }
+                (DataType::Int32, DataType::Float64) => {
+                    append_map_element!(Int32Builder, Float64Builder, field);
+                }
+                (DataType::Int32, DataType::Date32) => {
+                    append_map_element!(Int32Builder, Date32Builder, field);
+                }
+                (DataType::Int32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Int32Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Int32, DataType::Binary) => {
+                    append_map_element!(Int32Builder, BinaryBuilder, field);
+                }
+                (DataType::Int32, DataType::Utf8) => {
+                    append_map_element!(Int32Builder, StringBuilder, field);
+                }
+                (DataType::Int32, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Int32Builder, Decimal128Builder, field);
+                }
+                (DataType::Int32, DataType::Struct(_)) => {
+                    append_map_element!(Int32Builder, StructBuilder, field);
+                }
+                (DataType::Int64, DataType::Boolean) => {
+                    append_map_element!(Int64Builder, BooleanBuilder, field);
+                }
+                (DataType::Int64, DataType::Int8) => {
+                    append_map_element!(Int64Builder, Int8Builder, field);
+                }
+                (DataType::Int64, DataType::Int16) => {
+                    append_map_element!(Int64Builder, Int16Builder, field);
+                }
+                (DataType::Int64, DataType::Int32) => {
+                    append_map_element!(Int64Builder, Int32Builder, field);
+                }
+                (DataType::Int64, DataType::Int64) => {
+                    append_map_element!(Int64Builder, Int64Builder, field);
+                }
+                (DataType::Int64, DataType::Float32) => {
+                    append_map_element!(Int64Builder, Float32Builder, field);
+                }
+                (DataType::Int64, DataType::Float64) => {
+                    append_map_element!(Int64Builder, Float64Builder, field);
+                }
+                (DataType::Int64, DataType::Date32) => {
+                    append_map_element!(Int64Builder, Date32Builder, field);
+                }
+                (DataType::Int64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Int64Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Int64, DataType::Binary) => {
+                    append_map_element!(Int64Builder, BinaryBuilder, field);
+                }
+                (DataType::Int64, DataType::Utf8) => {
+                    append_map_element!(Int64Builder, StringBuilder, field);
+                }
+                (DataType::Int64, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Int64Builder, Decimal128Builder, field);
+                }
+                (DataType::Int64, DataType::Struct(_)) => {
+                    append_map_element!(Int64Builder, StructBuilder, field);
+                }
+                (DataType::Float32, DataType::Boolean) => {
+                    append_map_element!(Float32Builder, BooleanBuilder, field);
+                }
+                (DataType::Float32, DataType::Int8) => {
+                    append_map_element!(Float32Builder, Int8Builder, field);
+                }
+                (DataType::Float32, DataType::Int16) => {
+                    append_map_element!(Float32Builder, Int16Builder, field);
+                }
+                (DataType::Float32, DataType::Int32) => {
+                    append_map_element!(Float32Builder, Int32Builder, field);
+                }
+                (DataType::Float32, DataType::Int64) => {
+                    append_map_element!(Float32Builder, Int64Builder, field);
+                }
+                (DataType::Float32, DataType::Float32) => {
+                    append_map_element!(Float32Builder, Float32Builder, field);
+                }
+                (DataType::Float32, DataType::Float64) => {
+                    append_map_element!(Float32Builder, Float64Builder, field);
+                }
+                (DataType::Float32, DataType::Date32) => {
+                    append_map_element!(Float32Builder, Date32Builder, field);
+                }
+                (DataType::Float32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Float32Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Float32, DataType::Binary) => {
+                    append_map_element!(Float32Builder, BinaryBuilder, field);
+                }
+                (DataType::Float32, DataType::Utf8) => {
+                    append_map_element!(Float32Builder, StringBuilder, field);
+                }
+                (DataType::Float32, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Float32Builder, Decimal128Builder, field);
+                }
+                (DataType::Float32, DataType::Struct(_)) => {
+                    append_map_element!(Float32Builder, StructBuilder, field);
+                }
+                (DataType::Float64, DataType::Boolean) => {
+                    append_map_element!(Float64Builder, BooleanBuilder, field);
+                }
+                (DataType::Float64, DataType::Int8) => {
+                    append_map_element!(Float64Builder, Int8Builder, field);
+                }
+                (DataType::Float64, DataType::Int16) => {
+                    append_map_element!(Float64Builder, Int16Builder, field);
+                }
+                (DataType::Float64, DataType::Int32) => {
+                    append_map_element!(Float64Builder, Int32Builder, field);
+                }
+                (DataType::Float64, DataType::Int64) => {
+                    append_map_element!(Float64Builder, Int64Builder, field);
+                }
+                (DataType::Float64, DataType::Float32) => {
+                    append_map_element!(Float64Builder, Float32Builder, field);
+                }
+                (DataType::Float64, DataType::Float64) => {
+                    append_map_element!(Float64Builder, Float64Builder, field);
+                }
+                (DataType::Float64, DataType::Date32) => {
+                    append_map_element!(Float64Builder, Date32Builder, field);
+                }
+                (DataType::Float64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Float64Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Float64, DataType::Binary) => {
+                    append_map_element!(Float64Builder, BinaryBuilder, field);
+                }
+                (DataType::Float64, DataType::Utf8) => {
+                    append_map_element!(Float64Builder, StringBuilder, field);
+                }
+                (DataType::Float64, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Float64Builder, Decimal128Builder, field);
+                }
+                (DataType::Float64, DataType::Struct(_)) => {
+                    append_map_element!(Float64Builder, StructBuilder, field);
+                }
+                (DataType::Date32, DataType::Boolean) => {
+                    append_map_element!(Date32Builder, BooleanBuilder, field);
+                }
+                (DataType::Date32, DataType::Int8) => {
+                    append_map_element!(Date32Builder, Int8Builder, field);
+                }
+                (DataType::Date32, DataType::Int16) => {
+                    append_map_element!(Date32Builder, Int16Builder, field);
+                }
+                (DataType::Date32, DataType::Int32) => {
+                    append_map_element!(Date32Builder, Int32Builder, field);
+                }
+                (DataType::Date32, DataType::Int64) => {
+                    append_map_element!(Date32Builder, Int64Builder, field);
+                }
+                (DataType::Date32, DataType::Float32) => {
+                    append_map_element!(Date32Builder, Float32Builder, field);
+                }
+                (DataType::Date32, DataType::Float64) => {
+                    append_map_element!(Date32Builder, Float64Builder, field);
+                }
+                (DataType::Date32, DataType::Date32) => {
+                    append_map_element!(Date32Builder, Date32Builder, field);
+                }
+                (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Date32Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Date32, DataType::Binary) => {
+                    append_map_element!(Date32Builder, BinaryBuilder, field);
+                }
+                (DataType::Date32, DataType::Utf8) => {
+                    append_map_element!(Date32Builder, StringBuilder, field);
+                }
+                (DataType::Date32, DataType::Decimal128(_, _)) => {
+                    append_map_element!(Date32Builder, Decimal128Builder, field);
+                }
+                (DataType::Date32, DataType::Struct(_)) => {
+                    append_map_element!(Date32Builder, StructBuilder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Boolean) => {
+                    append_map_element!(TimestampMicrosecondBuilder, BooleanBuilder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int8) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Int8Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int16) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Int16Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int32) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Int32Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int64) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Int64Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float32) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Float32Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float64) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Float64Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Date32) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Date32Builder, field);
+                }
+                (
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                ) => {
+                    append_map_element!(
+                        TimestampMicrosecondBuilder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    );
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Binary) => {
+                    append_map_element!(TimestampMicrosecondBuilder, BinaryBuilder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
+                    append_map_element!(TimestampMicrosecondBuilder, StringBuilder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Decimal128(_, _)) => {
+                    append_map_element!(TimestampMicrosecondBuilder, Decimal128Builder, field);
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Struct(_)) => {
+                    append_map_element!(TimestampMicrosecondBuilder, StructBuilder, field);
+                }
+                (DataType::Binary, DataType::Boolean) => {
+                    append_map_element!(BinaryBuilder, BooleanBuilder, field);
+                }
+                (DataType::Binary, DataType::Int8) => {
+                    append_map_element!(BinaryBuilder, Int8Builder, field);
+                }
+                (DataType::Binary, DataType::Int16) => {
+                    append_map_element!(BinaryBuilder, Int16Builder, field);
+                }
+                (DataType::Binary, DataType::Int32) => {
+                    append_map_element!(BinaryBuilder, Int32Builder, field);
+                }
+                (DataType::Binary, DataType::Int64) => {
+                    append_map_element!(BinaryBuilder, Int64Builder, field);
+                }
+                (DataType::Binary, DataType::Float32) => {
+                    append_map_element!(BinaryBuilder, Float32Builder, field);
+                }
+                (DataType::Binary, DataType::Float64) => {
+                    append_map_element!(BinaryBuilder, Float64Builder, field);
+                }
+                (DataType::Binary, DataType::Date32) => {
+                    append_map_element!(BinaryBuilder, Date32Builder, field);
+                }
+                (DataType::Binary, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(BinaryBuilder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Binary, DataType::Binary) => {
+                    append_map_element!(BinaryBuilder, BinaryBuilder, field);
+                }
+                (DataType::Binary, DataType::Utf8) => {
+                    append_map_element!(BinaryBuilder, StringBuilder, field);
+                }
+                (DataType::Binary, DataType::Decimal128(_, _)) => {
+                    append_map_element!(BinaryBuilder, Decimal128Builder, field);
+                }
+                (DataType::Binary, DataType::Struct(_)) => {
+                    append_map_element!(BinaryBuilder, StructBuilder, field);
+                }
+                (DataType::Utf8, DataType::Boolean) => {
+                    append_map_element!(StringBuilder, BooleanBuilder, field);
+                }
+                (DataType::Utf8, DataType::Int8) => {
+                    append_map_element!(StringBuilder, Int8Builder, field);
+                }
+                (DataType::Utf8, DataType::Int16) => {
+                    append_map_element!(StringBuilder, Int16Builder, field);
+                }
+                (DataType::Utf8, DataType::Int32) => {
+                    append_map_element!(StringBuilder, Int32Builder, field);
+                }
+                (DataType::Utf8, DataType::Int64) => {
+                    append_map_element!(StringBuilder, Int64Builder, field);
+                }
+                (DataType::Utf8, DataType::Float32) => {
+                    append_map_element!(StringBuilder, Float32Builder, field);
+                }
+                (DataType::Utf8, DataType::Float64) => {
+                    append_map_element!(StringBuilder, Float64Builder, field);
+                }
+                (DataType::Utf8, DataType::Date32) => {
+                    append_map_element!(StringBuilder, Date32Builder, field);
+                }
+                (DataType::Utf8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(StringBuilder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Utf8, DataType::Binary) => {
+                    append_map_element!(StringBuilder, BinaryBuilder, field);
+                }
+                (DataType::Utf8, DataType::Utf8) => {
+                    append_map_element!(StringBuilder, StringBuilder, field);
+                }
+                (DataType::Utf8, DataType::Decimal128(_, _)) => {
+                    append_map_element!(StringBuilder, Decimal128Builder, field);
+                }
+                (DataType::Utf8, DataType::Struct(_)) => {
+                    append_map_element!(StringBuilder, StructBuilder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Boolean) => {
+                    append_map_element!(Decimal128Builder, BooleanBuilder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Int8) => {
+                    append_map_element!(Decimal128Builder, Int8Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Int16) => {
+                    append_map_element!(Decimal128Builder, Int16Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Int32) => {
+                    append_map_element!(Decimal128Builder, Int32Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Int64) => {
+                    append_map_element!(Decimal128Builder, Int64Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Float32) => {
+                    append_map_element!(Decimal128Builder, Float32Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Float64) => {
+                    append_map_element!(Decimal128Builder, Float64Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Date32) => {
+                    append_map_element!(Decimal128Builder, Date32Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(Decimal128Builder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Binary) => {
+                    append_map_element!(Decimal128Builder, BinaryBuilder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Utf8) => {
+                    append_map_element!(Decimal128Builder, StringBuilder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Decimal128(_, _)) => {
+                    append_map_element!(Decimal128Builder, Decimal128Builder, field);
+                }
+                (DataType::Decimal128(_, _), DataType::Struct(_)) => {
+                    append_map_element!(Decimal128Builder, StructBuilder, field);
+                }
+                (DataType::Struct(_), DataType::Boolean) => {
+                    append_map_element!(StructBuilder, BooleanBuilder, field);
+                }
+                (DataType::Struct(_), DataType::Int8) => {
+                    append_map_element!(StructBuilder, Int8Builder, field);
+                }
+                (DataType::Struct(_), DataType::Int16) => {
+                    append_map_element!(StructBuilder, Int16Builder, field);
+                }
+                (DataType::Struct(_), DataType::Int32) => {
+                    append_map_element!(StructBuilder, Int32Builder, field);
+                }
+                (DataType::Struct(_), DataType::Int64) => {
+                    append_map_element!(StructBuilder, Int64Builder, field);
+                }
+                (DataType::Struct(_), DataType::Float32) => {
+                    append_map_element!(StructBuilder, Float32Builder, field);
+                }
+                (DataType::Struct(_), DataType::Float64) => {
+                    append_map_element!(StructBuilder, Float64Builder, field);
+                }
+                (DataType::Struct(_), DataType::Date32) => {
+                    append_map_element!(StructBuilder, Date32Builder, field);
+                }
+                (DataType::Struct(_), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_map_element!(StructBuilder, TimestampMicrosecondBuilder, field);
+                }
+                (DataType::Struct(_), DataType::Binary) => {
+                    append_map_element!(StructBuilder, BinaryBuilder, field);
+                }
+                (DataType::Struct(_), DataType::Utf8) => {
+                    append_map_element!(StructBuilder, StringBuilder, field);
+                }
+                (DataType::Struct(_), DataType::Decimal128(_, _)) => {
+                    append_map_element!(StructBuilder, Decimal128Builder, field);
+                }
+                (DataType::Struct(_), DataType::Struct(_)) => {
+                    append_map_element!(StructBuilder, StructBuilder, field);
+                }
+                _ => {
+                    unreachable!(
+                        "Unsupported data type of map key and value: {:?} and {:?}",
+                        key_dt, value_dt
+                    )
+                }
+            }
+        }
         DataType::List(field) => match field.data_type() {
             DataType::Boolean => {
                 append_list_field_to_builder!(BooleanBuilder, field.data_type());
@@ -422,7 +991,7 @@ pub(crate) fn append_columns(
     column_idx: usize,
     builder: &mut Box<dyn ArrayBuilder>,
     prefer_dictionary_ratio: f64,
-) {
+) -> Result<(), CometError> {
     /// A macro for generating code of appending values into Arrow array builders.
     macro_rules! append_column_to_builder {
         ($builder_type:ty, $accessor:expr) => {{
@@ -471,6 +1040,36 @@ pub(crate) fn append_columns(
                         $element_dt,
                         builder,
                         &row.get_array(column_idx),
+                    )
+                    .unwrap()
+                }
+            }
+        }};
+    }
+
+    /// A macro for generating code of appending values into Arrow `MapBuilder`.
+    macro_rules! append_column_to_map_builder {
+        ($key_builder_type:ty, $value_builder_type:ty, $field:expr) => {{
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<MapBuilder<$key_builder_type, $value_builder_type>>()
+                .unwrap();
+            let mut row = SparkUnsafeRow::new(schema);
+
+            for i in row_start..row_end {
+                let row_addr = unsafe { *row_addresses_ptr.add(i) };
+                let row_size = unsafe { *row_sizes_ptr.add(i) };
+                row.point_to(row_addr, row_size);
+
+                let is_null = row.is_null_at(column_idx);
+
+                if is_null {
+                    builder.append(false)?;
+                } else {
+                    append_map_elements::<$key_builder_type, $value_builder_type>(
+                        $field,
+                        builder,
+                        &row.get_map(column_idx),
                     )
                     .unwrap()
                 }
@@ -583,6 +1182,490 @@ pub(crate) fn append_columns(
                     .append_value(row.get_timestamp(idx))
             );
         }
+        DataType::Map(field, _) => {
+            let (key_dt, value_dt, _) = get_map_key_value_dt(field)?;
+
+            // macro cannot expand to match arm
+            match (key_dt, value_dt) {
+                (DataType::Boolean, DataType::Boolean) => {
+                    append_column_to_map_builder!(BooleanBuilder, BooleanBuilder, field)
+                }
+                (DataType::Boolean, DataType::Int8) => {
+                    append_column_to_map_builder!(BooleanBuilder, Int8Builder, field)
+                }
+                (DataType::Boolean, DataType::Int16) => {
+                    append_column_to_map_builder!(BooleanBuilder, Int16Builder, field)
+                }
+                (DataType::Boolean, DataType::Int32) => {
+                    append_column_to_map_builder!(BooleanBuilder, Int32Builder, field)
+                }
+                (DataType::Boolean, DataType::Int64) => {
+                    append_column_to_map_builder!(BooleanBuilder, Int64Builder, field)
+                }
+                (DataType::Boolean, DataType::Float32) => {
+                    append_column_to_map_builder!(BooleanBuilder, Float32Builder, field)
+                }
+                (DataType::Boolean, DataType::Float64) => {
+                    append_column_to_map_builder!(BooleanBuilder, Float64Builder, field)
+                }
+                (DataType::Boolean, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(
+                        BooleanBuilder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    )
+                }
+                (DataType::Boolean, DataType::Date32) => {
+                    append_column_to_map_builder!(BooleanBuilder, Date32Builder, field)
+                }
+                (DataType::Boolean, DataType::Binary) => {
+                    append_column_to_map_builder!(BooleanBuilder, BinaryBuilder, field)
+                }
+                (DataType::Boolean, DataType::Utf8) => {
+                    append_column_to_map_builder!(BooleanBuilder, StringBuilder, field)
+                }
+                (DataType::Boolean, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(BooleanBuilder, Decimal128Builder, field)
+                }
+                (DataType::Int8, DataType::Boolean) => {
+                    append_column_to_map_builder!(Int8Builder, BooleanBuilder, field)
+                }
+                (DataType::Int8, DataType::Int8) => {
+                    append_column_to_map_builder!(Int8Builder, Int8Builder, field)
+                }
+                (DataType::Int8, DataType::Int16) => {
+                    append_column_to_map_builder!(Int8Builder, Int16Builder, field)
+                }
+                (DataType::Int8, DataType::Int32) => {
+                    append_column_to_map_builder!(Int8Builder, Int32Builder, field)
+                }
+                (DataType::Int8, DataType::Int64) => {
+                    append_column_to_map_builder!(Int8Builder, Int64Builder, field)
+                }
+                (DataType::Int8, DataType::Float32) => {
+                    append_column_to_map_builder!(Int8Builder, Float32Builder, field)
+                }
+                (DataType::Int8, DataType::Float64) => {
+                    append_column_to_map_builder!(Int8Builder, Float64Builder, field)
+                }
+                (DataType::Int8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(Int8Builder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Int8, DataType::Date32) => {
+                    append_column_to_map_builder!(Int8Builder, Date32Builder, field)
+                }
+                (DataType::Int8, DataType::Binary) => {
+                    append_column_to_map_builder!(Int8Builder, BinaryBuilder, field)
+                }
+                (DataType::Int8, DataType::Utf8) => {
+                    append_column_to_map_builder!(Int8Builder, StringBuilder, field)
+                }
+                (DataType::Int8, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Int8Builder, Decimal128Builder, field)
+                }
+                (DataType::Int16, DataType::Boolean) => {
+                    append_column_to_map_builder!(Int16Builder, BooleanBuilder, field)
+                }
+                (DataType::Int16, DataType::Int8) => {
+                    append_column_to_map_builder!(Int16Builder, Int8Builder, field)
+                }
+                (DataType::Int16, DataType::Int16) => {
+                    append_column_to_map_builder!(Int16Builder, Int16Builder, field)
+                }
+                (DataType::Int16, DataType::Int32) => {
+                    append_column_to_map_builder!(Int16Builder, Int32Builder, field)
+                }
+                (DataType::Int16, DataType::Int64) => {
+                    append_column_to_map_builder!(Int16Builder, Int64Builder, field)
+                }
+                (DataType::Int16, DataType::Float32) => {
+                    append_column_to_map_builder!(Int16Builder, Float32Builder, field)
+                }
+                (DataType::Int16, DataType::Float64) => {
+                    append_column_to_map_builder!(Int16Builder, Float64Builder, field)
+                }
+                (DataType::Int16, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(Int16Builder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Int16, DataType::Date32) => {
+                    append_column_to_map_builder!(Int16Builder, Date32Builder, field)
+                }
+                (DataType::Int16, DataType::Binary) => {
+                    append_column_to_map_builder!(Int16Builder, BinaryBuilder, field)
+                }
+                (DataType::Int16, DataType::Utf8) => {
+                    append_column_to_map_builder!(Int16Builder, StringBuilder, field)
+                }
+                (DataType::Int16, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Int16Builder, Decimal128Builder, field)
+                }
+                (DataType::Int32, DataType::Boolean) => {
+                    append_column_to_map_builder!(Int32Builder, BooleanBuilder, field)
+                }
+                (DataType::Int32, DataType::Int8) => {
+                    append_column_to_map_builder!(Int32Builder, Int8Builder, field)
+                }
+                (DataType::Int32, DataType::Int16) => {
+                    append_column_to_map_builder!(Int32Builder, Int16Builder, field)
+                }
+                (DataType::Int32, DataType::Int32) => {
+                    append_column_to_map_builder!(Int32Builder, Int32Builder, field)
+                }
+                (DataType::Int32, DataType::Int64) => {
+                    append_column_to_map_builder!(Int32Builder, Int64Builder, field)
+                }
+                (DataType::Int32, DataType::Float32) => {
+                    append_column_to_map_builder!(Int32Builder, Float32Builder, field)
+                }
+                (DataType::Int32, DataType::Float64) => {
+                    append_column_to_map_builder!(Int32Builder, Float64Builder, field)
+                }
+                (DataType::Int32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(Int32Builder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Int32, DataType::Date32) => {
+                    append_column_to_map_builder!(Int32Builder, Date32Builder, field)
+                }
+                (DataType::Int32, DataType::Binary) => {
+                    append_column_to_map_builder!(Int32Builder, BinaryBuilder, field)
+                }
+                (DataType::Int32, DataType::Utf8) => {
+                    append_column_to_map_builder!(Int32Builder, StringBuilder, field)
+                }
+                (DataType::Int32, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Int32Builder, Decimal128Builder, field)
+                }
+                (DataType::Int64, DataType::Boolean) => {
+                    append_column_to_map_builder!(Int64Builder, BooleanBuilder, field)
+                }
+                (DataType::Int64, DataType::Int8) => {
+                    append_column_to_map_builder!(Int64Builder, Int8Builder, field)
+                }
+                (DataType::Int64, DataType::Int16) => {
+                    append_column_to_map_builder!(Int64Builder, Int16Builder, field)
+                }
+                (DataType::Int64, DataType::Int32) => {
+                    append_column_to_map_builder!(Int64Builder, Int32Builder, field)
+                }
+                (DataType::Int64, DataType::Int64) => {
+                    append_column_to_map_builder!(Int64Builder, Int64Builder, field)
+                }
+                (DataType::Int64, DataType::Float32) => {
+                    append_column_to_map_builder!(Int64Builder, Float32Builder, field)
+                }
+                (DataType::Int64, DataType::Float64) => {
+                    append_column_to_map_builder!(Int64Builder, Float64Builder, field)
+                }
+                (DataType::Int64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(Int64Builder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Int64, DataType::Date32) => {
+                    append_column_to_map_builder!(Int64Builder, Date32Builder, field)
+                }
+                (DataType::Int64, DataType::Binary) => {
+                    append_column_to_map_builder!(Int64Builder, BinaryBuilder, field)
+                }
+                (DataType::Int64, DataType::Utf8) => {
+                    append_column_to_map_builder!(Int64Builder, StringBuilder, field)
+                }
+                (DataType::Int64, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Int64Builder, Decimal128Builder, field)
+                }
+                (DataType::Float32, DataType::Boolean) => {
+                    append_column_to_map_builder!(Float32Builder, BooleanBuilder, field)
+                }
+                (DataType::Float32, DataType::Int8) => {
+                    append_column_to_map_builder!(Float32Builder, Int8Builder, field)
+                }
+                (DataType::Float32, DataType::Int16) => {
+                    append_column_to_map_builder!(Float32Builder, Int16Builder, field)
+                }
+                (DataType::Float32, DataType::Int32) => {
+                    append_column_to_map_builder!(Float32Builder, Int32Builder, field)
+                }
+                (DataType::Float32, DataType::Int64) => {
+                    append_column_to_map_builder!(Float32Builder, Int64Builder, field)
+                }
+                (DataType::Float32, DataType::Float32) => {
+                    append_column_to_map_builder!(Float32Builder, Float32Builder, field)
+                }
+                (DataType::Float32, DataType::Float64) => {
+                    append_column_to_map_builder!(Float32Builder, Float64Builder, field)
+                }
+                (DataType::Float32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(
+                        Float32Builder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    )
+                }
+                (DataType::Float32, DataType::Date32) => {
+                    append_column_to_map_builder!(Float32Builder, Date32Builder, field)
+                }
+                (DataType::Float32, DataType::Binary) => {
+                    append_column_to_map_builder!(Float32Builder, BinaryBuilder, field)
+                }
+                (DataType::Float32, DataType::Utf8) => {
+                    append_column_to_map_builder!(Float32Builder, StringBuilder, field)
+                }
+                (DataType::Float32, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Float32Builder, Decimal128Builder, field)
+                }
+                (DataType::Float64, DataType::Boolean) => {
+                    append_column_to_map_builder!(Float64Builder, BooleanBuilder, field)
+                }
+                (DataType::Float64, DataType::Int8) => {
+                    append_column_to_map_builder!(Float64Builder, Int8Builder, field)
+                }
+                (DataType::Float64, DataType::Int16) => {
+                    append_column_to_map_builder!(Float64Builder, Int16Builder, field)
+                }
+                (DataType::Float64, DataType::Int32) => {
+                    append_column_to_map_builder!(Float64Builder, Int32Builder, field)
+                }
+                (DataType::Float64, DataType::Int64) => {
+                    append_column_to_map_builder!(Float64Builder, Int64Builder, field)
+                }
+                (DataType::Float64, DataType::Float32) => {
+                    append_column_to_map_builder!(Float64Builder, Float32Builder, field)
+                }
+                (DataType::Float64, DataType::Float64) => {
+                    append_column_to_map_builder!(Float64Builder, Float64Builder, field)
+                }
+                (DataType::Float64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(
+                        Float64Builder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    )
+                }
+                (DataType::Float64, DataType::Date32) => {
+                    append_column_to_map_builder!(Float64Builder, Date32Builder, field)
+                }
+                (DataType::Float64, DataType::Binary) => {
+                    append_column_to_map_builder!(Float64Builder, BinaryBuilder, field)
+                }
+                (DataType::Float64, DataType::Utf8) => {
+                    append_column_to_map_builder!(Float64Builder, StringBuilder, field)
+                }
+                (DataType::Float64, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Float64Builder, Decimal128Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Boolean) => {
+                    append_column_to_map_builder!(
+                        TimestampMicrosecondBuilder,
+                        BooleanBuilder,
+                        field
+                    )
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int8) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, Int8Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int16) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, Int16Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int32) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, Int32Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int64) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, Int64Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float32) => {
+                    append_column_to_map_builder!(
+                        TimestampMicrosecondBuilder,
+                        Float32Builder,
+                        field
+                    )
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float64) => {
+                    append_column_to_map_builder!(
+                        TimestampMicrosecondBuilder,
+                        Float64Builder,
+                        field
+                    )
+                }
+                (
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                ) => {
+                    append_column_to_map_builder!(
+                        TimestampMicrosecondBuilder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    )
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Date32) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, Date32Builder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Binary) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, BinaryBuilder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
+                    append_column_to_map_builder!(TimestampMicrosecondBuilder, StringBuilder, field)
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(
+                        TimestampMicrosecondBuilder,
+                        Decimal128Builder,
+                        field
+                    )
+                }
+                (DataType::Date32, DataType::Boolean) => {
+                    append_column_to_map_builder!(Date32Builder, BooleanBuilder, field)
+                }
+                (DataType::Date32, DataType::Int8) => {
+                    append_column_to_map_builder!(Date32Builder, Int8Builder, field)
+                }
+                (DataType::Date32, DataType::Int16) => {
+                    append_column_to_map_builder!(Date32Builder, Int16Builder, field)
+                }
+                (DataType::Date32, DataType::Int32) => {
+                    append_column_to_map_builder!(Date32Builder, Int32Builder, field)
+                }
+                (DataType::Date32, DataType::Int64) => {
+                    append_column_to_map_builder!(Date32Builder, Int64Builder, field)
+                }
+                (DataType::Date32, DataType::Float32) => {
+                    append_column_to_map_builder!(Date32Builder, Float32Builder, field)
+                }
+                (DataType::Date32, DataType::Float64) => {
+                    append_column_to_map_builder!(Date32Builder, Float64Builder, field)
+                }
+                (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(Date32Builder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Date32, DataType::Date32) => {
+                    append_column_to_map_builder!(Date32Builder, Date32Builder, field)
+                }
+                (DataType::Date32, DataType::Binary) => {
+                    append_column_to_map_builder!(Date32Builder, BinaryBuilder, field)
+                }
+                (DataType::Date32, DataType::Utf8) => {
+                    append_column_to_map_builder!(Date32Builder, StringBuilder, field)
+                }
+                (DataType::Date32, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Date32Builder, Decimal128Builder, field)
+                }
+                (DataType::Binary, DataType::Boolean) => {
+                    append_column_to_map_builder!(BinaryBuilder, BooleanBuilder, field)
+                }
+                (DataType::Binary, DataType::Int8) => {
+                    append_column_to_map_builder!(BinaryBuilder, Int8Builder, field)
+                }
+                (DataType::Binary, DataType::Int16) => {
+                    append_column_to_map_builder!(BinaryBuilder, Int16Builder, field)
+                }
+                (DataType::Binary, DataType::Int32) => {
+                    append_column_to_map_builder!(BinaryBuilder, Int32Builder, field)
+                }
+                (DataType::Binary, DataType::Int64) => {
+                    append_column_to_map_builder!(BinaryBuilder, Int64Builder, field)
+                }
+                (DataType::Binary, DataType::Float32) => {
+                    append_column_to_map_builder!(BinaryBuilder, Float32Builder, field)
+                }
+                (DataType::Binary, DataType::Float64) => {
+                    append_column_to_map_builder!(BinaryBuilder, Float64Builder, field)
+                }
+                (DataType::Binary, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(BinaryBuilder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Binary, DataType::Date32) => {
+                    append_column_to_map_builder!(BinaryBuilder, Date32Builder, field)
+                }
+                (DataType::Binary, DataType::Binary) => {
+                    append_column_to_map_builder!(BinaryBuilder, BinaryBuilder, field)
+                }
+                (DataType::Binary, DataType::Utf8) => {
+                    append_column_to_map_builder!(BinaryBuilder, StringBuilder, field)
+                }
+                (DataType::Binary, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(BinaryBuilder, Decimal128Builder, field)
+                }
+                (DataType::Utf8, DataType::Boolean) => {
+                    append_column_to_map_builder!(StringBuilder, BooleanBuilder, field)
+                }
+                (DataType::Utf8, DataType::Int8) => {
+                    append_column_to_map_builder!(StringBuilder, Int8Builder, field)
+                }
+                (DataType::Utf8, DataType::Int16) => {
+                    append_column_to_map_builder!(StringBuilder, Int16Builder, field)
+                }
+                (DataType::Utf8, DataType::Int32) => {
+                    append_column_to_map_builder!(StringBuilder, Int32Builder, field)
+                }
+                (DataType::Utf8, DataType::Int64) => {
+                    append_column_to_map_builder!(StringBuilder, Int64Builder, field)
+                }
+                (DataType::Utf8, DataType::Float32) => {
+                    append_column_to_map_builder!(StringBuilder, Float32Builder, field)
+                }
+                (DataType::Utf8, DataType::Float64) => {
+                    append_column_to_map_builder!(StringBuilder, Float64Builder, field)
+                }
+                (DataType::Utf8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(StringBuilder, TimestampMicrosecondBuilder, field)
+                }
+                (DataType::Utf8, DataType::Date32) => {
+                    append_column_to_map_builder!(StringBuilder, Date32Builder, field)
+                }
+                (DataType::Utf8, DataType::Binary) => {
+                    append_column_to_map_builder!(StringBuilder, BinaryBuilder, field)
+                }
+                (DataType::Utf8, DataType::Utf8) => {
+                    append_column_to_map_builder!(StringBuilder, StringBuilder, field)
+                }
+                (DataType::Utf8, DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(StringBuilder, Decimal128Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Boolean) => {
+                    append_column_to_map_builder!(Decimal128Builder, BooleanBuilder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Int8) => {
+                    append_column_to_map_builder!(Decimal128Builder, Int8Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Int16) => {
+                    append_column_to_map_builder!(Decimal128Builder, Int16Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Int32) => {
+                    append_column_to_map_builder!(Decimal128Builder, Int32Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Int64) => {
+                    append_column_to_map_builder!(Decimal128Builder, Int64Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Float32) => {
+                    append_column_to_map_builder!(Decimal128Builder, Float32Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Float64) => {
+                    append_column_to_map_builder!(Decimal128Builder, Float64Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    append_column_to_map_builder!(
+                        Decimal128Builder,
+                        TimestampMicrosecondBuilder,
+                        field
+                    )
+                }
+                (DataType::Decimal128(_, _), DataType::Date32) => {
+                    append_column_to_map_builder!(Decimal128Builder, Date32Builder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Binary) => {
+                    append_column_to_map_builder!(Decimal128Builder, BinaryBuilder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Utf8) => {
+                    append_column_to_map_builder!(Decimal128Builder, StringBuilder, field)
+                }
+                (DataType::Decimal128(_, _), DataType::Decimal128(_, _)) => {
+                    append_column_to_map_builder!(Decimal128Builder, Decimal128Builder, field)
+                }
+                _ => {
+                    return Err(CometError::Internal(format!(
+                        "Unsupported type: {:?}",
+                        field.data_type()
+                    )))
+                }
+            }
+        }
         DataType::List(field) => match field.data_type() {
             DataType::Boolean => {
                 append_column_to_list_builder!(BooleanBuilder, field.data_type());
@@ -641,6 +1724,8 @@ pub(crate) fn append_columns(
             unreachable!("Unsupported data type of column: {:?}", dt)
         }
     }
+
+    Ok(())
 }
 
 fn make_builders(
@@ -685,9 +1770,1339 @@ fn make_builders(
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
+        DataType::Map(field, _) => {
+            let (key_dt, value_dt, map_fieldnames) = get_map_key_value_dt(field)?;
+
+            let key_builder = make_builders(key_dt, NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
+            let value_builder = make_builders(value_dt, NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
+
+            // TODO: support other types of map after new release of Arrow. In new API, `MapBuilder`
+            // can take general `Box<dyn ArrayBuilder>` as key/value builder.
+            match (key_dt, value_dt) {
+                (DataType::Boolean, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Int8) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Int16) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Int32) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Int64) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Float32) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Float64) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Date32) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Binary) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Boolean, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(BooleanBuilder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int8, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Int8Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int16, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Int16Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int32, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Int32Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Int64, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Int64Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float32, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Float32Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Float64, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Float64Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Int8) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Int16) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Int32) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Int64) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Float32) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Float64) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Date32) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Binary) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Date32, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Date32Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Boolean) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int8) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int16) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int32) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int64) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float32) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float64) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                ) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Date32) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Binary) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Int8) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Int16) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Int32) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Int64) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Float32) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Float64) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Date32) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Binary) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Binary, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(BinaryBuilder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Boolean) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Int8) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Int16) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Int32) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Int64) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Float32) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Float64) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Date32) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Binary) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Utf8) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Utf8, DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(StringBuilder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Boolean) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(BooleanBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Int8) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Int8Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Int16) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Int16Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Int32) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Int32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Int64) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Int64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Float32) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Float32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Float64) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Float64Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder =
+                        downcast_builder!(TimestampMicrosecondBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Date32) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Date32Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Binary) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(BinaryBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Utf8) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(StringBuilder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+                (DataType::Decimal128(_, _), DataType::Decimal128(_, _)) => {
+                    let key_builder = downcast_builder!(Decimal128Builder, key_builder);
+                    let value_builder = downcast_builder!(Decimal128Builder, value_builder);
+                    Box::new(MapBuilder::new(
+                        Some(map_fieldnames),
+                        *key_builder,
+                        *value_builder,
+                    ))
+                }
+
+                _ => {
+                    return Err(CometError::Internal(format!(
+                        "Unsupported type: {:?}",
+                        field.data_type()
+                    )))
+                }
+            }
+        }
         DataType::List(field) => {
             // Disable dictionary encoding for array element
-            let value_builder = make_builders(field.data_type(), LIST_BUILDER_CAPACITY, 1.0)?;
+            let value_builder =
+                make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
             match field.data_type() {
                 DataType::Boolean => {
                     let builder = downcast_builder!(BooleanBuilder, value_builder);
@@ -810,7 +3225,7 @@ pub fn process_sorted_row_partition(
                 idx,
                 builder,
                 prefer_dictionary_ratio,
-            );
+            )?;
         }
 
         row_start = row_end;
