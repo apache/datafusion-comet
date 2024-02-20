@@ -684,7 +684,6 @@ impl PhysicalPlanner {
                         group_by,
                         agg_exprs?,
                         vec![None; num_agg], // no filter expressions
-                        vec![None; num_agg], // no order by expressions
                         child.clone(),
                         schema.clone(),
                     )?,

@@ -141,7 +141,8 @@ impl CopyStream {
             .iter()
             .map(|v| copy_or_cast_array(v))
             .collect::<Result<Vec<ArrayRef>, _>>()?;
-        RecordBatch::try_new(self.schema.clone(), vectors).map_err(DataFusionError::ArrowError)
+        RecordBatch::try_new(self.schema.clone(), vectors)
+            .map_err(|err| DataFusionError::ArrowError(err, None))
     }
 }
 
