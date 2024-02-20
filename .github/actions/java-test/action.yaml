@@ -37,9 +37,9 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw compile test-compile scalafix:scalafix -Psemanticdb
+        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb
 
     - name: Run tests
       shell: bash
       run: |
-        SPARK_HOME=`pwd` ./mvnw clean install
+        SPARK_HOME=`pwd` ./mvnw -B clean install

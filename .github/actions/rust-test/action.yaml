@@ -51,7 +51,7 @@ runs:
       shell: bash
       run: |
         cd common
-        ../mvnw clean compile -DskipTests
+        ../mvnw -B clean compile -DskipTests
 
     - name: Run Cargo test
       shell: bash
