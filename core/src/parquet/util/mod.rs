@@ -22,7 +22,5 @@ pub mod memory;
 
 mod buffer;
 pub use buffer::*;
-mod jni_buffer;
-pub use jni_buffer::*;
 
 pub mod test_common;

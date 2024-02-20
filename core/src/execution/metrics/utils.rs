@@ -27,8 +27,8 @@ use std::sync::Arc;
 /// update the metrics of all the children nodes. The metrics are pulled from the
 /// DataFusion execution plan and pushed to the Java side through JNI.
 pub fn update_comet_metric(
-    env: &JNIEnv,
-    metric_node: JObject,
+    env: &mut JNIEnv,
+    metric_node: &JObject,
     execution_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<(), CometError> {
     update_metrics(
@@ -43,27 +43,31 @@ pub fn update_comet_metric(
             .collect::<Vec<_>>(),
     )?;
 
-    for (i, child_plan) in execution_plan.children().iter().enumerate() {
-        let child_metric_node: JObject = jni_call!(env,
-            comet_metric_node(metric_node).get_child_node(i as i32) -> JObject
-        )?;
-        if child_metric_node.is_null() {
-            continue;
+    unsafe {
+        for (i, child_plan) in execution_plan.children().iter().enumerate() {
+            let child_metric_node: JObject = jni_call!(env,
+                comet_metric_node(metric_node).get_child_node(i as i32) -> JObject
+            )?;
+            if child_metric_node.is_null() {
+                continue;
+            }
+            update_comet_metric(env, &child_metric_node, child_plan)?;
         }
-        update_comet_metric(env, child_metric_node, child_plan)?;
     }
     Ok(())
 }
 
 #[inline]
 fn update_metrics(
-    env: &JNIEnv,
-    metric_node: JObject,
+    env: &mut JNIEnv,
+    metric_node: &JObject,
     metric_values: &[(&str, i64)],
 ) -> Result<(), CometError> {
-    for &(name, value) in metric_values {
-        let jname = jni_new_string!(env, &name)?;
-        jni_call!(env, comet_metric_node(metric_node).add(jname, value) -> ())?;
+    unsafe {
+        for &(name, value) in metric_values {
+            let jname = jni_new_string!(env, &name)?;
+            jni_call!(env, comet_metric_node(metric_node).add(&jname, value) -> ())?;
+        }
     }
     Ok(())
 }

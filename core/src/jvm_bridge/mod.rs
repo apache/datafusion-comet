@@ -19,7 +19,7 @@
 
 use jni::{
     errors::{Error, Result as JniResult},
-    objects::{JClass, JObject, JString, JValue},
+    objects::{JClass, JObject, JString, JValueGen, JValueOwned},
     AttachGuard, JNIEnv,
 };
 use once_cell::sync::OnceCell;
@@ -38,7 +38,7 @@ macro_rules! jni_map_error {
 /// Macro for converting Rust types to JNI types.
 macro_rules! jvalues {
     ($($args:expr,)* $(,)?) => {{
-        &[$(jni::objects::JValue::from($args)),*] as &[jni::objects::JValue]
+        &[$(jni::objects::JValue::from($args).as_jni()),*] as &[jni::sys::jvalue]
     }}
 }
 
@@ -75,7 +75,7 @@ macro_rules! jni_static_call {
         $crate::jvm_bridge::jni_map_error!(
             $env,
             $env.call_static_method_unchecked(
-                paste::paste! {$crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<class>]},
+                &paste::paste! {$crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<class>]},
                 paste::paste! {$crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method>]},
                 paste::paste! {$crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]}.clone(),
                 $crate::jvm_bridge::jvalues!($($args,)*)
@@ -114,23 +114,23 @@ impl<'a> BinaryWrapper<'a> {
     }
 }
 
-impl<'a> TryFrom<JValue<'a>> for StringWrapper<'a> {
+impl<'a> TryFrom<JValueOwned<'a>> for StringWrapper<'a> {
     type Error = Error;
 
-    fn try_from(value: JValue<'a>) -> Result<StringWrapper<'a>, Error> {
+    fn try_from(value: JValueOwned<'a>) -> Result<StringWrapper<'a>, Error> {
         match value {
-            JValue::Object(b) => Ok(StringWrapper::new(JString::from(b))),
+            JValueGen::Object(b) => Ok(StringWrapper::new(JString::from(b))),
             _ => Err(Error::WrongJValueType("object", value.type_name())),
         }
     }
 }
 
-impl<'a> TryFrom<JValue<'a>> for BinaryWrapper<'a> {
+impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
     type Error = Error;
 
-    fn try_from(value: JValue<'a>) -> Result<BinaryWrapper<'a>, Error> {
+    fn try_from(value: JValueOwned<'a>) -> Result<BinaryWrapper<'a>, Error> {
         match value {
-            JValue::Object(b) => Ok(BinaryWrapper::new(b)),
+            JValueGen::Object(b) => Ok(BinaryWrapper::new(b)),
             _ => Err(Error::WrongJValueType("object", value.type_name())),
         }
     }
@@ -151,7 +151,7 @@ pub(crate) use jni_static_call;
 pub(crate) use jvalues;
 
 /// Gets a global reference to a Java class.
-pub fn get_global_jclass(env: &JNIEnv<'_>, cls: &str) -> JniResult<JClass<'static>> {
+pub fn get_global_jclass(env: &mut JNIEnv, cls: &str) -> JniResult<JClass<'static>> {
     let local_jclass = env.find_class(cls)?;
     let global = env.new_global_ref::<JObject>(local_jclass.into())?;
 
@@ -186,11 +186,11 @@ static JVM_CLASSES: OnceCell<JVMClasses> = OnceCell::new();
 
 impl JVMClasses<'_> {
     /// Creates a new JVMClasses struct.
-    pub fn init(env: &JNIEnv) {
+    pub fn init(env: &mut JNIEnv) {
         JVM_CLASSES.get_or_init(|| {
             // A hack to make the `JNIEnv` static. It is not safe but we don't really use the
             // `JNIEnv` except for creating the global references of the classes.
-            let env = unsafe { std::mem::transmute::<_, &'static JNIEnv>(env) };
+            let env = unsafe { std::mem::transmute::<_, &'static mut JNIEnv>(env) };
 
             JVMClasses {
                 comet_metric_node: CometMetricNode::new(env).unwrap(),
