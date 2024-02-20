@@ -23,7 +23,7 @@ import java.io.ByteArrayOutputStream
 
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
@@ -31,12 +31,12 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, CometSparkSessionExtensions}
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -83,17 +83,7 @@ object CometExec {
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-
-    val configs = new java.util.HashMap[String, String]()
-
-    val maxMemory =
-      CometSparkSessionExtensions.getCometMemoryOverhead(SparkEnv.get.conf)
-    configs.put("memory_limit", String.valueOf(maxMemory))
-    configs.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
-    configs.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
-    configs.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
-
-    new CometExecIterator(newIterId, inputs, bytes, configs, nativeMetrics)
+    new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
   }
 }
 
@@ -163,33 +153,15 @@ abstract class CometNativeExec extends CometExec {
       case Some(serializedPlan) =>
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+        SQLConf.get.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
 
-        // Populate native configurations
-        val configs = new java.util.HashMap[String, String]()
-        val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(sparkContext.getConf)
-        configs.put("memory_limit", String.valueOf(maxMemory))
-        configs.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
-        configs.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
-        configs.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
-
-        // Strip mandatory prefix spark. which is not required for datafusion session params
-        session.conf.getAll.foreach {
-          case (k, v) if k.startsWith("spark.datafusion") =>
-            configs.put(k.replaceFirst("spark\\.", ""), v)
-          case _ =>
-        }
         val serializedPlanCopy = serializedPlan
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
         def createCometExecIter(inputs: Seq[Iterator[ColumnarBatch]]): CometExecIterator = {
-          val it = new CometExecIterator(
-            CometExec.newIterId,
-            inputs,
-            serializedPlanCopy,
-            configs,
-            nativeMetrics)
+          val it =
+            new CometExecIterator(CometExec.newIterId, inputs, serializedPlanCopy, nativeMetrics)
 
           setSubqueries(it.id, originalPlan)
 
