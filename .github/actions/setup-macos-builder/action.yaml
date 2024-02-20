@@ -49,6 +49,10 @@ runs:
         unzip $PROTO_ZIP
         echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
         export PATH=$PATH:$HOME/d/protoc/bin
+        # install openssl to work with potential issues with libcrypto.dylib loading
+        # see https://stackoverflow.com/questions/58272830/python-crashing-on-macos-10-15-beta-19a582a-with-usr-lib-libcrypto-dylib for more details
+        brew install openssl
+        export DYLD_LIBRARY_PATH=/usr/local/opt/openssl/lib:$DYLD_LIBRARY_PATH
 
     - name: Install JDK ${{inputs.jdk-version}}
       uses: actions/setup-java@v4
