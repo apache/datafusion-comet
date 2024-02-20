@@ -114,7 +114,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setDictionaryPage(
+pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionaryPage(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
