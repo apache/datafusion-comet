@@ -421,7 +421,7 @@ case class CometHashAggregateExec(
     groupingExpressions: Seq[NamedExpression],
     aggregateExpressions: Seq[AggregateExpression],
     input: Seq[Attribute],
-    mode: AggregateMode,
+    mode: Option[AggregateMode],
     child: SparkPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =

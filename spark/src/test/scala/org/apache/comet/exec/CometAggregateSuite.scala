@@ -402,7 +402,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "tbl",
               dictionaryEnabled) {
               checkSparkAnswer(
-                "SELECT _2, SUM(_1), MIN(_1), MAX(_1), COUNT(_1), AVG(_1) FROM tbl GROUP BY _2")
+                "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1), COUNT(DISTINCT _1), AVG(_1) FROM tbl GROUP BY _2")
             }
           }
         }
@@ -423,6 +423,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 checkSparkAnswer("SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2")
                 checkSparkAnswer("SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2")
+                checkSparkAnswer("SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
+                checkSparkAnswer("SELECT _g1, _g2, COUNT(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
                 checkSparkAnswer("SELECT _g1, _g2, MIN(_3), MAX(_3) FROM tbl GROUP BY _g1, _g2")
                 checkSparkAnswer("SELECT _g1, _g2, AVG(_3) FROM tbl GROUP BY _g1, _g2")
               }
@@ -454,7 +456,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 checkSparkAnswer("SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer(
+                  "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
+                checkSparkAnswer(
                   "SELECT _g3, _g4, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g3, _g4")
+                checkSparkAnswer(
+                  "SELECT _g3, _g4, COUNT(DISTINCT _3), COUNT(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer(
                   "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer("SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4")
@@ -482,7 +488,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 (1 to 4).foreach { col =>
                   (1 to 14).foreach { gCol =>
                     checkSparkAnswer(s"SELECT _g$gCol, SUM(_$col) FROM tbl GROUP BY _g$gCol")
+                    checkSparkAnswer(
+                      s"SELECT _g$gCol, SUM(DISTINCT _$col) FROM tbl GROUP BY _g$gCol")
                     checkSparkAnswer(s"SELECT _g$gCol, COUNT(_$col) FROM tbl GROUP BY _g$gCol")
+                    checkSparkAnswer(
+                      s"SELECT _g$gCol, COUNT(DISTINCT _$col) FROM tbl GROUP BY _g$gCol")
                     checkSparkAnswer(
                       s"SELECT _g$gCol, MIN(_$col), MAX(_$col) FROM tbl GROUP BY _g$gCol")
                     checkSparkAnswer(s"SELECT _g$gCol, AVG(_$col) FROM tbl GROUP BY _g$gCol")
@@ -715,6 +725,61 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_9) FROM tbl",
                 expectedNumOfCometAggregates)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("distinct") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { bosonColumnShuffleEnabled =>
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> bosonColumnShuffleEnabled.toString) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              val table = "test"
+              withTable(table) {
+                sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                sql(
+                  s"insert into $table values(1, 1, 1), (1, 1, 1), (1, 3, 1), (1, 4, 2), (5, 3, 2)")
+
+                var expectedNumOfBosonAggregates = 2
+
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT DISTINCT(col2) FROM $table",
+                  expectedNumOfBosonAggregates)
+
+                expectedNumOfBosonAggregates = 4
+
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT COUNT(distinct col2) FROM $table",
+                  expectedNumOfBosonAggregates)
+
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT COUNT(distinct col2), col1 FROM $table group by col1",
+                  expectedNumOfBosonAggregates)
+
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT SUM(distinct col2) FROM $table",
+                  expectedNumOfBosonAggregates)
+
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT SUM(distinct col2), col1 FROM $table group by col1",
+                  expectedNumOfBosonAggregates)
+
+                checkSparkAnswerAndNumOfAggregates(
+                  "SELECT COUNT(distinct col2), SUM(distinct col2), col1, COUNT(distinct col2)," +
+                    s" SUM(distinct col2) FROM $table group by col1",
+                  expectedNumOfBosonAggregates)
+
+                expectedNumOfBosonAggregates = 1
+                checkSparkAnswerAndNumOfAggregates(
+                  "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
+                    s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
+                  expectedNumOfBosonAggregates)
+              }
             }
           }
         }
