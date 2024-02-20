@@ -17,6 +17,8 @@
 
 //! JNI JVM related functions
 
+use crate::errors::CometResult;
+
 use jni::{
     errors::{Error, Result as JniResult},
     objects::{JClass, JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
@@ -71,7 +73,7 @@ macro_rules! jni_call {
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -190,11 +192,11 @@ pub fn get_global_jclass(env: &mut JNIEnv, cls: &str) -> JniResult<JClass<'stati
 
 mod comet_exec;
 pub use comet_exec::*;
+mod batch_iterator;
 mod comet_metric_node;
-use crate::{
-    errors::{CometError, CometResult},
-    JAVA_VM,
-};
+
+use crate::{errors::CometError, JAVA_VM};
+use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 
 /// The JVM classes that are used in the JNI calls.
@@ -212,6 +214,8 @@ pub struct JVMClasses<'a> {
     pub comet_metric_node: CometMetricNode<'a>,
     /// The static CometExec class. Used for getting the subquery result.
     pub comet_exec: CometExec<'a>,
+    /// The CometBatchIterator class. Used for iterating over the batches.
+    pub comet_batch_iterator: CometBatchIterator<'a>,
 }
 
 unsafe impl<'a> Send for JVMClasses<'a> {}
@@ -256,6 +260,7 @@ impl JVMClasses<'_> {
                 throwable_get_cause_method,
                 comet_metric_node: CometMetricNode::new(env).unwrap(),
                 comet_exec: CometExec::new(env).unwrap(),
+                comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
             }
         });
     }

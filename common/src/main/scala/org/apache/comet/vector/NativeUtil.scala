@@ -39,11 +39,14 @@ class NativeUtil {
    * @param batch
    *   the input Comet columnar batch
    * @return
-   *   a list containing pairs of memory addresses in the format of (address of Arrow array,
-   *   address of Arrow schema)
+   *   a list containing number of rows + pairs of memory addresses in the format of (address of
+   *   Arrow array, address of Arrow schema)
    */
   def exportBatch(batch: ColumnarBatch): Array[Long] = {
-    val vectors = (0 until batch.numCols()).flatMap { index =>
+    val exportedVectors = mutable.ArrayBuffer.empty[Long]
+    exportedVectors += batch.numRows()
+
+    (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometVector =>
           val valueVector = a.getValueVector
@@ -63,7 +66,8 @@ class NativeUtil {
             arrowArray,
             arrowSchema)
 
-          Seq((arrowArray, arrowSchema))
+          exportedVectors += arrowArray.memoryAddress()
+          exportedVectors += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -71,9 +75,7 @@ class NativeUtil {
       }
     }
 
-    vectors.flatMap { pair =>
-      Seq(pair._1.memoryAddress(), pair._2.memoryAddress())
-    }.toArray
+    exportedVectors.toArray
   }
 
   /**
