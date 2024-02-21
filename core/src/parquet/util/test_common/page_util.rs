@@ -22,7 +22,7 @@ use rand::distributions::uniform::SampleUniform;
 use parquet::{
     basic::Encoding,
     column::page::{Page, PageIterator, PageMetadata, PageReader},
-    data_type::{AsBytes, DataType},
+    data_type::DataType,
     encodings::{
         encoding::{get_encoder, DictEncoder, Encoder},
         levels::{max_buffer_size, LevelEncoder},
@@ -30,8 +30,6 @@ use parquet::{
     errors::Result,
     schema::types::{ColumnDescPtr, SchemaDescPtr},
 };
-
-use crate::parquet::util::memory::ByteBufferPtr;
 
 use super::random_numbers_range;
 use bytes::Bytes;
@@ -292,7 +290,7 @@ pub fn make_pages<T: DataType>(
                 let indices = dict_encoder
                     .write_indices()
                     .expect("write_indices() should be OK");
-                pb.add_indices(ByteBufferPtr::new(indices.as_bytes().to_vec()));
+                pb.add_indices(indices);
             }
             Encoding::PLAIN => {
                 pb.add_values::<T>(encoding, &values[value_range]);
