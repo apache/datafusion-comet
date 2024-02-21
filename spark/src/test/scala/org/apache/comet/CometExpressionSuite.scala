@@ -996,23 +996,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test in/not in") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "names"
-        withTable(table) {
-          sql(s"create table $table(id int, name varchar(20)) using parquet")
-          sql(
-            s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
-              "(NULL, 'Jones'), (4, NULL)")
+  test("test in(set)/not in(set)") {
+    Seq("100", "0").foreach { inSetThreshold =>
+      Seq(false, true).foreach { dictionary =>
+        withSQLConf(
+          SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
+          "parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "names"
+          withTable(table) {
+            sql(s"create table $table(id int, name varchar(20)) using parquet")
+            sql(
+              s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
+                "(NULL, 'Jones'), (4, NULL)")
 
-          checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
-          checkSparkAnswerAndOperator(
-            s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
+            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
+            checkSparkAnswerAndOperator(
+              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
 
-          // TODO: why with not in, the plan is only `LocalTableScan`?
-          checkSparkAnswer(s"SELECT * FROM $table WHERE id not in (1)")
-          checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
+            // TODO: why with not in, the plan is only `LocalTableScan`?
+            checkSparkAnswer(s"SELECT * FROM $table WHERE id not in (1)")
+            checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
+          }
         }
       }
     }
