@@ -139,6 +139,15 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_EXEC_BROADCAST_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
+      .doc(
+        "Whether to enable broadcasting for Comet native operators. By default, " +
+          "this config is false. Note that this feature is not fully supported yet " +
+          "and only enabled for test purpose.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_CODEC: ConfigEntry[String] = conf(
     s"$COMET_EXEC_CONFIG_PREFIX.shuffle.codec")
     .doc(
