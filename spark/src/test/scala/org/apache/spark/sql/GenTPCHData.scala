@@ -76,7 +76,7 @@ object GenTPCHData {
     // Generate data
     // Since dbgen may uses stdout to output the data, tables.genData needs to run table by table
     val tableNames =
-      if (config.tableFilter.isBlank) tables.tables.map(_.name) else Seq(config.tableFilter)
+      if (config.tableFilter.trim.isEmpty) tables.tables.map(_.name) else Seq(config.tableFilter)
     tableNames.foreach { tableName =>
       tables.genData(
         location = s"${config.location}/tpch/sf${config.scaleFactor}_${config.format}",

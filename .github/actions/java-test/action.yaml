@@ -37,9 +37,10 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb
+        echo "JAVA_VERSION=${JAVA_VERSION}"
+        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb -Djava.version=${JAVA_VERSION}
 
     - name: Run tests
       shell: bash
       run: |
-        SPARK_HOME=`pwd` ./mvnw -B clean install
+        SPARK_HOME=`pwd` ./mvnw -B clean install -Djava.version=${JAVA_VERSION}

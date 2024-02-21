@@ -882,6 +882,8 @@ public class FileReader implements Closeable {
     private final SQLMetric readThroughput;
 
     /**
+     * Constructor
+     *
      * @param offset where the first chunk starts
      */
     ConsecutivePartList(long offset) {
@@ -1104,6 +1106,8 @@ public class FileReader implements Closeable {
     }
 
     /**
+     * End position of the last byte of these chunks
+     *
      * @return the position following the last byte of these chunks
      */
     public long endPos() {

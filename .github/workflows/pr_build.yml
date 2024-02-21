@@ -35,105 +35,99 @@ on:
   workflow_dispatch:
 
 env:
-  JAVA_VERSION: 17
   RUST_VERSION: nightly
 
 jobs:
-  linux-rust-test:
-    name: Rust test (amd64)
-    runs-on: ubuntu-latest
+  linux-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        java_version: [8, 11, 17]
+        test-target: [rust, java]
+      fail-fast: false
+    name: ${{ matrix.test-target }} test on ${{ matrix.os }} with java ${{ matrix.java_version }}
+    runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
+    env:
+      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
 
       - uses: actions/checkout@v4
-      - name: Rust test steps
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
         uses: ./.github/actions/rust-test
-
-  linux-java-test:
-    name: Java test (amd64)
-    runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
-
-      - uses: actions/checkout@v4
-      - name: Java test steps
+      - if: matrix.test-target == 'java'
+        name: Java test steps
         uses: ./.github/actions/java-test
 
-
-  macos-rust-test:
-    name: Rust test (macos)
-    runs-on: macos-latest
+  macos-test:
+    strategy:
+      matrix:
+        os: [macos-latest]
+        java_version: [8, 11, 17]
+        test-target: [rust, java]
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 11 for pull_request event
+          - java_version: 11
+            is_push_event: false
+      fail-fast: false
+    name: ${{ matrix.test-target }} test on ${{ matrix.os }} with java ${{ matrix.java_version }}
+    runs-on: ${{ matrix.os }}
+    env:
+      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
 
       - uses: actions/checkout@v4
-      - name: Rust test steps
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
         uses: ./.github/actions/rust-test
-
-  macos-java-test:
-    name: Java test (macos)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
-
-      - uses: actions/checkout@v4
-      - name: Java test steps
+      - if: matrix.test-target == 'java'
+        name: Java test steps
         uses: ./.github/actions/java-test
 
-  macos-aarch64-rust-test:
-    name: Rust test (macos-aarch64)
+  macos-aarch64-test:
+    strategy:
+      matrix:
+        java_version: [8, 11, 17]
+        test-target: [rust, java]
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 11 for pull_request event
+          - java_version: 11
+            is_push_event: false
+      fail-fast: false
+    name: ${{ matrix.test-target }} test on macos-aarch64 with java ${{ matrix.java_version }}
     runs-on: macos-14
+    env:
+      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
 
       - uses: actions/checkout@v4
-      - name: Rust test steps
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
         uses: ./.github/actions/rust-test
-
-  macos-aarch64-java-test:
-    name: Java test (macos-aarch64)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{env.JAVA_VERSION}}
-          jdk-architecture: aarch64
-          protoc-architecture: aarch_64
-
-      - uses: actions/checkout@v4
-      - name: Java test steps
+      - if: matrix.test-target == 'java'
+        name: Java test steps
         uses: ./.github/actions/java-test
