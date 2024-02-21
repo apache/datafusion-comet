@@ -110,7 +110,7 @@ jobs:
           - java_version: 11
             is_push_event: false
       fail-fast: false
-    name: ${{ matrix.test-target }} (macos-aarch64) test with java ${{ matrix.java_version }}
+    name: ${{ matrix.test-target }} test on macos-aarch64 with java ${{ matrix.java_version }}
     runs-on: macos-14
     env:
       JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
