@@ -37,6 +37,7 @@ use comet::parquet::util::test_common::page_util::{
 
 use perf::FlamegraphProfiler;
 use rand::{prelude::StdRng, Rng, SeedableRng};
+use zstd::zstd_safe::WriteBuf;
 
 fn bench(c: &mut Criterion) {
     let expected_num_values: usize = NUM_PAGES * VALUES_PER_PAGE;
@@ -177,7 +178,7 @@ impl TestColumnReader {
     fn load_page(&mut self) {
         if let Some(page) = self.pages.get_next_page().unwrap() {
             let num_values = page.num_values() as usize;
-            let buffer = Buffer::from_slice_ref(page.buffer().data());
+            let buffer = Buffer::from_slice_ref(page.buffer().as_slice());
             self.inner.set_page_v1(num_values, buffer, page.encoding());
         }
     }
