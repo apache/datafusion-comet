@@ -19,25 +19,31 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.ByteArrayOutputStream
+import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream}
+import java.nio.ByteBuffer
+import java.nio.channels.Channels
 
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.TaskContext
+import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.comet.execution.shuffle.ArrowReaderIterator
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.vector.NativeUtil
 
 /**
  * A Comet physical operator
@@ -61,6 +67,48 @@ abstract class CometExec extends CometPlan {
   override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
   override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
+
+  /**
+   * Executes this Comet operator and serialized output ColumnarBatch into bytes.
+   */
+  private def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
+    executeColumnar().mapPartitionsInternal { iter =>
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+
+      val count = new NativeUtil().serializeBatches(iter, out)
+
+      out.flush()
+      out.close()
+      Iterator((count, cbbos.toChunkedByteBuffer))
+    }
+  }
+
+  /**
+   * Decodes the byte arrays back to ColumnarBatches and put them into buffer.
+   */
+  private def decodeBatches(bytes: ChunkedByteBuffer): Iterator[ColumnarBatch] = {
+    if (bytes.size == 0) {
+      return Iterator.empty
+    }
+
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+    val cbbis = bytes.toInputStream()
+    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
+
+    new ArrowReaderIterator(Channels.newChannel(ins))
+  }
+
+  /**
+   * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
+   */
+  def executeColumnarCollectIterator(): (Long, Iterator[ColumnarBatch]) = {
+    val countsAndBytes = getByteArrayRdd().collect()
+    val total = countsAndBytes.map(_._1).sum
+    val rows = countsAndBytes.iterator.flatMap(countAndBytes => decodeBatches(countAndBytes._2))
+    (total, rows)
+  }
 }
 
 object CometExec {
