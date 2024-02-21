@@ -43,7 +43,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use jni::{
     objects::{GlobalRef, JLongArray, JObject, ReleaseMode},
     sys::jlongArray,
