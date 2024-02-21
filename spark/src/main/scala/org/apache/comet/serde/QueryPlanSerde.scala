@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.{CometHashAggregateExec, CometPlan, CometSinkP
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -1802,6 +1802,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case _: UnionExec => true
       case _: ShuffleExchangeExec => true
       case _: TakeOrderedAndProjectExec => true
+      case _: BroadcastExchangeExec => true
       case _ => false
     }
   }

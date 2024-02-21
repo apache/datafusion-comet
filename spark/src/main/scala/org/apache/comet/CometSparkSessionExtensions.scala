@@ -37,12 +37,12 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
+import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -331,6 +331,16 @@ class CometSparkSessionExtensions
               u
           }
 
+        case b: BroadcastExchangeExec
+            if isCometNative(b.child) && isCometOperatorEnabled(conf, "broadcastExchangeExec") &&
+              isCometBroadCastEnabled(conf) =>
+          QueryPlanSerde.operator2Proto(b) match {
+            case Some(nativeOp) =>
+              val cometOp = CometBroadcastExchangeExec(b, b.child)
+              CometSinkPlaceHolder(nativeOp, b, cometOp)
+            case None => b
+          }
+
         // Native shuffle for Comet operators
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) &&
@@ -480,6 +490,10 @@ object CometSparkSessionExtensions extends Logging {
   private[comet] def isCometOperatorEnabled(conf: SQLConf, operator: String): Boolean = {
     val operatorFlag = s"$COMET_EXEC_CONFIG_PREFIX.$operator.enabled"
     conf.getConfString(operatorFlag, "false").toBoolean || isCometAllOperatorEnabled(conf)
+  }
+
+  private[comet] def isCometBroadCastEnabled(conf: SQLConf): Boolean = {
+    COMET_EXEC_BROADCAST_ENABLED.get(conf)
   }
 
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =

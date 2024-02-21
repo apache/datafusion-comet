@@ -35,7 +35,7 @@ import org.apache.parquet.hadoop.ParquetWriter
 import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -79,6 +79,8 @@ abstract class CometTestBase
         CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
         CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key -> "2g",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1g",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "1g",
         SQLConf.ANSI_ENABLED.key -> "false") {
         testFun
       }
@@ -157,6 +159,7 @@ abstract class CometTestBase
       case _: CometScanExec | _: CometBatchScanExec => true
       case _: CometSinkPlaceHolder | _: CometScanWrapper => false
       case _: CometExec | _: CometShuffleExchangeExec => true
+      case _: CometBroadcastExchangeExec => true
       case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter => true
       case op =>
         if (excludedClasses.exists(c => c.isAssignableFrom(op.getClass))) {

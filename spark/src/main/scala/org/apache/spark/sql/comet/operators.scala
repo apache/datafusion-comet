@@ -71,7 +71,7 @@ abstract class CometExec extends CometPlan {
   /**
    * Executes this Comet operator and serialized output ColumnarBatch into bytes.
    */
-  private def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
+  def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
     executeColumnar().mapPartitionsInternal { iter =>
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
@@ -86,27 +86,13 @@ abstract class CometExec extends CometPlan {
   }
 
   /**
-   * Decodes the byte arrays back to ColumnarBatches and put them into buffer.
-   */
-  private def decodeBatches(bytes: ChunkedByteBuffer): Iterator[ColumnarBatch] = {
-    if (bytes.size == 0) {
-      return Iterator.empty
-    }
-
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
-
-    new ArrowReaderIterator(Channels.newChannel(ins))
-  }
-
-  /**
    * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
    */
   def executeColumnarCollectIterator(): (Long, Iterator[ColumnarBatch]) = {
     val countsAndBytes = getByteArrayRdd().collect()
     val total = countsAndBytes.map(_._1).sum
-    val rows = countsAndBytes.iterator.flatMap(countAndBytes => decodeBatches(countAndBytes._2))
+    val rows = countsAndBytes.iterator
+      .flatMap(countAndBytes => CometExec.decodeBatches(countAndBytes._2))
     (total, rows)
   }
 }
@@ -132,6 +118,21 @@ object CometExec {
     outputStream.close()
     val bytes = outputStream.toByteArray
     new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
+  }
+
+  /**
+   * Decodes the byte arrays back to ColumnarBatches and put them into buffer.
+   */
+  def decodeBatches(bytes: ChunkedByteBuffer): Iterator[ColumnarBatch] = {
+    if (bytes.size == 0) {
+      return Iterator.empty
+    }
+
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+    val cbbis = bytes.toInputStream()
+    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
+
+    new ArrowReaderIterator(Channels.newChannel(ins))
   }
 }
 
