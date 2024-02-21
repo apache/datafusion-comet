@@ -196,6 +196,16 @@ impl SparkUnsafeObject for SparkUnsafeRow {
     }
 }
 
+impl Default for SparkUnsafeRow {
+    fn default() -> Self {
+        Self {
+            row_addr: -1,
+            row_size: -1,
+            row_bitset_width: -1,
+        }
+    }
+}
+
 impl SparkUnsafeRow {
     fn new(schema: &Vec<DataType>) -> Self {
         Self {
@@ -203,6 +213,11 @@ impl SparkUnsafeRow {
             row_size: -1,
             row_bitset_width: Self::get_row_bitset_width(schema.len()) as i64,
         }
+    }
+
+    /// Returns true if the row is a null row.
+    pub fn is_null_row(&self) -> bool {
+        self.row_addr == -1 && self.row_size == -1 && self.row_bitset_width == -1
     }
 
     /// Calculate the width of the bitset for the row in bytes.
@@ -278,24 +293,34 @@ pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
 /// `struct_builder` is the struct builder of the row. `row` is the row that contains the field.
-/// `idx` is the index of the field in the row.
+/// `idx` is the index of the field in the row. The caller is responsible for ensuring that the
+/// `struct_builder.append` is called before/after calling this function to append the null buffer
+/// of the struct array.
 #[allow(clippy::redundant_closure_call)]
 pub(crate) fn append_field(
     dt: &DataType,
     struct_builder: &mut StructBuilder,
     row: &SparkUnsafeRow,
     idx: usize,
-) {
+) -> Result<(), CometError> {
     /// A macro for generating code of appending value into field builder of Arrow struct builder.
     macro_rules! append_field_to_builder {
         ($builder_type:ty, $accessor:expr) => {{
             let field_builder = struct_builder.field_builder::<$builder_type>(idx).unwrap();
-            let is_null = row.is_null_at(idx);
 
-            if is_null {
+            if row.is_null_row() {
+                // The row is null.
                 field_builder.append_null();
             } else {
-                $accessor(field_builder);
+                let is_null = row.is_null_at(idx);
+
+                if is_null {
+                    // The field in the row is null.
+                    // Append a null value to the field builder.
+                    field_builder.append_null();
+                } else {
+                    $accessor(field_builder);
+                }
             }
         }};
     }
@@ -307,17 +332,25 @@ pub(crate) fn append_field(
             let field_builder = struct_builder
                 .field_builder::<MapBuilder<$key_builder_type, $value_builder_type>>(idx)
                 .unwrap();
-            let is_null = row.is_null_at(idx);
 
-            if is_null {
-                field_builder.append(false).unwrap();
+            if row.is_null_row() {
+                // The row is null.
+                field_builder.append(false)?;
             } else {
-                append_map_elements::<$key_builder_type, $value_builder_type>(
-                    $field,
-                    field_builder,
-                    &row.get_map(idx),
-                )
-                .unwrap();
+                let is_null = row.is_null_at(idx);
+
+                if is_null {
+                    // The field in the row is null.
+                    // Append a null value to the map builder.
+                    field_builder.append(false)?;
+                } else {
+                    append_map_elements::<$key_builder_type, $value_builder_type>(
+                        $field,
+                        field_builder,
+                        &row.get_map(idx),
+                    )
+                    .unwrap();
+                }
             }
         }};
     }
@@ -329,17 +362,25 @@ pub(crate) fn append_field(
             let field_builder = struct_builder
                 .field_builder::<ListBuilder<$builder_type>>(idx)
                 .unwrap();
-            let is_null = row.is_null_at(idx);
 
-            if is_null {
+            if row.is_null_row() {
+                // The row is null.
                 field_builder.append_null();
             } else {
-                append_list_element::<$builder_type>(
-                    $element_dt,
-                    field_builder,
-                    &row.get_array(idx),
-                )
-                .unwrap()
+                let is_null = row.is_null_at(idx);
+
+                if is_null {
+                    // The field in the row is null.
+                    // Append a null value to the list builder.
+                    field_builder.append_null();
+                } else {
+                    append_list_element::<$builder_type>(
+                        $element_dt,
+                        field_builder,
+                        &row.get_array(idx),
+                    )
+                    .unwrap()
+                }
             }
         }};
     }
@@ -397,13 +438,29 @@ pub(crate) fn append_field(
                 .append_value(row.get_decimal(idx, *p)));
         }
         DataType::Struct(fields) => {
-            append_field_to_builder!(StructBuilder, |builder: &mut StructBuilder| {
-                let nested_row = row.get_struct(idx, fields.len());
-                builder.append(true);
+            // Appending value into struct field builder of Arrow struct builder.
+            let field_builder = struct_builder.field_builder::<StructBuilder>(idx).unwrap();
+
+            if row.is_null_row() {
+                // The row is null.
+                field_builder.append_null();
+            } else {
+                let is_null = row.is_null_at(idx);
+
+                let nested_row = if is_null {
+                    // The field in the row is null, i.e., a null nested row.
+                    // Append a null value to the row builder.
+                    field_builder.append_null();
+                    SparkUnsafeRow::default()
+                } else {
+                    field_builder.append(true);
+                    row.get_struct(idx, fields.len())
+                };
+
                 for (field_idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), builder, &nested_row, field_idx);
+                    append_field(field.data_type(), field_builder, &nested_row, field_idx)?;
                 }
-            });
+            }
         }
         DataType::Map(field, _) => {
             let (key_dt, value_dt, _) = get_map_key_value_dt(field).unwrap();
@@ -978,9 +1035,11 @@ pub(crate) fn append_field(
             unreachable!("Unsupported data type of struct field: {:?}", dt)
         }
     }
+
+    Ok(())
 }
 
-/// Appends column of rows to the given array builder.
+/// Appends column of top rows to the given array builder.
 #[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
 pub(crate) fn append_columns(
     row_addresses_ptr: *mut jlong,
@@ -995,7 +1054,7 @@ pub(crate) fn append_columns(
     /// A macro for generating code of appending values into Arrow array builders.
     macro_rules! append_column_to_builder {
         ($builder_type:ty, $accessor:expr) => {{
-            let builder = builder
+            let element_builder = builder
                 .as_any_mut()
                 .downcast_mut::<$builder_type>()
                 .unwrap();
@@ -1009,9 +1068,11 @@ pub(crate) fn append_columns(
                 let is_null = row.is_null_at(column_idx);
 
                 if is_null {
-                    builder.append_null();
+                    // The element value is null.
+                    // Append a null value to the element builder.
+                    element_builder.append_null();
                 } else {
-                    $accessor(builder, &row, column_idx);
+                    $accessor(element_builder, &row, column_idx);
                 }
             }
         }};
@@ -1020,7 +1081,7 @@ pub(crate) fn append_columns(
     /// A macro for generating code of appending values into Arrow `ListBuilder`.
     macro_rules! append_column_to_list_builder {
         ($builder_type:ty, $element_dt:expr) => {{
-            let builder = builder
+            let list_builder = builder
                 .as_any_mut()
                 .downcast_mut::<ListBuilder<$builder_type>>()
                 .unwrap();
@@ -1034,11 +1095,13 @@ pub(crate) fn append_columns(
                 let is_null = row.is_null_at(column_idx);
 
                 if is_null {
-                    builder.append_null();
+                    // The list is null.
+                    // Append a null value to the list builder.
+                    list_builder.append_null();
                 } else {
                     append_list_element::<$builder_type>(
                         $element_dt,
-                        builder,
+                        list_builder,
                         &row.get_array(column_idx),
                     )
                     .unwrap()
@@ -1050,7 +1113,7 @@ pub(crate) fn append_columns(
     /// A macro for generating code of appending values into Arrow `MapBuilder`.
     macro_rules! append_column_to_map_builder {
         ($key_builder_type:ty, $value_builder_type:ty, $field:expr) => {{
-            let builder = builder
+            let map_builder = builder
                 .as_any_mut()
                 .downcast_mut::<MapBuilder<$key_builder_type, $value_builder_type>>()
                 .unwrap();
@@ -1064,14 +1127,49 @@ pub(crate) fn append_columns(
                 let is_null = row.is_null_at(column_idx);
 
                 if is_null {
-                    builder.append(false)?;
+                    // The map is null.
+                    // Append a null value to the map builder.
+                    map_builder.append(false)?;
                 } else {
                     append_map_elements::<$key_builder_type, $value_builder_type>(
                         $field,
-                        builder,
+                        map_builder,
                         &row.get_map(column_idx),
                     )
                     .unwrap()
+                }
+            }
+        }};
+    }
+
+    /// A macro for generating code of appending values into Arrow `StructBuilder`.
+    macro_rules! append_column_to_struct_builder {
+        ($fields:expr) => {{
+            let struct_builder = builder
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .unwrap();
+            let mut row = SparkUnsafeRow::new(schema);
+
+            for i in row_start..row_end {
+                let row_addr = unsafe { *row_addresses_ptr.add(i) };
+                let row_size = unsafe { *row_sizes_ptr.add(i) };
+                row.point_to(row_addr, row_size);
+
+                let is_null = row.is_null_at(column_idx);
+
+                let nested_row = if is_null {
+                    // The struct is null.
+                    // Append a null value to the struct builder and field builders.
+                    struct_builder.append_null();
+                    SparkUnsafeRow::default()
+                } else {
+                    struct_builder.append(true);
+                    row.get_struct(column_idx, $fields.len())
+                };
+
+                for (idx, field) in $fields.into_iter().enumerate() {
+                    append_field(field.data_type(), struct_builder, &nested_row, idx)?;
                 }
             }
         }};
@@ -1709,16 +1807,7 @@ pub(crate) fn append_columns(
             _ => unreachable!("Unsupported data type of list element: {:?}", dt),
         },
         DataType::Struct(fields) => {
-            append_column_to_builder!(
-                StructBuilder,
-                |builder: &mut StructBuilder, row: &SparkUnsafeRow, idx| {
-                    let nested_row = row.get_struct(idx, fields.len());
-                    builder.append(true);
-                    for (idx, field) in fields.into_iter().enumerate() {
-                        append_field(field.data_type(), builder, &nested_row, idx);
-                    }
-                }
-            );
+            append_column_to_struct_builder!(fields);
         }
         _ => {
             unreachable!("Unsupported data type of column: {:?}", dt)

@@ -63,6 +63,55 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
 
   import testImplicits._
 
+  test("columnar shuffle on nested struct including nulls") {
+    Seq(10, 201).foreach { numPartitions =>
+      Seq("1.0", "10.0").foreach { ratio =>
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          withParquetTable(
+            (0 until 50).map(i =>
+              (i, Seq((i + 1, i.toString), null, (i + 3, (i + 3).toString)), i + 1)),
+            "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 1)
+              .repartition(numPartitions, $"_1", $"_2", $"_3")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+        }
+      }
+    }
+  }
+
+  test("columnar shuffle on struct including nulls") {
+    Seq(10, 201).foreach { numPartitions =>
+      Seq("1.0", "10.0").foreach { ratio =>
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          val data: Seq[(Int, (Int, String))] =
+            Seq((1, (0, "1")), (2, (3, "3")), (3, null))
+          withParquetTable(data, "tbl") {
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_1" > 1)
+              .repartition(numPartitions, $"_1", $"_2")
+              .sortWithinPartitions($"_1")
+
+            checkSparkAnswer(df)
+            checkCometExchange(df, 1, false)
+          }
+        }
+      }
+    }
+  }
+
   test("RoundRobinPartitioning is supported by columnar shuffle") {
     withSQLConf(
       // AQE has `ShuffleStage` which is a leaf node which blocks
