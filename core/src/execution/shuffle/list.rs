@@ -17,7 +17,7 @@
 
 use crate::{
     errors::CometError,
-    execution::shuffle::row::{append_field, SparkUnsafeObject},
+    execution::shuffle::row::{append_field, SparkUnsafeObject, SparkUnsafeRow},
 };
 use arrow_array::builder::{
     ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
@@ -102,6 +102,7 @@ macro_rules! define_append_element {
             let is_null = list.is_null_at(idx);
 
             if is_null {
+                // Append a null value to the element builder.
                 element_builder.append_null();
             } else {
                 $accessor(element_builder, list, idx);
@@ -284,6 +285,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 let is_null = list.is_null_at(idx);
 
                 if is_null {
+                    // Append a null value to element builder.
                     element_builder.append_null();
                 } else {
                     element_builder.append_value(list.get_decimal(idx, *p))
@@ -313,21 +315,22 @@ pub fn append_list_element<T: ArrayBuilder>(
             }
              */
             DataType::Struct(fields) => {
-                let element_builder: &mut StructBuilder = list_builder
+                let struct_builder: &mut StructBuilder = list_builder
                     .values()
                     .as_any_mut()
                     .downcast_mut::<StructBuilder>()
                     .unwrap();
                 let is_null = list.is_null_at(idx);
 
-                if is_null {
-                    element_builder.append_null();
+                let nested_row = if is_null {
+                    SparkUnsafeRow::default()
                 } else {
-                    let nested_row = list.get_struct(idx, fields.len());
-                    element_builder.append(true);
-                    for (field_idx, field) in fields.into_iter().enumerate() {
-                        append_field(field.data_type(), element_builder, &nested_row, field_idx);
-                    }
+                    list.get_struct(idx, fields.len())
+                };
+
+                struct_builder.append(!is_null);
+                for (field_idx, field) in fields.into_iter().enumerate() {
+                    append_field(field.data_type(), struct_builder, &nested_row, field_idx)?;
                 }
             }
             _ => {

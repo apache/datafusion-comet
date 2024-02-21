@@ -19,7 +19,7 @@ use crate::{
     errors::CometError,
     execution::shuffle::{
         list::SparkUnsafeArray,
-        row::{append_field, downcast_builder_ref, SparkUnsafeObject},
+        row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
     },
 };
 use arrow_array::builder::{
@@ -91,7 +91,7 @@ macro_rules! define_append_map_element {
         fn $func(
             map_builder: &mut MapBuilder<$key_builder_type, $value_builder_type>,
             map: &SparkUnsafeMap,
-        ) {
+        ) -> Result<(), CometError> {
             let keys = &map.keys;
             let values = &map.values;
 
@@ -110,7 +110,9 @@ macro_rules! define_append_map_element {
                     $value_accessor(value_builder, values, idx);
                 }
             }
-            map_builder.append(true).unwrap();
+            map_builder.append(true)?;
+
+            Ok(())
         }
     };
 }
@@ -124,7 +126,7 @@ macro_rules! define_append_map_struct_value_element {
             map_builder: &mut MapBuilder<$key_builder_type, StructBuilder>,
             map: &SparkUnsafeMap,
             fields: &Fields,
-        ) {
+        ) -> Result<(), CometError> {
             let keys = &map.keys;
             let values = &map.values;
 
@@ -136,17 +138,21 @@ macro_rules! define_append_map_struct_value_element {
                 $key_accessor(key_builder, keys, idx);
 
                 let value_builder = downcast_builder_ref!(StructBuilder, map_builder.values());
-                if values.is_null_at(idx) {
+                let nested_row = if values.is_null_at(idx) {
                     value_builder.append_null();
+                    SparkUnsafeRow::default()
                 } else {
-                    let nested_row = values.get_struct(idx, fields.len());
                     value_builder.append(true);
-                    for (field_idx, field) in fields.into_iter().enumerate() {
-                        append_field(field.data_type(), value_builder, &nested_row, field_idx);
-                    }
+                    values.get_struct(idx, fields.len())
+                };
+
+                for (field_idx, field) in fields.into_iter().enumerate() {
+                    append_field(field.data_type(), value_builder, &nested_row, field_idx)?;
                 }
             }
-            map_builder.append(true).unwrap();
+            map_builder.append(true)?;
+
+            Ok(())
         }
     };
 }
@@ -160,7 +166,7 @@ macro_rules! define_append_map_struct_key_element {
             map_builder: &mut MapBuilder<StructBuilder, $value_builder_type>,
             map: &SparkUnsafeMap,
             fields: &Fields,
-        ) {
+        ) -> Result<(), CometError> {
             let keys = &map.keys;
             let values = &map.values;
 
@@ -172,7 +178,7 @@ macro_rules! define_append_map_struct_key_element {
                 let nested_row = keys.get_struct(idx, fields.len());
                 key_builder.append(true);
                 for (field_idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), key_builder, &nested_row, field_idx);
+                    append_field(field.data_type(), key_builder, &nested_row, field_idx)?;
                 }
 
                 let value_builder =
@@ -183,7 +189,9 @@ macro_rules! define_append_map_struct_key_element {
                     $value_accessor(value_builder, values, idx);
                 }
             }
-            map_builder.append(true).unwrap();
+            map_builder.append(true)?;
+
+            Ok(())
         }
     };
 }
@@ -193,7 +201,7 @@ fn append_map_struct_struct_element(
     map: &SparkUnsafeMap,
     key_fields: &Fields,
     value_fields: &Fields,
-) {
+) -> Result<(), CometError> {
     let keys = &map.keys;
     let values = &map.values;
 
@@ -205,21 +213,25 @@ fn append_map_struct_struct_element(
         let nested_row = keys.get_struct(idx, key_fields.len());
         key_builder.append(true);
         for (field_idx, field) in key_fields.into_iter().enumerate() {
-            append_field(field.data_type(), key_builder, &nested_row, field_idx);
+            append_field(field.data_type(), key_builder, &nested_row, field_idx)?;
         }
 
         let value_builder = downcast_builder_ref!(StructBuilder, map_builder.values());
-        if values.is_null_at(idx) {
+        let nested_row = if values.is_null_at(idx) {
             value_builder.append_null();
+            SparkUnsafeRow::default()
         } else {
-            let nested_row = values.get_struct(idx, value_fields.len());
             value_builder.append(true);
-            for (field_idx, field) in value_fields.into_iter().enumerate() {
-                append_field(field.data_type(), value_builder, &nested_row, field_idx);
-            }
+            values.get_struct(idx, value_fields.len())
+        };
+
+        for (field_idx, field) in value_fields.into_iter().enumerate() {
+            append_field(field.data_type(), value_builder, &nested_row, field_idx)?;
         }
     }
-    map_builder.append(true).unwrap();
+    map_builder.append(true)?;
+
+    Ok(())
 }
 
 /// A macro defining a function to append elements of a map to a map builder with given key builder
@@ -231,7 +243,7 @@ macro_rules! define_append_map_decimal_value_element {
             map_builder: &mut MapBuilder<$key_builder_type, Decimal128Builder>,
             map: &SparkUnsafeMap,
             precision: u8,
-        ) {
+        ) -> Result<(), CometError> {
             let keys = &map.keys;
             let values = &map.values;
 
@@ -249,7 +261,9 @@ macro_rules! define_append_map_decimal_value_element {
                     value_builder.append_value(values.get_decimal(idx, precision));
                 }
             }
-            map_builder.append(true).unwrap();
+            map_builder.append(true)?;
+
+            Ok(())
         }
     };
 }
@@ -263,7 +277,7 @@ macro_rules! define_append_map_decimal_key_element {
             map_builder: &mut MapBuilder<Decimal128Builder, $value_builder_type>,
             map: &SparkUnsafeMap,
             precision: u8,
-        ) {
+        ) -> Result<(), CometError> {
             let keys = &map.keys;
             let values = &map.values;
 
@@ -282,7 +296,9 @@ macro_rules! define_append_map_decimal_key_element {
                     $value_accessor(value_builder, values, idx);
                 }
             }
-            map_builder.append(true).unwrap();
+            map_builder.append(true)?;
+
+            Ok(())
         }
     };
 }
@@ -292,7 +308,7 @@ fn append_map_decimal_decimal_element(
     map: &SparkUnsafeMap,
     key_precision: u8,
     value_precision: u8,
-) {
+) -> Result<(), CometError> {
     let keys = &map.keys;
     let values = &map.values;
 
@@ -310,7 +326,9 @@ fn append_map_decimal_decimal_element(
             value_builder.append_value(values.get_decimal(idx, value_precision));
         }
     }
-    map_builder.append(true).unwrap();
+    map_builder.append(true)?;
+
+    Ok(())
 }
 
 fn append_map_decimal_struct_element(
@@ -318,7 +336,7 @@ fn append_map_decimal_struct_element(
     map: &SparkUnsafeMap,
     precision: u8,
     fields: &Fields,
-) {
+) -> Result<(), CometError> {
     let keys = &map.keys;
     let values = &map.values;
 
@@ -330,17 +348,21 @@ fn append_map_decimal_struct_element(
         key_builder.append_value(keys.get_decimal(idx, precision));
 
         let value_builder = downcast_builder_ref!(StructBuilder, map_builder.values());
-        if values.is_null_at(idx) {
+        let nested_row = if values.is_null_at(idx) {
             value_builder.append_null();
+            SparkUnsafeRow::default()
         } else {
-            let nested_row = values.get_struct(idx, fields.len());
             value_builder.append(true);
-            for (field_idx, field) in fields.into_iter().enumerate() {
-                append_field(field.data_type(), value_builder, &nested_row, field_idx);
-            }
+            values.get_struct(idx, fields.len())
+        };
+
+        for (field_idx, field) in fields.into_iter().enumerate() {
+            append_field(field.data_type(), value_builder, &nested_row, field_idx)?;
         }
     }
-    map_builder.append(true).unwrap();
+    map_builder.append(true)?;
+
+    Ok(())
 }
 
 fn append_map_struct_decimal_element(
@@ -348,7 +370,7 @@ fn append_map_struct_decimal_element(
     map: &SparkUnsafeMap,
     precision: u8,
     fields: &Fields,
-) {
+) -> Result<(), CometError> {
     let keys = &map.keys;
     let values = &map.values;
 
@@ -360,7 +382,7 @@ fn append_map_struct_decimal_element(
         let nested_row = values.get_struct(idx, fields.len());
         key_builder.append(true);
         for (field_idx, field) in fields.into_iter().enumerate() {
-            append_field(field.data_type(), key_builder, &nested_row, field_idx);
+            append_field(field.data_type(), key_builder, &nested_row, field_idx)?;
         }
 
         let value_builder = downcast_builder_ref!(Decimal128Builder, map_builder.values());
@@ -370,7 +392,9 @@ fn append_map_struct_decimal_element(
             value_builder.append_value(values.get_decimal(idx, precision));
         }
     }
-    map_builder.append(true).unwrap();
+    map_builder.append(true)?;
+
+    Ok(())
 }
 
 // Boolean key
@@ -1912,601 +1936,601 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
     map_builder: &mut MapBuilder<K, V>,
     map: &SparkUnsafeMap,
 ) -> Result<(), CometError> {
-    let (key_dt, value_dt, _) = get_map_key_value_dt(field).unwrap();
+    let (key_dt, value_dt, _) = get_map_key_value_dt(field)?;
 
     // macro cannot expand to match arm
     match (key_dt, value_dt) {
         (DataType::Boolean, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, BooleanBuilder>, map_builder);
-            append_map_boolean_boolean_element(map_builder, map);
+            append_map_boolean_boolean_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Int8Builder>, map_builder);
-            append_map_boolean_int8_element(map_builder, map);
+            append_map_boolean_int8_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Int16Builder>, map_builder);
-            append_map_boolean_int16_element(map_builder, map);
+            append_map_boolean_int16_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Int32Builder>, map_builder);
-            append_map_boolean_int32_element(map_builder, map);
+            append_map_boolean_int32_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Int64Builder>, map_builder);
-            append_map_boolean_int64_element(map_builder, map);
+            append_map_boolean_int64_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Float32Builder>, map_builder);
-            append_map_boolean_float32_element(map_builder, map);
+            append_map_boolean_float32_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Float64Builder>, map_builder);
-            append_map_boolean_float64_element(map_builder, map);
+            append_map_boolean_float64_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Date32Builder>, map_builder);
-            append_map_boolean_date32_element(map_builder, map);
+            append_map_boolean_date32_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<BooleanBuilder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_boolean_timestamp_element(map_builder, map);
+            append_map_boolean_timestamp_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, BinaryBuilder>, map_builder);
-            append_map_boolean_binary_element(map_builder, map);
+            append_map_boolean_binary_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, StringBuilder>, map_builder);
-            append_map_boolean_string_element(map_builder, map);
+            append_map_boolean_string_element(map_builder, map)?;
         }
         (DataType::Boolean, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, Decimal128Builder>, map_builder);
-            append_map_boolean_decimal_element(map_builder, map, *p);
+            append_map_boolean_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Boolean, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, StructBuilder>, map_builder);
-            append_map_boolean_struct_element(map_builder, map, fields);
+            append_map_boolean_struct_element(map_builder, map, fields)?;
         }
         (DataType::Int8, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, BooleanBuilder>, map_builder);
-            append_map_int8_boolean_element(map_builder, map);
+            append_map_int8_boolean_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Int8Builder>, map_builder);
-            append_map_int8_int8_element(map_builder, map);
+            append_map_int8_int8_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Int16Builder>, map_builder);
-            append_map_int8_int16_element(map_builder, map);
+            append_map_int8_int16_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Int32Builder>, map_builder);
-            append_map_int8_int32_element(map_builder, map);
+            append_map_int8_int32_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Int64Builder>, map_builder);
-            append_map_int8_int64_element(map_builder, map);
+            append_map_int8_int64_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Float32Builder>, map_builder);
-            append_map_int8_float32_element(map_builder, map);
+            append_map_int8_float32_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Float64Builder>, map_builder);
-            append_map_int8_float64_element(map_builder, map);
+            append_map_int8_float64_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Date32Builder>, map_builder);
-            append_map_int8_date32_element(map_builder, map);
+            append_map_int8_date32_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Int8Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_int8_timestamp_element(map_builder, map);
+            append_map_int8_timestamp_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, BinaryBuilder>, map_builder);
-            append_map_int8_binary_element(map_builder, map);
+            append_map_int8_binary_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, StringBuilder>, map_builder);
-            append_map_int8_string_element(map_builder, map);
+            append_map_int8_string_element(map_builder, map)?;
         }
         (DataType::Int8, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, Decimal128Builder>, map_builder);
-            append_map_int8_decimal_element(map_builder, map, *p);
+            append_map_int8_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Int8, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int8Builder, StructBuilder>, map_builder);
-            append_map_int8_struct_element(map_builder, map, fields);
+            append_map_int8_struct_element(map_builder, map, fields)?;
         }
         (DataType::Int16, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, BooleanBuilder>, map_builder);
-            append_map_int16_boolean_element(map_builder, map);
+            append_map_int16_boolean_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Int8Builder>, map_builder);
-            append_map_int16_int8_element(map_builder, map);
+            append_map_int16_int8_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Int16Builder>, map_builder);
-            append_map_int16_int16_element(map_builder, map);
+            append_map_int16_int16_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Int32Builder>, map_builder);
-            append_map_int16_int32_element(map_builder, map);
+            append_map_int16_int32_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Int64Builder>, map_builder);
-            append_map_int16_int64_element(map_builder, map);
+            append_map_int16_int64_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Float32Builder>, map_builder);
-            append_map_int16_float32_element(map_builder, map);
+            append_map_int16_float32_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Float64Builder>, map_builder);
-            append_map_int16_float64_element(map_builder, map);
+            append_map_int16_float64_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Date32Builder>, map_builder);
-            append_map_int16_date32_element(map_builder, map);
+            append_map_int16_date32_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Int16Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_int16_timestamp_element(map_builder, map);
+            append_map_int16_timestamp_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, BinaryBuilder>, map_builder);
-            append_map_int16_binary_element(map_builder, map);
+            append_map_int16_binary_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, StringBuilder>, map_builder);
-            append_map_int16_string_element(map_builder, map);
+            append_map_int16_string_element(map_builder, map)?;
         }
         (DataType::Int16, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, Decimal128Builder>, map_builder);
-            append_map_int16_decimal_element(map_builder, map, *p);
+            append_map_int16_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Int16, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int16Builder, StructBuilder>, map_builder);
-            append_map_int16_struct_element(map_builder, map, fields);
+            append_map_int16_struct_element(map_builder, map, fields)?;
         }
         (DataType::Int32, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, BooleanBuilder>, map_builder);
-            append_map_int32_boolean_element(map_builder, map);
+            append_map_int32_boolean_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Int8Builder>, map_builder);
-            append_map_int32_int8_element(map_builder, map);
+            append_map_int32_int8_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Int16Builder>, map_builder);
-            append_map_int32_int16_element(map_builder, map);
+            append_map_int32_int16_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Int32Builder>, map_builder);
-            append_map_int32_int32_element(map_builder, map);
+            append_map_int32_int32_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Int64Builder>, map_builder);
-            append_map_int32_int64_element(map_builder, map);
+            append_map_int32_int64_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Float32Builder>, map_builder);
-            append_map_int32_float32_element(map_builder, map);
+            append_map_int32_float32_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Float64Builder>, map_builder);
-            append_map_int32_float64_element(map_builder, map);
+            append_map_int32_float64_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Date32Builder>, map_builder);
-            append_map_int32_date32_element(map_builder, map);
+            append_map_int32_date32_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Int32Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_int32_timestamp_element(map_builder, map);
+            append_map_int32_timestamp_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, BinaryBuilder>, map_builder);
-            append_map_int32_binary_element(map_builder, map);
+            append_map_int32_binary_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, StringBuilder>, map_builder);
-            append_map_int32_string_element(map_builder, map);
+            append_map_int32_string_element(map_builder, map)?;
         }
         (DataType::Int32, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, Decimal128Builder>, map_builder);
-            append_map_int32_decimal_element(map_builder, map, *p);
+            append_map_int32_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Int32, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int32Builder, StructBuilder>, map_builder);
-            append_map_int32_struct_element(map_builder, map, fields);
+            append_map_int32_struct_element(map_builder, map, fields)?;
         }
         (DataType::Int64, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, BooleanBuilder>, map_builder);
-            append_map_int64_boolean_element(map_builder, map);
+            append_map_int64_boolean_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Int8Builder>, map_builder);
-            append_map_int64_int8_element(map_builder, map);
+            append_map_int64_int8_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Int16Builder>, map_builder);
-            append_map_int64_int16_element(map_builder, map);
+            append_map_int64_int16_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Int32Builder>, map_builder);
-            append_map_int64_int32_element(map_builder, map);
+            append_map_int64_int32_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Int64Builder>, map_builder);
-            append_map_int64_int64_element(map_builder, map);
+            append_map_int64_int64_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Float32Builder>, map_builder);
-            append_map_int64_float32_element(map_builder, map);
+            append_map_int64_float32_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Float64Builder>, map_builder);
-            append_map_int64_float64_element(map_builder, map);
+            append_map_int64_float64_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Date32Builder>, map_builder);
-            append_map_int64_date32_element(map_builder, map);
+            append_map_int64_date32_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Int64Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_int64_timestamp_element(map_builder, map);
+            append_map_int64_timestamp_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, BinaryBuilder>, map_builder);
-            append_map_int64_binary_element(map_builder, map);
+            append_map_int64_binary_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, StringBuilder>, map_builder);
-            append_map_int64_string_element(map_builder, map);
+            append_map_int64_string_element(map_builder, map)?;
         }
         (DataType::Int64, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, Decimal128Builder>, map_builder);
-            append_map_int64_decimal_element(map_builder, map, *p);
+            append_map_int64_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Int64, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Int64Builder, StructBuilder>, map_builder);
-            append_map_int64_struct_element(map_builder, map, fields);
+            append_map_int64_struct_element(map_builder, map, fields)?;
         }
         (DataType::Float32, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, BooleanBuilder>, map_builder);
-            append_map_float32_boolean_element(map_builder, map);
+            append_map_float32_boolean_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Int8Builder>, map_builder);
-            append_map_float32_int8_element(map_builder, map);
+            append_map_float32_int8_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Int16Builder>, map_builder);
-            append_map_float32_int16_element(map_builder, map);
+            append_map_float32_int16_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Int32Builder>, map_builder);
-            append_map_float32_int32_element(map_builder, map);
+            append_map_float32_int32_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Int64Builder>, map_builder);
-            append_map_float32_int64_element(map_builder, map);
+            append_map_float32_int64_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Float32Builder>, map_builder);
-            append_map_float32_float32_element(map_builder, map);
+            append_map_float32_float32_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Float64Builder>, map_builder);
-            append_map_float32_float64_element(map_builder, map);
+            append_map_float32_float64_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Date32Builder>, map_builder);
-            append_map_float32_date32_element(map_builder, map);
+            append_map_float32_date32_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Float32Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_float32_timestamp_element(map_builder, map);
+            append_map_float32_timestamp_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, BinaryBuilder>, map_builder);
-            append_map_float32_binary_element(map_builder, map);
+            append_map_float32_binary_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, StringBuilder>, map_builder);
-            append_map_float32_string_element(map_builder, map);
+            append_map_float32_string_element(map_builder, map)?;
         }
         (DataType::Float32, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, Decimal128Builder>, map_builder);
-            append_map_float32_decimal_element(map_builder, map, *p);
+            append_map_float32_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Float32, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float32Builder, StructBuilder>, map_builder);
-            append_map_float32_struct_element(map_builder, map, fields);
+            append_map_float32_struct_element(map_builder, map, fields)?;
         }
         (DataType::Float64, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, BooleanBuilder>, map_builder);
-            append_map_float64_boolean_element(map_builder, map);
+            append_map_float64_boolean_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Int8Builder>, map_builder);
-            append_map_float64_int8_element(map_builder, map);
+            append_map_float64_int8_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Int16Builder>, map_builder);
-            append_map_float64_int16_element(map_builder, map);
+            append_map_float64_int16_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Int32Builder>, map_builder);
-            append_map_float64_int32_element(map_builder, map);
+            append_map_float64_int32_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Int64Builder>, map_builder);
-            append_map_float64_int64_element(map_builder, map);
+            append_map_float64_int64_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Float32Builder>, map_builder);
-            append_map_float64_float32_element(map_builder, map);
+            append_map_float64_float32_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Float64Builder>, map_builder);
-            append_map_float64_float64_element(map_builder, map);
+            append_map_float64_float64_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Date32Builder>, map_builder);
-            append_map_float64_date32_element(map_builder, map);
+            append_map_float64_date32_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Float64Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_float64_timestamp_element(map_builder, map);
+            append_map_float64_timestamp_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, BinaryBuilder>, map_builder);
-            append_map_float64_binary_element(map_builder, map);
+            append_map_float64_binary_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, StringBuilder>, map_builder);
-            append_map_float64_string_element(map_builder, map);
+            append_map_float64_string_element(map_builder, map)?;
         }
         (DataType::Float64, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, Decimal128Builder>, map_builder);
-            append_map_float64_decimal_element(map_builder, map, *p);
+            append_map_float64_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Float64, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Float64Builder, StructBuilder>, map_builder);
-            append_map_float64_struct_element(map_builder, map, fields);
+            append_map_float64_struct_element(map_builder, map, fields)?;
         }
         (DataType::Date32, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, BooleanBuilder>, map_builder);
-            append_map_date32_boolean_element(map_builder, map);
+            append_map_date32_boolean_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Int8Builder>, map_builder);
-            append_map_date32_int8_element(map_builder, map);
+            append_map_date32_int8_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Int16Builder>, map_builder);
-            append_map_date32_int16_element(map_builder, map);
+            append_map_date32_int16_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Int32Builder>, map_builder);
-            append_map_date32_int32_element(map_builder, map);
+            append_map_date32_int32_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Int64Builder>, map_builder);
-            append_map_date32_int64_element(map_builder, map);
+            append_map_date32_int64_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Float32Builder>, map_builder);
-            append_map_date32_float32_element(map_builder, map);
+            append_map_date32_float32_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Float64Builder>, map_builder);
-            append_map_date32_float64_element(map_builder, map);
+            append_map_date32_float64_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Date32Builder>, map_builder);
-            append_map_date32_date32_element(map_builder, map);
+            append_map_date32_date32_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Date32Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_date32_timestamp_element(map_builder, map);
+            append_map_date32_timestamp_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, BinaryBuilder>, map_builder);
-            append_map_date32_binary_element(map_builder, map);
+            append_map_date32_binary_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, StringBuilder>, map_builder);
-            append_map_date32_string_element(map_builder, map);
+            append_map_date32_string_element(map_builder, map)?;
         }
         (DataType::Date32, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, Decimal128Builder>, map_builder);
-            append_map_date32_decimal_element(map_builder, map, *p);
+            append_map_date32_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Date32, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Date32Builder, StructBuilder>, map_builder);
-            append_map_date32_struct_element(map_builder, map, fields);
+            append_map_date32_struct_element(map_builder, map, fields)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Boolean) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, BooleanBuilder>,
                 map_builder
             );
-            append_map_timestamp_boolean_element(map_builder, map);
+            append_map_timestamp_boolean_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int8) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Int8Builder>,
                 map_builder
             );
-            append_map_timestamp_int8_element(map_builder, map);
+            append_map_timestamp_int8_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int16) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Int16Builder>,
                 map_builder
             );
-            append_map_timestamp_int16_element(map_builder, map);
+            append_map_timestamp_int16_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int32) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Int32Builder>,
                 map_builder
             );
-            append_map_timestamp_int32_element(map_builder, map);
+            append_map_timestamp_int32_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int64) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Int64Builder>,
                 map_builder
             );
-            append_map_timestamp_int64_element(map_builder, map);
+            append_map_timestamp_int64_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float32) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Float32Builder>,
                 map_builder
             );
-            append_map_timestamp_float32_element(map_builder, map);
+            append_map_timestamp_float32_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float64) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Float64Builder>,
                 map_builder
             );
-            append_map_timestamp_float64_element(map_builder, map);
+            append_map_timestamp_float64_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Date32) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, Date32Builder>,
                 map_builder
             );
-            append_map_timestamp_date32_element(map_builder, map);
+            append_map_timestamp_date32_element(map_builder, map)?;
         }
         (
             DataType::Timestamp(TimeUnit::Microsecond, _),
@@ -2516,296 +2540,296 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
                 MapBuilder<TimestampMicrosecondBuilder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_timestamp_timestamp_element(map_builder, map);
+            append_map_timestamp_timestamp_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Binary) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, BinaryBuilder>,
                 map_builder
             );
-            append_map_timestamp_binary_element(map_builder, map);
+            append_map_timestamp_binary_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<TimestampMicrosecondBuilder, StringBuilder>,
                 map_builder
             );
-            append_map_timestamp_string_element(map_builder, map);
+            append_map_timestamp_string_element(map_builder, map)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Decimal128(p, _)) => {
             let map_builder = downcast_builder_ref!(MapBuilder<TimestampMicrosecondBuilder, Decimal128Builder>, map_builder);
-            append_map_timestamp_decimal_element(map_builder, map, *p);
+            append_map_timestamp_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Struct(fields)) => {
             let map_builder = downcast_builder_ref!(MapBuilder<TimestampMicrosecondBuilder, StructBuilder>, map_builder);
-            append_map_timestamp_struct_element(map_builder, map, fields);
+            append_map_timestamp_struct_element(map_builder, map, fields)?;
         }
         (DataType::Binary, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, BooleanBuilder>, map_builder);
-            append_map_binary_boolean_element(map_builder, map);
+            append_map_binary_boolean_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Int8Builder>, map_builder);
-            append_map_binary_int8_element(map_builder, map);
+            append_map_binary_int8_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Int16Builder>, map_builder);
-            append_map_binary_int16_element(map_builder, map);
+            append_map_binary_int16_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Int32Builder>, map_builder);
-            append_map_binary_int32_element(map_builder, map);
+            append_map_binary_int32_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Int64Builder>, map_builder);
-            append_map_binary_int64_element(map_builder, map);
+            append_map_binary_int64_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Float32Builder>, map_builder);
-            append_map_binary_float32_element(map_builder, map);
+            append_map_binary_float32_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Float64Builder>, map_builder);
-            append_map_binary_float64_element(map_builder, map);
+            append_map_binary_float64_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Date32Builder>, map_builder);
-            append_map_binary_date32_element(map_builder, map);
+            append_map_binary_date32_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<BinaryBuilder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_binary_timestamp_element(map_builder, map);
+            append_map_binary_timestamp_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, BinaryBuilder>, map_builder);
-            append_map_binary_binary_element(map_builder, map);
+            append_map_binary_binary_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, StringBuilder>, map_builder);
-            append_map_binary_string_element(map_builder, map);
+            append_map_binary_string_element(map_builder, map)?;
         }
         (DataType::Binary, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, Decimal128Builder>, map_builder);
-            append_map_binary_decimal_element(map_builder, map, *p);
+            append_map_binary_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Binary, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BinaryBuilder, StructBuilder>, map_builder);
-            append_map_binary_struct_element(map_builder, map, fields);
+            append_map_binary_struct_element(map_builder, map, fields)?;
         }
         (DataType::Utf8, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, BooleanBuilder>, map_builder);
-            append_map_string_boolean_element(map_builder, map);
+            append_map_string_boolean_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Int8Builder>, map_builder);
-            append_map_string_int8_element(map_builder, map);
+            append_map_string_int8_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Int16Builder>, map_builder);
-            append_map_string_int16_element(map_builder, map);
+            append_map_string_int16_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Int32Builder>, map_builder);
-            append_map_string_int32_element(map_builder, map);
+            append_map_string_int32_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Int64Builder>, map_builder);
-            append_map_string_int64_element(map_builder, map);
+            append_map_string_int64_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Float32Builder>, map_builder);
-            append_map_string_float32_element(map_builder, map);
+            append_map_string_float32_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Float64Builder>, map_builder);
-            append_map_string_float64_element(map_builder, map);
+            append_map_string_float64_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Date32Builder>, map_builder);
-            append_map_string_date32_element(map_builder, map);
+            append_map_string_date32_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<StringBuilder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_string_timestamp_element(map_builder, map);
+            append_map_string_timestamp_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, BinaryBuilder>, map_builder);
-            append_map_string_binary_element(map_builder, map);
+            append_map_string_binary_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, StringBuilder>, map_builder);
-            append_map_string_string_element(map_builder, map);
+            append_map_string_string_element(map_builder, map)?;
         }
         (DataType::Utf8, DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, Decimal128Builder>, map_builder);
-            append_map_string_decimal_element(map_builder, map, *p);
+            append_map_string_decimal_element(map_builder, map, *p)?;
         }
         (DataType::Utf8, DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StringBuilder, StructBuilder>, map_builder);
-            append_map_string_struct_element(map_builder, map, fields);
+            append_map_string_struct_element(map_builder, map, fields)?;
         }
         (DataType::Decimal128(p, _), DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, BooleanBuilder>, map_builder);
-            append_map_decimal_boolean_element(map_builder, map, *p);
+            append_map_decimal_boolean_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Int8Builder>, map_builder);
-            append_map_decimal_int8_element(map_builder, map, *p);
+            append_map_decimal_int8_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Int16Builder>, map_builder);
-            append_map_decimal_int16_element(map_builder, map, *p);
+            append_map_decimal_int16_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Int32Builder>, map_builder);
-            append_map_decimal_int32_element(map_builder, map, *p);
+            append_map_decimal_int32_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Int64Builder>, map_builder);
-            append_map_decimal_int64_element(map_builder, map, *p);
+            append_map_decimal_int64_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Float32Builder>, map_builder);
-            append_map_decimal_float32_element(map_builder, map, *p);
+            append_map_decimal_float32_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Float64Builder>, map_builder);
-            append_map_decimal_float64_element(map_builder, map, *p);
+            append_map_decimal_float64_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, Date32Builder>, map_builder);
-            append_map_decimal_date32_element(map_builder, map, *p);
+            append_map_decimal_date32_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Decimal128Builder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_decimal_timestamp_element(map_builder, map, *p);
+            append_map_decimal_timestamp_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, BinaryBuilder>, map_builder);
-            append_map_decimal_binary_element(map_builder, map, *p);
+            append_map_decimal_binary_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p, _), DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, StringBuilder>, map_builder);
-            append_map_decimal_string_element(map_builder, map, *p);
+            append_map_decimal_string_element(map_builder, map, *p)?;
         }
         (DataType::Decimal128(p1, _), DataType::Decimal128(p2, _)) => {
             let map_builder = downcast_builder_ref!(MapBuilder<Decimal128Builder, Decimal128Builder>, map_builder);
-            append_map_decimal_decimal_element(map_builder, map, *p1, *p2);
+            append_map_decimal_decimal_element(map_builder, map, *p1, *p2)?;
         }
         (DataType::Decimal128(p, _), DataType::Struct(fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<Decimal128Builder, StructBuilder>, map_builder);
-            append_map_decimal_struct_element(map_builder, map, *p, fields);
+            append_map_decimal_struct_element(map_builder, map, *p, fields)?;
         }
         (DataType::Struct(fields), DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, BooleanBuilder>, map_builder);
-            append_map_struct_boolean_element(map_builder, map, fields);
+            append_map_struct_boolean_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Int8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Int8Builder>, map_builder);
-            append_map_struct_int8_element(map_builder, map, fields);
+            append_map_struct_int8_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Int16) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Int16Builder>, map_builder);
-            append_map_struct_int16_element(map_builder, map, fields);
+            append_map_struct_int16_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Int32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Int32Builder>, map_builder);
-            append_map_struct_int32_element(map_builder, map, fields);
+            append_map_struct_int32_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Int64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Int64Builder>, map_builder);
-            append_map_struct_int64_element(map_builder, map, fields);
+            append_map_struct_int64_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Float32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Float32Builder>, map_builder);
-            append_map_struct_float32_element(map_builder, map, fields);
+            append_map_struct_float32_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Float64) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Float64Builder>, map_builder);
-            append_map_struct_float64_element(map_builder, map, fields);
+            append_map_struct_float64_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Date32) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Date32Builder>, map_builder);
-            append_map_struct_date32_element(map_builder, map, fields);
+            append_map_struct_date32_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<StructBuilder, TimestampMicrosecondBuilder>,
                 map_builder
             );
-            append_map_struct_timestamp_element(map_builder, map, fields);
+            append_map_struct_timestamp_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Binary) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, BinaryBuilder>, map_builder);
-            append_map_struct_binary_element(map_builder, map, fields);
+            append_map_struct_binary_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Utf8) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, StringBuilder>, map_builder);
-            append_map_struct_string_element(map_builder, map, fields);
+            append_map_struct_string_element(map_builder, map, fields)?;
         }
         (DataType::Struct(fields), DataType::Decimal128(p, _)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, Decimal128Builder>, map_builder);
-            append_map_struct_decimal_element(map_builder, map, *p, fields);
+            append_map_struct_decimal_element(map_builder, map, *p, fields)?;
         }
         (DataType::Struct(key_fields), DataType::Struct(value_fields)) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<StructBuilder, StructBuilder>, map_builder);
-            append_map_struct_struct_element(map_builder, map, key_fields, value_fields);
+            append_map_struct_struct_element(map_builder, map, key_fields, value_fields)?;
         }
         _ => {
             return Err(CometError::Internal(format!(
