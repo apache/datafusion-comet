@@ -17,9 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use crate::execution::operators::{InputBatch, ScanExec};
 use arrow::{
-    array::{make_array, Array, ArrayData, ArrayRef},
     datatypes::DataType as ArrowDataType,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
@@ -32,13 +30,12 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_common::DataFusionError;
 use futures::poll;
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        AutoElements, JBooleanArray, JByteArray, JClass, JIntArray, JLongArray, JMap, JObject,
-        JObjectArray, JPrimitiveArray, JString, ReleaseMode,
+        JByteArray, JClass, JIntArray, JLongArray, JMap, JObject, JObjectArray, JPrimitiveArray,
+        JString, ReleaseMode,
     },
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
@@ -59,10 +56,11 @@ use crate::{
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
-    sys::{jboolean, jbooleanArray, jdouble, jintArray, jobjectArray, jstring},
+    sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
 use tokio::runtime::Runtime;
 
+use crate::execution::operators::ScanExec;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -75,6 +73,8 @@ struct ExecutionContext {
     pub root_op: Option<Arc<dyn ExecutionPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
+    /// The global reference of input sources for the DataFusion plan
+    pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
     /// The FFI arrays. We need to keep them alive here.
@@ -100,6 +100,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     _class: JClass,
     id: jlong,
     config_object: JObject,
+    iterators: jobjectArray,
     serialized_query: jbyteArray,
     metrics_node: JObject,
 ) -> jlong {
@@ -137,6 +138,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
+        // Get the global references of input sources
+        let mut input_sources = vec![];
+        let iter_array = JObjectArray::from_raw(iterators);
+        let num_inputs = env.get_array_length(&iter_array)?;
+        for i in 0..num_inputs {
+            let input_source = env.get_object_array_element(&iter_array, i)?;
+            let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
+            input_sources.push(input_source);
+        }
+
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
@@ -147,6 +158,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             spark_plan,
             root_op: None,
             scans: vec![],
+            input_sources,
             stream: None,
             ffi_arrays: vec![],
             conf: configs,
@@ -164,7 +176,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 fn prepare_datafusion_session_context(
     conf: &HashMap<String, String>,
 ) -> CometResult<SessionContext> {
-    // Get the batch size from Boson JVM side
+    // Get the batch size from Comet JVM side
     let batch_size = conf
         .get("batch_size")
         .ok_or(CometError::Internal(
@@ -212,10 +224,9 @@ fn prepare_datafusion_session_context(
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    output: Result<RecordBatch, DataFusionError>,
+    output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
 ) -> CometResult<jlongArray> {
-    let output_batch = output?;
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
@@ -260,6 +271,20 @@ fn prepare_output(
     Ok(long_array.into_raw())
 }
 
+/// Pull the next input from JVM. Note that we cannot pull input batches in
+/// `ScanStream.poll_next` when the execution stream is polled for output.
+/// Because the input source could be another native execution stream, which
+/// will be executed in another tokio blocking thread. It causes JNI throw
+/// Java exception. So we pull input batches here and insert them into scan
+/// operators before polling the stream,
+#[inline]
+fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
+    exec_context.scans.iter_mut().try_for_each(|scan| {
+        scan.get_next_batch()?;
+        Ok::<(), CometError>(())
+    })
+}
+
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
@@ -269,76 +294,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
     exec_context: jlong,
-    addresses_array: jobjectArray,
-    finishes: jbooleanArray,
-    batch_rows: jint,
 ) -> jlongArray {
-    try_unwrap_or_throw(&e, |mut env| unsafe {
+    try_unwrap_or_throw(&e, |mut env| {
+        // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let addresses = JObjectArray::from_raw(addresses_array);
-        let num_addresses = env.get_array_length(&addresses)? as usize;
-
-        let mut all_inputs: Vec<Vec<ArrayRef>> = Vec::with_capacity(num_addresses);
-
-        for i in 0..num_addresses {
-            let mut inputs: Vec<ArrayRef> = vec![];
-
-            let inner_addresses = env.get_object_array_element(&addresses, i as i32)?.into();
-            let inner_address_array: AutoElements<jlong> =
-                env.get_array_elements(&inner_addresses, ReleaseMode::NoCopyBack)?;
-
-            let num_inner_address = inner_address_array.len();
-            assert_eq!(
-                num_inner_address % 2,
-                0,
-                "Arrow Array addresses are invalid!"
-            );
-
-            let num_arrays = num_inner_address / 2;
-            let array_elements = inner_address_array.as_ptr();
-
-            let mut i: usize = 0;
-            while i < num_arrays {
-                let array_ptr = *(array_elements.add(i * 2));
-                let schema_ptr = *(array_elements.add(i * 2 + 1));
-                let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
-
-                if exec_context.debug_native {
-                    // Validate the array data from JVM.
-                    array_data.validate_full().expect("Invalid array data");
-                }
-
-                inputs.push(make_array(array_data));
-                i += 1;
-            }
-
-            all_inputs.push(inputs);
-        }
-
-        // Prepares the input batches.
-        let array = JBooleanArray::from_raw(finishes);
-        let eofs = env.get_array_elements(&array, ReleaseMode::NoCopyBack)?;
-        let eof_flags = eofs.as_ptr();
-
-        // Whether reaching the end of input batches.
-        let mut finished = true;
-        let mut input_batches = all_inputs
-            .into_iter()
-            .enumerate()
-            .map(|(idx, inputs)| {
-                let eof = eof_flags.add(idx);
-
-                if *eof == 1 {
-                    InputBatch::EOF
-                } else {
-                    finished = false;
-                    InputBatch::new(inputs, Some(batch_rows as usize))
-                }
-            })
-            .collect::<Vec<InputBatch>>();
-
-        // Retrieve the query
         let exec_context_id = exec_context.id;
 
         // Initialize the execution stream.
@@ -346,8 +306,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
             let planner = PhysicalPlanner::new().with_exec_id(exec_context_id);
-            let (scans, root_op) =
-                planner.create_plan(&exec_context.spark_plan, &mut input_batches)?;
+            let (scans, root_op) = planner.create_plan(
+                &exec_context.spark_plan,
+                &mut exec_context.input_sources.clone(),
+            )?;
 
             exec_context.root_op = Some(root_op.clone());
             exec_context.scans = scans;
@@ -366,15 +328,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 .execute(0, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
-            input_batches
-                .into_iter()
-                .enumerate()
-                .for_each(|(idx, input_batch)| {
-                    let scan = &mut exec_context.scans[idx];
-
-                    // Set inputs at `Scan` node.
-                    scan.set_input_batch(input_batch);
-                });
+            // Pull input batches
+            pull_input_batches(exec_context)?;
         }
 
         loop {
@@ -384,7 +339,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             match poll_output {
                 Poll::Ready(Some(output)) => {
-                    return prepare_output(&mut env, output, exec_context);
+                    return prepare_output(&mut env, output?, exec_context);
                 }
                 Poll::Ready(None) => {
                     // Reaches EOF of output.
@@ -397,22 +352,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                     return Ok(long_array.into_raw());
                 }
-                // After reaching the end of any input, a poll pending means there are more than
-                // one blocking operators, we don't need go back-forth
-                // between JVM/Native. Just keeping polling.
-                Poll::Pending if finished => {
-                    // Update metrics
-                    update_metrics(&mut env, exec_context)?;
-
-                    // Output not ready yet
-                    continue;
-                }
-                // Not reaching the end of input yet, so a poll pending means there are blocking
-                // operators. Just returning to keep reading next input.
+                // A poll pending means there are more than one blocking operators,
+                // we don't need go back-forth between JVM/Native. Just keeping polling.
                 Poll::Pending => {
                     // Update metrics
                     update_metrics(&mut env, exec_context)?;
-                    return return_pending(env);
+
+                    // Pull input batches
+                    pull_input_batches(exec_context)?;
+
+                    // Output not ready yet
+                    continue;
                 }
             }
         }
@@ -423,37 +373,6 @@ fn return_pending(env: JNIEnv) -> Result<jlongArray, CometError> {
     let long_array = env.new_long_array(1)?;
     env.set_long_array_region(&long_array, 0, &[0])?;
     Ok(long_array.into_raw())
-}
-
-#[no_mangle]
-/// Peeks into next output if any.
-pub extern "system" fn Java_org_apache_comet_Native_peekNext(
-    e: JNIEnv,
-    _class: JClass,
-    exec_context: jlong,
-) -> jlongArray {
-    try_unwrap_or_throw(&e, |mut env| {
-        // Retrieve the query
-        let exec_context = get_execution_context(exec_context);
-
-        if exec_context.stream.is_none() {
-            // Plan is not initialized yet.
-            return return_pending(env);
-        }
-
-        // Polling the stream.
-        let next_item = exec_context.stream.as_mut().unwrap().next();
-        let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
-
-        match poll_output {
-            Poll::Ready(Some(output)) => prepare_output(&mut env, output, exec_context),
-            _ => {
-                // Update metrics
-                update_metrics(&mut env, exec_context)?;
-                return_pending(env)
-            }
-        }
-    })
 }
 
 #[no_mangle]
@@ -507,7 +426,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
     }
 }
 
-/// Used by Boson shuffle external sorter to write sorted records to disk.
+/// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
@@ -577,7 +496,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 }
 
 #[no_mangle]
-/// Used by Boson shuffle external sorter to sort in-memory row partition ids.
+/// Used by Comet shuffle external sorter to sort in-memory row partition ids.
 pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     e: JNIEnv,
     _class: JClass,

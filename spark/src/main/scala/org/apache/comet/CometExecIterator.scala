@@ -48,30 +48,24 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
+  private val nativeUtil = new NativeUtil
+  private val cometBatchIterators = inputs.map { iterator =>
+    new CometBatchIterator(iterator, nativeUtil)
+  }.toArray
   private val plan = {
     val configs = createNativeConf
-    nativeLib.createPlan(id, configs, protobufQueryPlan, nativeMetrics)
+    nativeLib.createPlan(id, configs, cometBatchIterators, protobufQueryPlan, nativeMetrics)
   }
-  private val nativeUtil = new NativeUtil
+
   private var nextBatch: Option[ColumnarBatch] = None
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
-  private def peekNext(): ExecutionState = {
-    convertNativeResult(nativeLib.peekNext(plan))
-  }
+  private def executeNative(): ExecutionState = {
+    val result = nativeLib.executePlan(plan)
 
-  private def executeNative(
-      input: Array[Array[Long]],
-      finishes: Array[Boolean],
-      numRows: Int): ExecutionState = {
-    convertNativeResult(nativeLib.executePlan(plan, input, finishes, numRows))
-  }
-
-  private def convertNativeResult(result: Array[Long]): ExecutionState = {
     val flag = result(0)
     if (flag == -1) EOF
-    else if (flag == 0) Pending
     else if (flag == 1) {
       val numRows = result(1)
       val addresses = result.slice(2, result.length)
@@ -113,36 +107,12 @@ class CometExecIterator(
   /** The execution is finished - no more batch */
   case object EOF extends ExecutionState
 
-  /** The execution is pending (e.g., blocking operator is still consuming batches) */
-  case object Pending extends ExecutionState
-
-  private def peek(): Option[ColumnarBatch] = {
-    peekNext() match {
-      case Batch(numRows, addresses) =>
-        val cometVectors = nativeUtil.importVector(addresses)
-        Some(new ColumnarBatch(cometVectors.toArray, numRows))
-      case _ =>
-        None
-    }
-  }
-
-  def getNextBatch(
-      inputArrays: Array[Array[Long]],
-      finishes: Array[Boolean],
-      numRows: Int): Option[ColumnarBatch] = {
-    executeNative(inputArrays, finishes, numRows) match {
+  def getNextBatch(): Option[ColumnarBatch] = {
+    executeNative() match {
       case EOF => None
       case Batch(numRows, addresses) =>
         val cometVectors = nativeUtil.importVector(addresses)
         Some(new ColumnarBatch(cometVectors.toArray, numRows))
-      case Pending =>
-        if (finishes.forall(_ == true)) {
-          // Once no input, we should not get a pending flag.
-          throw new SparkException(
-            "Native execution should not be pending after reaching end of input batches")
-        }
-        // For pending, we keep reading next input.
-        None
     }
   }
 
@@ -152,48 +122,12 @@ class CometExecIterator(
     if (nextBatch.isDefined) {
       return true
     }
-    // Before we pull next input batch, check if there is next output batch available
-    // from native side. Some operators might still have output batches ready produced
-    // from last input batch. For example, `expand` operator will produce output batches
-    // based on the input batch.
-    nextBatch = peek()
 
-    // Next input batches are available, execute native query plan with the inputs until
-    // we get next output batch ready
-    while (nextBatch.isEmpty && inputs.exists(_.hasNext)) {
-      val batches = inputs.map {
-        case input if input.hasNext => Some(input.next())
-        case _ => None
-      }
+    nextBatch = getNextBatch()
 
-      var numRows = -1
-      val (batchAddresses, finishes) = batches
-        .map {
-          case Some(batch) =>
-            numRows = batch.numRows()
-            (nativeUtil.exportBatch(batch), false)
-          case None => (Array.empty[Long], true)
-        }
-        .toArray
-        .unzip
-
-      // At least one input batch should be consumed
-      assert(numRows != -1, "No input batch has been consumed")
-
-      nextBatch = getNextBatch(batchAddresses, finishes, numRows)
-    }
-
-    // After we consume to the end of the iterators, the native side still can output batches
-    // back because there might be blocking operators e.g. Sort. We continue ask for batches
-    // until it returns empty columns.
     if (nextBatch.isEmpty) {
-      val finishes = inputs.map(_ => true).toArray
-      nextBatch = getNextBatch(inputs.map(_ => Array.empty[Long]).toArray, finishes, 0)
-      val hasNext = nextBatch.isDefined
-      if (!hasNext) {
-        close()
-      }
-      hasNext
+      close()
+      false
     } else {
       true
     }
@@ -222,6 +156,7 @@ class CometExecIterator(
         currentBatch = null
       }
       nativeLib.releasePlan(plan)
+
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
       // Caused by: java.lang.IllegalStateException: Memory was leaked by query.

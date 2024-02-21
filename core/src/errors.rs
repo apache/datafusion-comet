@@ -159,6 +159,15 @@ impl From<CometError> for DataFusionError {
     }
 }
 
+impl From<CometError> for ExecutionError {
+    fn from(value: CometError) -> Self {
+        match value {
+            CometError::Execution { source } => source,
+            _ => ExecutionError::GeneralError(value.to_string()),
+        }
+    }
+}
+
 impl jni::errors::ToException for CometError {
     fn to_exception(&self) -> Exception {
         match self {

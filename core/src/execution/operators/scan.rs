@@ -26,33 +26,62 @@ use futures::Stream;
 use itertools::Itertools;
 
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_array::{make_array, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_data::ArrayData;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
+use crate::{
+    errors::CometError,
+    execution::{
+        datafusion::planner::TEST_EXEC_CONTEXT_ID, operators::ExecutionError,
+        utils::SparkArrowConvert,
+    },
+    jvm_bridge::{jni_call, JVMClasses},
+};
 use datafusion::{
     execution::TaskContext,
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use jni::{
+    objects::{GlobalRef, JLongArray, JObject, ReleaseMode},
+    sys::jlongArray,
+};
 
 #[derive(Debug, Clone)]
 pub struct ScanExec {
-    pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
+    /// environment `JNIEnv` from the execution context.
+    pub exec_context_id: i64,
+    /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
+    pub input_source: Option<Arc<GlobalRef>>,
+    /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
+    /// The input batch of input data. Used to determine the schema of the input data.
+    /// It is also used in unit test to mock the input data from JVM.
+    pub batch: Arc<Mutex<Option<InputBatch>>>,
 }
 
 impl ScanExec {
-    pub fn new(batch: InputBatch, data_types: Vec<DataType>) -> Self {
-        Self {
-            batch: Arc::new(Mutex::new(Some(batch))),
-            data_types,
-        }
-    }
+    pub fn new(
+        exec_context_id: i64,
+        input_source: Option<Arc<GlobalRef>>,
+        data_types: Vec<DataType>,
+    ) -> Result<Self, CometError> {
+        // Scan's schema is determined by the input batch, so we need to set it before execution.
+        let first_batch = if let Some(input_source) = input_source.as_ref() {
+            ScanExec::get_next(exec_context_id, input_source.as_obj())?
+        } else {
+            InputBatch::EOF
+        };
 
-    /// Feeds input batch into this `Scan`.
-    pub fn set_input_batch(&mut self, input: InputBatch) {
-        *self.batch.try_lock().unwrap() = Some(input);
+        Ok(Self {
+            exec_context_id,
+            input_source,
+            data_types,
+            batch: Arc::new(Mutex::new(Some(first_batch))),
+        })
     }
 
     /// Checks if the input data type `dt` is a dictionary type with primitive value type.
@@ -73,6 +102,98 @@ impl ScanExec {
         }
 
         dt.clone()
+    }
+
+    /// Feeds input batch into this `Scan`. Only used in unit test.
+    pub fn set_input_batch(&mut self, input: InputBatch) {
+        *self.batch.try_lock().unwrap() = Some(input);
+    }
+
+    /// Pull next input batch from JVM.
+    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+        let mut current_batch = self.batch.try_lock().unwrap();
+
+        if self.input_source.is_none() {
+            // This is a unit test. We don't need to call JNI.
+            return Ok(());
+        }
+
+        if current_batch.is_none() {
+            let next_batch = ScanExec::get_next(
+                self.exec_context_id,
+                self.input_source.as_ref().unwrap().as_obj(),
+            )?;
+            *current_batch = Some(next_batch);
+        }
+
+        Ok(())
+    }
+
+    /// Invokes JNI call to get next batch.
+    fn get_next(exec_context_id: i64, iter: &JObject) -> Result<InputBatch, CometError> {
+        if exec_context_id == TEST_EXEC_CONTEXT_ID {
+            // This is a unit test. We don't need to call JNI.
+            return Ok(InputBatch::EOF);
+        }
+
+        let mut env = JVMClasses::get_env();
+
+        if iter.is_null() {
+            return Err(CometError::from(ExecutionError::GeneralError(format!(
+                "Null batch iterator object. Plan id: {}",
+                exec_context_id
+            ))));
+        }
+
+        let batch_object: JObject = unsafe {
+            jni_call!(&mut env,
+            comet_batch_iterator(iter).next() -> JObject)?
+        };
+
+        if batch_object.is_null() {
+            return Err(CometError::from(ExecutionError::GeneralError(format!(
+                "Null batch object. Plan id: {}",
+                exec_context_id
+            ))));
+        }
+
+        let batch_object = unsafe { JLongArray::from_raw(batch_object.as_raw() as jlongArray) };
+
+        let addresses = unsafe { env.get_array_elements(&batch_object, ReleaseMode::NoCopyBack)? };
+
+        let mut inputs: Vec<ArrayRef> = vec![];
+
+        // First element is the number of rows.
+        let num_rows = unsafe { *addresses.as_ptr() as i64 };
+
+        if num_rows < 0 {
+            return Ok(InputBatch::EOF);
+        }
+
+        let array_num = addresses.len() - 1;
+        if array_num % 2 != 0 {
+            return Err(CometError::Internal(format!(
+                "Invalid number of Arrow Array addresses: {}",
+                array_num
+            )));
+        }
+
+        let num_arrays = array_num / 2;
+        let array_elements = unsafe { addresses.as_ptr().add(1) };
+
+        let mut i: usize = 0;
+        while i < num_arrays {
+            let array_ptr = unsafe { *(array_elements.add(i * 2)) };
+            let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+
+            // TODO: validate array input data
+
+            inputs.push(make_array(array_data));
+            i += 1;
+        }
+
+        Ok(InputBatch::new(inputs, Some(num_rows as usize)))
     }
 }
 
@@ -214,19 +335,22 @@ impl Stream for ScanStream {
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
         let input_batch = &*scan_batch;
-        let result = match input_batch {
-            // Input batch is not ready.
-            None => Poll::Pending,
-            Some(batch) => match batch {
-                InputBatch::EOF => Poll::Ready(None),
-                InputBatch::Batch(columns, num_rows) => {
-                    Poll::Ready(Some(self.build_record_batch(columns, *num_rows)))
-                }
-            },
+
+        let input_batch = if let Some(batch) = input_batch {
+            batch
+        } else {
+            return Poll::Pending;
         };
 
-        // Reset the current input batch so it won't be processed again
+        let result = match input_batch {
+            InputBatch::EOF => Poll::Ready(None),
+            InputBatch::Batch(columns, num_rows) => {
+                Poll::Ready(Some(self.build_record_batch(columns, *num_rows)))
+            }
+        };
+
         *scan_batch = None;
+
         result
     }
 }
