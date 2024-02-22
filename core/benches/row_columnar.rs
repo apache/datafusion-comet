@@ -23,6 +23,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use tempfile::Builder;
 
 const NUM_ROWS: usize = 10000;
+const BATCH_SIZE: usize = 5000;
 const NUM_COLS: usize = 100;
 const ROW_SIZE: usize = SparkUnsafeRow::get_row_bitset_width(NUM_COLS) + NUM_COLS * 8;
 
@@ -67,6 +68,7 @@ fn benchmark(c: &mut Criterion) {
 
             process_sorted_row_partition(
                 NUM_ROWS,
+                BATCH_SIZE,
                 row_address_ptr,
                 row_size_ptr,
                 &schema,

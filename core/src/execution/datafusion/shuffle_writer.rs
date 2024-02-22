@@ -61,6 +61,7 @@ use tokio::task;
 
 use crate::{
     common::bit::ceil,
+    errors::{CometError, CometResult},
     execution::datafusion::spark_hash::{create_hashes, pmod},
 };
 
@@ -1153,44 +1154,60 @@ fn make_batch(
 }
 
 /// Checksum algorithms for writing IPC bytes.
-#[derive(Debug, Clone)]
-pub(crate) enum ChecksumAlgorithm {
+#[derive(Clone)]
+pub(crate) enum Checksum {
     /// CRC32 checksum algorithm.
-    CRC32(Option<u32>),
+    CRC32(Hasher),
     /// Adler32 checksum algorithm.
-    Adler32(Option<u32>),
+    Adler32(Adler32),
 }
 
-pub(crate) fn compute_checksum(
-    cursor: &mut Cursor<&mut Vec<u8>>,
-    checksum_algorithm: &ChecksumAlgorithm,
-) -> Result<ChecksumAlgorithm> {
-    match checksum_algorithm {
-        ChecksumAlgorithm::CRC32(checksum) => {
-            let mut hasher = if let Some(initial) = checksum {
-                Hasher::new_with_initial(*initial)
-            } else {
-                Hasher::new()
-            };
-            std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-            hasher.update(cursor.chunk());
-
-            let checksum = hasher.finalize();
-            Ok(ChecksumAlgorithm::CRC32(Some(checksum)))
+impl Checksum {
+    pub(crate) fn try_new(algo: i32, initial_opt: Option<u32>) -> CometResult<Self> {
+        match algo {
+            0 => {
+                let hasher = if let Some(initial) = initial_opt {
+                    Hasher::new_with_initial(initial)
+                } else {
+                    Hasher::new()
+                };
+                Ok(Checksum::CRC32(hasher))
+            }
+            1 => {
+                let hasher = if let Some(initial) = initial_opt {
+                    // Note that Adler32 initial state is not zero.
+                    // i.e., `Adler32::from_checksum(0)` is not the same as `Adler32::new()`.
+                    Adler32::from_checksum(initial)
+                } else {
+                    Adler32::new()
+                };
+                Ok(Checksum::Adler32(hasher))
+            }
+            _ => Err(CometError::Internal(
+                "Unsupported checksum algorithm".to_string(),
+            )),
         }
-        ChecksumAlgorithm::Adler32(checksum) => {
-            let mut hasher = if let Some(initial) = checksum {
-                // Note that Adler32 initial state is not zero.
-                // i.e., `Adler32::from_checksum(0)` is not the same as `Adler32::new()`.
-                Adler32::from_checksum(*initial)
-            } else {
-                Adler32::new()
-            };
-            std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-            hasher.write(cursor.chunk());
+    }
 
-            let checksum = hasher.finish();
-            Ok(ChecksumAlgorithm::Adler32(Some(checksum)))
+    pub(crate) fn update(&mut self, cursor: &mut Cursor<&mut Vec<u8>>) -> CometResult<()> {
+        match self {
+            Checksum::CRC32(hasher) => {
+                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
+                hasher.update(cursor.chunk());
+                Ok(())
+            }
+            Checksum::Adler32(hasher) => {
+                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
+                hasher.write(cursor.chunk());
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn finalize(self) -> u32 {
+        match self {
+            Checksum::CRC32(hasher) => hasher.finalize(),
+            Checksum::Adler32(hasher) => hasher.finish(),
         }
     }
 }
