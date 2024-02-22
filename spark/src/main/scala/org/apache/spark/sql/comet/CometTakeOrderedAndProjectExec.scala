@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters.asJavaIterableConverter
-
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
@@ -31,9 +29,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsR
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.serde.OperatorOuterClass
-import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -82,13 +78,13 @@ case class CometTakeOrderedAndProjectExec(
         val localTopK = if (orderingSatisfies) {
           childRDD.mapPartitionsInternal { iter =>
             val limitOp =
-              CometTakeOrderedAndProjectExec.getLimitNativePlan(output, limit).get
+              CometExecUtils.getLimitNativePlan(output, limit).get
             CometExec.getCometIterator(Seq(iter), limitOp)
           }
         } else {
           childRDD.mapPartitionsInternal { iter =>
             val topK =
-              CometTakeOrderedAndProjectExec
+              CometExecUtils
                 .getTopKNativePlan(output, sortOrder, child, limit)
                 .get
             CometExec.getCometIterator(Seq(iter), topK)
@@ -108,7 +104,7 @@ case class CometTakeOrderedAndProjectExec(
       }
 
       singlePartitionRDD.mapPartitionsInternal { iter =>
-        val topKAndProjection = CometTakeOrderedAndProjectExec
+        val topKAndProjection = CometExecUtils
           .getProjectionNativePlan(projectList, output, sortOrder, child, limit)
           .get
         CometExec.getCometIterator(Seq(iter), topKAndProjection)
@@ -135,90 +131,5 @@ object CometTakeOrderedAndProjectExec {
     val exprs = projectList.map(exprToProto(_, child.output))
     val sortOrders = sortOrder.map(exprToProto(_, child.output))
     exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined)
-  }
-
-  /**
-   * Prepare Projection + TopK native plan for CometTakeOrderedAndProjectExec.
-   */
-  def getProjectionNativePlan(
-      projectList: Seq[NamedExpression],
-      outputAttributes: Seq[Attribute],
-      sortOrder: Seq[SortOrder],
-      child: SparkPlan,
-      limit: Int): Option[Operator] = {
-    getTopKNativePlan(outputAttributes, sortOrder, child, limit).flatMap { topK =>
-      val exprs = projectList.map(exprToProto(_, child.output))
-
-      if (exprs.forall(_.isDefined)) {
-        val projectBuilder = OperatorOuterClass.Projection.newBuilder()
-        projectBuilder.addAllProjectList(exprs.map(_.get).asJava)
-        val opBuilder = OperatorOuterClass.Operator
-          .newBuilder()
-          .addChildren(topK)
-        Some(opBuilder.setProjection(projectBuilder).build())
-      } else {
-        None
-      }
-    }
-  }
-
-  def getLimitNativePlan(outputAttributes: Seq[Attribute], limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-    val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
-
-    val scanTypes = outputAttributes.flatten { attr =>
-      serializeDataType(attr.dataType)
-    }
-
-    if (scanTypes.length == outputAttributes.length) {
-      scanBuilder.addAllFields(scanTypes.asJava)
-
-      val limitBuilder = OperatorOuterClass.Limit.newBuilder()
-      limitBuilder.setLimit(limit)
-
-      val limitOpBuilder = OperatorOuterClass.Operator
-        .newBuilder()
-        .addChildren(scanOpBuilder.setScan(scanBuilder))
-      Some(limitOpBuilder.setLimit(limitBuilder).build())
-    } else {
-      None
-    }
-  }
-
-  /**
-   * Prepare TopK native plan for CometTakeOrderedAndProjectExec.
-   */
-  def getTopKNativePlan(
-      outputAttributes: Seq[Attribute],
-      sortOrder: Seq[SortOrder],
-      child: SparkPlan,
-      limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-    val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
-
-    val scanTypes = outputAttributes.flatten { attr =>
-      serializeDataType(attr.dataType)
-    }
-
-    if (scanTypes.length == outputAttributes.length) {
-      scanBuilder.addAllFields(scanTypes.asJava)
-
-      val sortOrders = sortOrder.map(exprToProto(_, child.output))
-
-      if (sortOrders.forall(_.isDefined)) {
-        val sortBuilder = OperatorOuterClass.Sort.newBuilder()
-        sortBuilder.addAllSortOrders(sortOrders.map(_.get).asJava)
-        sortBuilder.setFetch(limit)
-
-        val sortOpBuilder = OperatorOuterClass.Operator
-          .newBuilder()
-          .addChildren(scanOpBuilder.setScan(scanBuilder))
-        Some(sortOpBuilder.setSort(sortBuilder).build())
-      } else {
-        None
-      }
-    } else {
-      None
-    }
   }
 }
