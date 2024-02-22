@@ -1830,10 +1830,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case StructType(fields) =>
         fields.forall(f => supportedDataType(f.dataType))
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
+      case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
       case ArrayType(elementType, _) =>
         supportedDataType(elementType)
       case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
       case MapType(_, MapType(_, _, _), _) => false
+      case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
+      case MapType(_, StructType(_), _) => false
+      case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
+      case MapType(_, ArrayType(_, _), _) => false
       case MapType(keyType, valueType, _) =>
         supportedDataType(keyType) && supportedDataType(valueType)
       case _ =>

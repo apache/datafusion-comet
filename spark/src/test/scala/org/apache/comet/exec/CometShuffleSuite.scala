@@ -112,6 +112,91 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("columnar shuffle on array/struct map key/value") {
+    Seq("false", "true").foreach { execEnabled =>
+      Seq(10, 201).foreach { numPartitions =>
+        Seq("1.0", "10.0").foreach { ratio =>
+          withSQLConf(
+            CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
+            CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+            withParquetTable((0 until 50).map(i => (Map(Seq(i, i + 1) -> i), i + 1)), "tbl") {
+              val df = sql("SELECT * FROM tbl")
+                .filter($"_2" > 10)
+                .repartition(numPartitions, $"_1", $"_2")
+                .sortWithinPartitions($"_2")
+
+              checkSparkAnswer(df)
+              // Array map key array element fallback to Spark shuffle for now
+              checkCometExchange(df, 0, false)
+            }
+
+            withParquetTable((0 until 50).map(i => (Map(i -> Seq(i, i + 1)), i + 1)), "tbl") {
+              val df = sql("SELECT * FROM tbl")
+                .filter($"_2" > 10)
+                .repartition(numPartitions, $"_1", $"_2")
+                .sortWithinPartitions($"_2")
+
+              checkSparkAnswer(df)
+              // Array map value array element fallback to Spark shuffle for now
+              checkCometExchange(df, 0, false)
+            }
+
+            withParquetTable((0 until 50).map(i => (Map((i, i.toString) -> i), i + 1)), "tbl") {
+              val df = sql("SELECT * FROM tbl")
+                .filter($"_2" > 10)
+                .repartition(numPartitions, $"_1", $"_2")
+                .sortWithinPartitions($"_2")
+
+              checkSparkAnswer(df)
+              // Struct map key array element fallback to Spark shuffle for now
+              checkCometExchange(df, 0, false)
+            }
+
+            withParquetTable((0 until 50).map(i => (Map(i -> (i, i.toString)), i + 1)), "tbl") {
+              val df = sql("SELECT * FROM tbl")
+                .filter($"_2" > 10)
+                .repartition(numPartitions, $"_1", $"_2")
+                .sortWithinPartitions($"_2")
+
+              checkSparkAnswer(df)
+              // Struct map value array element fallback to Spark shuffle for now
+              checkCometExchange(df, 0, false)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("columnar shuffle on map array element") {
+    Seq("false", "true").foreach { execEnabled =>
+      Seq(10, 201).foreach { numPartitions =>
+        Seq("1.0", "10.0").foreach { ratio =>
+          withSQLConf(
+            CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
+            CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+            withParquetTable(
+              (0 until 50).map(i => ((Seq(Map(1 -> i)), Map(2 -> i), Map(3 -> i)), i + 1)),
+              "tbl") {
+              val df = sql("SELECT * FROM tbl")
+                .filter($"_2" > 10)
+                .repartition(numPartitions, $"_1", $"_2")
+                .sortWithinPartitions($"_2")
+
+              checkSparkAnswer(df)
+              // Map array element fallback to Spark shuffle for now
+              checkCometExchange(df, 0, false)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("RoundRobinPartitioning is supported by columnar shuffle") {
     withSQLConf(
       // AQE has `ShuffleStage` which is a leaf node which blocks
