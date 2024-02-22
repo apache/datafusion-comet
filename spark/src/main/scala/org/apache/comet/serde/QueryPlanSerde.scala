@@ -1718,7 +1718,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                 case op if !op.isInstanceOf[CometPlan] =>
                   seenNonNativeOp = true
                   op
-                case op @ CometHashAggregateExec(_, _, _, _, input, Some(Partial), _) =>
+                case op @ CometHashAggregateExec(_, _, _, _, input, Some(Partial), _, _) =>
                   if (!seenNonNativeOp && partialAggInput.isEmpty) {
                     partialAggInput = Some(input)
                   }

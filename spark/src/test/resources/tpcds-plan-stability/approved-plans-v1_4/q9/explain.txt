@@ -53,7 +53,8 @@ Arguments: [ss_ext_discount_amt#18, ss_net_paid#19], [ss_ext_discount_amt#18, ss
 
 (8) CometHashAggregate
 Input [2]: [ss_ext_discount_amt#18, ss_net_paid#19]
-Arguments: [ss_ext_discount_amt#18, ss_net_paid#19], Partial, [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#18)), partial_avg(UnscaledValue(ss_net_paid#19))]
+Keys: []
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#18)), partial_avg(UnscaledValue(ss_net_paid#19))]
 
 (9) CometExchange
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
@@ -61,7 +62,8 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
-Arguments: [count#21, sum#22, count#23, sum#24, count#25], Final, [count(1), avg(UnscaledValue(ss_ext_discount_amt#18)), avg(UnscaledValue(ss_net_paid#19))]
+Keys: []
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#18)), avg(UnscaledValue(ss_net_paid#19))]
 
 (11) ColumnarToRow [codegen id : 1]
 Input [3]: [count(1)#26, avg(ss_ext_discount_amt)#27, avg(ss_net_paid)#28]
@@ -102,7 +104,8 @@ Arguments: [ss_ext_discount_amt#31, ss_net_paid#32], [ss_ext_discount_amt#31, ss
 
 (16) CometHashAggregate
 Input [2]: [ss_ext_discount_amt#31, ss_net_paid#32]
-Arguments: [ss_ext_discount_amt#31, ss_net_paid#32], Partial, [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#31)), partial_avg(UnscaledValue(ss_net_paid#32))]
+Keys: []
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#31)), partial_avg(UnscaledValue(ss_net_paid#32))]
 
 (17) CometExchange
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
@@ -110,7 +113,8 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (18) CometHashAggregate
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
-Arguments: [count#34, sum#35, count#36, sum#37, count#38], Final, [count(1), avg(UnscaledValue(ss_ext_discount_amt#31)), avg(UnscaledValue(ss_net_paid#32))]
+Keys: []
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#31)), avg(UnscaledValue(ss_net_paid#32))]
 
 (19) ColumnarToRow [codegen id : 1]
 Input [3]: [count(1)#39, avg(ss_ext_discount_amt)#40, avg(ss_net_paid)#41]
@@ -151,7 +155,8 @@ Arguments: [ss_ext_discount_amt#44, ss_net_paid#45], [ss_ext_discount_amt#44, ss
 
 (24) CometHashAggregate
 Input [2]: [ss_ext_discount_amt#44, ss_net_paid#45]
-Arguments: [ss_ext_discount_amt#44, ss_net_paid#45], Partial, [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#44)), partial_avg(UnscaledValue(ss_net_paid#45))]
+Keys: []
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#44)), partial_avg(UnscaledValue(ss_net_paid#45))]
 
 (25) CometExchange
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
@@ -159,7 +164,8 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (26) CometHashAggregate
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
-Arguments: [count#47, sum#48, count#49, sum#50, count#51], Final, [count(1), avg(UnscaledValue(ss_ext_discount_amt#44)), avg(UnscaledValue(ss_net_paid#45))]
+Keys: []
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#44)), avg(UnscaledValue(ss_net_paid#45))]
 
 (27) ColumnarToRow [codegen id : 1]
 Input [3]: [count(1)#52, avg(ss_ext_discount_amt)#53, avg(ss_net_paid)#54]
@@ -200,7 +206,8 @@ Arguments: [ss_ext_discount_amt#57, ss_net_paid#58], [ss_ext_discount_amt#57, ss
 
 (32) CometHashAggregate
 Input [2]: [ss_ext_discount_amt#57, ss_net_paid#58]
-Arguments: [ss_ext_discount_amt#57, ss_net_paid#58], Partial, [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#57)), partial_avg(UnscaledValue(ss_net_paid#58))]
+Keys: []
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#57)), partial_avg(UnscaledValue(ss_net_paid#58))]
 
 (33) CometExchange
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
@@ -208,7 +215,8 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (34) CometHashAggregate
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
-Arguments: [count#60, sum#61, count#62, sum#63, count#64], Final, [count(1), avg(UnscaledValue(ss_ext_discount_amt#57)), avg(UnscaledValue(ss_net_paid#58))]
+Keys: []
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#57)), avg(UnscaledValue(ss_net_paid#58))]
 
 (35) ColumnarToRow [codegen id : 1]
 Input [3]: [count(1)#65, avg(ss_ext_discount_amt)#66, avg(ss_net_paid)#67]
@@ -249,7 +257,8 @@ Arguments: [ss_ext_discount_amt#70, ss_net_paid#71], [ss_ext_discount_amt#70, ss
 
 (40) CometHashAggregate
 Input [2]: [ss_ext_discount_amt#70, ss_net_paid#71]
-Arguments: [ss_ext_discount_amt#70, ss_net_paid#71], Partial, [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#70)), partial_avg(UnscaledValue(ss_net_paid#71))]
+Keys: []
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#70)), partial_avg(UnscaledValue(ss_net_paid#71))]
 
 (41) CometExchange
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
@@ -257,7 +266,8 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (42) CometHashAggregate
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
-Arguments: [count#73, sum#74, count#75, sum#76, count#77], Final, [count(1), avg(UnscaledValue(ss_ext_discount_amt#70)), avg(UnscaledValue(ss_net_paid#71))]
+Keys: []
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#70)), avg(UnscaledValue(ss_net_paid#71))]
 
 (43) ColumnarToRow [codegen id : 1]
 Input [3]: [count(1)#78, avg(ss_ext_discount_amt)#79, avg(ss_net_paid)#80]

@@ -88,7 +88,8 @@ Arguments: [ss_list_price#3], [ss_list_price#3]
 
 (4) CometHashAggregate
 Input [1]: [ss_list_price#3]
-Arguments: [ss_list_price#3], Partial, [ss_list_price#3], [partial_avg(UnscaledValue(ss_list_price#3)), partial_count(ss_list_price#3)]
+Keys [1]: [ss_list_price#3]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#3)), partial_count(ss_list_price#3)]
 
 (5) CometExchange
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
@@ -139,7 +140,8 @@ Arguments: [ss_list_price#18], [ss_list_price#18]
 
 (14) CometHashAggregate
 Input [1]: [ss_list_price#18]
-Arguments: [ss_list_price#18], Partial, [ss_list_price#18], [partial_avg(UnscaledValue(ss_list_price#18)), partial_count(ss_list_price#18)]
+Keys [1]: [ss_list_price#18]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#18)), partial_count(ss_list_price#18)]
 
 (15) CometExchange
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
@@ -198,7 +200,8 @@ Arguments: [ss_list_price#33], [ss_list_price#33]
 
 (26) CometHashAggregate
 Input [1]: [ss_list_price#33]
-Arguments: [ss_list_price#33], Partial, [ss_list_price#33], [partial_avg(UnscaledValue(ss_list_price#33)), partial_count(ss_list_price#33)]
+Keys [1]: [ss_list_price#33]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#33)), partial_count(ss_list_price#33)]
 
 (27) CometExchange
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
@@ -257,7 +260,8 @@ Arguments: [ss_list_price#48], [ss_list_price#48]
 
 (38) CometHashAggregate
 Input [1]: [ss_list_price#48]
-Arguments: [ss_list_price#48], Partial, [ss_list_price#48], [partial_avg(UnscaledValue(ss_list_price#48)), partial_count(ss_list_price#48)]
+Keys [1]: [ss_list_price#48]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#48)), partial_count(ss_list_price#48)]
 
 (39) CometExchange
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
@@ -316,7 +320,8 @@ Arguments: [ss_list_price#63], [ss_list_price#63]
 
 (50) CometHashAggregate
 Input [1]: [ss_list_price#63]
-Arguments: [ss_list_price#63], Partial, [ss_list_price#63], [partial_avg(UnscaledValue(ss_list_price#63)), partial_count(ss_list_price#63)]
+Keys [1]: [ss_list_price#63]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#63)), partial_count(ss_list_price#63)]
 
 (51) CometExchange
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
@@ -375,7 +380,8 @@ Arguments: [ss_list_price#78], [ss_list_price#78]
 
 (62) CometHashAggregate
 Input [1]: [ss_list_price#78]
-Arguments: [ss_list_price#78], Partial, [ss_list_price#78], [partial_avg(UnscaledValue(ss_list_price#78)), partial_count(ss_list_price#78)]
+Keys [1]: [ss_list_price#78]
+Functions [2]: [partial_avg(UnscaledValue(ss_list_price#78)), partial_count(ss_list_price#78)]
 
 (63) CometExchange
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
