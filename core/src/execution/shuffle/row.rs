@@ -1758,7 +1758,7 @@ pub(crate) fn append_columns(
                 }
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported map type: {:?}",
                         field.data_type()
                     )))
                 }
@@ -3182,7 +3182,7 @@ fn make_builders(
 
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported map type: {:?}",
                         field.data_type()
                     )))
                 }
@@ -3255,7 +3255,7 @@ fn make_builders(
                 }
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported list type: {:?}",
                         field.data_type()
                     )))
                 }
