@@ -151,7 +151,8 @@ Condition : isnotnull(i_category#14)
 
 (24) CometHashAggregate
 Input [2]: [i_current_price#13, i_category#14]
-Arguments: [i_current_price#13, i_category#14], Partial, [i_category#14], [partial_avg(UnscaledValue(i_current_price#13))]
+Keys [1]: [i_category#14]
+Functions [1]: [partial_avg(UnscaledValue(i_current_price#13))]
 
 (25) CometExchange
 Input [3]: [i_category#14, sum#15, count#16]
@@ -159,7 +160,8 @@ Arguments: hashpartitioning(i_category#14, 5), ENSURE_REQUIREMENTS, CometNativeS
 
 (26) CometHashAggregate
 Input [3]: [i_category#14, sum#15, count#16]
-Arguments: [i_category#14, sum#15, count#16], Final, [i_category#14], [avg(UnscaledValue(i_current_price#13))]
+Keys [1]: [i_category#14]
+Functions [1]: [avg(UnscaledValue(i_current_price#13))]
 
 (27) CometFilter
 Input [2]: [avg(i_current_price)#17, i_category#14]
@@ -281,7 +283,8 @@ Arguments: [d_month_seq#26], [d_month_seq#26]
 
 (48) CometHashAggregate
 Input [1]: [d_month_seq#26]
-Arguments: [d_month_seq#26], [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
+Functions: []
 
 (49) CometExchange
 Input [1]: [d_month_seq#26]
@@ -289,7 +292,8 @@ Arguments: hashpartitioning(d_month_seq#26, 5), ENSURE_REQUIREMENTS, CometNative
 
 (50) CometHashAggregate
 Input [1]: [d_month_seq#26]
-Arguments: [d_month_seq#26], [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
+Functions: []
 
 (51) ColumnarToRow [codegen id : 1]
 Input [1]: [d_month_seq#26]

@@ -415,7 +415,8 @@ Arguments: [(d_month_seq + 1)#49], [(d_month_seq#46 + 1) AS (d_month_seq + 1)#49
 
 (69) CometHashAggregate
 Input [1]: [(d_month_seq + 1)#49]
-Arguments: [(d_month_seq + 1)#49], [(d_month_seq + 1)#49]
+Keys [1]: [(d_month_seq + 1)#49]
+Functions: []
 
 (70) CometExchange
 Input [1]: [(d_month_seq + 1)#49]
@@ -423,7 +424,8 @@ Arguments: hashpartitioning((d_month_seq + 1)#49, 5), ENSURE_REQUIREMENTS, Comet
 
 (71) CometHashAggregate
 Input [1]: [(d_month_seq + 1)#49]
-Arguments: [(d_month_seq + 1)#49], [(d_month_seq + 1)#49]
+Keys [1]: [(d_month_seq + 1)#49]
+Functions: []
 
 (72) ColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 1)#49]
@@ -455,7 +457,8 @@ Arguments: [(d_month_seq + 3)#53], [(d_month_seq#50 + 3) AS (d_month_seq + 3)#53
 
 (76) CometHashAggregate
 Input [1]: [(d_month_seq + 3)#53]
-Arguments: [(d_month_seq + 3)#53], [(d_month_seq + 3)#53]
+Keys [1]: [(d_month_seq + 3)#53]
+Functions: []
 
 (77) CometExchange
 Input [1]: [(d_month_seq + 3)#53]
@@ -463,7 +466,8 @@ Arguments: hashpartitioning((d_month_seq + 3)#53, 5), ENSURE_REQUIREMENTS, Comet
 
 (78) CometHashAggregate
 Input [1]: [(d_month_seq + 3)#53]
-Arguments: [(d_month_seq + 3)#53], [(d_month_seq + 3)#53]
+Keys [1]: [(d_month_seq + 3)#53]
+Functions: []
 
 (79) ColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 3)#53]
