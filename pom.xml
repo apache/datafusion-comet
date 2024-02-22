@@ -54,7 +54,7 @@ under the License.
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>14.0.2</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
-    <spotless.version>2.29.0</spotless.version>
+    <spotless.version>2.43.0</spotless.version>
     <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>

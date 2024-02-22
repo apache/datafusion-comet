@@ -121,6 +121,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private long peakMemoryUsedBytes = 0;
   private ExposedByteArrayOutputStream serBuffer;
   private SerializationStream serOutputStream;
+
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
    * then call stop() with success = false if they get an exception, we want to make sure we don't
