@@ -321,6 +321,20 @@ class CometSparkSessionExtensions
               c
           }
 
+        case s: TakeOrderedAndProjectExec
+            if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
+              && isCometShuffleEnabled(conf) &&
+              CometTakeOrderedAndProjectExec.isSupported(s.projectList, s.sortOrder, s.child) =>
+          // TODO: support offset for Spark 3.4
+          QueryPlanSerde.operator2Proto(s) match {
+            case Some(nativeOp) =>
+              val cometOp =
+                CometTakeOrderedAndProjectExec(s, s.limit, s.sortOrder, s.projectList, s.child)
+              CometSinkPlaceHolder(nativeOp, s, cometOp)
+            case None =>
+              s
+          }
+
         case u: UnionExec
             if isCometOperatorEnabled(conf, "union") &&
               u.children.forall(isCometNative) =>
