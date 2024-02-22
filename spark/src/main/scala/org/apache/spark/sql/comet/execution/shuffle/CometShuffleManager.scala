@@ -52,7 +52,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
         " Shuffle will continue to spill to disk when necessary.")
   }
 
-  private val sortShuffleManager = new SortShuffleManager(conf);
+  private val sortShuffleManager = new SortShuffleManager(conf)
 
   /**
    * A mapping from shuffle ids to the task ids of mappers producing output for those shuffles.

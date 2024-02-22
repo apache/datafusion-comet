@@ -59,22 +59,28 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
-          val df = sql(
-            "SELECT tbl_a._1, tbl_b._2 FROM tbl_a JOIN tbl_b " +
-              "WHERE tbl_a._1 > tbl_a._2 LIMIT 2")
+          Seq(true, false).foreach { emptyBroadcast =>
+            val broadcastTable = if (emptyBroadcast) "tbl_a" else "tbl_b"
+            val df = sql(
+              s"SELECT /*+ BROADCAST($broadcastTable) */ tbl_a._1, tbl_b._2 FROM tbl_a JOIN tbl_b " +
+                "WHERE tbl_a._1 > tbl_a._2 LIMIT 2")
 
-          val nativeBroadcast = find(df.queryExecution.executedPlan) {
-            case _: CometBroadcastExchangeExec => true
-            case _ => false
-          }.get.asInstanceOf[CometBroadcastExchangeExec]
+            val nativeBroadcast = find(df.queryExecution.executedPlan) {
+              case _: CometBroadcastExchangeExec => true
+              case _ => false
+            }.get.asInstanceOf[CometBroadcastExchangeExec]
 
-          val numParts = nativeBroadcast.executeColumnar().getNumPartitions
+            val numParts = nativeBroadcast.executeColumnar().getNumPartitions
 
-          val rows = nativeBroadcast.executeCollect().toSeq.sortBy(row => row.getInt(0))
-          val rowContents = rows.map(row => row.getInt(0))
-          val expected = (0 until numParts).flatMap(_ => (0 until 5).map(i => i + 1)).sorted
-
-          assert(rowContents === expected)
+            val rows = nativeBroadcast.executeCollect().toSeq.sortBy(row => row.getInt(0))
+            val rowContents = rows.map(row => row.getInt(0))
+            val expected = if (emptyBroadcast) {
+              Seq.empty
+            } else {
+              (0 until numParts).flatMap(_ => (0 until 5).map(i => i + 1)).sorted
+            }
+            assert(rowContents === expected)
+          }
         }
       }
     }
