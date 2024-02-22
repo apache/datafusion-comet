@@ -42,7 +42,8 @@ use datafusion_common::ScalarValue;
 use datafusion_physical_expr::{
     execution_props::ExecutionProps,
     expressions::{
-        CaseExpr, CastExpr, Count, InListExpr, IsNullExpr, Max, Min, NegativeExpr, NotExpr, Sum,
+        CaseExpr, CastExpr, Count, FirstValue, InListExpr, IsNullExpr, LastValue, Max, Min,
+        NegativeExpr, NotExpr, Sum,
     },
     AggregateExpr, ScalarFunctionExpr,
 };
@@ -899,6 +900,28 @@ impl PhysicalPlanner {
                         Ok(Arc::new(Avg::new(child, "avg", datatype)))
                     }
                 }
+            }
+            AggExprStruct::First(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(FirstValue::new(
+                    child,
+                    "first",
+                    datatype,
+                    vec![],
+                    vec![],
+                )))
+            }
+            AggExprStruct::Last(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(LastValue::new(
+                    child,
+                    "last",
+                    datatype,
+                    vec![],
+                    vec![],
+                )))
             }
         }
     }

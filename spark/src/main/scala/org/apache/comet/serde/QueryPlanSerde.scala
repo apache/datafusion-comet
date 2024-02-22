@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
@@ -283,6 +283,42 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setMax(maxBuilder)
+              .build())
+        } else {
+          None
+        }
+      case first @ First(child, ignoreNulls)
+          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
+        val childExpr = exprToProto(child, inputs)
+        val dataType = serializeDataType(first.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val firstBuilder = ExprOuterClass.First.newBuilder()
+          firstBuilder.setChild(childExpr.get)
+          firstBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setFirst(firstBuilder)
+              .build())
+        } else {
+          None
+        }
+      case last @ Last(child, ignoreNulls)
+          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
+        val childExpr = exprToProto(child, inputs)
+        val dataType = serializeDataType(last.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val lastBuilder = ExprOuterClass.Last.newBuilder()
+          lastBuilder.setChild(childExpr.get)
+          lastBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setLast(lastBuilder)
               .build())
         } else {
           None

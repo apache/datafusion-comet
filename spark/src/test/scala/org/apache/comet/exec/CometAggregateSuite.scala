@@ -438,8 +438,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
               "tbl",
               dictionaryEnabled) {
-              checkSparkAnswer(
-                "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1), COUNT(DISTINCT _1), AVG(_1) FROM tbl GROUP BY _2")
+              withView("v") {
+                sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
+                checkSparkAnswer(
+                  "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
+                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2")
+              }
             }
           }
         }
@@ -458,6 +462,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val path = new Path(dir.toURI.toString, "test.parquet")
               makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
               withParquetTable(path.toUri.toString, "tbl") {
+                withView("v") {
+                  sql("CREATE TEMP VIEW v AS SELECT _g1, _g2, _3 FROM tbl ORDER BY _3")
+                  checkSparkAnswer("SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2")
+                  checkSparkAnswer("SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2")
+                }
                 checkSparkAnswer("SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2")
                 checkSparkAnswer("SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2")
                 checkSparkAnswer("SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
@@ -491,6 +500,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val path = new Path(dir.toURI.toString, "test.parquet")
               makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
               withParquetTable(path.toUri.toString, "tbl") {
+                withView("v") {
+                  sql("CREATE TEMP VIEW v AS SELECT _g3, _g4, _3, _4 FROM tbl ORDER BY _3, _4")
+                  checkSparkAnswer(
+                    "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4")
+                  checkSparkAnswer("SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4")
+                }
                 checkSparkAnswer("SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer(
                   "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
@@ -524,6 +539,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 // Test all combinations of different aggregation & group-by types
                 (1 to 4).foreach { col =>
                   (1 to 14).foreach { gCol =>
+                    withView("v") {
+                      sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _$col FROM tbl ORDER BY _$col")
+                      checkSparkAnswer(s"SELECT _g$gCol, FIRST(_$col) FROM v GROUP BY _g$gCol")
+                      checkSparkAnswer(s"SELECT _g$gCol, LAST(_$col) FROM v GROUP BY _g$gCol")
+                    }
                     checkSparkAnswer(s"SELECT _g$gCol, SUM(_$col) FROM tbl GROUP BY _g$gCol")
                     checkSparkAnswer(
                       s"SELECT _g$gCol, SUM(DISTINCT _$col) FROM tbl GROUP BY _g$gCol")
@@ -817,6 +837,53 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
                   expectedNumOfBosonAggregates)
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("first/last") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionary =>
+        withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "test"
+          withTable(table) {
+            sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+            sql(
+              s"insert into $table values(4, 1, 1), (4, 1, 1), (3, 3, 1)," +
+                " (2, 4, 2), (1, 3, 2), (null, 1, 1)")
+            withView("t") {
+              sql("CREATE VIEW t AS SELECT col1, col3 FROM test ORDER BY col1")
+
+              var expectedNumOfBosonAggregates = 2
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1), LAST(col1) FROM t",
+                expectedNumOfBosonAggregates)
+
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1) FROM t",
+                expectedNumOfBosonAggregates)
+
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1), LAST(col1), col3 FROM t GROUP BY col3",
+                expectedNumOfBosonAggregates)
+
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1), col3 FROM t GROUP BY col3",
+                expectedNumOfBosonAggregates)
+
+              expectedNumOfBosonAggregates = 0
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1, true), LAST(col1) FROM t",
+                expectedNumOfBosonAggregates)
+
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT FIRST(col1), LAST(col1, true), col3 FROM t GROUP BY col3",
+                expectedNumOfBosonAggregates)
             }
           }
         }
