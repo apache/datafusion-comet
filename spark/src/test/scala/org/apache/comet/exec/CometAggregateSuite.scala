@@ -791,9 +791,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("distinct") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { bosonColumnShuffleEnabled =>
+      Seq(true, false).foreach { cometColumnShuffleEnabled =>
         withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> bosonColumnShuffleEnabled.toString) {
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               val table = "test"
@@ -802,40 +802,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 sql(
                   s"insert into $table values(1, 1, 1), (1, 1, 1), (1, 3, 1), (1, 4, 2), (5, 3, 2)")
 
-                var expectedNumOfBosonAggregates = 2
+                var expectedNumOfCometAggregates = 2
 
                 checkSparkAnswerAndNumOfAggregates(
                   s"SELECT DISTINCT(col2) FROM $table",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
-                expectedNumOfBosonAggregates = 4
+                expectedNumOfCometAggregates = 4
 
                 checkSparkAnswerAndNumOfAggregates(
                   s"SELECT COUNT(distinct col2) FROM $table",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
                 checkSparkAnswerAndNumOfAggregates(
                   s"SELECT COUNT(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
                 checkSparkAnswerAndNumOfAggregates(
                   s"SELECT SUM(distinct col2) FROM $table",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
                 checkSparkAnswerAndNumOfAggregates(
                   s"SELECT SUM(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
                 checkSparkAnswerAndNumOfAggregates(
                   "SELECT COUNT(distinct col2), SUM(distinct col2), col1, COUNT(distinct col2)," +
                     s" SUM(distinct col2) FROM $table group by col1",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
 
-                expectedNumOfBosonAggregates = 1
+                expectedNumOfCometAggregates = 1
                 checkSparkAnswerAndNumOfAggregates(
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
                     s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
-                  expectedNumOfBosonAggregates)
+                  expectedNumOfCometAggregates)
               }
             }
           }
@@ -859,31 +859,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             withView("t") {
               sql("CREATE VIEW t AS SELECT col1, col3 FROM test ORDER BY col1")
 
-              var expectedNumOfBosonAggregates = 2
+              var expectedNumOfCometAggregates = 2
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1) FROM t",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1) FROM t",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1), col3 FROM t GROUP BY col3",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1), col3 FROM t GROUP BY col3",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
 
-              expectedNumOfBosonAggregates = 0
+              expectedNumOfCometAggregates = 0
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1, true), LAST(col1) FROM t",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1, true), col3 FROM t GROUP BY col3",
-                expectedNumOfBosonAggregates)
+                expectedNumOfCometAggregates)
             }
           }
         }
