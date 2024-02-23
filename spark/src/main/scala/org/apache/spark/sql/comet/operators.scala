@@ -82,7 +82,11 @@ abstract class CometExec extends CometPlan {
 
       out.flush()
       out.close()
-      Iterator((count, cbbos.toChunkedByteBuffer))
+      if (out.size() > 0) {
+        Iterator((count, cbbos.toChunkedByteBuffer))
+      } else {
+        Iterator((count, new ChunkedByteBuffer(Array.empty[ByteBuffer])))
+      }
     }
   }
 
