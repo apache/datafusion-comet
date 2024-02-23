@@ -134,8 +134,7 @@ jobs:
 
   tpcds-1g:
     name: Run TPC-DS queries with SF=1
-    # Pin to 'Ubuntu 20.04' due to 'databricks/tpcds-kit' compilation
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     container:
       image: amd64/rust
     env:
@@ -159,7 +158,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: databricks/tpcds-kit
-          ref: 2a5078a782192ddb6efbcead8de9973d6ab4f069
           path: ./tpcds-kit
       - name: Build Comet
         run: make release
