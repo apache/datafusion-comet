@@ -24,12 +24,13 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode, UnsafeRowSerializer}
+import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.shims.ShimCometTakeOrderedAndProjectExec
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -123,13 +124,12 @@ case class CometTakeOrderedAndProjectExec(
     this.copy(child = newChild)
 }
 
-object CometTakeOrderedAndProjectExec {
-  def isSupported(
-      projectList: Seq[NamedExpression],
-      sortOrder: Seq[SortOrder],
-      child: SparkPlan): Boolean = {
-    val exprs = projectList.map(exprToProto(_, child.output))
-    val sortOrders = sortOrder.map(exprToProto(_, child.output))
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined)
+object CometTakeOrderedAndProjectExec extends ShimCometTakeOrderedAndProjectExec {
+  // TODO: support offset for Spark 3.4
+  def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
+    val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
+    val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
+    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && getOffset(plan).getOrElse(
+      0) == 0
   }
 }
