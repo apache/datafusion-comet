@@ -173,20 +173,20 @@ jobs:
           cd ..
       - name: Run TPC-DS queries (Sort merge join)
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.BosonTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.preferSortMergeJoin=true
       - name: Run TPC-DS queries (Broadcast hash join)
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.BosonTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=10485760
       - name: Run TPC-DS queries (Shuffled hash join)
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.BosonTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
