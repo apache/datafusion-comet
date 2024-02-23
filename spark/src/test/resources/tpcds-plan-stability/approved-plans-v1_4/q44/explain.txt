@@ -51,7 +51,8 @@ Arguments: [ss_item_sk#1, ss_net_profit#3], [ss_item_sk#1, ss_net_profit#3]
 
 (4) CometHashAggregate
 Input [2]: [ss_item_sk#1, ss_net_profit#3]
-Arguments: [ss_item_sk#1, ss_net_profit#3], Partial, [ss_item_sk#1], [partial_avg(UnscaledValue(ss_net_profit#3))]
+Keys [1]: [ss_item_sk#1]
+Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#3))]
 
 (5) CometExchange
 Input [3]: [ss_item_sk#1, sum#5, count#6]
@@ -59,7 +60,8 @@ Arguments: hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeSh
 
 (6) CometHashAggregate
 Input [3]: [ss_item_sk#1, sum#5, count#6]
-Arguments: [ss_item_sk#1, sum#5, count#6], Final, [ss_item_sk#1], [avg(UnscaledValue(ss_net_profit#3))]
+Keys [1]: [ss_item_sk#1]
+Functions [1]: [avg(UnscaledValue(ss_net_profit#3))]
 
 (7) CometFilter
 Input [2]: [item_sk#7, rank_col#8]
@@ -202,7 +204,8 @@ Arguments: [ss_store_sk#22, ss_net_profit#23], [ss_store_sk#22, ss_net_profit#23
 
 (37) CometHashAggregate
 Input [2]: [ss_store_sk#22, ss_net_profit#23]
-Arguments: [ss_store_sk#22, ss_net_profit#23], Partial, [ss_store_sk#22], [partial_avg(UnscaledValue(ss_net_profit#23))]
+Keys [1]: [ss_store_sk#22]
+Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#23))]
 
 (38) CometExchange
 Input [3]: [ss_store_sk#22, sum#25, count#26]
@@ -210,7 +213,8 @@ Arguments: hashpartitioning(ss_store_sk#22, 5), ENSURE_REQUIREMENTS, CometNative
 
 (39) CometHashAggregate
 Input [3]: [ss_store_sk#22, sum#25, count#26]
-Arguments: [ss_store_sk#22, sum#25, count#26], Final, [ss_store_sk#22], [avg(UnscaledValue(ss_net_profit#23))]
+Keys [1]: [ss_store_sk#22]
+Functions [1]: [avg(UnscaledValue(ss_net_profit#23))]
 
 (40) ColumnarToRow [codegen id : 1]
 Input [1]: [rank_col#27]

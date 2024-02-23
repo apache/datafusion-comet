@@ -32,8 +32,9 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.execution.shuffle.ArrowReaderIterator
+import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -81,7 +82,11 @@ abstract class CometExec extends CometPlan {
 
       out.flush()
       out.close()
-      Iterator((count, cbbos.toChunkedByteBuffer))
+      if (out.size() > 0) {
+        Iterator((count, cbbos.toChunkedByteBuffer))
+      } else {
+        Iterator((count, new ChunkedByteBuffer(Array.empty[ByteBuffer])))
+      }
     }
   }
 
@@ -121,7 +126,7 @@ object CometExec {
   }
 
   /**
-   * Decodes the byte arrays back to ColumnarBatches and put them into buffer.
+   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
    */
   def decodeBatches(bytes: ChunkedByteBuffer): Iterator[ColumnarBatch] = {
     if (bytes.size == 0) {
@@ -145,7 +150,7 @@ abstract class CometNativeExec extends CometExec {
    * The serialized native query plan, optional. This is only defined when the current node is the
    * "boundary" node between native and Spark.
    */
-  private var serializedPlanOpt: Option[Array[Byte]] = None
+  def serializedPlanOpt: Option[Array[Byte]]
 
   /** The Comet native operator */
   def nativeOp: Operator
@@ -197,8 +202,9 @@ abstract class CometNativeExec extends CometExec {
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     serializedPlanOpt match {
       case None =>
-        assert(children.length == 1) // TODO: fix this!
-        children.head.executeColumnar()
+        // This is in the middle of a native execution, it should not be executed directly.
+        throw new CometRuntimeException(
+          s"CometNativeExec should not be executed directly without a serialized plan: $this")
       case Some(serializedPlan) =>
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
@@ -224,17 +230,49 @@ abstract class CometNativeExec extends CometExec {
           it
         }
 
-        children.map(_.executeColumnar) match {
-          case Seq(child) =>
-            child.mapPartitionsInternal(iter => createCometExecIter(Seq(iter)))
-          case Seq(first, second) =>
-            first.zipPartitions(second) { (iter1, iter2) =>
-              createCometExecIter(Seq(iter1, iter2))
-            }
-          case _ =>
-            throw new CometRuntimeException(
-              s"Expected only two children but got s${children.size}")
+        // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
+        // to execute the native plan.
+        val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
+
+        foreachUntilCometInput(this)(inputs += _.executeColumnar())
+
+        if (inputs.isEmpty) {
+          throw new CometRuntimeException(s"No input for CometNativeExec: $this")
         }
+
+        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
+    }
+  }
+
+  /**
+   * Traverse the tree of Comet physical operators until reaching the input sources operators and
+   * apply the given function to each operator.
+   *
+   * The input sources include the following operators:
+   *   - CometScanExec - Comet scan node
+   *   - CometBatchScanExec - Comet scan node
+   *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
+   *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
+   *   - CometShuffleExchangeExec - Comet shuffle exchange node
+   *   - CometUnionExec, etc. which executes its children native plan and produces ColumnarBatches
+   *
+   * @param plan
+   *   the root of the Comet physical plan tree (e.g., the root of the SparkPlan tree of a query)
+   *   to traverse
+   * @param func
+   *   the function to apply to each Comet physical operator
+   */
+  def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
+    plan match {
+      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
+          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
+          _: CometCoalesceExec =>
+        func(plan)
+      case _: CometPlan =>
+        // Other Comet operators, continue to traverse the tree.
+        plan.children.foreach(foreachUntilCometInput(_)(func))
+      case _ =>
+      // no op
     }
   }
 
@@ -242,11 +280,44 @@ abstract class CometNativeExec extends CometExec {
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
-  def convertBlock(): Unit = {
-    val out = new ByteArrayOutputStream()
-    nativeOp.writeTo(out)
-    out.close()
-    serializedPlanOpt = Some(out.toByteArray)
+  def convertBlock(): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case serializedPlan: Option[Array[Byte]] if serializedPlan.isEmpty =>
+        val out = new ByteArrayOutputStream()
+        nativeOp.writeTo(out)
+        out.close()
+        Some(out.toByteArray)
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  /**
+   * Cleans the serialized plan from this native Comet operator. Used to canonicalize the plan.
+   */
+  def cleanBlock(): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case serializedPlan: Option[Array[Byte]] if serializedPlan.isDefined =>
+        None
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
+  }
+
+  override protected def doCanonicalize(): SparkPlan = {
+    val canonicalizedPlan = super.doCanonicalize().asInstanceOf[CometNativeExec]
+    if (serializedPlanOpt.isDefined) {
+      // If the plan is a boundary node, we should remove the serialized plan.
+      canonicalizedPlan.cleanBlock()
+    } else {
+      canonicalizedPlan
+    }
   }
 }
 
@@ -257,7 +328,8 @@ case class CometProjectExec(
     override val originalPlan: SparkPlan,
     projectList: Seq[NamedExpression],
     override val output: Seq[Attribute],
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override def producedAttributes: AttributeSet = outputSet
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -269,7 +341,8 @@ case class CometProjectExec(
     obj match {
       case other: CometProjectExec =>
         this.projectList == other.projectList &&
-        this.output == other.output && this.child == other.child
+        this.output == other.output && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -282,7 +355,8 @@ case class CometFilterExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     condition: Expression,
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -293,7 +367,8 @@ case class CometFilterExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometFilterExec =>
-        this.condition == other.condition && this.child == other.child
+        this.condition == other.condition && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -314,7 +389,8 @@ case class CometSortExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     sortOrder: Seq[SortOrder],
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -325,7 +401,8 @@ case class CometSortExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometSortExec =>
-        this.sortOrder == other.sortOrder && this.child == other.child
+        this.sortOrder == other.sortOrder && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -344,7 +421,8 @@ case class CometLocalLimitExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     limit: Int,
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -352,13 +430,26 @@ case class CometLocalLimitExec(
   override def stringArgs: Iterator[Any] = Iterator(limit, child)
 
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometLocalLimitExec =>
+        this.limit == other.limit && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(limit: java.lang.Integer, child)
 }
 
 case class CometGlobalLimitExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     limit: Int,
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -368,7 +459,8 @@ case class CometGlobalLimitExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometGlobalLimitExec =>
-        this.limit == other.limit && this.child == other.child
+        this.limit == other.limit && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -381,7 +473,8 @@ case class CometExpandExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     projections: Seq[Seq[Expression]],
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override def producedAttributes: AttributeSet = outputSet
 
@@ -393,7 +486,8 @@ case class CometExpandExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometExpandExec =>
-        this.projections == other.projections && this.child == other.child
+        this.projections == other.projections && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -443,10 +537,20 @@ case class CometHashAggregateExec(
     aggregateExpressions: Seq[AggregateExpression],
     input: Seq[Attribute],
     mode: Option[AggregateMode],
-    child: SparkPlan)
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
+
+  override def verboseStringWithOperatorId(): String = {
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Input", child.output)}
+       |${ExplainUtils.generateFieldString("Keys", groupingExpressions)}
+       |${ExplainUtils.generateFieldString("Functions", aggregateExpressions)}
+       |""".stripMargin
+  }
 
   override def stringArgs: Iterator[Any] =
     Iterator(input, mode, groupingExpressions, aggregateExpressions, child)
@@ -458,7 +562,8 @@ case class CometHashAggregateExec(
         this.aggregateExpressions == other.aggregateExpressions &&
         this.input == other.input &&
         this.mode == other.mode &&
-        this.child == other.child
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
@@ -471,6 +576,7 @@ case class CometHashAggregateExec(
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
+  override val serializedPlanOpt: Option[Array[Byte]] = None
   override def stringArgs: Iterator[Any] = Iterator(originalPlan.output, originalPlan)
 }
 
@@ -486,6 +592,8 @@ case class CometSinkPlaceHolder(
     override val originalPlan: SparkPlan,
     child: SparkPlan)
     extends CometUnaryExec {
+  override val serializedPlanOpt: Option[Array[Byte]] = None
+
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
     this.copy(child = newChild)
   }

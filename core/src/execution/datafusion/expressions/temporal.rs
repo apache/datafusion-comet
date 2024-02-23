@@ -33,7 +33,10 @@ use datafusion_physical_expr::PhysicalExpr;
 
 use crate::execution::{
     datafusion::expressions::utils::{array_with_timezone, down_cast_any_ref},
-    kernels::temporal::{date_trunc_dyn, timestamp_trunc_dyn},
+    kernels::temporal::{
+        date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn,
+        timestamp_trunc_dyn,
+    },
 };
 
 #[derive(Debug, Hash)]
@@ -372,9 +375,13 @@ impl PhysicalExpr for DateTruncExec {
                 let result = date_trunc_dyn(&date, format)?;
                 Ok(ColumnarValue::Array(result))
             }
+            (ColumnarValue::Array(date), ColumnarValue::Array(formats)) => {
+                let result = date_trunc_array_fmt_dyn(&date, &formats)?;
+                Ok(ColumnarValue::Array(result))
+            }
             _ => Err(DataFusionError::Execution(
-                "Invalid input to function DateTrunc. Expected (PrimitiveArray<Date32>, Scalar)"
-                    .to_string(),
+                "Invalid input to function DateTrunc. Expected (PrimitiveArray<Date32>, Scalar) or \
+                    (PrimitiveArray<Date32>, StringArray)".to_string(),
             )),
         }
     }
@@ -486,9 +493,20 @@ impl PhysicalExpr for TimestampTruncExec {
                 let result = timestamp_trunc_dyn(&ts, format)?;
                 Ok(ColumnarValue::Array(result))
             }
+            (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
+                let ts = array_with_timezone(
+                    ts,
+                    tz.clone(),
+                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
+                );
+                let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
+                Ok(ColumnarValue::Array(result))
+            }
             _ => Err(DataFusionError::Execution(
-                "Invalid input to function TimestampTrunc. ".to_owned()
-                    + "Expected (PrimitiveArray<TimestampMicrosecondType>, Scalar, String)",
+                "Invalid input to function TimestampTrunc. \
+                    Expected (PrimitiveArray<TimestampMicrosecondType>, Scalar, String) or \
+                    (PrimitiveArray<TimestampMicrosecondType>, StringArray, String)"
+                    .to_string(),
             )),
         }
     }

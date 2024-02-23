@@ -51,7 +51,11 @@ runs:
       shell: bash
       run: |
         cd common
-        ../mvnw -B clean compile -DskipTests -Djava.version=${JAVA_VERSION}
+        if [ $JAVA_VERSION == "1.8" ]; then
+          ../mvnw -B clean compile -DskipTests -Djava.version=${JAVA_VERSION} -Dspotless.version=2.29.0
+        else
+          ../mvnw -B clean compile -DskipTests -Djava.version=${JAVA_VERSION}
+        fi
 
     - name: Run Cargo test
       shell: bash

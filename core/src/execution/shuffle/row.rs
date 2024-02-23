@@ -20,7 +20,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::shuffle_writer::{compute_checksum, write_ipc_compressed, ChecksumAlgorithm},
+        datafusion::shuffle_writer::{write_ipc_compressed, Checksum},
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
@@ -1758,7 +1758,7 @@ pub(crate) fn append_columns(
                 }
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported map type: {:?}",
                         field.data_type()
                     )))
                 }
@@ -3182,7 +3182,7 @@ fn make_builders(
 
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported map type: {:?}",
                         field.data_type()
                     )))
                 }
@@ -3255,7 +3255,7 @@ fn make_builders(
                 }
                 _ => {
                     return Err(CometError::Internal(format!(
-                        "Unsupported type: {:?}",
+                        "Unsupported list type: {:?}",
                         field.data_type()
                     )))
                 }
@@ -3280,6 +3280,7 @@ fn make_builders(
 #[allow(clippy::too_many_arguments)]
 pub fn process_sorted_row_partition(
     row_num: usize,
+    batch_size: usize,
     row_addresses_ptr: *mut jlong,
     row_sizes_ptr: *mut jint,
     schema: &Vec<DataType>,
@@ -3287,79 +3288,86 @@ pub fn process_sorted_row_partition(
     prefer_dictionary_ratio: f64,
     checksum_enabled: bool,
     checksum_algo: i32,
-    current_checksum: Option<u32>,
+    // This is the checksum value passed in from Spark side, and is getting updated for
+    // each shuffle partition Spark processes. It is called "initial" here to indicate
+    // this is the initial checksum for this method, as it also gets updated iteratively
+    // inside the loop within the method across batches.
+    initial_checksum: Option<u32>,
 ) -> Result<(i64, Option<u32>), CometError> {
-    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
-    schema.iter().try_for_each(|dt| {
-        make_builders(dt, row_num, prefer_dictionary_ratio)
-            .map(|builder| data_builders.push(builder))?;
-        Ok::<(), CometError>(())
-    })?;
-
-    // Appends rows to the array builders.
-    let mut row_start: usize = 0;
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
-    while row_start < row_num {
-        let row_end = std::cmp::min(row_start + row_step, row_num);
 
-        // For each column, iterating over rows and appending values to corresponding array builder.
-        for (idx, builder) in data_builders.iter_mut().enumerate() {
-            append_columns(
-                row_addresses_ptr,
-                row_sizes_ptr,
-                row_start,
-                row_end,
-                schema,
-                idx,
-                builder,
-                prefer_dictionary_ratio,
-            )?;
-        }
-
-        row_start = row_end;
-    }
-
-    // Writes a record batch generated from the array builders to the output file.
-    let array_refs: Result<Vec<ArrayRef>, _> = data_builders
-        .iter_mut()
-        .zip(schema.iter())
-        .map(|(builder, datatype)| builder_to_array(builder, datatype, prefer_dictionary_ratio))
-        .collect();
-    let batch = make_batch(array_refs?);
-
-    let mut frozen: Vec<u8> = vec![];
-    let mut cursor = Cursor::new(&mut frozen);
-    cursor.seek(SeekFrom::End(0))?;
-    let written = write_ipc_compressed(&batch, &mut cursor)?;
-
-    let checksum = if checksum_enabled {
-        let checksum = match checksum_algo {
-            0 => ChecksumAlgorithm::CRC32(current_checksum),
-            1 => ChecksumAlgorithm::Adler32(current_checksum),
-            _ => {
-                return Err(CometError::Internal(
-                    "Unsupported checksum algorithm".to_string(),
-                ))
-            }
-        };
-
-        match compute_checksum(&mut cursor, &checksum)? {
-            ChecksumAlgorithm::CRC32(checksum) => checksum,
-            ChecksumAlgorithm::Adler32(checksum) => checksum,
-        }
+    // The current row number we are reading
+    let mut current_row = 0;
+    // Total number of bytes written
+    let mut written = 0;
+    // The current checksum value. This is updated incrementally in the following loop.
+    let mut current_checksum = if checksum_enabled {
+        Some(Checksum::try_new(checksum_algo, initial_checksum)?)
     } else {
         None
     };
 
-    let mut output_data = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(output_path)?;
+    while current_row < row_num {
+        let n = std::cmp::min(batch_size, row_num - current_row);
 
-    output_data.write_all(&frozen)?;
+        let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+        schema.iter().try_for_each(|dt| {
+            make_builders(dt, n, prefer_dictionary_ratio)
+                .map(|builder| data_builders.push(builder))?;
+            Ok::<(), CometError>(())
+        })?;
 
-    Ok((written as i64, checksum))
+        // Appends rows to the array builders.
+        let mut row_start: usize = current_row;
+        while row_start < current_row + n {
+            let row_end = std::cmp::min(row_start + row_step, current_row + n);
+
+            // For each column, iterating over rows and appending values to corresponding array
+            // builder.
+            for (idx, builder) in data_builders.iter_mut().enumerate() {
+                append_columns(
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    row_start,
+                    row_end,
+                    schema,
+                    idx,
+                    builder,
+                    prefer_dictionary_ratio,
+                )?;
+            }
+
+            row_start = row_end;
+        }
+
+        // Writes a record batch generated from the array builders to the output file.
+        let array_refs: Result<Vec<ArrayRef>, _> = data_builders
+            .iter_mut()
+            .zip(schema.iter())
+            .map(|(builder, datatype)| builder_to_array(builder, datatype, prefer_dictionary_ratio))
+            .collect();
+        let batch = make_batch(array_refs?);
+
+        let mut frozen: Vec<u8> = vec![];
+        let mut cursor = Cursor::new(&mut frozen);
+        cursor.seek(SeekFrom::End(0))?;
+        written += write_ipc_compressed(&batch, &mut cursor)?;
+
+        if let Some(checksum) = &mut current_checksum {
+            checksum.update(&mut cursor)?;
+        }
+
+        let mut output_data = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&output_path)?;
+
+        output_data.write_all(&frozen)?;
+        current_row += n;
+    }
+
+    Ok((written as i64, current_checksum.map(|c| c.finalize())))
 }
 
 fn builder_to_array(

@@ -286,6 +286,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("trunc with format array") {
+    val numRows = 1000
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "date_trunc_with_format.parquet")
+        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+        withParquetTable(path.toString, "dateformattbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT " +
+              "dateformat, _7, " +
+              "trunc(_7, dateformat) " +
+              " from dateformattbl ")
+        }
+      }
+    }
+  }
+
   test("date_trunc") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -350,6 +367,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 s"date_trunc('$format', _5)  " +
                 " from timetbl")
           }
+        }
+      }
+    }
+  }
+
+  test("date_trunc with format array") {
+    val numRows = 1000
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
+        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+        withParquetTable(path.toString, "timeformattbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT " +
+              "format, _0, _1, _2, _3, _4, _5, " +
+              "date_trunc(format, _0), " +
+              "date_trunc(format, _1), " +
+              "date_trunc(format, _2), " +
+              "date_trunc(format, _3), " +
+              "date_trunc(format, _4), " +
+              "date_trunc(format, _5) " +
+              " from timeformattbl ")
         }
       }
     }

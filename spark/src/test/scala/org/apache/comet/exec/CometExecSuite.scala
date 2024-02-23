@@ -80,6 +80,25 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometBroadcastExchangeExec: empty broadcast") {
+    withSQLConf(CometConf.COMET_EXEC_BROADCAST_ENABLED.key -> "true") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(a) */ *" +
+              " FROM (SELECT * FROM tbl_a WHERE _1 < 0) a JOIN tbl_b b" +
+              " ON a._1 = b._1")
+          val nativeBroadcast = find(df.queryExecution.executedPlan) {
+            case _: CometBroadcastExchangeExec => true
+            case _ => false
+          }.get.asInstanceOf[CometBroadcastExchangeExec]
+          val rows = nativeBroadcast.executeCollect()
+          assert(rows.isEmpty)
+        }
+      }
+    }
+  }
+
   test("CometExec.executeColumnarCollectIterator can collect ColumnarBatch results") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",

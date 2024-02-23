@@ -36,6 +36,7 @@ import org.apache.spark.shuffle.sort.RowPartition;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 
+import org.apache.comet.CometConf;
 import org.apache.comet.Native;
 import org.apache.comet.serde.QueryPlanSerde$;
 
@@ -178,6 +179,7 @@ public abstract class SpillWriter {
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
     long start = System.nanoTime();
+    int batchSize = (int) CometConf.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,
@@ -185,6 +187,7 @@ public abstract class SpillWriter {
             dataTypes,
             file.getAbsolutePath(),
             preferDictionaryRatio,
+            batchSize,
             checksumEnabled,
             checksumAlgo,
             currentChecksum);

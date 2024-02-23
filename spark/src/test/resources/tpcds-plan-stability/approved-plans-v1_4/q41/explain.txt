@@ -56,7 +56,8 @@ Arguments: [i_manufact#5], [i_manufact#5]
 
 (8) CometHashAggregate
 Input [1]: [i_manufact#5]
-Arguments: [i_manufact#5], Partial, [i_manufact#5], [partial_count(1)]
+Keys [1]: [i_manufact#5]
+Functions [1]: [partial_count(1)]
 
 (9) CometExchange
 Input [2]: [i_manufact#5, count#9]
@@ -64,7 +65,8 @@ Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeSh
 
 (10) CometHashAggregate
 Input [2]: [i_manufact#5, count#9]
-Arguments: [i_manufact#5, count#9], Final, [i_manufact#5], [count(1)]
+Keys [1]: [i_manufact#5]
+Functions [1]: [count(1)]
 
 (11) CometFilter
 Input [2]: [item_cnt#10, i_manufact#5]

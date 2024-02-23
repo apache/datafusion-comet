@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
@@ -283,6 +283,42 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setMax(maxBuilder)
+              .build())
+        } else {
+          None
+        }
+      case first @ First(child, ignoreNulls)
+          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
+        val childExpr = exprToProto(child, inputs)
+        val dataType = serializeDataType(first.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val firstBuilder = ExprOuterClass.First.newBuilder()
+          firstBuilder.setChild(childExpr.get)
+          firstBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setFirst(firstBuilder)
+              .build())
+        } else {
+          None
+        }
+      case last @ Last(child, ignoreNulls)
+          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
+        val childExpr = exprToProto(child, inputs)
+        val dataType = serializeDataType(last.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val lastBuilder = ExprOuterClass.Last.newBuilder()
+          lastBuilder.setChild(childExpr.get)
+          lastBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setLast(lastBuilder)
               .build())
         } else {
           None
@@ -1718,7 +1754,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                 case op if !op.isInstanceOf[CometPlan] =>
                   seenNonNativeOp = true
                   op
-                case op @ CometHashAggregateExec(_, _, _, _, input, Some(Partial), _) =>
+                case op @ CometHashAggregateExec(_, _, _, _, input, Some(Partial), _, _) =>
                   if (!seenNonNativeOp && partialAggInput.isEmpty) {
                     partialAggInput = Some(input)
                   }
@@ -1830,10 +1866,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case StructType(fields) =>
         fields.forall(f => supportedDataType(f.dataType))
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
+      case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
       case ArrayType(elementType, _) =>
         supportedDataType(elementType)
       case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
       case MapType(_, MapType(_, _, _), _) => false
+      case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
+      case MapType(_, StructType(_), _) => false
+      case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
+      case MapType(_, ArrayType(_, _), _) => false
       case MapType(keyType, valueType, _) =>
         supportedDataType(keyType) && supportedDataType(valueType)
       case _ =>

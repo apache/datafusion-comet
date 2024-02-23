@@ -224,6 +224,13 @@ object CometConf {
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
       .createWithDefault(1.0)
 
+  val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
+    conf("spark.comet.columnar.shuffle.batch.size")
+      .internal()
+      .doc("Batch size when writing out sorted spill files on the native side.")
+      .intConf
+      .createWithDefault(8192)
+
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .doc("The ratio of total values to distinct values in a string column to decide whether to " +

@@ -237,7 +237,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometProjectExec(nativeOp, op, op.projectList, op.output, op.child)
+              CometProjectExec(nativeOp, op, op.projectList, op.output, op.child, None)
             case None =>
               op
           }
@@ -246,7 +246,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometFilterExec(nativeOp, op, op.condition, op.child)
+              CometFilterExec(nativeOp, op, op.condition, op.child, None)
             case None =>
               op
           }
@@ -255,7 +255,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometSortExec(nativeOp, op, op.sortOrder, op.child)
+              CometSortExec(nativeOp, op, op.sortOrder, op.child, None)
             case None =>
               op
           }
@@ -264,7 +264,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometLocalLimitExec(nativeOp, op, op.limit, op.child)
+              CometLocalLimitExec(nativeOp, op, op.limit, op.child, None)
             case None =>
               op
           }
@@ -273,7 +273,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometGlobalLimitExec(nativeOp, op, op.limit, op.child)
+              CometGlobalLimitExec(nativeOp, op, op.limit, op.child, None)
             case None =>
               op
           }
@@ -282,7 +282,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometExpandExec(nativeOp, op, op.projections, op.child)
+              CometExpandExec(nativeOp, op, op.projections, op.child, None)
             case None =>
               op
           }
@@ -304,7 +304,8 @@ class CometSparkSessionExtensions
                 aggExprs,
                 child.output,
                 if (modes.nonEmpty) Some(modes.head) else None,
-                child)
+                child,
+                None)
             case None =>
               op
           }
@@ -425,10 +426,11 @@ class CometSparkSessionExtensions
         newPlan.transformDown {
           case op: CometNativeExec =>
             if (firstNativeOp) {
-              op.convertBlock()
               firstNativeOp = false
+              op.convertBlock()
+            } else {
+              op
             }
-            op
           case op =>
             firstNativeOp = true
             op
