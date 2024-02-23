@@ -1052,6 +1052,24 @@ class CometExecSuite extends CometTestBase {
         }
       })
   }
+
+  test("Fallback to Spark for TakeOrderedAndProjectExec with offset") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3").offset(1).groupBy($"a").sum("b")
+          checkSparkAnswer(df)
+        }
+      })
+  }
 }
 
 case class BucketedTableTestSpec(

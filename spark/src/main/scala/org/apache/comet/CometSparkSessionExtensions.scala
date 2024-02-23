@@ -324,7 +324,8 @@ class CometSparkSessionExtensions
         case s: TakeOrderedAndProjectExec
             if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
               && isCometShuffleEnabled(conf) &&
-              CometTakeOrderedAndProjectExec.isSupported(s.projectList, s.sortOrder, s.child) =>
+              CometTakeOrderedAndProjectExec.isSupported(s.projectList, s.sortOrder, s.child) &&
+              s.offset == 0 =>
           // TODO: support offset for Spark 3.4
           QueryPlanSerde.operator2Proto(s) match {
             case Some(nativeOp) =>
