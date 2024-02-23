@@ -145,7 +145,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: 17
+          jdk-version: 11
 
       - name: Cache TPC-DS generated data
         id: cache-tpcds-sf-1
