@@ -20,6 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
+import org.apache.spark.sql.execution.LimitExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
@@ -31,5 +32,10 @@ trait ShimCometSparkSessionExtensions {
     .filter(_.getName == "pushedAggregate")
     .map { a => a.setAccessible(true); a }
     .flatMap(_.get(scan).asInstanceOf[Option[Aggregation]])
+    .headOption
+
+  def getOffset(limit: LimitExec): Option[Int] = limit.getClass.getDeclaredFields
+    .filter(_.getName == "offset")
+    .map { a => a.setAccessible(true); a.get(limit).asInstanceOf[Int] }
     .headOption
 }

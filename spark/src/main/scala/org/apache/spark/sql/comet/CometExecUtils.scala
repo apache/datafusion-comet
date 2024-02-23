@@ -21,14 +21,22 @@ package org.apache.spark.sql.comet
 
 import scala.collection.JavaConverters.asJavaIterableConverter
 
+import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometExecUtils {
+
+  def createEmptyColumnarRDDWithSinglePartition(
+      sparkContext: SparkContext): RDD[ColumnarBatch] = {
+    new EmptyRDDWithPartitions(sparkContext, 1)
+  }
 
   /**
    * Prepare Projection + TopK native plan for CometTakeOrderedAndProjectExec.
@@ -119,3 +127,17 @@ object CometExecUtils {
     }
   }
 }
+
+/** A simple RDD with no data, but with the given number of partitions. */
+private class EmptyRDDWithPartitions(@transient private val sc: SparkContext, numPartitions: Int)
+    extends RDD[ColumnarBatch](sc, Nil) {
+
+  override def getPartitions: Array[Partition] =
+    Array.tabulate(numPartitions)(i => EmptyPartition(i))
+
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+    Iterator.empty
+  }
+}
+
+private case class EmptyPartition(index: Int) extends Partition

@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -42,7 +41,7 @@ case class CometCoalesceExec(
     if (numPartitions == 1 && rdd.getNumPartitions < 1) {
       // Make sure we don't output an RDD with 0 partitions, when claiming that we have a
       // `SinglePartition`.
-      new CometCoalesceExec.EmptyRDDWithPartitions(sparkContext, numPartitions)
+      CometExecUtils.createEmptyColumnarRDDWithSinglePartition(sparkContext)
     } else {
       rdd.coalesce(numPartitions, shuffle = false)
     }
@@ -66,21 +65,4 @@ case class CometCoalesceExec(
   }
 
   override def hashCode(): Int = Objects.hashCode(numPartitions: java.lang.Integer, child)
-}
-
-object CometCoalesceExec {
-
-  /** A simple RDD with no data, but with the given number of partitions. */
-  class EmptyRDDWithPartitions(@transient private val sc: SparkContext, numPartitions: Int)
-      extends RDD[ColumnarBatch](sc, Nil) {
-
-    override def getPartitions: Array[Partition] =
-      Array.tabulate(numPartitions)(i => EmptyPartition(i))
-
-    override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-      Iterator.empty
-    }
-  }
-
-  case class EmptyPartition(index: Int) extends Partition
 }

@@ -1,0 +1,113 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with the License. You may
+ * obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the
+ * License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.spark.sql.comet
+
+import java.util.Objects
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.serializer.Serializer
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode, UnsafeRowSerializer}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
+import org.apache.spark.sql.vectorized.ColumnarBatch
+
+/**
+ * Comet physical plan node for Spark `CollectExecNode`.
+ *
+ * Similar to `CometTakeOrderedAndProjectExec`, it contains two native executions seperated by a
+ * comet shuffle.
+ */
+case class CometCollectLimitExec(
+    override val originalPlan: SparkPlan,
+    limit: Int,
+    offset: Int,
+    child: SparkPlan)
+    extends CometExec
+    with UnaryExecNode {
+
+  private lazy val writeMetrics =
+    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+  private lazy val readMetrics =
+    SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = Map(
+    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
+    "shuffleReadElapsedCompute" ->
+      SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle read elapsed compute at native"),
+    "numPartitions" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of partitions")) ++ readMetrics ++ writeMetrics
+
+  private lazy val serializer: Serializer =
+    new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
+
+  override def executeCollect(): Array[InternalRow] = {
+    ColumnarToRowExec(child).executeTake(limit)
+  }
+
+  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val childRDD = child.executeColumnar()
+    if (childRDD.getNumPartitions == 0) {
+      CometExecUtils.createEmptyColumnarRDDWithSinglePartition(sparkContext)
+    } else {
+      val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
+        childRDD
+      } else {
+        val localLimitedRDD = if (limit >= 0) {
+          childRDD.mapPartitionsInternal { iter =>
+            val limitOp = CometExecUtils.getLimitNativePlan(output, limit).get
+            CometExec.getCometIterator(Seq(iter), limitOp)
+          }
+        } else {
+          childRDD
+        }
+        // Shuffle to Single Partition using Comet native shuffle
+        val dep = CometShuffleExchangeExec.prepareShuffleDependency(
+          localLimitedRDD,
+          child.output,
+          outputPartitioning,
+          serializer,
+          metrics)
+        metrics("numPartitions").set(dep.partitioner.numPartitions)
+
+        new CometShuffledBatchRDD(dep, readMetrics)
+      }
+
+      // todo: supports offset later
+      singlePartitionRDD.mapPartitionsInternal { iter =>
+        val limitOp = CometExecUtils.getLimitNativePlan(output, limit).get
+        CometExec.getCometIterator(Seq(iter), limitOp)
+      }
+    }
+  }
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] = Iterator(limit, offset, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometCollectLimitExec =>
+        this.limit == other.limit && this.offset == other.offset &&
+        this.child == other.child
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(limit: java.lang.Integer, offset: java.lang.Integer, child)
+}
