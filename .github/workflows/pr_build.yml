@@ -138,7 +138,7 @@ jobs:
     container:
       image: amd64/rust
     env:
-      JAVA_VERSION: 17
+      JAVA_VERSION: 11
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
