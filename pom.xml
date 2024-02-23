@@ -835,6 +835,7 @@ under the License.
             <exclude>**/test/resources/**</exclude>
             <exclude>**/benchmarks/*.txt</exclude>
             <exclude>**/inspections/*.txt</exclude>
+            <exclude>tpcds-kit/**</exclude>
           </excludes>
         </configuration>
       </plugin>
