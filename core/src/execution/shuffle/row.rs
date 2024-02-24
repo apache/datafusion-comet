@@ -37,7 +37,7 @@ use arrow_array::{
         StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
-    Array, ArrayRef, RecordBatch,
+    Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use jni::sys::{jint, jlong};
@@ -3347,7 +3347,7 @@ pub fn process_sorted_row_partition(
             .zip(schema.iter())
             .map(|(builder, datatype)| builder_to_array(builder, datatype, prefer_dictionary_ratio))
             .collect();
-        let batch = make_batch(array_refs?);
+        let batch = make_batch(array_refs?, n);
 
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
@@ -3420,7 +3420,7 @@ fn builder_to_array(
     }
 }
 
-fn make_batch(arrays: Vec<ArrayRef>) -> RecordBatch {
+fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> RecordBatch {
     let mut dict_id = 0;
     let fields = arrays
         .iter()
@@ -3441,5 +3441,6 @@ fn make_batch(arrays: Vec<ArrayRef>) -> RecordBatch {
         })
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
-    RecordBatch::try_new(schema, arrays).unwrap()
+    let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
+    RecordBatch::try_new_with_options(schema, arrays, &options).unwrap()
 }

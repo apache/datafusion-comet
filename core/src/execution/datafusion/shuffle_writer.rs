@@ -272,10 +272,11 @@ impl PartitionBuffer {
 
         // active -> staging
         let active = std::mem::take(&mut self.active);
+        let num_rows = self.num_active_rows;
         self.num_active_rows = 0;
         mem_diff -= self.active_slots_mem_size as isize;
 
-        let frozen_batch = make_batch(self.schema.clone(), active)?;
+        let frozen_batch = make_batch(self.schema.clone(), active, num_rows)?;
 
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
@@ -1148,9 +1149,11 @@ fn make_dict_builder(datatype: &DataType, capacity: usize) -> Box<dyn ArrayBuild
 fn make_batch(
     schema: SchemaRef,
     mut arrays: Vec<Box<dyn ArrayBuilder>>,
+    row_count: usize,
 ) -> ArrowResult<RecordBatch> {
     let columns = arrays.iter_mut().map(|array| array.finish()).collect();
-    RecordBatch::try_new(schema, columns)
+    let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
+    RecordBatch::try_new_with_options(schema, columns, &options)
 }
 
 /// Checksum algorithms for writing IPC bytes.

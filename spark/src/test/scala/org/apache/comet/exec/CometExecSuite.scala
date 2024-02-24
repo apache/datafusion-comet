@@ -373,6 +373,7 @@ class CometExecSuite extends CometTestBase {
     withParquetDataFrame((0 until 5).map(i => (i, i + 1))) { df =>
       assert(df.where("_1 IS NOT NULL").count() == 5)
       checkSparkAnswerAndOperator(df)
+      assert(df.select().limit(2).count() === 2)
     }
   }
 
