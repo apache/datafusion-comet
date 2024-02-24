@@ -40,6 +40,7 @@ message Operator {
     Limit limit = 105;
     ShuffleWriter shuffle_writer = 106;
     Expand expand = 107;
+    Coalesce coalesce = 108;
   }
 }
 
@@ -87,3 +88,8 @@ message Expand {
   repeated spark.spark_expression.Expr project_list = 1;
   int32 num_expr_per_project = 3;
 }
+
+message Coalesce {
+  int32 num_partitions = 1;
+}
+

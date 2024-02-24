@@ -310,15 +310,13 @@ class CometSparkSessionExtensions
               op
           }
 
-        case c @ CoalesceExec(numPartitions, child)
-            if isCometOperatorEnabled(conf, "coalesce")
-              && isCometNative(child) =>
-          QueryPlanSerde.operator2Proto(c) match {
+        case op: CoalesceExec =>
+          val newOp = transform1(op)
+          newOp match {
             case Some(nativeOp) =>
-              val cometOp = CometCoalesceExec(c, numPartitions, child)
-              CometSinkPlaceHolder(nativeOp, c, cometOp)
+              CometCoalesceExec(nativeOp, op, op.numPartitions, op.child, None)
             case None =>
-              c
+              op
           }
 
         case s: TakeOrderedAndProjectExec

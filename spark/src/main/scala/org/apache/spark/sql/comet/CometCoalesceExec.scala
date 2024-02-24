@@ -22,31 +22,24 @@ package org.apache.spark.sql.comet
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
+
+import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
  * This is basically a copy of Spark's CoalesceExec, but supports columnar processing to make it
  * more efficient when including it in a Comet query plan.
  */
 case class CometCoalesceExec(
+    override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     numPartitions: Int,
-    child: SparkPlan)
-    extends CometExec
-    with UnaryExecNode {
-  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val rdd = child.executeColumnar()
-    if (numPartitions == 1 && rdd.getNumPartitions < 1) {
-      // Make sure we don't output an RDD with 0 partitions, when claiming that we have a
-      // `SinglePartition`.
-      new CometCoalesceExec.EmptyRDDWithPartitions(sparkContext, numPartitions)
-    } else {
-      rdd.coalesce(numPartitions, shuffle = false)
-    }
-  }
+    child: SparkPlan,
+    override val serializedPlanOpt: Option[Array[Byte]])
+    extends CometUnaryExec {
 
   override def outputPartitioning: Partitioning = {
     if (numPartitions == 1) SinglePartition
@@ -59,7 +52,8 @@ case class CometCoalesceExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometCoalesceExec =>
-        this.numPartitions == other.numPartitions && this.child == other.child
+        this.numPartitions == other.numPartitions && this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }

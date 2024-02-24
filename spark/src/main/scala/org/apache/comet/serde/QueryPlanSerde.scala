@@ -1791,6 +1791,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           }
         }
 
+      case CoalesceExec(numPartitions, _) if isCometOperatorEnabled(op.conf, "coalesce") =>
+        if (childOp.nonEmpty) {
+          val coalesceBuilder = OperatorOuterClass.Coalesce
+            .newBuilder()
+            .setNumPartitions(numPartitions)
+          Some(result.setCoalesce(coalesceBuilder).build())
+        } else {
+          None
+        }
+
       case op if isCometSink(op) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
@@ -1834,7 +1844,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
     op match {
       case s if isCometScan(s) => true
       case _: CometSinkPlaceHolder => true
-      case _: CoalesceExec => true
       case _: UnionExec => true
       case _: ShuffleExchangeExec => true
       case _: TakeOrderedAndProjectExec => true

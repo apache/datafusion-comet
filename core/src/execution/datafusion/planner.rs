@@ -38,6 +38,7 @@ use datafusion::{
         ExecutionPlan, Partitioning,
     },
 };
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion_common::ScalarValue;
 use datafusion_physical_expr::{
     execution_props::ExecutionProps,
@@ -727,6 +728,12 @@ impl PhysicalPlanner {
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
 
                 Ok((scans, Arc::new(LocalLimitExec::new(child, num as usize))))
+            }
+            OpStruct::Coalesce(coalesce) => {
+                assert!(children.len() == 1);
+                let (scans, child) = self.create_plan(&children[0], inputs)?;
+
+                Ok((scans, Arc::new(CoalescePartitionsExec::new(child))))
             }
             OpStruct::Sort(sort) => {
                 assert!(children.len() == 1);
