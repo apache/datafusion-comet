@@ -266,7 +266,7 @@ abstract class CometNativeExec extends CometExec {
     plan match {
       case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometCoalesceExec =>
+          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.

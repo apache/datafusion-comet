@@ -31,11 +31,12 @@ import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.functions.{date_add, expr}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
@@ -983,6 +984,92 @@ class CometExecSuite extends CometTestBase {
         assert(coalescedRdd.getNumPartitions == 2)
       }
     }
+  }
+
+  test("TakeOrderedAndProjectExec") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df1 = spark.sql("""
+                                |SELECT a, b, ROW_NUMBER() OVER(ORDER BY a, b) AS rn
+                                |FROM t1 LIMIT 3
+                                |""".stripMargin)
+
+          assert(df1.rdd.getNumPartitions == 1)
+          checkSparkAnswerAndOperator(df1, classOf[WindowExec])
+
+          val df2 = spark.sql("""
+                                |SELECT b, RANK() OVER(ORDER BY a, b) AS rk, DENSE_RANK(b) OVER(ORDER BY a, b) AS s
+                                |FROM t1 LIMIT 2
+                                |""".stripMargin)
+          assert(df2.rdd.getNumPartitions == 1)
+          checkSparkAnswerAndOperator(df2, classOf[WindowExec], classOf[ProjectExec])
+
+          // Other Comet native operator can take input from `CometTakeOrderedAndProjectExec`.
+          val df3 = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3").groupBy($"a").sum("b")
+          checkSparkAnswerAndOperator(df3)
+        }
+      })
+  }
+
+  test("TakeOrderedAndProjectExec without sorting") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.EliminateSorts") {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df = spark
+            .table("t1")
+            .select("a", "b")
+            .sortWithinPartitions("b", "a")
+            .orderBy("b")
+            .select($"b" + 1, $"a")
+            .limit(3)
+
+          val takeOrdered = stripAQEPlan(df.queryExecution.executedPlan).collect {
+            case b: CometTakeOrderedAndProjectExec => b
+          }
+          assert(takeOrdered.length == 1)
+          assert(takeOrdered.head.orderingSatisfies)
+
+          checkSparkAnswerAndOperator(df)
+        }
+      })
+  }
+
+  test("Fallback to Spark for TakeOrderedAndProjectExec with offset") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3").offset(1).groupBy($"a").sum("b")
+          checkSparkAnswer(df)
+        }
+      })
   }
 }
 
