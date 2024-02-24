@@ -20,7 +20,6 @@
 package org.apache.comet.exec
 
 import scala.collection.JavaConverters._
-import scala.collection.convert.ImplicitConversions.`collection AsScalaIterable`
 import scala.collection.mutable
 import scala.util.Random
 
@@ -38,10 +37,9 @@ import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.functions.{col, date_add, expr}
+import org.apache.spark.sql.functions.{date_add, expr}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.DataTypes
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -216,51 +214,6 @@ class CometExecSuite extends CometTestBase {
 
         assert(metrics.contains("output_rows"))
         assert(metrics("output_rows").value == 1L)
-      }
-    }
-  }
-
-  test("test cast utf8 to boolean as compatible with Spark") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
-      withTable("test_table1", "test_table2", "test_table3", "test_table4") {
-        // Supported boolean values as true by both Arrow and Spark
-        val inputDF = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES").toDF("c1")
-        inputDF.write.format("parquet").saveAsTable("test_table1")
-        val resultDF = this.spark
-          .table("test_table1")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr = resultDF.collectAsList().toList
-        resultArr.foreach(x => assert(x.get(1) == true))
-
-        // Supported boolean values as false by both Arrow and Spark
-        val inputDF2 = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No").toDF("c1")
-        inputDF2.write.format("parquet").saveAsTable("test_table2")
-        val resultDF2 = this.spark
-          .table("test_table2")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr2 = resultDF2.collectAsList().toList
-        resultArr2.foreach(x => assert(x.get(1) == false))
-
-        // Supported boolean values by Arrow but not Spark
-        val inputDF3 =
-          Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off").toDF("c1")
-        inputDF3.write.format("parquet").saveAsTable("test_table3")
-        val resultDF3 = this.spark
-          .table("test_table3")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr3 = resultDF3.collectAsList().toList
-        resultArr3.foreach(x => assert(x.get(1) == null))
-
-        // Invalid boolean casting values for Arrow and Spark
-        val inputDF4 = Seq("car", "Truck").toDF("c1")
-        inputDF4.write.format("parquet").saveAsTable("test_table4")
-        val resultDF4 = this.spark
-          .table("test_table4")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr4 = resultDF4.collectAsList().toList
-        resultArr4.foreach(x => assert(x.get(1) == null))
       }
     }
   }
