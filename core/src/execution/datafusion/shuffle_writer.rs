@@ -315,6 +315,9 @@ fn slot_size(len: usize, data_type: &DataType) -> usize {
             // TODO: this is not accurate, but should be good enough for now
             slot_size(len, key_type.as_ref()) + slot_size(len / 10, value_type.as_ref())
         }
+        // TODO: this is not accurate, but should be good enough for now
+        DataType::Binary => len * 100 + len * 4,
+        DataType::LargeBinary => len * 100 + len * 8,
         DataType::FixedSizeBinary(s) => len * (*s as usize),
         DataType::Timestamp(_, _) => len * 8,
         dt => unimplemented!(
@@ -521,6 +524,8 @@ fn append_columns(
         {
             append_string_dict!(key_type)
         }
+        DataType::Binary => append!(Binary),
+        DataType::LargeBinary => append!(LargeBinary),
         DataType::FixedSizeBinary(_) => append_unwrap!(FixedSizeBinary),
         t => unimplemented!(
             "{}",
@@ -1275,3 +1280,6 @@ impl RecordBatchStream for EmptyStream {
         self.schema.clone()
     }
 }
+
+#[cfg(test)]
+mod shuffle_writer_test;
