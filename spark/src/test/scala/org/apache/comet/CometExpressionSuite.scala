@@ -21,15 +21,13 @@ package org.apache.comet
 
 import java.util
 
-import scala.collection.convert.ImplicitConversions.`collection AsScalaIterable`
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, expr}
+import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{DataTypes, Decimal, DecimalType, StructType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark34Plus}
 
@@ -1306,48 +1304,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test cast utf8 to boolean as compatible with Spark") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
-      withTable("test_table1", "test_table2", "test_table3", "test_table4") {
-        // Supported boolean values as true by both Arrow and Spark
-        val inputDF = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES").toDF("c1")
-        inputDF.write.format("parquet").saveAsTable("test_table1")
-        val resultDF = this.spark
-          .table("test_table1")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr = resultDF.collectAsList().toList
-        resultArr.foreach(x => assert(x.get(1) == true))
-
-        // Supported boolean values as false by both Arrow and Spark
-        val inputDF2 = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No").toDF("c1")
-        inputDF2.write.format("parquet").saveAsTable("test_table2")
-        val resultDF2 = this.spark
-          .table("test_table2")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr2 = resultDF2.collectAsList().toList
-        resultArr2.foreach(x => assert(x.get(1) == false))
-
-        // Supported boolean values by Arrow but not Spark
-        val inputDF3 =
-          Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off").toDF("c1")
-        inputDF3.write.format("parquet").saveAsTable("test_table3")
-        val resultDF3 = this.spark
-          .table("test_table3")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr3 = resultDF3.collectAsList().toList
-        resultArr3.foreach(x => assert(x.get(1) == null))
-
-        // Invalid boolean casting values for Arrow and Spark
-        val inputDF4 = Seq("car", "Truck").toDF("c1")
-        inputDF4.write.format("parquet").saveAsTable("test_table4")
-        val resultDF4 = this.spark
-          .table("test_table4")
-          .withColumn("converted", col("c1").cast(DataTypes.BooleanType))
-        val resultArr4 = resultDF4.collectAsList().toList
-        resultArr4.foreach(x => assert(x.get(1) == null))
+    def testConvertedColumn(inputValues: Seq[String]): Unit = {
+      val table = "test_table"
+      withTable(table) {
+        val values = inputValues.map(x => s"('$x')").mkString(",")
+        sql(s"create table $table(base_column char(20)) using parquet")
+        sql(s"insert into $table values $values")
+        checkSparkAnswerAndOperator(
+          s"select base_column, cast(base_column as boolean) as converted_column from $table")
       }
     }
+
+    // Supported boolean values as true by both Arrow and Spark
+    testConvertedColumn(inputValues = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES"))
+    // Supported boolean values as false by both Arrow and Spark
+    testConvertedColumn(inputValues = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No"))
+    // Supported boolean values by Arrow but not Spark
+    testConvertedColumn(inputValues =
+      Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off"))
+    // Invalid boolean casting values for Arrow and Spark
+    testConvertedColumn(inputValues = Seq("car", "Truck"))
   }
 
 }

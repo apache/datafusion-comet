@@ -78,16 +78,18 @@ impl Cast {
         let to_type = &self.data_type;
         let cast_result = match (from_type, to_type) {
             (DataType::Utf8, DataType::Boolean) => Self::spark_cast_utf8_to_boolean::<i32>(&array),
-            (DataType::LargeUtf8, DataType::Boolean) => Self::spark_cast_utf8_to_boolean::<i64>(&array),
-            _ => cast_with_options(&array, &self.data_type, &CAST_OPTIONS)?
+            (DataType::LargeUtf8, DataType::Boolean) => {
+                Self::spark_cast_utf8_to_boolean::<i64>(&array)
+            }
+            _ => cast_with_options(&array, &self.data_type, &CAST_OPTIONS)?,
         };
         let result = spark_cast(cast_result, from_type, &self.data_type);
         Ok(result)
     }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(from: &dyn Array) -> ArrayRef
-        where
-            OffsetSize: OffsetSizeTrait,
+    where
+        OffsetSize: OffsetSizeTrait,
     {
         let array = from
             .as_any()
@@ -100,10 +102,11 @@ impl Cast {
                 Some(value) => match value.to_ascii_lowercase().trim() {
                     "t" | "true" | "y" | "yes" | "1" => Some(true),
                     "f" | "false" | "n" | "no" | "0" => Some(false),
-                    _ => None
+                    _ => None,
                 },
-                _ => None
-            }).collect::<BooleanArray>();
+                _ => None,
+            })
+            .collect::<BooleanArray>();
 
         Arc::new(output_array)
     }
