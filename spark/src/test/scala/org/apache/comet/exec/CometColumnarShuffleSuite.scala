@@ -42,9 +42,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     val conf = super.sparkConf
     conf
       .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, adaptiveExecutionEnabled.toString)
-      .set(CometConf.COMET_EXEC_ENABLED.key, "false")
-      .set(CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key, "true")
-      .set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
       .set("spark.shuffle.unsafe.fastMergeEnabled", fastMergeEnabled.toString)
   }
 
@@ -55,7 +52,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
-        CometConf.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString) {
+        CometConf.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -840,16 +840,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  test("grouped aggregate: Comet shuffle") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
-        val df = sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1")
-        checkCometExchange(df, 1, true)
-        checkSparkAnswerAndOperator(df)
-      }
-    }
-  }
-
   test("hash-based columnar shuffle") {
     Seq(10, 200, 201).foreach { numPartitions =>
       withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
@@ -907,43 +897,29 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  // TODO: separate this into `CometNativeShuffleSuite`?
-  test("Comet native operator after Comet shuffle") {
-    Seq(true, false).foreach { columnarShuffle =>
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
-        withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
-          val df = sql("SELECT * FROM tbl")
+  test("native operator after columnar shuffle") {
+    withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
 
-          val shuffled1 = df
-            .repartition(10, $"_2")
-            .select($"_1", $"_1" + 1, $"_2" + 2)
-            .repartition(10, $"_1")
-            .filter($"_1" > 1)
+      val shuffled1 = df
+        .repartition(10, $"_2")
+        .select($"_1", $"_1" + 1, $"_2" + 2)
+        .repartition(10, $"_1")
+        .filter($"_1" > 1)
 
-          // 2 Comet shuffle exchanges are expected
-          checkCometExchange(shuffled1, 2, !columnarShuffle)
-          checkSparkAnswer(shuffled1)
+      // 2 Comet shuffle exchanges are expected
+      checkCometExchange(shuffled1, 2, false)
+      checkSparkAnswer(shuffled1)
 
-          val shuffled2 = df
-            .repartitionByRange(10, $"_2")
-            .select($"_1", $"_1" + 1, $"_2" + 2)
-            .repartition(10, $"_1")
-            .filter($"_1" > 1)
+      val shuffled2 = df
+        .repartitionByRange(10, $"_2")
+        .select($"_1", $"_1" + 1, $"_2" + 2)
+        .repartition(10, $"_1")
+        .filter($"_1" > 1)
 
-          // 2 Comet shuffle exchanges are expected, if columnar shuffle is enabled
-          if (columnarShuffle) {
-            checkCometExchange(shuffled2, 2, !columnarShuffle)
-          } else {
-            // Because the first exchange from the bottom is range exchange which native shuffle
-            // doesn't support. So Comet exec operators stop before the first exchange and thus
-            // there is no Comet exchange.
-            checkCometExchange(shuffled2, 0, true)
-          }
-          checkSparkAnswer(shuffled2)
-        }
-      }
+      // 2 Comet shuffle exchanges are expected, if columnar shuffle is enabled
+      checkCometExchange(shuffled2, 2, false)
+      checkSparkAnswer(shuffled2)
     }
   }
 

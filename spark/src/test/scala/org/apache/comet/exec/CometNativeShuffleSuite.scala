@@ -19,8 +19,10 @@
 
 package org.apache.comet.exec
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -30,12 +32,16 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-  override protected def sparkConf: SparkConf = {
-    val conf = super.sparkConf
-    conf
-      .set(CometConf.COMET_EXEC_ENABLED.key, "true")
-      .set(CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key, "false")
-      .set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+        testFun
+      }
+    }
   }
 
   import testImplicits._
@@ -61,9 +67,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           allTypes = allTypes.filterNot(Set(14, 17).contains)
         }
         allTypes.map(i => s"_$i").foreach { c =>
-          withSQLConf(
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
             readParquetFile(path.toString) { df =>
               val shuffled = df
                 .select($"_1")
@@ -98,20 +102,49 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("columnar shuffle: single partition") {
-    Seq(true, false).foreach { execEnabled =>
-      withSQLConf(
-        CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> (!execEnabled).toString) {
-        withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
-          val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
+    withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
 
-          val shuffled = df.repartition(1)
+      val shuffled = df.repartition(1)
 
-          checkCometExchange(shuffled, 1, execEnabled)
-          checkSparkAnswer(shuffled)
-        }
-      }
+      checkCometExchange(shuffled, 1, true)
+      checkSparkAnswer(shuffled)
+    }
+  }
+
+  test("native operator after native shuffle") {
+    withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+
+      val shuffled1 = df
+        .repartition(10, $"_2")
+        .select($"_1", $"_1" + 1, $"_2" + 2)
+        .repartition(10, $"_1")
+        .filter($"_1" > 1)
+
+      // 2 Comet shuffle exchanges are expected
+      checkCometExchange(shuffled1, 2, true)
+      checkSparkAnswer(shuffled1)
+
+      val shuffled2 = df
+        .repartitionByRange(10, $"_2")
+        .select($"_1", $"_1" + 1, $"_2" + 2)
+        .repartition(10, $"_1")
+        .filter($"_1" > 1)
+
+      // Because the first exchange from the bottom is range exchange which native shuffle
+      // doesn't support. So Comet exec operators stop before the first exchange and thus
+      // there is no Comet exchange.
+      checkCometExchange(shuffled2, 0, true)
+      checkSparkAnswer(shuffled2)
+    }
+  }
+
+  test("grouped aggregate: native shuffle") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1")
+      checkCometExchange(df, 1, true)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
