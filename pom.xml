@@ -836,6 +836,7 @@ under the License.
             <exclude>**/benchmarks/*.txt</exclude>
             <exclude>**/inspections/*.txt</exclude>
             <exclude>tpcds-kit/**</exclude>
+            <exclude>tpcds-sf-1/**</exclude>
           </excludes>
         </configuration>
       </plugin>
