@@ -315,6 +315,9 @@ fn slot_size(len: usize, data_type: &DataType) -> usize {
             // TODO: this is not accurate, but should be good enough for now
             slot_size(len, key_type.as_ref()) + slot_size(len / 10, value_type.as_ref())
         }
+        // TODO: this is not accurate, but should be good enough for now
+        DataType::Binary => len * 100 + len * 4,
+        DataType::LargeBinary => len * 100 + len * 8,
         DataType::FixedSizeBinary(s) => len * (*s as usize),
         DataType::Timestamp(_, _) => len * 8,
         dt => unimplemented!(
@@ -521,6 +524,8 @@ fn append_columns(
         {
             append_string_dict!(key_type)
         }
+        DataType::Binary => append!(Binary),
+        DataType::LargeBinary => append!(LargeBinary),
         DataType::FixedSizeBinary(_) => append_unwrap!(FixedSizeBinary),
         t => unimplemented!(
             "{}",
@@ -1273,5 +1278,38 @@ impl RecordBatchStream for EmptyStream {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_slot_size() {
+        let batch_size = 1usize;
+        // not inclusive of all supported types, but enough to test the function
+        let supported_primitive_types = [
+            DataType::Int32,
+            DataType::Int64,
+            DataType::UInt32,
+            DataType::UInt64,
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Boolean,
+            DataType::Utf8,
+            DataType::LargeUtf8,
+            DataType::Binary,
+            DataType::LargeBinary,
+            DataType::FixedSizeBinary(16),
+        ];
+        let expected_slot_size = [4, 8, 4, 8, 4, 8, 1, 104, 108, 104, 108, 16];
+        supported_primitive_types
+            .iter()
+            .zip(expected_slot_size.iter())
+            .for_each(|(data_type, expected)| {
+                let slot_size = slot_size(batch_size, data_type);
+                assert_eq!(slot_size, *expected);
+            })
     }
 }
