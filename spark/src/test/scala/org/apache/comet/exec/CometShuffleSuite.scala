@@ -1169,6 +1169,22 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("fix: comet native shuffle with binary data") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+        val df = sql("SELECT cast(cast(_1 as STRING) as BINARY) as binary, _2 FROM tbl")
+
+        val shuffled = df.repartition(1, $"binary")
+
+        checkCometExchange(shuffled, 1, true)
+        checkSparkAnswer(shuffled)
+      }
+    }
+  }
+
   test("Comet shuffle metrics") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
