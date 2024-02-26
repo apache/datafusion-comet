@@ -641,6 +641,7 @@ under the License.
             <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
             <junitxml>.</junitxml>
             <filereports>SparkTestSuite.txt</filereports>
+            <stdout>D</stdout>
             <stderr/>
             <tagsToExclude>org.apache.comet.IntegrationTestSuite</tagsToExclude>
             <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
