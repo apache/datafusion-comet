@@ -35,14 +35,12 @@ import org.apache.comet.CometConf
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
-  protected val fastMergeEnabled: Boolean = true
   protected val numElementsForceSpillThreshold: Int = 10
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf
       .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, adaptiveExecutionEnabled.toString)
-      .set("spark.shuffle.unsafe.fastMergeEnabled", fastMergeEnabled.toString)
   }
 
   protected val asyncShuffleEnable: Boolean
@@ -965,22 +963,6 @@ class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = true
 
   protected val adaptiveExecutionEnabled: Boolean = true
-}
-
-class CometAsyncNonFastMergeShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val fastMergeEnabled: Boolean = false
-
-  protected val adaptiveExecutionEnabled: Boolean = true
-
-  protected val asyncShuffleEnable: Boolean = true
-}
-
-class CometNonFastMergeShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val fastMergeEnabled: Boolean = false
-
-  protected val adaptiveExecutionEnabled: Boolean = true
-
-  protected val asyncShuffleEnable: Boolean = false
 }
 
 class CometShuffleSuite extends CometColumnarShuffleSuite {
