@@ -31,6 +31,7 @@ under the License.
 
   <modules>
     <module>common</module>
+    <module>shims</module>
     <module>spark</module>
     <module>spark-integration</module>
   </modules>
@@ -525,6 +526,9 @@ under the License.
 
     <profile>
       <id>spark-3.5</id>
+      <activation>
+	<activeByDefault>true</activeByDefault>
+      </activation>
       <properties>
         <scala.version>2.12.17</scala.version>
         <spark.version.short>3.5</spark.version.short>

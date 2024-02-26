@@ -51,6 +51,17 @@ under the License.
       </exclusions>
     </dependency>
     <dependency>
+      <groupId>org.apache.comet</groupId>
+      <artifactId>comet-spark-shims${spark.version.short}_${scala.binary.version}</artifactId>
+      <version>${project.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.arrow</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>
     </dependency>
