@@ -36,8 +36,8 @@ import org.apache.spark.sql.execution.datasources.RecordReaderIterator
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.internal._
+import org.apache.spark.sql.internal.SQLConf._
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
