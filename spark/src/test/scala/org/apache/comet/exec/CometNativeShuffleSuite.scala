@@ -49,7 +49,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // TODO: this test takes ~5mins to run, we should reduce the test time.
   test("fix: Too many task completion listener of ArrowReaderIterator causes OOM") {
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1") {
-      withParquetTable((0 until 1000000).map(i => (1, (i + 1).toLong)), "tbl") {
+      withParquetTable((0 until 100000).map(i => (1, (i + 1).toLong)), "tbl") {
         assert(
           sql("SELECT * FROM tbl").repartition(201, $"_1").count() == sql("SELECT * FROM tbl")
             .count())
