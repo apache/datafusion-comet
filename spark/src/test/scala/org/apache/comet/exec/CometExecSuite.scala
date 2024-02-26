@@ -43,6 +43,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -1055,6 +1056,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Fallback to Spark for TakeOrderedAndProjectExec with offset") {
+    assume(isSpark34Plus)
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withTable("t1") {
@@ -1066,7 +1068,7 @@ class CometExecSuite extends CometTestBase {
             .write
             .saveAsTable("t1")
 
-          val df = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3").offset(1).groupBy($"a").sum("b")
+          val df = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3 OFFSET 1").groupBy($"a").sum("b")
           checkSparkAnswer(df)
         }
       })
