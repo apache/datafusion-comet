@@ -17,17 +17,17 @@
  * under the License.
  */
 
+package org.apache.spark.sql
+
+import org.apache.spark.SparkContext
+import org.apache.spark.rdd.RDD
+
 /**
  * Mostly copied from
  * https://github.com/databricks/spark-sql-perf/blob/master/src/main/scala/com/databricks/spark/sql/perf/tpch/TPCH.scala
  *
  * TODO: port this back to the upstream Spark similar to TPCDS benchmark
  */
-
-package org.apache.spark.sql
-
-import org.apache.spark.SparkContext
-import org.apache.spark.rdd.RDD
 
 class Dbgen(dbgenDir: String, params: Seq[String]) extends DataGenerator {
   val dbgen: String = s"$dbgenDir/dbgen"
