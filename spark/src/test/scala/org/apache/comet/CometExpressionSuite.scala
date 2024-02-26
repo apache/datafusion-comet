@@ -1302,4 +1302,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("test cast utf8 to boolean as compatible with Spark") {
+    def testCastedColumn(inputValues: Seq[String]): Unit = {
+      val table = "test_table"
+      withTable(table) {
+        val values = inputValues.map(x => s"('$x')").mkString(",")
+        sql(s"create table $table(base_column char(20)) using parquet")
+        sql(s"insert into $table values $values")
+        checkSparkAnswerAndOperator(
+          s"select base_column, cast(base_column as boolean) as casted_column from $table")
+      }
+    }
+
+    // Supported boolean values as true by both Arrow and Spark
+    testCastedColumn(inputValues = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES"))
+    // Supported boolean values as false by both Arrow and Spark
+    testCastedColumn(inputValues = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No"))
+    // Supported boolean values by Arrow but not Spark
+    testCastedColumn(inputValues =
+      Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off"))
+    // Invalid boolean casting values for Arrow and Spark
+    testCastedColumn(inputValues = Seq("car", "Truck"))
+  }
+
 }

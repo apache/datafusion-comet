@@ -27,7 +27,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::ArrayRef;
+use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{Result as DataFusionResult, ScalarValue};
@@ -73,10 +73,42 @@ impl Cast {
     }
 
     fn cast_array(&self, array: ArrayRef) -> DataFusionResult<ArrayRef> {
-        let array = array_with_timezone(array, self.timezone.clone(), Some(&self.data_type));
+        let to_type = &self.data_type;
+        let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
         let from_type = array.data_type();
-        let cast_result = cast_with_options(&array, &self.data_type, &CAST_OPTIONS)?;
-        Ok(spark_cast(cast_result, from_type, &self.data_type))
+        let cast_result = match (from_type, to_type) {
+            (DataType::Utf8, DataType::Boolean) => Self::spark_cast_utf8_to_boolean::<i32>(&array),
+            (DataType::LargeUtf8, DataType::Boolean) => {
+                Self::spark_cast_utf8_to_boolean::<i64>(&array)
+            }
+            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
+        };
+        let result = spark_cast(cast_result, from_type, to_type);
+        Ok(result)
+    }
+
+    fn spark_cast_utf8_to_boolean<OffsetSize>(from: &dyn Array) -> ArrayRef
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let array = from
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .unwrap();
+
+        let output_array = array
+            .iter()
+            .map(|value| match value {
+                Some(value) => match value.to_ascii_lowercase().trim() {
+                    "t" | "true" | "y" | "yes" | "1" => Some(true),
+                    "f" | "false" | "n" | "no" | "0" => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<BooleanArray>();
+
+        Arc::new(output_array)
     }
 }
 
