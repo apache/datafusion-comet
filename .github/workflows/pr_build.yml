@@ -70,7 +70,7 @@ jobs:
   macos-test:
     strategy:
       matrix:
-        os: [macos-latest]
+        os: [macos-13]
         java_version: [8, 11, 17]
         test-target: [rust, java]
         is_push_event:
