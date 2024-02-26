@@ -17,13 +17,6 @@
  * under the License.
  */
 
-/**
- * Mostly copied from
- * https://github.com/databricks/spark-sql-perf/blob/master/src/main/scala/com/databricks/spark/sql/perf/Tables.scala
- *
- * TODO: port this back to the upstream Spark similar to TPCDS benchmark
- */
-
 package org.apache.spark.sql
 
 import scala.util.Try
@@ -35,6 +28,12 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
+/**
+ * Mostly copied from
+ * https://github.com/databricks/spark-sql-perf/blob/master/src/main/scala/com/databricks/spark/sql/perf/Tables.scala
+ *
+ * TODO: port this back to the upstream Spark similar to TPCDS benchmark
+ */
 trait DataGenerator extends Serializable {
   def generate(
       sparkContext: SparkContext,

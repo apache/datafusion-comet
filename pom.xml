@@ -722,6 +722,9 @@ under the License.
               <importOrder>
                 <order>java|javax,scala,org,org.apache,com,org.apache.comet,\#,\#org.apache.comet</order>
               </importOrder>
+              <licenseHeader>
+                <file>${maven.multiModuleProjectDirectory}/dev/copyright/java-header.txt</file>
+              </licenseHeader>
             </java>
             <scala>
               <toggleOffOn />
@@ -729,6 +732,9 @@ under the License.
                 <version>3.6.1</version>
                 <file>${maven.multiModuleProjectDirectory}/scalafmt.conf</file>
               </scalafmt>
+              <licenseHeader>
+                <file>${maven.multiModuleProjectDirectory}/dev/copyright/scala-header.txt</file>
+              </licenseHeader>
             </scala>
           </configuration>
         </plugin>
