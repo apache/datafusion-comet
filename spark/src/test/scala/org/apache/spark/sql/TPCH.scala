@@ -24,7 +24,7 @@ import org.apache.spark.rdd.RDD
 
 /**
  * Mostly copied from
- * https://github.com/databricks/spark-sql-perf/blob/master/src/main/scala/com/databricks/spark/sql/perf/Tables.scala
+ * https://github.com/databricks/spark-sql-perf/blob/master/src/main/scala/com/databricks/spark/sql/perf/tpch/TPCH.scala
  *
  * TODO: port this back to the upstream Spark similar to TPCDS benchmark
  */
