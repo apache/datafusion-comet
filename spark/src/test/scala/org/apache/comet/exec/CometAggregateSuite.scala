@@ -538,21 +538,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
-                  withView("v") {
-                    (1 to 4).foreach { col =>
+                  (1 to 4).foreach { col =>
+                    withView("v") {
                       sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _$col FROM tbl ORDER BY _$col")
                       checkSparkAnswer(s"SELECT _g$gCol, FIRST(_$col) FROM v GROUP BY _g$gCol")
                       checkSparkAnswer(s"SELECT _g$gCol, LAST(_$col) FROM v GROUP BY _g$gCol")
                     }
                   }
-                  checkSparkAnswer(s"SELECT _g$gCol, SUM(_1), SUM(_2), SUM(FROM tbl GROUP BY _g$gCol")
                   checkSparkAnswer(
-                    s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol")
-                  checkSparkAnswer(s"SELECT _g$gCol, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g$gCol")
+                    s"SELECT _g$gCol, SUM(_1), SUM(_2) FROM tbl GROUP BY _g$gCol")
+                  checkSparkAnswer(s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol")
+                  checkSparkAnswer(
+                    s"SELECT _g$gCol, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g$gCol")
                   checkSparkAnswer(
                     s"SELECT _g$gCol, COUNT(DISTINCT _1) FROM tbl GROUP BY _g$gCol")
-                  checkSparkAnswer(
-                    s"SELECT _g$gCol, MIN(_1), MAX(_4) FROM tbl GROUP BY _g$gCol")
+                  checkSparkAnswer(s"SELECT _g$gCol, MIN(_1), MAX(_4) FROM tbl GROUP BY _g$gCol")
                   checkSparkAnswer(s"SELECT _g$gCol, AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol")
                 }
               }
