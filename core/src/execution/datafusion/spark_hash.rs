@@ -292,6 +292,12 @@ pub fn create_hashes<'a>(
             DataType::LargeUtf8 => {
                 hash_array!(LargeStringArray, col, hashes_buffer);
             }
+            DataType::Binary => {
+                hash_array!(BinaryArray, col, hashes_buffer);
+            }
+            DataType::LargeBinary => {
+                hash_array!(LargeBinaryArray, col, hashes_buffer);
+            }
             DataType::FixedSizeBinary(_) => {
                 hash_array!(FixedSizeBinaryArray, col, hashes_buffer);
             }
