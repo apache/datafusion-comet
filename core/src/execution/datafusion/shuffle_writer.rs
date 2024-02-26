@@ -461,31 +461,31 @@ fn append_columns(
     }
 
     macro_rules! append_byte_dict {
-        ($kt:ident, $byte_type:ty, $array:ty) => {{
+        ($kt:ident, $byte_type:ty, $array_type:ty) => {{
             match $kt.as_ref() {
                 DataType::Int8 => {
-                    append_dict!(Int8Type, GenericByteDictionaryBuilder<Int8Type, $byte_type>, $array)
+                    append_dict!(Int8Type, GenericByteDictionaryBuilder<Int8Type, $byte_type>, $array_type)
                 }
                 DataType::Int16 => {
-                    append_dict!(Int16Type,  GenericByteDictionaryBuilder<Int16Type, $byte_type>, $array)
+                    append_dict!(Int16Type,  GenericByteDictionaryBuilder<Int16Type, $byte_type>, $array_type)
                 }
                 DataType::Int32 => {
-                    append_dict!(Int32Type,  GenericByteDictionaryBuilder<Int32Type, $byte_type>, $array)
+                    append_dict!(Int32Type,  GenericByteDictionaryBuilder<Int32Type, $byte_type>, $array_type)
                 }
                 DataType::Int64 => {
-                    append_dict!(Int64Type,  GenericByteDictionaryBuilder<Int64Type, $byte_type>, $array)
+                    append_dict!(Int64Type,  GenericByteDictionaryBuilder<Int64Type, $byte_type>, $array_type)
                 }
                 DataType::UInt8 => {
-                    append_dict!(UInt8Type,  GenericByteDictionaryBuilder<UInt8Type, $byte_type>, $array)
+                    append_dict!(UInt8Type,  GenericByteDictionaryBuilder<UInt8Type, $byte_type>, $array_type)
                 }
                 DataType::UInt16 => {
-                    append_dict!(UInt16Type, GenericByteDictionaryBuilder<UInt16Type, $byte_type>, $array)
+                    append_dict!(UInt16Type, GenericByteDictionaryBuilder<UInt16Type, $byte_type>, $array_type)
                 }
                 DataType::UInt32 => {
-                    append_dict!(UInt32Type, GenericByteDictionaryBuilder<UInt32Type, $byte_type>, $array)
+                    append_dict!(UInt32Type, GenericByteDictionaryBuilder<UInt32Type, $byte_type>, $array_type)
                 }
                 DataType::UInt64 => {
-                    append_dict!(UInt64Type, GenericByteDictionaryBuilder<UInt64Type, $byte_type>, $array)
+                    append_dict!(UInt64Type, GenericByteDictionaryBuilder<UInt64Type, $byte_type>, $array_type)
                 }
                 _ => unreachable!("Unknown key type for dictionary"),
             }
