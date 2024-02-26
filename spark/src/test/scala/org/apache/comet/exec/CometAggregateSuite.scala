@@ -545,8 +545,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                       checkSparkAnswer(s"SELECT _g$gCol, LAST(_$col) FROM v GROUP BY _g$gCol")
                     }
                   }
-                  checkSparkAnswer(
-                    s"SELECT _g$gCol, SUM(_1), SUM(_2) FROM tbl GROUP BY _g$gCol")
+                  checkSparkAnswer(s"SELECT _g$gCol, SUM(_1), SUM(_2) FROM tbl GROUP BY _g$gCol")
                   checkSparkAnswer(s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol")
                   checkSparkAnswer(
                     s"SELECT _g$gCol, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g$gCol")
