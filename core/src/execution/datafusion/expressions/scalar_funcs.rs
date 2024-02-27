@@ -369,7 +369,7 @@ fn spark_round(
                     array.clone()
                 ])?))
             }
-            dt => exec_err!("Not supported datatype[{dt}] for ROUND"),
+            dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
         ColumnarValue::Scalar(a) => match a {
             ScalarValue::Int64(a) if *point < 0 => {
