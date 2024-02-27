@@ -392,7 +392,7 @@ fn spark_round(
             ScalarValue::Float32(_) | ScalarValue::Float64(_) => Ok(ColumnarValue::Scalar(
                 ScalarValue::try_from_array(&math_expressions::round(&[a.to_array()?])?, 0)?,
             )),
-            dt => exec_err!("Not supported datatype[{dt}] for ROUND"),
+            dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
     }
 }
