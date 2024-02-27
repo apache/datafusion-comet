@@ -22,8 +22,10 @@ package org.apache.comet.exec
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame, DataFrameWriter, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -40,6 +42,7 @@ import org.apache.spark.sql.functions.{date_add, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
+
 import org.apache.comet.CometConf
 
 class CometExecSuite extends CometTestBase {
