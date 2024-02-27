@@ -22,26 +22,24 @@ package org.apache.comet.exec
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame, DataFrameWriter, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
+import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.functions.{date_add, expr}
+import org.apache.spark.sql.functions.{date_add, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
-
 import org.apache.comet.CometConf
 
 class CometExecSuite extends CometTestBase {
@@ -53,6 +51,19 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
+    }
+  }
+
+  test("Fix corrupted AggregateMode when transforming plan parameters") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "table") {
+      val df = sql("SELECT * FROM table").groupBy($"_1").agg(sum("_2"))
+      val agg = stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
+        case s: CometHashAggregateExec => s
+      }.get
+
+      assert(agg.mode.isDefined && agg.mode.get.isInstanceOf[AggregateMode])
+      val newAgg = agg.cleanBlock().asInstanceOf[CometHashAggregateExec]
+      assert(newAgg.mode.isDefined && newAgg.mode.get.isInstanceOf[AggregateMode])
     }
   }
 
