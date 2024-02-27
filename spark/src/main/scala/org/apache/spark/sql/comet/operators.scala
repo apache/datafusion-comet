@@ -150,7 +150,7 @@ abstract class CometNativeExec extends CometExec {
    * The serialized native query plan, optional. This is only defined when the current node is the
    * "boundary" node between native and Spark.
    *
-   * Note that derived classes of `BosonNativeExec` must have `serializedPlanOpt` in last product
+   * Note that derived classes of `CometNativeExec` must have `serializedPlanOpt` in last product
    * parameter.
    */
   def serializedPlanOpt: Option[Array[Byte]]
@@ -280,10 +280,11 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Maps through product elements except the last one. The last element will be transformed using
-   * the provided function. This is used to transform `serializedPlanOpt` parameter in case
-   * classes of Boson native operator where the `serializedPlanOpt` is always the last produce
-   * element. That is because we cannot match `Option[Array[Byte]]` due to type erase.
+   * Copies product elements to the output array except the last one. The last element will be
+   * transformed using the provided function. This is used to transform `serializedPlanOpt`
+   * parameter in case classes of Comet native operator where the `serializedPlanOpt` is always
+   * the last produce element. That is because we cannot match `Option[Array[Byte]]` due to type
+   * erase.
    */
   private def mapProduct(f: Any => AnyRef): Array[AnyRef] = {
     val arr = Array.ofDim[AnyRef](productArity)
