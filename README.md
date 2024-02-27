@@ -58,10 +58,8 @@ Linux, Apple OSX (Intel and M1)
 - Apache Spark 3.2, 3.3, or 3.4
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
-- Scala 2.12
-- Maven
 
-## Quickstart
+## Getting started
 
 Make sure the requirements above are met and software installed on your machine
 
@@ -69,6 +67,7 @@ Make sure the requirements above are met and software installed on your machine
 ```commandline
 git clone https://github.com/apache/arrow-datafusion-comet.git
 ```
+
 ### Specify the Spark version and build the Comet
 Spark 3.4 used for the example.
 ```
@@ -80,7 +79,7 @@ make release PROFILES="-Pspark-3.4"
 Make sure `SPARK_HOME` points to the same Spark version as Comet has built for.
 
 ```
-spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
+$SPARK_HOME/bin/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
 --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
 --conf spark.comet.enabled=true \
 --conf spark.comet.exec.enabled=true \
@@ -89,14 +88,18 @@ spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
 
 ### Verify Comet enabled for Spark SQL query  
 
+Create a test Parquet source
 ```scala
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
-INFO src/lib.rs: Comet native library initialized
+```
 
+Query the data, the INFO message shows the native library has been initialized.
+The query plan reflects Comet operators being used for this query instead of Spark ones
+```scala
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1"); spark.sql("select * from t1 where a > 5").explain
+INFO src/lib.rs: Comet native library initialized
 == Physical Plan ==
         *(1) ColumnarToRow
         +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
 +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
-
 ```
