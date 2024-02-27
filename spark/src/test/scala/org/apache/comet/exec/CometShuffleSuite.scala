@@ -63,6 +63,25 @@ abstract class CometShuffleSuiteBase extends CometTestBase with AdaptiveSparkPla
 
   import testImplicits._
 
+  test("Native shuffle with dictionary of binary") {
+    Seq("true", "false").foreach { dictionaryEnabled =>
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+        withParquetTable(
+          (0 until 1000).map(i => (i % 5, (i % 5).toString.getBytes())),
+          "tbl",
+          dictionaryEnabled.toBoolean) {
+          val shuffled = sql("SELECT * FROM tbl").repartition(2, $"_2")
+
+          checkCometExchange(shuffled, 1, true)
+          checkSparkAnswer(shuffled)
+        }
+      }
+    }
+  }
+
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
