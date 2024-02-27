@@ -93,8 +93,9 @@ Create a test Parquet source
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
-Query the data, the INFO message shows the native library has been initialized.
-The query plan reflects Comet operators being used for this query instead of Spark ones
+Query the data from the test source and check: 
+- INFO message shows the native Comet library has been initialized.
+- The query plan reflects Comet operators being used for this query instead of Spark ones
 ```scala
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1"); spark.sql("select * from t1 where a > 5").explain
 INFO src/lib.rs: Comet native library initialized
