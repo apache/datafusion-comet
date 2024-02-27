@@ -33,9 +33,26 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometExecUtils {
 
+  /**
+   * Create an empty ColumnarBatch RDD with a single partition.
+   */
   def createEmptyColumnarRDDWithSinglePartition(
       sparkContext: SparkContext): RDD[ColumnarBatch] = {
     new EmptyRDDWithPartitions(sparkContext, 1)
+  }
+
+  /**
+   * Transform the given RDD into a new RDD that takes the first `limit` elements of each
+   * partition. The limit operation is performed on the native side.
+   */
+  def toNativeLimitedPerPartition(
+      childPlan: RDD[ColumnarBatch],
+      outputAttribute: Seq[Attribute],
+      limit: Int): RDD[ColumnarBatch] = {
+    childPlan.mapPartitionsInternal { iter =>
+      val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit).get
+      CometExec.getCometIterator(Seq(iter), limitOp)
+    }
   }
 
   /**

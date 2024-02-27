@@ -1085,6 +1085,8 @@ class CometExecSuite extends CometTestBase {
 
           // checks CometCollectExec.doExecuteColumnar is indirectly called
           val qe = df.queryExecution
+          // make sure the root node is CometCollectLimitExec
+          assert(qe.executedPlan.isInstanceOf[CometCollectLimitExec])
           SQLExecution.withNewExecutionId(qe, Some("count")) {
             qe.executedPlan.resetMetrics()
             assert(qe.executedPlan.execute().count() === 2)

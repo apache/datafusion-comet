@@ -20,10 +20,11 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.execution.LimitExec
+import org.apache.spark.sql.execution.{LimitExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
+  import org.apache.comet.shims.ShimCometSparkSessionExtensions._
 
   /**
    * TODO: delete after dropping Spark 3.2.0 support and directly call scan.pushedAggregate
@@ -34,8 +35,18 @@ trait ShimCometSparkSessionExtensions {
     .flatMap(_.get(scan).asInstanceOf[Option[Aggregation]])
     .headOption
 
-  def getOffset(limit: LimitExec): Option[Int] = limit.getClass.getDeclaredFields
+  /**
+   * TODO: delete after dropping Spark 3.2 and 3.3 support
+   */
+  def getOffset(limit: LimitExec): Int = getOffsetOpt(limit).getOrElse(0)
+
+}
+
+object ShimCometSparkSessionExtensions {
+  private def getOffsetOpt(plan: SparkPlan): Option[Int] = plan.getClass.getDeclaredFields
     .filter(_.getName == "offset")
-    .map { a => a.setAccessible(true); a.get(limit).asInstanceOf[Int] }
+    .map { a => a.setAccessible(true); a.get(plan) }
+    .filter(_.isInstanceOf[Int])
+    .map(_.asInstanceOf[Int])
     .headOption
 }
