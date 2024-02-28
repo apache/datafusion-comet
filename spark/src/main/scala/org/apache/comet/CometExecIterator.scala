@@ -60,7 +60,7 @@ class CometExecIterator(
       cometBatchIterators,
       protobufQueryPlan,
       nativeMetrics,
-      new CometTaskMemoryManager)
+      new CometTaskMemoryManager(id))
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

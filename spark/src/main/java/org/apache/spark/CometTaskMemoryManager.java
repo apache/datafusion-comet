@@ -28,10 +28,14 @@ import org.apache.spark.memory.TaskMemoryManager;
  * memory manager. This assumes Spark's off-heap memory mode is enabled.
  */
 public class CometTaskMemoryManager {
+  /** The id uniquely identifies the native plan this memory manager is associated to */
+  private final long id;
+
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
 
-  public CometTaskMemoryManager() {
+  public CometTaskMemoryManager(long id) {
+    this.id = id;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
   }
@@ -61,6 +65,11 @@ public class CometTaskMemoryManager {
     public long spill(long size, MemoryConsumer trigger) throws IOException {
       // No spilling
       return 0;
+    }
+
+    @Override
+    public String toString() {
+      return String.format("NativeMemoryConsumer(id=%)", id);
     }
   }
 }
