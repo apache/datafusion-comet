@@ -58,22 +58,30 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-        var allTypes: Seq[Int] = (1 to 20)
-        if (isSpark34Plus) {
-          allTypes = allTypes.filterNot(Set(14, 17).contains)
-        }
-        allTypes.map(i => s"_$i").foreach { c =>
-          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-            readParquetFile(path.toString) { df =>
-              val shuffled = df
-                .select($"_1")
-                .repartition(10, col(c))
-              checkCometExchange(shuffled, 1, true)
-              checkSparkAnswerAndOperator(shuffled)
+    Seq(false).foreach { execEnabled =>
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+          var allTypes: Seq[Int] = (1 to 20)
+          if (isSpark34Plus) {
+            allTypes = allTypes.filterNot(Set(14, 17).contains)
+          }
+          allTypes.map(i => s"_$i").foreach { c =>
+            withSQLConf(
+              CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
+              "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+              readParquetFile(path.toString) { df =>
+                val shuffled = df
+                  .select($"_1")
+                  .repartition(10, col(c))
+                checkCometExchange(shuffled, 1, true)
+                if (execEnabled) {
+                  checkSparkAnswerAndOperator(shuffled)
+                } else {
+                  checkSparkAnswer(shuffled)
+                }
+              }
             }
           }
         }
