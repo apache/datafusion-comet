@@ -240,7 +240,13 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometProjectExec(nativeOp, op, op.projectList, op.output, op.child, None)
+              CometProjectExec(
+                nativeOp,
+                op,
+                op.projectList,
+                op.output,
+                op.child,
+                SerializedPlan(None))
             case None =>
               op
           }
@@ -249,7 +255,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometFilterExec(nativeOp, op, op.condition, op.child, None)
+              CometFilterExec(nativeOp, op, op.condition, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -258,7 +264,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometSortExec(nativeOp, op, op.sortOrder, op.child, None)
+              CometSortExec(nativeOp, op, op.sortOrder, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -267,7 +273,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometLocalLimitExec(nativeOp, op, op.limit, op.child, None)
+              CometLocalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -276,7 +282,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometGlobalLimitExec(nativeOp, op, op.limit, op.child, None)
+              CometGlobalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -299,7 +305,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometExpandExec(nativeOp, op, op.projections, op.child, None)
+              CometExpandExec(nativeOp, op, op.projections, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -322,7 +328,7 @@ class CometSparkSessionExtensions
                 child.output,
                 if (modes.nonEmpty) Some(modes.head) else None,
                 child,
-                None)
+                SerializedPlan(None))
             case None =>
               op
           }

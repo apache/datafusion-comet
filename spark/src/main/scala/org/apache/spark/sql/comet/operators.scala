@@ -150,7 +150,7 @@ abstract class CometNativeExec extends CometExec {
    * The serialized native query plan, optional. This is only defined when the current node is the
    * "boundary" node between native and Spark.
    */
-  def serializedPlanOpt: Option[Array[Byte]]
+  def serializedPlanOpt: SerializedPlan
 
   /** The Comet native operator */
   def nativeOp: Operator
@@ -200,7 +200,7 @@ abstract class CometNativeExec extends CometExec {
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    serializedPlanOpt match {
+    serializedPlanOpt.plan match {
       case None =>
         // This is in the middle of a native execution, it should not be executed directly.
         throw new CometRuntimeException(
@@ -282,11 +282,11 @@ abstract class CometNativeExec extends CometExec {
    */
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
-      case serializedPlan: Option[Array[Byte]] if serializedPlan.isEmpty =>
+      case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
         val out = new ByteArrayOutputStream()
         nativeOp.writeTo(out)
         out.close()
-        Some(out.toByteArray)
+        SerializedPlan(Some(out.toByteArray))
       case other: AnyRef => other
       case null => null
     }
@@ -300,8 +300,8 @@ abstract class CometNativeExec extends CometExec {
    */
   def cleanBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
-      case serializedPlan: Option[Array[Byte]] if serializedPlan.isDefined =>
-        None
+      case serializedPlan: SerializedPlan if serializedPlan.isDefined =>
+        SerializedPlan(None)
       case other: AnyRef => other
       case null => null
     }
@@ -323,13 +323,23 @@ abstract class CometNativeExec extends CometExec {
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
+/**
+ * Represents the serialized plan of Comet native operators. Only the first operator in a block of
+ * continuous Comet native operators has defined plan bytes which contains the serialization of
+ * the plan tree of the block.
+ */
+case class SerializedPlan(plan: Option[Array[Byte]]) {
+  def isDefined: Boolean = plan.isDefined
+  def isEmpty: Boolean = plan.isEmpty
+}
+
 case class CometProjectExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     projectList: Seq[NamedExpression],
     override val output: Seq[Attribute],
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override def producedAttributes: AttributeSet = outputSet
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -356,7 +366,7 @@ case class CometFilterExec(
     override val originalPlan: SparkPlan,
     condition: Expression,
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -390,7 +400,7 @@ case class CometSortExec(
     override val originalPlan: SparkPlan,
     sortOrder: Seq[SortOrder],
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -422,7 +432,7 @@ case class CometLocalLimitExec(
     override val originalPlan: SparkPlan,
     limit: Int,
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -449,7 +459,7 @@ case class CometGlobalLimitExec(
     override val originalPlan: SparkPlan,
     limit: Int,
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -474,7 +484,7 @@ case class CometExpandExec(
     override val originalPlan: SparkPlan,
     projections: Seq[Seq[Expression]],
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override def producedAttributes: AttributeSet = outputSet
 
@@ -538,7 +548,7 @@ case class CometHashAggregateExec(
     input: Seq[Attribute],
     mode: Option[AggregateMode],
     child: SparkPlan,
-    override val serializedPlanOpt: Option[Array[Byte]])
+    override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -576,7 +586,7 @@ case class CometHashAggregateExec(
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
-  override val serializedPlanOpt: Option[Array[Byte]] = None
+  override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
   override def stringArgs: Iterator[Any] = Iterator(originalPlan.output, originalPlan)
 }
 
@@ -592,7 +602,7 @@ case class CometSinkPlaceHolder(
     override val originalPlan: SparkPlan,
     child: SparkPlan)
     extends CometUnaryExec {
-  override val serializedPlanOpt: Option[Array[Byte]] = None
+  override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
     this.copy(child = newChild)

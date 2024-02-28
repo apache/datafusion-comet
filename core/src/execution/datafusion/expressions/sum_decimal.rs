@@ -24,11 +24,9 @@ use arrow_array::{
 };
 use arrow_data::decimal::validate_decimal_precision;
 use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::Accumulator;
+use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
 use datafusion_common::{Result as DFResult, ScalarValue};
-use datafusion_physical_expr::{
-    aggregate::utils::down_cast_any_ref, AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr,
-};
+use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, AggregateExpr, PhysicalExpr};
 use std::{any::Any, ops::BitAnd, sync::Arc};
 
 use crate::unlikely;
@@ -204,7 +202,7 @@ impl Accumulator for SumDecimalAccumulator {
         Ok(())
     }
 
-    fn evaluate(&self) -> DFResult<ScalarValue> {
+    fn evaluate(&mut self) -> DFResult<ScalarValue> {
         // For each group:
         //   1. if `is_empty` is true, it means either there is no value or all values for the group
         //      are null, in this case we'll return null
@@ -224,7 +222,7 @@ impl Accumulator for SumDecimalAccumulator {
         std::mem::size_of_val(self)
     }
 
-    fn state(&self) -> DFResult<Vec<ScalarValue>> {
+    fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
         let sum = if self.is_not_null {
             ScalarValue::try_new_decimal128(self.sum, self.precision, self.scale)?
         } else {

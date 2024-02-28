@@ -608,6 +608,7 @@ impl PhysicalPlanner {
                     vec![left, right],
                     data_type,
                     None,
+                    false,
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -984,6 +985,7 @@ impl PhysicalPlanner {
             args.to_vec(),
             data_type,
             None,
+            args.is_empty(),
         ));
 
         Ok(scalar_expr)
