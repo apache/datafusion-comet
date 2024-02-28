@@ -97,10 +97,13 @@ Query the data from the test source and check:
 - INFO message shows the native Comet library has been initialized.
 - The query plan reflects Comet operators being used for this query instead of Spark ones
 ```scala
-scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1"); spark.sql("select * from t1 where a > 5").explain
+scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1")
+scala> spark.sql("select * from t1 where a > 5").explain
 INFO src/lib.rs: Comet native library initialized
 == Physical Plan ==
         *(1) ColumnarToRow
         +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
-+- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+          +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)], 
+             Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], 
+             PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
