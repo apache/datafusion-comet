@@ -104,6 +104,6 @@ INFO src/lib.rs: Comet native library initialized
         *(1) ColumnarToRow
         +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
 +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)], 
-   Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], 
-   PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], 
+PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
