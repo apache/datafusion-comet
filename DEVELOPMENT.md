@@ -60,6 +60,10 @@ make benchmark-org.apache.spark.sql.benchmark.CometReadBenchmark
 To run TPC-H or TPC-DS micro benchmarks, please follow the instructions
 in the respective source code, e.g., `CometTPCHQueryBenchmark`.
 
+## Style
+
+You can fix Scala style issues using spotless by running `make format`.
+
 ## Debugging
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
 It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](DEBUGGING.md)

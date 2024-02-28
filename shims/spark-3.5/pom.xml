@@ -25,19 +25,13 @@ under the License.
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>org.apache.comet</groupId>
-	<artifactId>comet-spark-shims</artifactId>
+	<artifactId>comet-spark-per-spark-shims</artifactId>
         <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>comet-spark-shims${spark.version.short}_${scala.binary.version}</artifactId>
-    <name>comet-spark-shims${spark.version.short}_${scala.binary.version}</name>
-    <packaging>pom</packaging>
-
-  <properties>
-    <!-- Reverse default (skip installation), and then enable only for child modules -->
-    <maven.deploy.skip>false</maven.deploy.skip>
-  </properties>
+    <artifactId>comet-spark-per-spark-shims${spark.version.short}_${scala.binary.version}</artifactId>
+    <name>comet-spark-per-spark-shims${spark.version.short}_${scala.binary.version}</name>
 
     <dependencies>
         <dependency>
@@ -96,6 +90,10 @@ under the License.
                     </execution>
                 </executions>
             </plugin>
+	    <plugin>
+              <groupId>net.alchim31.maven</groupId>
+              <artifactId>scala-maven-plugin</artifactId>
+	    </plugin>
         </plugins>
     </build>
 </project>

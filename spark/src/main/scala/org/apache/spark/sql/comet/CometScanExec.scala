@@ -42,7 +42,7 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
-import org.apache.comet.shims.{ShimCometScanExec, ShimFileFormat}
+import org.apache.comet.shims.{PartitionShim, ShimCometScanExec, ShimFileFormat}
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -267,7 +267,7 @@ case class CometScanExec(
       selectedPartitions
         .flatMap { p =>
           p.files.map { f =>
-            PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+            PartitionShim.getPartitionedFile(f, p.values)
           }
         }
         .groupBy { f =>
@@ -354,10 +354,9 @@ case class CometScanExec(
               // SPARK-39634: Allow file splitting in combination with row index generation once
               // the fix for PARQUET-2161 is available.
               !isNeededForSchema(requiredSchema)
-            PartitionedFileUtil.splitFiles(
+            PartitionShim.splitFiles(
               sparkSession = relation.sparkSession,
               file = file,
-              filePath = filePath,
               isSplitable = isSplitable,
               maxSplitBytes = maxSplitBytes,
               partitionValues = partition.values)

@@ -42,7 +42,11 @@ bench:
 	RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(filter-out $@,$(MAKECMDGOALS))
 format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
-	./mvnw spotless:apply $(PROFILES)
+	./mvnw spotless:apply $(PROFILES) -Pspark-3.5
+	./mvnw spotless:apply $(PROFILES) -Pspark-3.4
+	./mvnw spotless:apply $(PROFILES) -Pspark-3.3
+	./mvnw spotless:apply $(PROFILES) -Pspark-3.2
+
 
 core-amd64:
 	rustup target add x86_64-apple-darwin

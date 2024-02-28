@@ -17,18 +17,33 @@
  * under the License.
  */
 
-package org.apache.comet
+package org.apache.comet.shims
 
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.PartitionedFileUtil
+import org.apache.spark.sql.execution.datasources._
 
-import org.apache.hadoop.fs.Path
-
-class Shim {
+class PartitionShim {
 
   def getPartitionedFile(
       file: FileStatusWithMetadata,
       partitionValues: InternalRow): PartitionedFile = {
-    PartitonedFileUtil.getPartitionedFile(file, f.getPath, partitionValues)
+    PartitionedFileUtil.getPartitionedFile(file, f.getPath, partitionValues)
   }
 
+  def splitFiles(
+      sparkSession: SparkSession,
+      file: FileStatusWithMetadata,
+      isSplitable: Boolean,
+      maxSplitBytes: Long,
+      partitionValues: InternalRow): Seq[PartitionedFile] = {
+    PartitionedFileUtil.splitFiles(
+      sparkSession = sparkSession,
+      file = file,
+      filePath = file.getPath,
+      isSplitable = isSplitable,
+      maxSplitBytes = maxSplitBytes,
+      partitionValues = partitionValues)
+  }
 }

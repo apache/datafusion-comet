@@ -30,8 +30,8 @@ under the License.
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>comet-spark-shims</artifactId>
-    <name>comet-spark-shims</name>
+    <artifactId>comet-spark-per-spark-shims</artifactId>
+    <name>comet-spark-per-spark-shims</name>
     <packaging>pom</packaging>
 
   <properties>
@@ -103,19 +103,19 @@ under the License.
       <profile>
 	<id>spark-3.2</id>
 	<modules>
-          <module>spark-3.2</module>
+          <module>pre-spark-3.5</module>
 	</modules>
       </profile>
       <profile>
 	<id>spark-3.3</id>
 	<modules>
-          <module>spark-3.3</module>
+          <module>pre-spark-3.5</module>
 	</modules>
       </profile>
       <profile>
 	<id>spark-3.4</id>
 	<modules>
-          <module>spark-3.4</module>
+          <module>pre-spark-3.5</module>
 	</modules>
       </profile>
       <profile>
