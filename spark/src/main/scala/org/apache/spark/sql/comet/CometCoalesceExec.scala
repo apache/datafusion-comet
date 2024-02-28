@@ -41,7 +41,7 @@ case class CometCoalesceExec(
     if (numPartitions == 1 && rdd.getNumPartitions < 1) {
       // Make sure we don't output an RDD with 0 partitions, when claiming that we have a
       // `SinglePartition`.
-      CometExecUtils.createEmptyColumnarRDDWithSinglePartition(sparkContext)
+      CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)
     } else {
       rdd.coalesce(numPartitions, shuffle = false)
     }

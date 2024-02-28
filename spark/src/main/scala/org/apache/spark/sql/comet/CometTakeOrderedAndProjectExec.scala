@@ -77,7 +77,7 @@ case class CometTakeOrderedAndProjectExec(
         childRDD
       } else {
         val localTopK = if (orderingSatisfies) {
-          CometExecUtils.toNativeLimitedPerPartition(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
         } else {
           childRDD.mapPartitionsInternal { iter =>
             val topK =

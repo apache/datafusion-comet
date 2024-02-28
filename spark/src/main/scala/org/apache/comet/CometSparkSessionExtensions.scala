@@ -480,8 +480,11 @@ class CometSparkSessionExtensions
   // `ColumnarToRowExec` for such operators.
   case class EliminateRedundantColumnarToRow(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      plan.transform { case ColumnarToRowExec(child: CometCollectLimitExec) =>
-        child
+      plan match {
+        case ColumnarToRowExec(child: CometCollectLimitExec) =>
+          child
+        case other =>
+          other
       }
     }
   }

@@ -67,17 +67,17 @@ case class CometCollectLimitExec(
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
     if (childRDD.getNumPartitions == 0) {
-      CometExecUtils.createEmptyColumnarRDDWithSinglePartition(sparkContext)
+      CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)
     } else {
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
         childRDD
       } else {
         val localLimitedRDD = if (limit >= 0) {
-          CometExecUtils.toNativeLimitedPerPartition(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
         } else {
           childRDD
         }
-        // Shuffle to Single Partition using Comet native shuffle
+        // Shuffle to Single Partition using Comet shuffle
         val dep = CometShuffleExchangeExec.prepareShuffleDependency(
           localLimitedRDD,
           child.output,
@@ -88,7 +88,7 @@ case class CometCollectLimitExec(
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
-      CometExecUtils.toNativeLimitedPerPartition(singlePartitionRDD, output, limit)
+      CometExecUtils.getNativeLimitRDD(singlePartitionRDD, output, limit)
     }
   }
 

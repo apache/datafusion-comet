@@ -186,7 +186,7 @@ abstract class CometTestBase
       if (!plan.exists(op => planClass.isAssignableFrom(op.getClass))) {
         assert(
           false,
-          s"Expected plan to contain ${planClass.getSimpleName}.\n" +
+          s"Expected plan to contain ${planClass.getSimpleName}, but not.\n" +
             s"plan: $plan")
       }
     }

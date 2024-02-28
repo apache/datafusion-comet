@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import scala.collection.JavaConverters.asJavaIterableConverter
+import scala.reflect.ClassTag
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -34,18 +35,19 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 object CometExecUtils {
 
   /**
-   * Create an empty ColumnarBatch RDD with a single partition.
+   * Create an empty RDD with the given number of partitions.
    */
-  def createEmptyColumnarRDDWithSinglePartition(
-      sparkContext: SparkContext): RDD[ColumnarBatch] = {
-    new EmptyRDDWithPartitions(sparkContext, 1)
+  def emptyRDDWithPartitions[T: ClassTag](
+      sparkContext: SparkContext,
+      numPartitions: Int): RDD[T] = {
+    new EmptyRDDWithPartitions(sparkContext, numPartitions)
   }
 
   /**
    * Transform the given RDD into a new RDD that takes the first `limit` elements of each
    * partition. The limit operation is performed on the native side.
    */
-  def toNativeLimitedPerPartition(
+  def getNativeLimitRDD(
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
       limit: Int): RDD[ColumnarBatch] = {
@@ -146,13 +148,15 @@ object CometExecUtils {
 }
 
 /** A simple RDD with no data, but with the given number of partitions. */
-private class EmptyRDDWithPartitions(@transient private val sc: SparkContext, numPartitions: Int)
-    extends RDD[ColumnarBatch](sc, Nil) {
+private class EmptyRDDWithPartitions[T: ClassTag](
+    @transient private val sc: SparkContext,
+    numPartitions: Int)
+    extends RDD[T](sc, Nil) {
 
   override def getPartitions: Array[Partition] =
     Array.tabulate(numPartitions)(i => EmptyPartition(i))
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[T] = {
     Iterator.empty
   }
 }
