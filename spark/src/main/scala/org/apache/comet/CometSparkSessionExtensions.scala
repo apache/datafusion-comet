@@ -65,6 +65,9 @@ class CometSparkSessionExtensions
 
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+
+    override def postColumnarTransitions: Rule[SparkPlan] =
+      EliminateRedundantColumnarToRow(session)
   }
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
@@ -284,6 +287,20 @@ class CometSparkSessionExtensions
               op
           }
 
+        case op: CollectLimitExec
+            if isCometNative(op.child) && isCometOperatorEnabled(conf, "collectLimit")
+              && isCometShuffleEnabled(conf)
+              && getOffset(op) == 0 =>
+          QueryPlanSerde.operator2Proto(op) match {
+            case Some(nativeOp) =>
+              val offset = getOffset(op)
+              val cometOp =
+                CometCollectLimitExec(op, op.limit, offset, op.child)
+              CometSinkPlaceHolder(nativeOp, op, cometOp)
+            case None =>
+              op
+          }
+
         case op: ExpandExec =>
           val newOp = transform1(op)
           newOp match {
@@ -454,6 +471,26 @@ class CometSparkSessionExtensions
             firstNativeOp = true
             op
         }
+      }
+    }
+  }
+
+  // CometExec already wraps a `ColumnarToRowExec` for row-based operators. Therefore,
+  // `ColumnarToRowExec` is redundant and can be eliminated.
+  //
+  // It was added during ApplyColumnarRulesAndInsertTransitions' insertTransitions phase when Spark
+  // requests row-based output such as `collect` call. It's correct to add a redundant
+  // `ColumnarToRowExec` for `CometExec`. However, for certain operators such as
+  // `CometCollectLimitExec` which overrides `executeCollect`, the redundant `ColumnarToRowExec`
+  // makes the override ineffective. The purpose of this rule is to eliminate the redundant
+  // `ColumnarToRowExec` for such operators.
+  case class EliminateRedundantColumnarToRow(session: SparkSession) extends Rule[SparkPlan] {
+    override def apply(plan: SparkPlan): SparkPlan = {
+      plan match {
+        case ColumnarToRowExec(child: CometCollectLimitExec) =>
+          child
+        case other =>
+          other
       }
     }
   }

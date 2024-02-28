@@ -32,9 +32,9 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -1086,6 +1086,34 @@ class CometExecSuite extends CometTestBase {
           checkSparkAnswer(df)
         }
       })
+  }
+
+  test("collect limit") {
+    Seq("true", "false").foreach(aqe => {
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+          val df = sql("SELECT _1 as id, _2 as value FROM tbl limit 2")
+          assert(df.queryExecution.executedPlan.execute().getNumPartitions === 1)
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometCollectLimitExec]))
+          assert(df.collect().length === 2)
+
+          val qe = df.queryExecution
+          // make sure the root node is CometCollectLimitExec
+          assert(qe.executedPlan.isInstanceOf[CometCollectLimitExec])
+          // executes CometCollectExec directly to check doExecuteColumnar implementation
+          SQLExecution.withNewExecutionId(qe, Some("count")) {
+            qe.executedPlan.resetMetrics()
+            assert(qe.executedPlan.execute().count() === 2)
+          }
+
+          assert(df.isEmpty === false)
+
+          // follow up native operation is possible
+          val df3 = df.groupBy("id").sum("value")
+          checkSparkAnswerAndOperator(df3)
+        }
+      }
+    })
   }
 }
 

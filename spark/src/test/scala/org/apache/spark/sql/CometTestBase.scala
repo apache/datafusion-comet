@@ -150,7 +150,15 @@ abstract class CometTestBase
   protected def checkSparkAnswerAndOperator(
       df: => DataFrame,
       excludedClasses: Class[_]*): Unit = {
+    checkSparkAnswerAndOperator(df, Seq.empty, excludedClasses: _*)
+  }
+
+  protected def checkSparkAnswerAndOperator(
+      df: => DataFrame,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Class[_]*): Unit = {
     checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
     checkSparkAnswer(df)
   }
 
@@ -170,6 +178,17 @@ abstract class CometTestBase
             s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
               s"plan: $plan")
         }
+    }
+  }
+
+  protected def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
+    includePlans.foreach { case planClass =>
+      if (!plan.exists(op => planClass.isAssignableFrom(op.getClass))) {
+        assert(
+          false,
+          s"Expected plan to contain ${planClass.getSimpleName}, but not.\n" +
+            s"plan: $plan")
+      }
     }
   }
 
