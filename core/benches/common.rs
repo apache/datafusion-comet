@@ -45,6 +45,7 @@ pub fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) ->
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn create_primitive_array<T>(size: usize, null_density: f32) -> PrimitiveArray<T>
 where
     T: ArrowPrimitiveType,
@@ -64,6 +65,7 @@ where
 
 /// Creates a dictionary with random keys and values, with value type `T`.
 /// Note here the keys are the dictionary indices.
+#[allow(dead_code)]
 pub fn create_dictionary_array<T>(
     size: usize,
     value_size: usize,

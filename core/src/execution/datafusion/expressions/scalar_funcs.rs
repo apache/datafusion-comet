@@ -31,13 +31,11 @@ use datafusion::{
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
-    cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
-    ScalarValue,
+    cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
+    Result as DataFusionResult, ScalarValue,
 };
 use datafusion_physical_expr::{
-    execution_props::ExecutionProps,
-    functions::{create_physical_fun, make_scalar_function},
-    math_expressions,
+    execution_props::ExecutionProps, functions::create_physical_fun, math_expressions,
 };
 use num::{BigInt, Signed, ToPrimitive};
 use unicode_segmentation::UnicodeSegmentation;
@@ -366,7 +364,12 @@ fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_array(array, precision, scale, &f)
             }
-            _ => make_scalar_function(math_expressions::round)(args),
+            DataType::Float32 | DataType::Float64 => {
+                Ok(ColumnarValue::Array(math_expressions::round(&[
+                    array.clone()
+                ])?))
+            }
+            dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
         ColumnarValue::Scalar(a) => match a {
             ScalarValue::Int64(a) if *point < 0 => {
@@ -386,7 +389,10 @@ fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, &f)
             }
-            _ => make_scalar_function(math_expressions::round)(args),
+            ScalarValue::Float32(_) | ScalarValue::Float64(_) => Ok(ColumnarValue::Scalar(
+                ScalarValue::try_from_array(&math_expressions::round(&[a.to_array()?])?, 0)?,
+            )),
+            dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
     }
 }

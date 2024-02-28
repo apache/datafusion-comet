@@ -28,7 +28,7 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 
 use super::copy_or_cast_array;
 
@@ -141,8 +141,7 @@ impl CopyStream {
             .iter()
             .map(|v| copy_or_cast_array(v))
             .collect::<Result<Vec<ArrayRef>, _>>()?;
-        RecordBatch::try_new(self.schema.clone(), vectors)
-            .map_err(|err| DataFusionError::ArrowError(err, None))
+        RecordBatch::try_new(self.schema.clone(), vectors).map_err(|e| arrow_datafusion_err!(e))
     }
 }
 

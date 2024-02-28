@@ -43,7 +43,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use jni::{
     objects::{GlobalRef, JLongArray, JObject, ReleaseMode},
     sys::jlongArray,
@@ -325,7 +325,7 @@ impl ScanStream {
 
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(self.schema.clone(), new_columns, &options)
-            .map_err(|err| DataFusionError::ArrowError(err, None))
+            .map_err(|e| arrow_datafusion_err!(e))
     }
 }
 

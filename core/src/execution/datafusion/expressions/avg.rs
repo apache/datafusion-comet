@@ -24,11 +24,11 @@ use arrow_array::{
     Array, ArrayRef, ArrowNumericType, Int64Array, PrimitiveArray,
 };
 use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::{type_coercion::aggregates::avg_return_type, Accumulator};
-use datafusion_common::{not_impl_err, DataFusionError, Result, ScalarValue};
-use datafusion_physical_expr::{
-    expressions::format_state_name, AggregateExpr, EmitTo, GroupsAccumulator, PhysicalExpr,
+use datafusion::logical_expr::{
+    type_coercion::aggregates::avg_return_type, Accumulator, EmitTo, GroupsAccumulator,
 };
+use datafusion_common::{not_impl_err, DataFusionError, Result, ScalarValue};
+use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
 use arrow_array::ArrowNativeTypeOp;
@@ -146,7 +146,7 @@ pub struct AvgAccumulator {
 }
 
 impl Accumulator for AvgAccumulator {
-    fn state(&self) -> Result<Vec<ScalarValue>> {
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
             ScalarValue::Float64(self.sum),
             ScalarValue::from(self.count),
@@ -175,7 +175,7 @@ impl Accumulator for AvgAccumulator {
         Ok(())
     }
 
-    fn evaluate(&self) -> Result<ScalarValue> {
+    fn evaluate(&mut self) -> Result<ScalarValue> {
         Ok(ScalarValue::Float64(
             self.sum.map(|f| f / self.count as f64),
         ))
