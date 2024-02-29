@@ -27,7 +27,7 @@ class CometTPCDSQuerySuite
     extends {
       // This is private in `TPCDSBase`.
       val excludedTpcdsQueries: Seq[String] =
-        Seq("q34", "q66", "q64", "q71", "q88", "q90", "q96")
+        Seq("q66", "q71", "q88", "q90", "q96")
 
       // This is private in `TPCDSBase` and `excludedTpcdsQueries` is private too.
       // So we cannot override `excludedTpcdsQueries` to exclude the queries.
