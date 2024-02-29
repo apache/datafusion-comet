@@ -51,11 +51,7 @@ runs:
       shell: bash
       run: |
         cd common
-        if [ $JAVA_VERSION == "1.8" ]; then
-          ../mvnw -B clean compile -DskipTests -Djava.version=${JAVA_VERSION} -Dspotless.version=2.29.0
-        else
-          ../mvnw -B clean compile -DskipTests -Djava.version=${JAVA_VERSION}
-        fi
+        ../mvnw -B clean compile -DskipTests
 
     - name: Run Cargo test
       shell: bash
@@ -64,9 +60,6 @@ runs:
         # This is required to run some JNI related tests on the Rust side
         JAVA_LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$JAVA_HOME/lib:$JAVA_HOME/lib/jli
         # special handing for java 1.8 for both linux and mac distributions
-        if [ $JAVA_VERSION == "8" ]; then
-          JAVA_LD_LIBRARY_PATH=$JAVA_HOME/jre/lib/amd64/server:$JAVA_HOME/jre/lib/amd64:$JAVA_HOME/jre/lib/amd64/jli:$JAVA_HOME/jre/lib/server:$JAVA_HOME/jre/lib:$JAVA_HOME/jre/lib/jli
-        fi
         RUST_BACKTRACE=1 \
         LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_LD_LIBRARY_PATH \
         DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$JAVA_LD_LIBRARY_PATH \

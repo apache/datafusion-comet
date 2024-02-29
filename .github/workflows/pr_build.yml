@@ -54,8 +54,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
-    env:
-      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
@@ -82,8 +80,6 @@ jobs:
     if: github.event_name == 'push'
     name: ${{ matrix.test-target }} test on ${{ matrix.os }} with java ${{ matrix.java_version }}
     runs-on: ${{ matrix.os }}
-    env:
-      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
@@ -113,8 +109,6 @@ jobs:
       fail-fast: false
     name: ${{ matrix.test-target }} test on macos-aarch64 with java ${{ matrix.java_version }}
     runs-on: macos-14
-    env:
-      JAVA_VERSION: ${{ matrix.java_version == 8 && '1.8' || format('{0}', matrix.java_version) }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain

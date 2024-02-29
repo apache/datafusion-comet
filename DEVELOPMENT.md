@@ -30,7 +30,7 @@ under the License.
 
 ## Development Setup
 
-1. Make sure `JAVA_HOME` is set and point to JDK 11 installation.
+1. Make sure `JAVA_HOME` is set and point to JDK 8/11/17 installation.
 2. Install Rust toolchain. The easiest way is to use
    [rustup](https://rustup.rs).
 
@@ -39,6 +39,8 @@ under the License.
 A few common commands are specified in project's `Makefile`:
 
 - `make`: compile the entire project, but don't run tests
+- `make test-rust`: compile the project and run tests in Rust side
+- `make test-java`: compile the project and run tests in Java side
 - `make test`: compile the project and run tests in both Rust and Java
   side.
 - `make release`: compile the project and creates a release build. This
@@ -47,6 +49,25 @@ A few common commands are specified in project's `Makefile`:
 - `make clean`: clean up the workspace
 - `bin/comet-spark-shell -d . -o spark/target/` run Comet spark shell for V1 datasources
 - `bin/comet-spark-shell -d . -o spark/target/ --conf spark.sql.sources.useV1SourceList=""` run Comet spark shell for V2 datasources
+	
+## Opening Project in IDEs
+Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
+For Rust code, the CLion IDE is recommended. For JVM code, IntelliJ IDEA is recommended. 
+
+Before opening the project in an IDE, make sure to run `make` first to generate the necessary files for the IDEs. Currently, it's mostly about
+generating protobuf message classes for the JVM side. It's only required to run `make` once after cloning the repo.
+
+### IntelliJ IDEA
+First make sure to install the Scala plugin in IntelliJ IDEA. 
+After that, you can open the project in IntelliJ IDEA. The IDE should automatically detect the project structure and import as a Maven project.
+
+### CLion
+First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
+After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
+
+### Running Tests in IDEA
+Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting "Run" or "Debug".
+However if the tests is related to the native side. Please make sure to run `make core`  or `cd core && cargo build` before running the tests in IDEA.
 
 ## Benchmark
 
