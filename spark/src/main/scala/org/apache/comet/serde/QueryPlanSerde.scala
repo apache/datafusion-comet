@@ -1376,7 +1376,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
       case ShiftRight(left, right) =>
         val leftExpr = exprToProtoInternal(left, inputs)
-        val rightExpr = exprToProtoInternal(right, inputs)
+        val rightExpr = if (left.dataType == LongType) {
+          // DataFusion bitwise shift right expression requires
+          // same data type between left and right side
+          exprToProtoInternal(Cast(right, LongType), inputs)
+        } else {
+          exprToProtoInternal(right, inputs)
+        }
 
         if (leftExpr.isDefined && rightExpr.isDefined) {
           val builder = ExprOuterClass.BitwiseShiftRight.newBuilder()
@@ -1394,7 +1400,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
       case ShiftLeft(left, right) =>
         val leftExpr = exprToProtoInternal(left, inputs)
-        val rightExpr = exprToProtoInternal(right, inputs)
+        val rightExpr = if (left.dataType == LongType) {
+          // DataFusion bitwise shift left expression requires
+          // same data type between left and right side
+          exprToProtoInternal(Cast(right, LongType), inputs)
+        } else {
+          exprToProtoInternal(right, inputs)
+        }
 
         if (leftExpr.isDefined && rightExpr.isDefined) {
           val builder = ExprOuterClass.BitwiseShiftLeft.newBuilder()
