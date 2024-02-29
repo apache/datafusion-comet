@@ -123,7 +123,7 @@ jobs:
             ${{ runner.os }}-java-maven-
       - name: Restore TPC-DS generated data
         id: cache-tpcds-sf-1
-        uses: actions/cache/resotre@v4
+        uses: actions/cache/restore@v4
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml') }}
