@@ -50,7 +50,7 @@ A few common commands are specified in project's `Makefile`:
 - `bin/comet-spark-shell -d . -o spark/target/` run Comet spark shell for V1 datasources
 - `bin/comet-spark-shell -d . -o spark/target/ --conf spark.sql.sources.useV1SourceList=""` run Comet spark shell for V2 datasources
 	
-## Opening Project in IDEs
+## Development Environment
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
 For Rust code, the CLion IDE is recommended. For JVM code, IntelliJ IDEA is recommended. 
 

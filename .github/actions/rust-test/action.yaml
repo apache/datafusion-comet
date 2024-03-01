@@ -57,11 +57,4 @@ runs:
       shell: bash
       run: |
         cd core
-        # This is required to run some JNI related tests on the Rust side
-        JAVA_LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$JAVA_HOME/lib:$JAVA_HOME/lib/jli
-        # special handing for java 1.8 for both linux and mac distributions
-        RUST_BACKTRACE=1 \
-        LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_LD_LIBRARY_PATH \
-        DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$JAVA_LD_LIBRARY_PATH \
-        cargo test
-
+        RUST_BACKTRACE=1 cargo test
