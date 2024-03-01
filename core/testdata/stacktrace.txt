@@ -1,0 +1,12 @@
+Some Error Message
+        at std::backtrace_rs::backtrace::libunwind::trace(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/../../backtrace/src/backtrace/libunwind.rs:93)
+        at std::backtrace_rs::backtrace::trace_unsynchronized(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/../../backtrace/src/backtrace/mod.rs:66)
+        at std::backtrace::Backtrace::create(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/backtrace.rs:331)
+        at std::backtrace::Backtrace::capture(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/backtrace.rs:297)
+        at comet::Java_org_apache_comet_NativeBase_init::{{closure}}(/Users/somebody/src/arrow-datafusion-comet/core/src/lib.rs:70)
+        at std::panicking::try::do_call(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/panicking.rs:526)
+        at ___rust_try(__internal__:0)
+        at std::panicking::try(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/panicking.rs:490)
+        at std::panic::catch_unwind(/rustc/ec08a0337f3556212525dbf1d3b41e19bdf27621/library/std/src/panic.rs:142)
+        at comet::errors::try_unwrap_or_throw(/Users/somebody/src/arrow-datafusion-comet/core/src/errors.rs:369)
+        at Java_org_apache_comet_NativeBase_init(/Users/somebody/src/arrow-datafusion-comet/core/src/lib.rs:53)

@@ -651,7 +651,6 @@ mod tests {
     /// See [`object_panic_exception`] for a test which involves generating a panic and verifying
     /// that the resulting stack trace includes the offending call.
     #[test]
-    #[ignore]
     pub fn stacktrace_string() {
         // Setup: Start with a backtrace that includes all of the expected scenarios, including
         // cases where the file and location are not provided as part of the backtrace capture
