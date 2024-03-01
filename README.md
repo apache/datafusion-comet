@@ -22,12 +22,19 @@ under the License.
 Comet is an Apache Spark plugin that uses [Apache Arrow DataFusion](https://arrow.apache.org/datafusion/)
 as native runtime to achieve improvement in terms of query efficiency and query runtime.
 
-On a high level, Comet aims to support:
+Comet runs Spark SQL queries using the native DataFusion runtime, which is
+typically faster and more resource efficient than JVM based runtimes.
+
+<a href="doc/comet-overview.png"><img src="doc/comet-system-diagram.png" align="center" width="500" ></a>
+
+Comet aims to support:
 - a native Parquet implementation, including both reader and writer
 - full implementation of Spark operators, including
   Filter/Project/Aggregation/Join/Exchange etc.
 - full implementation of Spark built-in expressions
 - a UDF framework for users to migrate their existing UDF to native
+
+## Architecture
 
 The following diagram illustrates the architecture of Comet:
 
