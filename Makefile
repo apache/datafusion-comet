@@ -21,25 +21,22 @@ all: core jvm
 
 core:
 	cd core && cargo build
-jvm:
-	./mvnw clean package -DskipTests $(PROFILES)
-test:
-	./mvnw clean
+test-rust:
 	# We need to compile CometException so that the cargo test can pass
 	./mvnw compile -pl common -DskipTests $(PROFILES)
 	cd core && cargo build && \
-	LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli && \
-	DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli \
 	RUST_BACKTRACE=1 cargo test
+jvm:
+	./mvnw clean package -DskipTests $(PROFILES)
+test-jvm: core
 	SPARK_HOME=`pwd` COMET_CONF_DIR=$(shell pwd)/conf RUST_BACKTRACE=1 ./mvnw verify $(PROFILES)
+test: test-rust test-jvm
 clean:
 	cd core && cargo clean
 	./mvnw clean
 	rm -rf .dist
 bench:
-	cd core && LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli && \
-	DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}${JAVA_HOME}/lib:${JAVA_HOME}/lib/server:${JAVA_HOME}/lib/jli \
-	RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(filter-out $@,$(MAKECMDGOALS))
+	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(filter-out $@,$(MAKECMDGOALS))
 format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)

@@ -37,18 +37,9 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        echo "JAVA_VERSION=${JAVA_VERSION}"
-        if [ $JAVA_VERSION == "1.8" ]; then
-          ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb -Djava.version=${JAVA_VERSION} -Dspotless.version=2.29.0
-        else
-          ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb -Djava.version=${JAVA_VERSION}
-        fi
+        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb
 
     - name: Run tests
       shell: bash
       run: |
-        if [ $JAVA_VERSION == "1.8" ]; then
-          SPARK_HOME=`pwd` ./mvnw -B clean install -Djava.version=${JAVA_VERSION} -Dspotless.version=2.29.0
-        else
-          SPARK_HOME=`pwd` ./mvnw -B clean install -Djava.version=${JAVA_VERSION}
-        fi
+        SPARK_HOME=`pwd` ./mvnw -B clean install
