@@ -47,10 +47,12 @@ public class CometScalarSubquery {
   }
 
   public static synchronized void removeSubquery(long planId, ScalarSubquery subquery) {
-    subqueryMap.get(planId).remove(subquery.exprId().id());
+    if (subqueryMap.containsKey(planId)) {
+      subqueryMap.get(planId).remove(subquery.exprId().id());
 
-    if (subqueryMap.get(planId).isEmpty()) {
-      subqueryMap.remove(planId);
+      if (subqueryMap.get(planId).isEmpty()) {
+        subqueryMap.remove(planId);
+      }
     }
   }
 
