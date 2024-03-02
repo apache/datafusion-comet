@@ -15,6 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
+name: "Java Test"
+description: "Run Java tests"
+inputs:
+  MAVEN_OPTS:
+    description: 'Maven options passed to the mvn command'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
@@ -37,9 +44,9 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb
+        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb ${{ inputs.MAVEN_OPTS }}
 
     - name: Run tests
       shell: bash
       run: |
-        SPARK_HOME=`pwd` ./mvnw -B clean install
+        SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.MAVEN_OPTS }}
