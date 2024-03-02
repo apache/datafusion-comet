@@ -137,6 +137,7 @@ jobs:
           if ! echo $PR_TITLE | grep -Eq '^(\w+)(\(.+\))?: .+$'; then
             echo "PR title does not follow conventional commit style."
             echo "Please use a title in the format: type: message, or type(scope): message"
+            echo "Example: feat: Add support for sort-merge join"
             exit 1
           fi
 
