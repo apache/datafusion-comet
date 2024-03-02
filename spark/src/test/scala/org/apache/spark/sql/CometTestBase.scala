@@ -183,7 +183,7 @@ abstract class CometTestBase
 
   protected def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
     includePlans.foreach { case planClass =>
-      if (!plan.exists(op => planClass.isAssignableFrom(op.getClass))) {
+      if (plan.find(op => planClass.isAssignableFrom(op.getClass)).isEmpty) {
         assert(
           false,
           s"Expected plan to contain ${planClass.getSimpleName}, but not.\n" +

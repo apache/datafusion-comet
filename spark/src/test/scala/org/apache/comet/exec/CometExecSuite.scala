@@ -72,6 +72,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("CometBroadcastExchangeExec") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
@@ -97,6 +98,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("CometBroadcastExchangeExec: empty broadcast") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
@@ -116,6 +118,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("CometExec.executeColumnarCollectIterator can collect ColumnarBatch results") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {

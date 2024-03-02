@@ -602,6 +602,10 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION.matches("3\\.2\\..*")
   }
 
+  def isSpark33Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "3.3"
+  }
+
   /** Used for operations that are available in Spark 3.4+ */
   def isSpark34Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "3.4"
