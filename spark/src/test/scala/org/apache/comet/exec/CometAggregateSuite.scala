@@ -902,7 +902,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 sql(s"insert into $table values(true, 3)")
                 // Spark maps BOOL_AND to MIN and BOOL_OR to MAX
                 checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT MIN(a), MIN(b), BOOL_AND(a), BOOL_OR(a) FROM $table",
+                  s"SELECT MIN(a), MAX(a), BOOL_AND(a), BOOL_OR(a) FROM $table",
                   2)
               }
             }
