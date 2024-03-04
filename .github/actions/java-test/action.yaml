@@ -22,7 +22,7 @@ inputs:
     description: 'Maven options passed to the mvn command'
     required: false
     default: ''
-  upload-test-results:
+  upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
     required: false
     default: 'false'
@@ -57,7 +57,7 @@ runs:
         SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
 
     - name: Upload test results
-      if: ${{ inputs.upload-test-results == 'true' }}
+      if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
       with:
          name: java-test-reports-${{ github.run_id }}
@@ -66,5 +66,5 @@ runs:
          overwrite: true
 
     - name: Upload coverage results
-      if: ${{ inputs.upload-test-results == 'true' }}
+      if: ${{ inputs.upload-test-reports == 'true' }}
       uses: codecov/codecov-action@v3 # uses v3 as it allows tokenless uploading
