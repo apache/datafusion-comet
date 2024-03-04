@@ -34,7 +34,7 @@ use jni::{
 };
 use log::{info, LevelFilter};
 use log4rs::{
-    append::console::ConsoleAppender,
+    append::console::{ConsoleAppender, Target},
     config::{load_config_file, Appender, Deserializers, Root},
     encode::pattern::PatternEncoder,
     Config,
@@ -99,6 +99,7 @@ const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 // Creates a default log4rs config, which logs to console with `INFO` level.
 fn default_logger_config() -> CometResult<Config> {
     let console_append = ConsoleAppender::builder()
+        .target(Target::Stderr)
         .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
         .build();
     let appender = Appender::builder().build("console", Box::new(console_append));
