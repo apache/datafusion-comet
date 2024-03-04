@@ -886,6 +886,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test bool_and/bool_or") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { bosonColumnShuffleEnabled =>
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> bosonColumnShuffleEnabled.toString) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              val table = "test"
+              withTable(table) {
+                sql(s"create table $table(a boolean, b int) using parquet")
+                sql(s"insert into $table values(true, 1)")
+                sql(s"insert into $table values(false, 2)")
+                sql(s"insert into $table values(true, 3)")
+                sql(s"insert into $table values(true, 3)")
+                // Spark maps BOOL_AND to MIN and BOOL_OR to MAX
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT MIN(a), MIN(b), BOOL_AND(a), BOOL_OR(a) FROM $table",
+                  2)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)

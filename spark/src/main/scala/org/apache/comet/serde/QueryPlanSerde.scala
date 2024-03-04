@@ -181,7 +181,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
   private def minMaxDataTypeSupported(dt: DataType): Boolean = {
     dt match {
-      case _: NumericType | DateType | TimestampType => true
+      case _: NumericType | DateType | TimestampType | BooleanType => true
       case _ => false
     }
   }
