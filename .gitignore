@@ -1,6 +1,9 @@
 target
 .idea
 *.iml
+.vscode/
+.bloop/
+.metals/
 derby.log
 metastore_db/
 spark-warehouse/
