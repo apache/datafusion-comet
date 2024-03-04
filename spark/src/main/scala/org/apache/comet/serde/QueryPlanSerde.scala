@@ -1051,20 +1051,34 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val dataType = serializeDataType(attr.dataType)
 
           if (dataType.isDefined) {
-            val boundRef = BindReferences
-              .bindReference(attr, inputs, allowFailures = false)
-              .asInstanceOf[BoundReference]
-            val boundExpr = ExprOuterClass.BoundReference
-              .newBuilder()
-              .setIndex(boundRef.ordinal)
-              .setDatatype(dataType.get)
-              .build()
-
-            Some(
-              ExprOuterClass.Expr
+            if (binding) {
+              val boundRef = BindReferences
+                .bindReference(attr, inputs, allowFailures = false)
+                .asInstanceOf[BoundReference]
+              val boundExpr = ExprOuterClass.BoundReference
                 .newBuilder()
-                .setBound(boundExpr)
-                .build())
+                .setIndex(boundRef.ordinal)
+                .setDatatype(dataType.get)
+                .build()
+
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setBound(boundExpr)
+                  .build())
+            } else {
+              val unboundRef = ExprOuterClass.UnboundReference
+                .newBuilder()
+                .setName(attr.name)
+                .setDatatype(dataType.get)
+                .build()
+
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setUnbound(unboundRef)
+                  .build())
+            }
           } else {
             None
           }
