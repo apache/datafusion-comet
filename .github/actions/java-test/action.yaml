@@ -18,10 +18,15 @@
 name: "Java Test"
 description: "Run Java tests"
 inputs:
-  MAVEN_OPTS:
+  maven_opts:
     description: 'Maven options passed to the mvn command'
     required: false
     default: ''
+  upload-test-results:
+    description: 'Whether to upload test results including coverage to GitHub'
+    required: false
+    default: 'false'
+
 runs:
   using: "composite"
   steps:
@@ -44,9 +49,22 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb ${{ inputs.MAVEN_OPTS }}
+        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb ${{ inputs.maven_opts }}
 
     - name: Run tests
       shell: bash
       run: |
-        SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.MAVEN_OPTS }}
+        SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
+
+    - name: Upload test results
+      if: ${{ inputs.upload-test-results == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+         name: java-test-reports-${{ github.run_id }}
+         path: "**/target/surefire-reports/*.txt"
+         retention-days: 7 # 1 week for test reports
+         overwrite: true
+
+    - name: Upload coverage results
+      if: ${{ inputs.upload-test-results == 'true' }}
+      uses: codecov/codecov-action@v3 # uses v3 as it allows tokenless uploading

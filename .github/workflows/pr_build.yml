@@ -69,7 +69,9 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          MAVEN_OPTS: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          # upload test reports only for java 17
+          upload-test-reports: ${{ matrix.java_version == '17' }}
 
   linux-test-with-old-spark:
     strategy:
@@ -98,7 +100,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          MAVEN_OPTS: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }}
 
   macos-test:
     strategy:
@@ -125,7 +127,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          MAVEN_OPTS: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }}
 
   macos-aarch64-test:
     strategy:
@@ -157,7 +159,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          MAVEN_OPTS: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }}
 
   macos-aarch64-test-with-old-spark:
     strategy:
@@ -186,7 +188,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          MAVEN_OPTS: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }}
 
   check-pr-title:
     runs-on: ubuntu-latest
