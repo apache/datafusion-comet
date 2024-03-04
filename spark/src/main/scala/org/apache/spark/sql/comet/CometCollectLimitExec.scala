@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.util.Objects
-
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.InternalRow
@@ -28,6 +26,8 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, Come
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import com.google.common.base.Objects
 
 /**
  * Comet physical plan node for Spark `CollectLimitExec`.

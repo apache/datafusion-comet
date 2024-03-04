@@ -271,7 +271,7 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with SQLQueryTestH
   }
 
   // TODO: remove once Spark 3.2 & 3.3 is no longer supported
-  private val shouldRegenerateGoldenFiles: Boolean =
+  private def shouldRegenerateGoldenFiles: Boolean =
     System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
 }
 
