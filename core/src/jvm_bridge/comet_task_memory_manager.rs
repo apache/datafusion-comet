@@ -24,8 +24,8 @@ use jni::{
 
 use crate::jvm_bridge::get_global_jclass;
 
-/// A DataFusion `MemoryPool` implementation for Comet, which delegate to the JVM
-/// side `CometTaskMemoryManager`.
+/// A wrapper which delegate acquire/release memory calls to the
+/// JVM side `CometTaskMemoryManager`.
 #[derive(Debug)]
 pub struct CometTaskMemoryManager<'a> {
     pub class: JClass<'a>,

@@ -30,8 +30,13 @@ use datafusion::{
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 
-use crate::jvm_bridge::{jni_call, JVMClasses};
+use crate::{
+    errors::CometResult,
+    jvm_bridge::{jni_call, JVMClasses},
+};
 
+/// A DataFusion `MemoryPool` implementation for Comet. Internally this is
+/// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     used: AtomicUsize,
@@ -52,6 +57,23 @@ impl CometMemoryPool {
             used: AtomicUsize::new(0),
         }
     }
+
+    fn acquire(&self, additional: usize) -> CometResult<i64> {
+        let mut env = JVMClasses::get_env();
+        let handle = self.task_memory_manager_handle.as_obj();
+        unsafe {
+            jni_call!(&mut env,
+              comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
+        }
+    }
+
+    fn release(&self, size: usize) -> CometResult<()> {
+        let mut env = JVMClasses::get_env();
+        let handle = self.task_memory_manager_handle.as_obj();
+        unsafe {
+            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
+        }
+    }
 }
 
 unsafe impl Send for CometMemoryPool {}
@@ -59,37 +81,32 @@ unsafe impl Sync for CometMemoryPool {}
 
 impl MemoryPool for CometMemoryPool {
     fn grow(&self, _: &MemoryReservation, additional: usize) {
+        self.acquire(additional)
+            .unwrap_or_else(|_| panic!("Failed to acquire {} bytes", additional));
         self.used.fetch_add(additional, Relaxed);
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        let mut env = JVMClasses::get_env();
-        let handle = self.task_memory_manager_handle.as_obj();
-        unsafe {
-            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-                .unwrap();
-        }
+        self.release(size)
+            .unwrap_or_else(|_| panic!("Failed to release {} bytes", size));
         self.used.fetch_sub(size, Relaxed);
     }
 
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
         if additional > 0 {
-            let mut env = JVMClasses::get_env();
-            let handle = self.task_memory_manager_handle.as_obj();
-            unsafe {
-                let acquired = jni_call!(&mut env,
-                  comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)?;
+            let acquired = self.acquire(additional)?;
+            // If the number of bytes we acquired is less than the requested, return an error,
+            // and hopefully will trigger spilling from the caller side.
+            if acquired < additional as i64 {
+                // Release the acquired bytes before throwing error
+                self.release(acquired as usize)?;
 
-                // If the number of bytes we acquired is less than the requested, return an error,
-                // and hopefully will trigger spilling from the caller side.
-                if acquired < additional as i64 {
-                    return Err(DataFusionError::Execution(format!(
-                        "Failed to acquire {} bytes, only got {}. Reserved: {}",
-                        additional,
-                        acquired,
-                        self.reserved(),
-                    )));
-                }
+                return Err(DataFusionError::Execution(format!(
+                    "Failed to acquire {} bytes, only got {}. Reserved: {}",
+                    additional,
+                    acquired,
+                    self.reserved(),
+                )));
             }
             self.used.fetch_add(additional, Relaxed);
         }
