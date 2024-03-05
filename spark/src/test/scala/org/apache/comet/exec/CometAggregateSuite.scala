@@ -845,7 +845,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     s" SUM(distinct col2) FROM $table group by col1",
                   expectedNumOfCometAggregates)
 
-                expectedNumOfCometAggregates = 1
+                expectedNumOfCometAggregates = if (cometColumnShuffleEnabled) 2 else 1
                 checkSparkAnswerAndNumOfAggregates(
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
                     s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
