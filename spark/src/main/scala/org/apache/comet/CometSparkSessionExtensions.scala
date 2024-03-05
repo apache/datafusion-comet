@@ -115,7 +115,7 @@ class CometSparkSessionExtensions
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[AttributeReference],
+                _: Seq[_],
                 requiredSchema,
                 _,
                 _,

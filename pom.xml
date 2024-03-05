@@ -712,9 +712,9 @@ under the License.
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.1.0</version>
           <configuration>
-            <systemProperties>
+            <systemPropertyVariables>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
-            </systemProperties>
+            </systemPropertyVariables>
           </configuration>
         </plugin>
         <plugin>

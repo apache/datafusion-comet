@@ -38,6 +38,25 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+  import testImplicits._
+
+  test("Final aggregation should not bind to the input of partial aggregation") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 10000, 10, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            val df = sql("SELECT * FROM tbl").groupBy("_g1").agg(sum($"_3" + $"_g3"))
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
 
   test("Ensure traversed operators during finding first partial aggregation are all native") {
     withTable("lineitem", "part") {
@@ -879,6 +898,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT FIRST(col1), LAST(col1, true), col3 FROM t GROUP BY col3",
                 expectedNumOfCometAggregates)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("test bool_and/bool_or") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { bosonColumnShuffleEnabled =>
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> bosonColumnShuffleEnabled.toString) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              val table = "test"
+              withTable(table) {
+                sql(s"create table $table(a boolean, b int) using parquet")
+                sql(s"insert into $table values(true, 1)")
+                sql(s"insert into $table values(false, 2)")
+                sql(s"insert into $table values(true, 3)")
+                sql(s"insert into $table values(true, 3)")
+                // Spark maps BOOL_AND to MIN and BOOL_OR to MAX
+                checkSparkAnswerAndNumOfAggregates(
+                  s"SELECT MIN(a), MAX(a), BOOL_AND(a), BOOL_OR(a) FROM $table",
+                  2)
+              }
             }
           }
         }

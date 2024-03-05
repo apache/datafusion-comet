@@ -43,7 +43,7 @@ use datafusion_physical_expr::{
     execution_props::ExecutionProps,
     expressions::{
         CaseExpr, CastExpr, Count, FirstValue, InListExpr, IsNullExpr, LastValue, Max, Min,
-        NegativeExpr, NotExpr, Sum,
+        NegativeExpr, NotExpr, Sum, UnKnownColumn,
     },
     AggregateExpr, ScalarFunctionExpr,
 };
@@ -201,9 +201,16 @@ impl PhysicalPlanner {
             }
             ExprStruct::Bound(bound) => {
                 let idx = bound.index as usize;
-                let column_name = format!("col_{}", idx);
-                Ok(Arc::new(Column::new(&column_name, idx)))
+                if idx >= input_schema.fields().len() {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "Column index {} is out of bound. Schema: {}",
+                        idx, input_schema
+                    )));
+                }
+                let field = input_schema.field(idx);
+                Ok(Arc::new(Column::new(field.name().as_str(), idx)))
             }
+            ExprStruct::Unbound(unbound) => Ok(Arc::new(UnKnownColumn::new(unbound.name.as_str()))),
             ExprStruct::IsNotNull(is_notnull) => {
                 let child = self.create_expr(is_notnull.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(IsNotNullExpr::new(child)))

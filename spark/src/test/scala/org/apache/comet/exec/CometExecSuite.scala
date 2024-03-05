@@ -291,7 +291,6 @@ class CometExecSuite extends CometTestBase {
         val exchanges = stripAQEPlan(df.queryExecution.executedPlan).collect {
           case s: CometShuffleExchangeExec if s.shuffleType == CometColumnarShuffle =>
             s
-            s
         }
         assert(exchanges.length == 4)
       }
