@@ -75,6 +75,7 @@ message Expr {
     BitwiseNot bitwiseNot = 48;
     Abs abs = 49;
     Subquery subquery = 50;
+    UnboundReference unbound = 51;
   }
 }
 
@@ -251,6 +252,11 @@ message IsNotNull {
 // Bound to a particular vector array in input batch.
 message BoundReference {
   int32 index = 1;
+  DataType datatype = 2;
+}
+
+message UnboundReference {
+  string name = 1;
   DataType datatype = 2;
 }
 

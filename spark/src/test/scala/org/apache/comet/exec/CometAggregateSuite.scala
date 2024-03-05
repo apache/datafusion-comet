@@ -38,6 +38,25 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+  import testImplicits._
+
+  test("Final aggregation should not bind to the input of partial aggregation") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 10000, 10, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            val df = sql("SELECT * FROM tbl").groupBy("_g1").agg(sum($"_3" + $"_g3"))
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
 
   test("Ensure traversed operators during finding first partial aggregation are all native") {
     withTable("lineitem", "part") {
