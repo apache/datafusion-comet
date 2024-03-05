@@ -34,6 +34,19 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, i
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("coalesce should return correct datatype") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT coalesce(cast(_18 as date), cast(_19 as date), _20) FROM tbl")
+        }
+      }
+    }
+  }
+
   test("bitwise shift with different left/right types") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
