@@ -45,7 +45,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-catalyst/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-catalyst/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -74,7 +74,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-core-1/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-core-1/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -103,7 +103,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-core-2/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-core-2/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -132,7 +132,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-core-3/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-core-3/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -161,7 +161,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-hive-1/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-hive-1/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -190,7 +190,7 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
       fail-fast: false
-    name: spark-sql-hive-2/${{ matrix.os }}/spark-${{ matrix.spark-version }}/java-${{ matrix.java-version }}
+    name: spark-sql-hive-2/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust

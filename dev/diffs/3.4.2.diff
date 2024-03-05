@@ -425,25 +425,19 @@ index cfc8b2cc845..c6fcfd7bd08 100644
          } finally {
            spark.listenerManager.unregister(listener)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
-index 418ca3430bb..9524dced201 100644
+index 418ca3430bb..d5fc207601c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
-@@ -17,13 +17,10 @@
- package org.apache.spark.sql.execution
- 
- import java.io.File
--
- import scala.util.Random
--
+@@ -23,7 +23,7 @@ import scala.util.Random
  import org.apache.hadoop.fs.Path
--
+ 
  import org.apache.spark.SparkConf
 -import org.apache.spark.sql.{DataFrame, QueryTest}
 +import org.apache.spark.sql.{DataFrame, DisableComet, QueryTest}
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
  import org.apache.spark.sql.execution.datasources.v2.orc.OrcScan
  import org.apache.spark.sql.internal.SQLConf
-@@ -195,7 +192,7 @@ class DataSourceV2ScanExecRedactionSuite extends DataSourceScanRedactionTest {
+@@ -195,7 +195,7 @@ class DataSourceV2ScanExecRedactionSuite extends DataSourceScanRedactionTest {
      }
    }
  
@@ -780,18 +774,21 @@ index 26e61c6b58d..2a7c96d164a 100644
        spark.range(10).selectExpr("id", "id % 3 as p")
          .write.partitionBy("p").saveAsTable("testDataForScan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-index 0ab8691801d..4392c74cb14 100644
+index 0ab8691801d..df9e47fdc7a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-@@ -18,6 +18,7 @@
+@@ -18,9 +18,9 @@
  package org.apache.spark.sql.execution.python
  
  import org.apache.spark.sql.catalyst.plans.logical.{ArrowEvalPython, BatchEvalPython, Limit, LocalLimit}
 +import org.apache.spark.sql.comet.CometScanExec
  import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SparkPlanTest}
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
- import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-@@ -108,6 +109,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+-import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+ import org.apache.spark.sql.functions.col
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -108,6 +108,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: FileSourceScanExec => scan
@@ -799,7 +796,7 @@ index 0ab8691801d..4392c74cb14 100644
            }
            assert(scanNodes.length == 1)
            assert(scanNodes.head.output.map(_.name) == Seq("a"))
-@@ -120,11 +122,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -120,11 +121,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: FileSourceScanExec => scan
@@ -818,7 +815,7 @@ index 0ab8691801d..4392c74cb14 100644
          }
        }
      }
-@@ -145,6 +152,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -145,6 +151,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: BatchScanExec => scan
@@ -826,7 +823,7 @@ index 0ab8691801d..4392c74cb14 100644
            }
            assert(scanNodes.length == 1)
            assert(scanNodes.head.output.map(_.name) == Seq("a"))
-@@ -157,6 +165,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -157,12 +164,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: BatchScanExec => scan
@@ -834,6 +831,18 @@ index 0ab8691801d..4392c74cb14 100644
            }
            assert(scanNodes.length == 1)
            // $"a" is not null and $"a" > 1
+-          val filters = scanNodes.head.scan.asInstanceOf[ParquetScan].pushedFilters
+-          assert(filters.length == 2)
+-          assert(filters.flatMap(_.references).distinct === Array("a"))
++          val dataFilters = scanNodes.head match {
++            case scan: FileSourceScanExec => scan.dataFilters
++            case scan: CometScanExec => scan.dataFilters
++          }
++          assert(dataFilters.length == 2)
++          assert(dataFilters.flatMap(_.references.map(_.name)).distinct == Seq("a"))
+         }
+       }
+     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 266bb343526..85ec36db996 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
