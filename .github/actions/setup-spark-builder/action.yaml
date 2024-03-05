@@ -48,6 +48,16 @@ runs:
         git apply ../dev/diffs/${{inputs.spark-version}}.diff
         ../mvnw -nsu -q versions:set-property -Dproperty=comet.version  -DnewVersion=${{inputs.comet-version}} -DgenerateBackupPoms=false
 
+    - name: Cache Maven dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-java-maven-
+
     - name: Build Comet
       shell: bash
       run: |
