@@ -30,10 +30,17 @@ runs:
   using: "composite"
   steps:
     - name: Clone Spark repo
+      uses: actions/checkout@v4
+      with:
+        repository: apache/spark
+        path: apache-spark
+        ref: v${{inputs.spark-version}}
+        fetch-depth: 1
+
+    - name: Setup Spark for Comet
       shell: bash
       run: |
-        git clone git@github.com:apache/spark.git --depth 1 --branch v${{inputs.spark-version}} apache-spark
         cd apache-spark
-        git apply dev/diffs/${{inputs.spark-version}}.diff
+        git apply ../dev/diffs/${{inputs.spark-version}}.diff
         ../mvnw -nsu -q versions:set-property -Dproperty=comet.version  -DnewVersion=${{inputs.comet-version}} -DgenerateBackupPoms=false
 
