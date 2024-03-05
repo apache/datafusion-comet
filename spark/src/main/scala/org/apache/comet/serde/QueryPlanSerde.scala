@@ -349,6 +349,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       expr: Expression,
       input: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
+    def castToProto(
+        timeZoneId: Option[String],
+        dt: DataType,
+        childExpr: Option[Expr]): Option[Expr] = {
+      val dataType = serializeDataType(dt)
+
+      if (childExpr.isDefined && dataType.isDefined) {
+        val castBuilder = ExprOuterClass.Cast.newBuilder()
+        castBuilder.setChild(childExpr.get)
+        castBuilder.setDatatype(dataType.get)
+
+        val timeZone = timeZoneId.getOrElse("UTC")
+        castBuilder.setTimezone(timeZone)
+
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setCast(castBuilder)
+            .build())
+      } else {
+        None
+      }
+    }
 
     def exprToProtoInternal(expr: Expression, inputs: Seq[Attribute]): Option[Expr] = {
       SQLConf.get
@@ -363,24 +386,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         case Cast(child, dt, timeZoneId, _) =>
           val childExpr = exprToProtoInternal(child, inputs)
-          val dataType = serializeDataType(dt)
-
-          if (childExpr.isDefined && dataType.isDefined) {
-            val castBuilder = ExprOuterClass.Cast.newBuilder()
-            castBuilder.setChild(childExpr.get)
-            castBuilder.setDatatype(dataType.get)
-
-            val timeZone = timeZoneId.getOrElse("UTC")
-            castBuilder.setTimezone(timeZone)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setCast(castBuilder)
-                .build())
-          } else {
-            None
-          }
+          castToProto(timeZoneId, dt, childExpr)
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
@@ -1494,7 +1500,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         case a @ Coalesce(_) =>
           val exprChildren = a.children.map(exprToProtoInternal(_, inputs))
-          scalarExprToProto("coalesce", exprChildren: _*)
+          val childExpr = scalarExprToProto("coalesce", exprChildren: _*)
+          // TODO: Remove this once we have new DataFusion release which includes
+          // the fix: https://github.com/apache/arrow-datafusion/pull/9459
+          castToProto(None, a.dataType, childExpr)
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.
