@@ -54,7 +54,7 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml', '!apache-spark/**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
 

@@ -65,7 +65,7 @@ jobs:
       - name: Run Spark sql/catalyst tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt catalyst/test
+          ENABLE_COMET=false build/sbt catalyst/test
 
   spark-sql-core-1:
     strategy:
@@ -94,7 +94,7 @@ jobs:
       - name: Run Spark sql/core-1 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
+          ENABLE_COMET=false build/sbt sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
 
   spark-sql-core-2:
     strategy:
@@ -123,7 +123,7 @@ jobs:
       - name: Run Spark sql/core-2 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt "sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*"
+          ENABLE_COMET=false build/sbt "sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*"
 
   spark-sql-core-3:
     strategy:
@@ -152,7 +152,7 @@ jobs:
       - name: Run Spark sql/core-3 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
+          ENABLE_COMET=false build/sbt sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
 
   spark-sql-hive-1:
     strategy:
@@ -181,7 +181,7 @@ jobs:
       - name: Run Spark sql/hive-1 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+          ENABLE_COMET=false build/sbt hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
 
   spark-sql-hive-2:
     strategy:
@@ -210,5 +210,5 @@ jobs:
       - name: Run Spark sql/hive-2 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt "hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite"
+          ENABLE_COMET=false build/sbt "hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite"
 
