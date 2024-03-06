@@ -30,62 +30,6 @@ LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with 
 
 _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
 
-# Expand Comet exception details
-By default, Comet outputs the exception details specific for Comet. There is a possibility of extending the exception
-details by leveraging Datafusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-
-```scala
-scala> spark.sql("my_failing_query").show(false)
-
-24/03/05 17:00:07 ERROR Executor: Exception in task 0.0 in stage 0.0 (TID 0)/ 1]
-org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected to receive scalars of incompatible types (Date32("NULL"), Int32(15901)).
-This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
-        at org.apache.comet.Native.executePlan(Native Method)
-        at org.apache.comet.CometExecIterator.executeNative(CometExecIterator.scala:65)
-        at org.apache.comet.CometExecIterator.getNextBatch(CometExecIterator.scala:111)
-        at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
-
-```
-To do that with Comet it is needed to enable `backtrace` in  https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml
-
-```
-datafusion-common = { version = "36.0.0", features = ["backtrace"] }
-datafusion = { default-features = false, version = "36.0.0", features = ["unicode_expressions", "backtrace"] }
-```
-
-Then build the Comet as [described](https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started)
-
-Start Comet with `RUST_BACKTRACE=1`
-
-```commandline
-RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true --conf spark.comet.exec.all.enabled=true
-```
-
-Get the expanded exception details
-```scala
-scala> spark.sql("my_failing_query").show(false)
-24/03/05 17:00:49 ERROR Executor: Exception in task 0.0 in stage 0.0 (TID 0)
-org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected to receive scalars of incompatible types (Date32("NULL"), Int32(15901))
-
-backtrace:    0: std::backtrace::Backtrace::create
-1: datafusion_physical_expr::aggregate::min_max::min
-2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
-        3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
-4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
-5: _Java_org_apache_comet_Native_executePlan
-.
-This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
-        at org.apache.comet.Native.executePlan(Native Method)
-at org.apache.comet.CometExecIterator.executeNative(CometExecIterator.scala:65)
-at org.apache.comet.CometExecIterator.getNextBatch(CometExecIterator.scala:111)
-at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
-
-...
-```
-Note: 
-- The backtrace coverage in Datafusion is still improving. So there is a chance the error still not covered, feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
-- The backtrace doesn't come for free and therefore intended for debugging purposes
-
 ## Debugging for Advanced Developers
 
 Add a `.lldbinit` to comet/core. This is not strictly necessary but will be useful if you want to
@@ -150,3 +94,62 @@ https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html
 
 Detecting the debugger
 https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).
+
+# Verbose debug
+By default, Comet outputs the exception details specific for Comet. 
+
+```scala
+scala> spark.sql("my_failing_query").show(false)
+
+24/03/05 17:00:07 ERROR Executor: Exception in task 0.0 in stage 0.0 (TID 0)/ 1]
+org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected to receive scalars of incompatible types (Date32("NULL"), Int32(15901)).
+This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
+        at org.apache.comet.Native.executePlan(Native Method)
+        at org.apache.comet.CometExecIterator.executeNative(CometExecIterator.scala:65)
+        at org.apache.comet.CometExecIterator.getNextBatch(CometExecIterator.scala:111)
+        at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
+
+```
+
+There is a verbose exception option by leveraging Datafusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
+This option allows to append native Datafusion stacktrace to the original error message. 
+To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for Datafusion dependencies
+
+```
+datafusion-common = { version = "36.0.0", features = ["backtrace"] }
+datafusion = { default-features = false, version = "36.0.0", features = ["unicode_expressions", "backtrace"] }
+```
+
+Then build the Comet as [described](https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started)
+
+Start Comet with `RUST_BACKTRACE=1`
+
+```commandline
+RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true --conf spark.comet.exec.all.enabled=true
+```
+
+Get the expanded exception details
+```scala
+scala> spark.sql("my_failing_query").show(false)
+24/03/05 17:00:49 ERROR Executor: Exception in task 0.0 in stage 0.0 (TID 0)
+org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected to receive scalars of incompatible types (Date32("NULL"), Int32(15901))
+
+backtrace:    
+  0: std::backtrace::Backtrace::create
+  1: datafusion_physical_expr::aggregate::min_max::min
+  2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch 
+  3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
+  4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
+  5: _Java_org_apache_comet_Native_executePlan
+  ...
+This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
+        at org.apache.comet.Native.executePlan(Native Method)
+at org.apache.comet.CometExecIterator.executeNative(CometExecIterator.scala:65)
+at org.apache.comet.CometExecIterator.getNextBatch(CometExecIterator.scala:111)
+at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
+
+...
+```
+Note:
+- The backtrace coverage in Datafusion is still improving. So there is a chance the error still not covered, feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
+- The backtrace doesn't come for free and therefore intended for debugging purposes
