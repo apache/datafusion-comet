@@ -480,10 +480,11 @@ fn spark_decimal_div(
     let l_mul = ten.pow(l_exp);
     let r_mul = ten.pow(r_exp);
     let five = BigInt::from(5);
+    let zero = BigInt::from(0);
     let result: Decimal128Array = arrow::compute::kernels::arity::binary(left, right, |l, r| {
         let l = BigInt::from(l) * &l_mul;
         let r = BigInt::from(r) * &r_mul;
-        let div = &l / &r;
+        let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
         let res = if div.is_negative() {
             div - &five
         } else {
