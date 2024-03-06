@@ -54,9 +54,9 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml', '!apache-spark/**/pom.xml') }}
+        key: ${{ runner.os }}-spark-sql-${{ hashFiles('spark/**/pom.xml', 'common/**/pom.xml') }}
         restore-keys: |
-          ${{ runner.os }}-java-maven-
+          ${{ runner.os }}-spark-sql-
 
     - name: Build Comet
       shell: bash
