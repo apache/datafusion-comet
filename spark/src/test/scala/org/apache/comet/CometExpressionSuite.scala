@@ -61,7 +61,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           readParquetFile(dir.getCanonicalPath) { df =>
             {
               val decimalLiteral = Decimal(0.00)
-              val cometDf = df.select($"dec" / decimalLiteral)
+              val cometDf = df.select($"dec" / decimalLiteral, $"dec" % decimalLiteral)
               checkSparkAnswerAndOperator(cometDf)
             }
           }
