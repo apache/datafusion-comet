@@ -424,6 +424,29 @@ index cfc8b2cc845..c6fcfd7bd08 100644
            }
          } finally {
            spark.listenerManager.unregister(listener)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
+index c0ec8a58bd5..5f880751e21 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
+@@ -27,7 +27,7 @@ import org.apache.hadoop.fs.permission.FsPermission
+ import org.mockito.Mockito.{mock, spy, when}
+ 
+ import org.apache.spark._
+-import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, QueryTest, Row, SaveMode}
++import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, DisableComet, QueryTest, Row, SaveMode}
+ import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
+ import org.apache.spark.sql.catalyst.util.BadRecordException
+ import org.apache.spark.sql.execution.datasources.jdbc.{DriverRegistry, JDBCOptions}
+@@ -248,7 +248,8 @@ class QueryExecutionErrorsSuite
+   }
+ 
+   test("INCONSISTENT_BEHAVIOR_CROSS_VERSION: " +
+-    "compatibility with Spark 2.4/3.2 in reading/writing dates") {
++    "compatibility with Spark 2.4/3.2 in reading/writing dates",
++    DisableComet("Comet doesn't completely support datetime rebase mode yet")) {
+ 
+     // Fail to read ancient datetime values.
+     withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> EXCEPTION.toString) {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 index 418ca3430bb..d5fc207601c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
@@ -553,7 +576,7 @@ index 07e2849ce6f..264fb61db16 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 9adcb43c838..e04dc5b4246 100644
+index 9adcb43c838..84c4db4a727 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1025,7 +1025,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -595,7 +618,17 @@ index 9adcb43c838..e04dc5b4246 100644
        }
      }
    }
-@@ -1914,7 +1926,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1673,7 +1685,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+     }
+   }
+ 
+-  test("SPARK-17091: Convert IN predicate to Parquet filter push-down") {
++  test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
++      DisableComet("IN predicate is not yet supported in Comet, see issue #36")) {
+     val schema = StructType(Seq(
+       StructField("a", IntegerType, nullable = false)
+     ))
+@@ -1914,7 +1927,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -605,7 +638,7 @@ index 9adcb43c838..e04dc5b4246 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2206,7 +2219,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2206,7 +2220,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -618,7 +651,7 @@ index 9adcb43c838..e04dc5b4246 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2266,7 +2283,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2266,7 +2284,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -798,7 +831,7 @@ index 26e61c6b58d..2a7c96d164a 100644
        spark.range(10).selectExpr("id", "id % 3 as p")
          .write.partitionBy("p").saveAsTable("testDataForScan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-index 0ab8691801d..7b8590ee6e1 100644
+index 0ab8691801d..d9125f658ad 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 @@ -18,6 +18,7 @@
@@ -840,7 +873,7 @@ index 0ab8691801d..7b8590ee6e1 100644
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: BatchScanExec => scan
-+            case scan: CometScanExec => scan
++            case scan: CometBatchScanExec => scan
            }
            assert(scanNodes.length == 1)
            assert(scanNodes.head.output.map(_.name) == Seq("a"))
