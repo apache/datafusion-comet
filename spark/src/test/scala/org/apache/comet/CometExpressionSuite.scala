@@ -48,6 +48,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals divide by zero") {
+    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal divide operation
+    assume(isSpark34Plus)
+
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "false",
