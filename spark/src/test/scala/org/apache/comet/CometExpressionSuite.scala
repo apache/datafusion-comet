@@ -24,7 +24,7 @@ import java.util
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions.{expr, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType, StructType}
@@ -42,6 +42,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
             "SELECT coalesce(cast(_18 as date), cast(_19 as date), _20) FROM tbl")
+        }
+      }
+    }
+  }
+
+  test("decimals divide by zero") {
+    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal divide operation
+    assume(isSpark34Plus)
+
+    Seq(true, false).foreach { dictionary =>
+      withSQLConf(
+        SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "false",
+        "parquet.enable.dictionary" -> dictionary.toString) {
+        withTempPath { dir =>
+          val data = makeDecimalRDD(10, DecimalType(18, 10), dictionary)
+          data.write.parquet(dir.getCanonicalPath)
+          readParquetFile(dir.getCanonicalPath) { df =>
+            {
+              val decimalLiteral = Decimal(0.00)
+              val cometDf = df.select($"dec" / decimalLiteral, $"dec" % decimalLiteral)
+              checkSparkAnswerAndOperator(cometDf)
+            }
+          }
         }
       }
     }
