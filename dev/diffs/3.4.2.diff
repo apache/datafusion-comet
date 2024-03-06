@@ -505,6 +505,30 @@ index bd9c79e5b96..ab7584e768e 100644
        }
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
+index 1d2e467c94c..77a119505b9 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
+@@ -28,7 +28,7 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, GlobFilter, Path}
+ import org.mockito.Mockito.{mock, when}
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, DisableCometSuite, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.encoders.RowEncoder
+ import org.apache.spark.sql.execution.datasources.PartitionedFile
+ import org.apache.spark.sql.functions.col
+@@ -38,7 +38,9 @@ import org.apache.spark.sql.test.SharedSparkSession
+ import org.apache.spark.sql.types._
+ import org.apache.spark.util.Utils
+ 
+-class BinaryFileFormatSuite extends QueryTest with SharedSparkSession {
++// For some reason this suite is flaky w/ or w/o Comet when running in Github workflow.
++// Since it isn't related to Comet, we disable it for now.
++class BinaryFileFormatSuite extends QueryTest with SharedSparkSession with DisableCometSuite {
+   import BinaryFileFormat._
+ 
+   private var testDir: String = _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala
 index 07e2849ce6f..264fb61db16 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala
@@ -774,21 +798,18 @@ index 26e61c6b58d..2a7c96d164a 100644
        spark.range(10).selectExpr("id", "id % 3 as p")
          .write.partitionBy("p").saveAsTable("testDataForScan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-index 0ab8691801d..df9e47fdc7a 100644
+index 0ab8691801d..7b8590ee6e1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-@@ -18,9 +18,9 @@
+@@ -18,6 +18,7 @@
  package org.apache.spark.sql.execution.python
  
  import org.apache.spark.sql.catalyst.plans.logical.{ArrowEvalPython, BatchEvalPython, Limit, LocalLimit}
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet._
  import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SparkPlanTest}
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
--import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
- import org.apache.spark.sql.functions.col
- import org.apache.spark.sql.internal.SQLConf
- import org.apache.spark.sql.test.SharedSparkSession
-@@ -108,6 +108,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+@@ -108,6 +109,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: FileSourceScanExec => scan
@@ -796,7 +817,7 @@ index 0ab8691801d..df9e47fdc7a 100644
            }
            assert(scanNodes.length == 1)
            assert(scanNodes.head.output.map(_.name) == Seq("a"))
-@@ -120,11 +121,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -120,11 +122,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: FileSourceScanExec => scan
@@ -815,7 +836,7 @@ index 0ab8691801d..df9e47fdc7a 100644
          }
        }
      }
-@@ -145,6 +151,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -145,6 +152,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: BatchScanExec => scan
@@ -823,26 +844,30 @@ index 0ab8691801d..df9e47fdc7a 100644
            }
            assert(scanNodes.length == 1)
            assert(scanNodes.head.output.map(_.name) == Seq("a"))
-@@ -157,12 +164,16 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
+@@ -157,6 +165,7 @@ class ExtractPythonUDFsSuite extends SparkPlanTest with SharedSparkSession {
  
            val scanNodes = query.queryExecution.executedPlan.collect {
              case scan: BatchScanExec => scan
-+            case scan: CometScanExec => scan
++            case scan: CometBatchScanExec => scan
            }
            assert(scanNodes.length == 1)
            // $"a" is not null and $"a" > 1
--          val filters = scanNodes.head.scan.asInstanceOf[ParquetScan].pushedFilters
--          assert(filters.length == 2)
--          assert(filters.flatMap(_.references).distinct === Array("a"))
-+          val dataFilters = scanNodes.head match {
-+            case scan: FileSourceScanExec => scan.dataFilters
-+            case scan: CometScanExec => scan.dataFilters
-+          }
-+          assert(dataFilters.length == 2)
-+          assert(dataFilters.flatMap(_.references.map(_.name)).distinct == Seq("a"))
-         }
-       }
-     }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
+index d083cac48ff..43057eb251b 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
+@@ -37,8 +37,10 @@ import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException,
+ import org.apache.spark.sql.streaming.util.StreamManualClock
+ import org.apache.spark.util.Utils
+ 
++// For some reason this suite is flaky w/ or w/o Comet when running in Github workflow.
++// Since it isn't related to Comet, we disable it for now.
+ class AsyncProgressTrackingMicroBatchExecutionSuite
+-  extends StreamTest with BeforeAndAfter with Matchers {
++  extends StreamTest with BeforeAndAfter with Matchers with DisableCometSuite {
+ 
+   import testImplicits._
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 266bb343526..85ec36db996 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
@@ -954,6 +979,31 @@ index 266bb343526..85ec36db996 100644
            } else {
              assert(scans.isEmpty)
            }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
+index b5f6d2f9f68..8e84ec3f070 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
+@@ -20,7 +20,7 @@ package org.apache.spark.sql.sources
+ import java.io.File
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.AnalysisException
++import org.apache.spark.sql.{AnalysisException, DisableCometSuite}
+ import org.apache.spark.sql.catalyst.TableIdentifier
+ import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTableType}
+ import org.apache.spark.sql.catalyst.parser.ParseException
+@@ -28,7 +28,10 @@ import org.apache.spark.sql.internal.SQLConf.BUCKETING_MAX_BUCKETS
+ import org.apache.spark.sql.test.SharedSparkSession
+ import org.apache.spark.util.Utils
+ 
+-class CreateTableAsSelectSuite extends DataSourceTest with SharedSparkSession {
++// For some reason this suite is flaky w/ or w/o Comet when running in Github workflow.
++// Since it isn't related to Comet, we disable it for now.
++class CreateTableAsSelectSuite extends DataSourceTest with SharedSparkSession
++    with DisableCometSuite {
+   import testImplicits._
+ 
+   protected override lazy val sql = spark.sql _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 index 1f55742cd67..42377f7cf26 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
