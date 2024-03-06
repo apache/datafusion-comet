@@ -111,9 +111,9 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 
 ```
 
-There is a verbose exception option by leveraging Datafusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-This option allows to append native Datafusion stacktrace to the original error message. 
-To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for Datafusion dependencies
+There is a verbose exception option by leveraging DataFusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
+This option allows to append native DataFusion stacktrace to the original error message. 
+To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for DataFusion dependencies
 
 ```
 datafusion-common = { version = "36.0.0", features = ["backtrace"] }
@@ -141,15 +141,16 @@ backtrace:
   3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
   4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
   5: _Java_org_apache_comet_Native_executePlan
-  ...
+  (reduced)
+
 This was likely caused by a bug in DataFusion's code and we would welcome that you file an bug report in our issue tracker
         at org.apache.comet.Native.executePlan(Native Method)
 at org.apache.comet.CometExecIterator.executeNative(CometExecIterator.scala:65)
 at org.apache.comet.CometExecIterator.getNextBatch(CometExecIterator.scala:111)
 at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
+(reduced)
 
-...
 ```
 Note:
-- The backtrace coverage in Datafusion is still improving. So there is a chance the error still not covered, feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
-- The backtrace doesn't come for free and therefore intended for debugging purposes
+- The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
+- The backtrace evaluation comes with performance cost and intended mostly for debugging purposes
