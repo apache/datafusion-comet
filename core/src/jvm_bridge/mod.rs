@@ -73,7 +73,7 @@ macro_rules! jni_call {
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -194,10 +194,12 @@ mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
+mod comet_task_memory_manager;
 
 use crate::{errors::CometError, JAVA_VM};
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
+pub use comet_task_memory_manager::*;
 
 /// The JVM classes that are used in the JNI calls.
 pub struct JVMClasses<'a> {
@@ -216,6 +218,9 @@ pub struct JVMClasses<'a> {
     pub comet_exec: CometExec<'a>,
     /// The CometBatchIterator class. Used for iterating over the batches.
     pub comet_batch_iterator: CometBatchIterator<'a>,
+    /// The CometTaskMemoryManager used for interacting with JVM side to
+    /// acquire & release native memory.
+    pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
 }
 
 unsafe impl<'a> Send for JVMClasses<'a> {}
@@ -261,6 +266,7 @@ impl JVMClasses<'_> {
                 comet_metric_node: CometMetricNode::new(env).unwrap(),
                 comet_exec: CometExec::new(env).unwrap(),
                 comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
+                comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
             }
         });
     }

@@ -80,6 +80,8 @@ allowed_expr+="|^org/apache/spark/shuffle/comet/.*$"
 allowed_expr+="|^org/apache/spark/sql/$"
 allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
+allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
+allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0
