@@ -1136,7 +1136,7 @@ index abe606ad9c1..438e7494473 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..346b344c078 100644
+index dd55fcfe42c..e83348242d3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
@@ -1184,11 +1184,12 @@ index dd55fcfe42c..346b344c078 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +456,7 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +456,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
 +      case CometFilterExec(_, _, _, child, _) => child
++      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, child, _), _) => child
      }
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
