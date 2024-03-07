@@ -361,6 +361,36 @@ index 2796b1cf154..94591f83c84 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
+index 5125708be32..e274a497996 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
+@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
+ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
+ import org.apache.spark.sql.catalyst.expressions.{Ascending, GenericRow, SortOrder}
+ import org.apache.spark.sql.catalyst.plans.logical.Filter
++import org.apache.spark.sql.comet._
+ import org.apache.spark.sql.execution.{BinaryExecNode, FilterExec, ProjectExec, SortExec, SparkPlan, WholeStageCodegenExec}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.exchange.{ShuffleExchangeExec, ShuffleExchangeLike}
+@@ -1371,7 +1372,7 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+           assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
+           assert(collect(plan) { case _: SortMergeJoinExec => true }.size === 3)
+           // No extra sort on left side before last sort merge join
+-          assert(collect(plan) { case _: SortExec => true }.size === 5)
++          assert(collect(plan) { case _: SortExec | _: CometSortExec => true }.size === 5)
+       }
+ 
+       // Test output ordering is not preserved
+@@ -1382,7 +1383,7 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+           assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
+           assert(collect(plan) { case _: SortMergeJoinExec => true }.size === 3)
+           // Have sort on left side before last sort merge join
+-          assert(collect(plan) { case _: SortExec => true }.size === 6)
++          assert(collect(plan) { case _: SortExec | _: CometSortExec => true }.size === 6)
+       }
+ 
+       // Test singe partition
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 index b5b34922694..5fa734d30e1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
@@ -1106,10 +1136,18 @@ index abe606ad9c1..438e7494473 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..b8854809ba6 100644
+index dd55fcfe42c..346b344c078 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-@@ -126,7 +126,11 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
+ import org.apache.spark.sql.catalyst.plans.PlanTestBase
+ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+ import org.apache.spark.sql.catalyst.util._
++import org.apache.spark.sql.comet._
+ import org.apache.spark.sql.execution.FilterExec
+ import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
+ import org.apache.spark.sql.execution.datasources.DataSourceUtils
+@@ -126,7 +127,11 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -1122,7 +1160,7 @@ index dd55fcfe42c..b8854809ba6 100644
      }
    }
  
-@@ -242,6 +246,23 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +247,23 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -1146,6 +1184,14 @@ index dd55fcfe42c..b8854809ba6 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
+@@ -434,6 +456,7 @@ private[sql] trait SQLTestUtilsBase
+     val schema = df.schema
+     val withoutFilters = df.queryExecution.executedPlan.transform {
+       case FilterExec(_, child) => child
++      case CometFilterExec(_, _, _, child, _) => child
+     }
+ 
+     spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 index ed2e309fa07..3767d4e7ca4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala

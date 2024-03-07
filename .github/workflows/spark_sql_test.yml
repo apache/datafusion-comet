@@ -94,7 +94,7 @@ jobs:
       - name: Run Spark sql/core-1 tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest"
+          ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
 
   spark-sql-core-2:
     strategy:
