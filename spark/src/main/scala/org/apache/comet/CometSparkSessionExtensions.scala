@@ -38,6 +38,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -337,6 +338,26 @@ class CometSparkSessionExtensions
               op
           }
 
+        case op: SortMergeJoinExec
+            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+              op.children.forall(isCometNative(_)) =>
+          val newOp = transform1(op)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSortMergeJoinExec(
+                nativeOp,
+                op,
+                op.leftKeys,
+                op.rightKeys,
+                op.joinType,
+                op.condition,
+                op.left,
+                op.right,
+                SerializedPlan(None))
+            case None =>
+              op
+          }
+
         case c @ CoalesceExec(numPartitions, child)
             if isCometOperatorEnabled(conf, "coalesce")
               && isCometNative(child) =>
@@ -576,7 +597,9 @@ object CometSparkSessionExtensions extends Logging {
 
   private[comet] def isCometOperatorEnabled(conf: SQLConf, operator: String): Boolean = {
     val operatorFlag = s"$COMET_EXEC_CONFIG_PREFIX.$operator.enabled"
-    conf.getConfString(operatorFlag, "false").toBoolean || isCometAllOperatorEnabled(conf)
+    val operatorDisabledFlag = s"$COMET_EXEC_CONFIG_PREFIX.$operator.disabled"
+    conf.getConfString(operatorFlag, "false").toBoolean || isCometAllOperatorEnabled(conf) &&
+    !conf.getConfString(operatorDisabledFlag, "false").toBoolean
   }
 
   private[comet] def isCometBroadCastEnabled(conf: SQLConf): Boolean = {

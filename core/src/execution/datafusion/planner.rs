@@ -37,13 +37,14 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
+        joins::SortMergeJoinExec,
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
         ExecutionPlan, Partitioning,
     },
 };
-use datafusion_common::ScalarValue;
+use datafusion_common::{JoinType as DFJoinType, ScalarValue};
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -77,7 +78,7 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, Operator},
+        spark_operator::{operator::OpStruct, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
@@ -868,6 +869,85 @@ impl PhysicalPlanner {
                     Arc::new(CometExpandExec::new(projections, child, schema)),
                 ))
             }
+            OpStruct::SortMergeJoin(join) => {
+                assert!(children.len() == 2);
+                let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
+                let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+
+                left_scans.append(&mut right_scans);
+
+                let left_join_exprs = join
+                    .left_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, left.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let right_join_exprs = join
+                    .right_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, right.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let join_on = left_join_exprs
+                    .into_iter()
+                    .zip(right_join_exprs)
+                    .collect::<Vec<_>>();
+
+                let join_type = match join.join_type.try_into() {
+                    Ok(JoinType::Inner) => DFJoinType::Inner,
+                    Ok(JoinType::LeftOuter) => DFJoinType::Left,
+                    Ok(JoinType::RightOuter) => DFJoinType::Right,
+                    Ok(JoinType::FullOuter) => DFJoinType::Full,
+                    Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
+                    Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
+                    Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
+                    Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
+                    Err(_) => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Unsupported join type: {:?}",
+                            join.join_type
+                        )));
+                    }
+                };
+
+                let sort_options = join
+                    .sort_options
+                    .iter()
+                    .map(|sort_option| {
+                        let sort_expr = self.create_sort_expr(sort_option, left.schema()).unwrap();
+                        SortOptions {
+                            descending: sort_expr.options.descending,
+                            nulls_first: sort_expr.options.nulls_first,
+                        }
+                    })
+                    .collect();
+
+                // DataFusion `SortMergeJoinExec` operator keeps the input batch internally. We need
+                // to copy the input batch to avoid the data corruption from reusing the input
+                // batch.
+                let left = if op_reuse_array(&left) {
+                    Arc::new(CopyExec::new(left))
+                } else {
+                    left
+                };
+
+                let right = if op_reuse_array(&right) {
+                    Arc::new(CopyExec::new(right))
+                } else {
+                    right
+                };
+
+                let join = Arc::new(SortMergeJoinExec::try_new(
+                    left,
+                    right,
+                    join_on,
+                    None,
+                    join_type,
+                    sort_options,
+                    false,
+                )?);
+
+                Ok((left_scans, join))
+            }
         }
     }
 
@@ -1049,6 +1129,15 @@ impl From<ExpressionError> for DataFusionError {
     fn from(value: ExpressionError) -> Self {
         DataFusionError::Execution(value.to_string())
     }
+}
+
+/// Returns true if given operator probably returns input array as output array without
+/// modification.
+fn op_reuse_array(op: &Arc<dyn ExecutionPlan>) -> bool {
+    op.as_any().downcast_ref::<ScanExec>().is_some()
+        || op.as_any().downcast_ref::<LocalLimitExec>().is_some()
+        || op.as_any().downcast_ref::<ProjectionExec>().is_some()
+        || op.as_any().downcast_ref::<FilterExec>().is_some()
 }
 
 #[cfg(test)]

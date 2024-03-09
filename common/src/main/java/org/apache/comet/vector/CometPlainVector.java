@@ -113,7 +113,11 @@ public class CometPlainVector extends CometDecodedVector {
       byte[] result = new byte[length];
       Platform.copyMemory(
           null, valueBufferAddress + offset, result, Platform.BYTE_ARRAY_OFFSET, length);
-      return UTF8String.fromString(convertToUuid(result).toString());
+      if (length == 16) {
+        return UTF8String.fromString(convertToUuid(result).toString());
+      } else {
+        return UTF8String.fromBytes(result);
+      }
     }
   }
 
