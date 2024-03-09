@@ -1783,6 +1783,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         if (aggregateExpressions.isEmpty) {
           val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
           hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+          if (resultExprs.exists(_.isEmpty)) {
+            emitWarning(s"Unsupported result expressions found in: ${resultExpressions}")
+            return None
+          }
+          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
           Some(result.setHashAgg(hashAggBuilder).build())
         } else {
           val modes = aggregateExpressions.map(_.mode).distinct
