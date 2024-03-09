@@ -40,6 +40,22 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("Aggregation without aggregate expressions should use correct result expressions") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test")
+        makeParquetFile(path, 10000, 10, false)
+        withParquetTable(path.toUri.toString, "tbl") {
+          val df = sql("SELECT _g5 FROM tbl GROUP BY _g1, _g2, _g3, _g4, _g5")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("Final aggregation should not bind to the input of partial aggregation") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
