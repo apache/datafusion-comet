@@ -32,7 +32,7 @@ use datafusion::{
 };
 
 #[inline]
-fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
+pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
     #[inline]
     fn mix_k1(mut k1: i32) -> i32 {
         k1 = k1.mul_wrapping(0xcc9e2d51u32 as i32);

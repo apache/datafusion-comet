@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.BinaryArithmetic
+import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.DeclarativeAggregate
 
 trait ShimQueryPlanSerde {
@@ -43,5 +43,9 @@ trait ShimQueryPlanSerde {
     } else {
       failOnError.head
     }
+  }
+
+  def isBloomFilterMightContain(binary: BinaryExpression): Boolean = {
+    binary.getClass.getName == "org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain"
   }
 }
