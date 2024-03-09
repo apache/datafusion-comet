@@ -106,12 +106,7 @@ impl SparkBloomFilter {
     pub fn might_contain_longs(&self, items: &Int64Array) -> CometResult<BooleanArray> {
         Ok(items
             .iter()
-            .map(|v| {
-                v.and_then(|v| {
-                    let might_contain = self.might_contain_long(v);
-                    Some(might_contain)
-                })
-            })
+            .map(|v| v.map(|x| self.might_contain_long(x)))
             .collect())
     }
 }

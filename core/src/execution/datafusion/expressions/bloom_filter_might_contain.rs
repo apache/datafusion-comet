@@ -24,7 +24,6 @@ use arrow_schema::DataType;
 use datafusion::{common::Result, physical_plan::ColumnarValue};
 use datafusion_common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, PhysicalExpr};
-use log::info;
 use once_cell::sync::OnceCell;
 use std::{
     any::Any,
@@ -99,7 +98,6 @@ impl PhysicalExpr for BloomFilterMightContain {
                     );
                 }
                 ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
-                    info!("init for bloom filter");
                     let filter = v.map(|v| SparkBloomFilter::new_from_buf(v.as_bytes()));
                     self.bloom_filter.get_or_init(|| filter);
                 }
@@ -112,9 +110,9 @@ impl PhysicalExpr for BloomFilterMightContain {
         let lazy_filter = self.bloom_filter.get().unwrap();
         if lazy_filter.is_none() {
             // when the bloom filter is null, we should return a boolean array with all nulls
-            return Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
+            Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
                 num_rows,
-            ))));
+            ))))
         } else {
             let spark_filter = lazy_filter.as_ref().unwrap();
             let values = self.value_expr.evaluate(batch)?;
@@ -134,9 +132,9 @@ impl PhysicalExpr for BloomFilterMightContain {
                         Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
                     }
                     _ => {
-                        return internal_err!(
+                        internal_err!(
                             "value_expr must be evaluated as an int64 array or a int64 scalar"
-                        );
+                        )
                     }
                 },
             }
