@@ -25,9 +25,14 @@ use datafusion::{
     common::DataFusionError,
     logical_expr::{BuiltinScalarFunction, Operator as DataFusionOperator},
     physical_expr::{
-        expressions::{BinaryExpr, Column, IsNotNullExpr, Literal as DataFusionLiteral},
+        execution_props::ExecutionProps,
+        expressions::{
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, Count, FirstValue, IsNotNullExpr,
+            IsNullExpr, LastValue, Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr,
+            Sum, UnKnownColumn,
+        },
         functions::create_physical_expr,
-        PhysicalExpr, PhysicalSortExpr,
+        AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
@@ -39,14 +44,6 @@ use datafusion::{
     },
 };
 use datafusion_common::ScalarValue;
-use datafusion_physical_expr::{
-    execution_props::ExecutionProps,
-    expressions::{
-        CaseExpr, CastExpr, Count, FirstValue, InListExpr, IsNullExpr, LastValue, Max, Min,
-        NegativeExpr, NotExpr, Sum, UnKnownColumn,
-    },
-    AggregateExpr, ScalarFunctionExpr,
-};
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -496,7 +493,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|x| self.create_expr(x, input_schema.clone()).unwrap())
                     .collect::<Vec<_>>();
-                Ok(Arc::new(InListExpr::new(value, list, expr.negated, None)))
+                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
