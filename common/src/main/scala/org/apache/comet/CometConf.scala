@@ -227,7 +227,9 @@ object CometConf {
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
       .internal()
-      .doc("Batch size when writing out sorted spill files on the native side.")
+      .doc("Batch size when writing out sorted spill files on the native side. Note that " +
+        "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
+        "it will produce larger batches than expected in the native operator after shuffle.")
       .intConf
       .createWithDefault(8192)
 
