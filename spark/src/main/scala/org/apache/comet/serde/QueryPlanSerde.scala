@@ -48,7 +48,7 @@ import org.apache.comet.shims.ShimQueryPlanSerde
  */
 object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
   def emitWarning(reason: String): Unit = {
-    logWarning(s"Comet native execution is disabled due to: $reason")
+    logWarning(s"Comet native execution: $reason")
   }
 
   def supportedDataType(dt: DataType): Boolean = dt match {
