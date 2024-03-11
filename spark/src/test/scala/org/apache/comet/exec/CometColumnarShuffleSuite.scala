@@ -927,6 +927,12 @@ class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = true
 
   protected val adaptiveExecutionEnabled: Boolean = true
+}
+
+class CometShuffleSuite extends CometColumnarShuffleSuite {
+  override protected val asyncShuffleEnable: Boolean = false
+
+  protected val adaptiveExecutionEnabled: Boolean = true
 
   import testImplicits._
 
@@ -975,12 +981,6 @@ class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
       }
     }
   }
-}
-
-class CometShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
-  protected val adaptiveExecutionEnabled: Boolean = true
 }
 
 class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {

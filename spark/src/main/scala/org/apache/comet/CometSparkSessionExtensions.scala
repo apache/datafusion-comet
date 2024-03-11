@@ -382,6 +382,7 @@ class CometSparkSessionExtensions
             case None => b
           }
 
+        // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
           val newOp = transform1(s)
           newOp match {
@@ -391,6 +392,9 @@ class CometSparkSessionExtensions
               s
           }
 
+        // For AQE shuffle stage on a reused Comet shuffle exchange
+        // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
+        // the query plan won't be re-optimized/planned in non-AQE mode.
         case s @ ShuffleQueryStageExec(
               _,
               ReusedExchangeExec(_, _: CometShuffleExchangeExec),
