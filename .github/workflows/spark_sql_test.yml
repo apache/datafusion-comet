@@ -45,13 +45,13 @@ jobs:
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
         module:
-          - {name: "catalyst", args: "catalyst/test"}
-          - {name: "sql/core-1", args: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql/core-2", args: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
-          - {name: "sql/core-3", args: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql/hive-1", args: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
-          - {name: "sql/hive-2", args: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
-          - {name: "sql/hive-3", args: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+          - {name: "catalyst", args1: "catalyst/test", args2: ""}
+          - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
+          - {name: "sql/core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
+          - {name: "sql/core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
+          - {name: "sql/hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {name: "sql/hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
+          - {name: "sql/hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
     name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
@@ -73,7 +73,7 @@ jobs:
       - name: Run Spark tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt ${{ matrix.module.args }}
+          ENABLE_COMET=true build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
         env:
           LC_ALL: "C.UTF-8"
 
