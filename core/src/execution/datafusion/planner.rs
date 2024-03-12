@@ -17,7 +17,7 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::{
@@ -37,13 +37,17 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
+        joins::{utils::JoinFilter, HashJoinExec, PartitionMode},
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
         ExecutionPlan, Partitioning,
     },
 };
-use datafusion_common::ScalarValue;
+use datafusion_common::{
+    tree_node::{TreeNode, VisitRecursion},
+    JoinType as DFJoinType, ScalarValue,
+};
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -76,7 +80,7 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, Operator},
+        spark_operator::{operator::OpStruct, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
@@ -858,6 +862,107 @@ impl PhysicalPlanner {
                     Arc::new(CometExpandExec::new(projections, child, schema)),
                 ))
             }
+            OpStruct::HashJoin(join) => {
+                assert!(children.len() == 2);
+                let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
+                let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+
+                left_scans.append(&mut right_scans);
+
+                let left_join_exprs: Vec<_> = join
+                    .left_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, left.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let right_join_exprs: Vec<_> = join
+                    .right_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, right.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let join_on = left_join_exprs
+                    .into_iter()
+                    .zip(right_join_exprs)
+                    .collect::<Vec<_>>();
+
+                let join_type = match join.join_type.try_into() {
+                    Ok(JoinType::Inner) => DFJoinType::Inner,
+                    Ok(JoinType::LeftOuter) => DFJoinType::Left,
+                    Ok(JoinType::RightOuter) => DFJoinType::Right,
+                    Ok(JoinType::FullOuter) => DFJoinType::Full,
+                    Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
+                    Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
+                    Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
+                    Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
+                    Err(_) => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Unsupported join type: {:?}",
+                            join.join_type
+                        )));
+                    }
+                };
+
+                // Handle join filter as DataFusion `JoinFilter` struct
+                let join_filter = if let Some(expr) = &join.condition {
+                    let physical_expr = self.create_expr(expr, left.schema())?;
+                    let (left_field_indices, right_field_indices) = expr_to_columns(
+                        &physical_expr,
+                        left.schema().fields.len(),
+                        right.schema().fields.len(),
+                    )?;
+                    let column_indices = JoinFilter::build_column_indices(
+                        left_field_indices.clone(),
+                        right_field_indices.clone(),
+                    );
+
+                    let filter_fields: Vec<Field> = left_field_indices
+                        .into_iter()
+                        .map(|i| left.schema().field(i).clone())
+                        .chain(
+                            right_field_indices
+                                .into_iter()
+                                .map(|i| right.schema().field(i).clone()),
+                        )
+                        .collect_vec();
+
+                    let filter_schema = Schema::new_with_metadata(filter_fields, HashMap::new());
+
+                    Some(JoinFilter::new(
+                        physical_expr,
+                        column_indices,
+                        filter_schema,
+                    ))
+                } else {
+                    None
+                };
+
+                // DataFusion `HashJoinExec` operator keeps the input batch internally. We need
+                // to copy the input batch to avoid the data corruption from reusing the input
+                // batch.
+                let left = if !is_op_do_copying(&left) {
+                    Arc::new(CopyExec::new(left))
+                } else {
+                    left
+                };
+
+                let right = if !is_op_do_copying(&right) {
+                    Arc::new(CopyExec::new(right))
+                } else {
+                    right
+                };
+
+                let join = Arc::new(HashJoinExec::try_new(
+                    left,
+                    right,
+                    join_on,
+                    join_filter,
+                    &join_type,
+                    PartitionMode::Partitioned,
+                    false,
+                )?);
+
+                Ok((left_scans, join))
+            }
         }
     }
 
@@ -1024,6 +1129,48 @@ impl From<ExpressionError> for DataFusionError {
     fn from(value: ExpressionError) -> Self {
         DataFusionError::Execution(value.to_string())
     }
+}
+
+/// Returns true if given operator copies input batch to avoid data corruption from reusing
+/// input arrays.
+fn is_op_do_copying(op: &Arc<dyn ExecutionPlan>) -> bool {
+    op.as_any().downcast_ref::<CopyExec>().is_some()
+        || op.as_any().downcast_ref::<CometExpandExec>().is_some()
+        || op.as_any().downcast_ref::<SortExec>().is_some()
+}
+
+/// Collects the indices of the columns in the input schema that are used in the expression
+/// and returns them as a pair of vectors, one for the left side and one for the right side.
+fn expr_to_columns(
+    expr: &Arc<dyn PhysicalExpr>,
+    left_field_len: usize,
+    right_field_len: usize,
+) -> Result<(Vec<usize>, Vec<usize>), ExecutionError> {
+    let mut left_field_indices: Vec<usize> = vec![];
+    let mut right_field_indices: Vec<usize> = vec![];
+
+    expr.apply(&mut |expr| {
+        Ok({
+            if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+                if column.index() > left_field_len + right_field_len {
+                    return Err(DataFusionError::Internal(format!(
+                        "Column index {} out of range",
+                        column.index()
+                    )));
+                } else if column.index() < left_field_len {
+                    left_field_indices.push(column.index());
+                } else {
+                    right_field_indices.push(column.index() - left_field_len);
+                }
+            }
+            VisitRecursion::Continue
+        })
+    })?;
+
+    left_field_indices.sort();
+    right_field_indices.sort();
+
+    Ok((left_field_indices, right_field_indices))
 }
 
 #[cfg(test)]

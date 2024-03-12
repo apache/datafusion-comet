@@ -25,7 +25,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.comet.{CometSinkPlaceHolder, DecimalPrecision}
@@ -35,6 +36,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.ShuffledHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -42,7 +44,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
 import org.apache.comet.shims.ShimQueryPlanSerde
 
 /**
@@ -1836,6 +1838,48 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           } else {
             None
           }
+        }
+
+      case join: ShuffledHashJoinExec if isCometOperatorEnabled(op.conf, "hash_join") =>
+        if (join.buildSide == BuildRight) {
+          // DataFusion HashJoin assumes build side is always left.
+          // TODO: support BuildRight
+          return None
+        }
+
+        val condition = join.condition.map { cond =>
+          val condProto = exprToProto(cond, join.left.output ++ join.right.output)
+          if (condProto.isEmpty) {
+            return None
+          }
+          condProto.get
+        }
+
+        val joinType = join.joinType match {
+          case Inner => JoinType.Inner
+          case LeftOuter => JoinType.LeftOuter
+          case RightOuter => JoinType.RightOuter
+          case FullOuter => JoinType.FullOuter
+          case LeftSemi => JoinType.LeftSemi
+          case LeftAnti => JoinType.LeftAnti
+          case _ => return None // Spark doesn't support other join types
+        }
+
+        val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
+        val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
+
+        if (leftKeys.forall(_.isDefined) &&
+          rightKeys.forall(_.isDefined) &&
+          childOp.nonEmpty) {
+          val joinBuilder = OperatorOuterClass.HashJoin
+            .newBuilder()
+            .setJoinType(joinType)
+            .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
+            .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+          condition.foreach(joinBuilder.setCondition)
+          Some(result.setHashJoin(joinBuilder).build())
+        } else {
+          None
         }
 
       case op if isCometSink(op) =>

@@ -91,7 +91,7 @@ impl ExecutionPlan for CopyExec {
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        self.input.children()
+        vec![self.input.clone()]
     }
 
     fn with_new_children(
