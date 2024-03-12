@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometSinkPlaceHolder, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometRowToColumnarExec, CometSinkPlaceHolder, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
@@ -2064,6 +2064,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
   private def isCometSink(op: SparkPlan): Boolean = {
     op match {
       case s if isCometScan(s) => true
+      case _: CometRowToColumnarExec => true
       case _: CometSinkPlaceHolder => true
       case _: CoalesceExec => true
       case _: CollectLimitExec => true

@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
@@ -43,7 +44,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
+import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -68,7 +69,7 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] =
-      EliminateRedundantColumnarToRow(session)
+      EliminateRedundantTransitions(session)
   }
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
@@ -237,6 +238,11 @@ class CometSparkSessionExtensions
         case op if isCometScan(op) =>
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
+
+        case op if shouldApplyRowToColumnar(conf, op) =>
+          val cometOp = CometRowToColumnarExec(op)
+          val nativeOp = QueryPlanSerde.operator2Proto(cometOp).get
+          CometScanWrapper(nativeOp, cometOp)
 
         case op: ProjectExec =>
           val newOp = transform1(op)
@@ -592,18 +598,26 @@ class CometSparkSessionExtensions
     }
   }
 
-  // CometExec already wraps a `ColumnarToRowExec` for row-based operators. Therefore,
-  // `ColumnarToRowExec` is redundant and can be eliminated.
+  // This rule is responsible for eliminating redundant transitions between row-based and
+  // columnar-based operators for Comet. Currently, two potential redundant transitions are:
+  // 1. ColumnarToRowExec at the end of a Spark operator, which is redundant for Comet operators as
+  //    CometExec already wraps a `ColumnarToRowExec` for row-based operators.
+  // 2. Consecutive operators of CometRowToColumnarExec and ColumnarToRowExec, which might be
+  //    possible for Comet to add a `CometRowToColumnarExec` for row-based operators first, then
+  //    Spark only requests row-based output.
   //
-  // It was added during ApplyColumnarRulesAndInsertTransitions' insertTransitions phase when Spark
-  // requests row-based output such as `collect` call. It's correct to add a redundant
-  // `ColumnarToRowExec` for `CometExec`. However, for certain operators such as
-  // `CometCollectLimitExec` which overrides `executeCollect`, the redundant `ColumnarToRowExec`
-  // makes the override ineffective. The purpose of this rule is to eliminate the redundant
-  // `ColumnarToRowExec` for such operators.
-  case class EliminateRedundantColumnarToRow(session: SparkSession) extends Rule[SparkPlan] {
+  // The `ColumnarToRowExec` was added during ApplyColumnarRulesAndInsertTransitions'
+  // insertTransitions phase when Spark requests row-based output such as a `collect` call. It's
+  // correct to add a redundant `ColumnarToRowExec` for `CometExec`. However, for certain operators
+  // such as `CometCollectLimitExec` which overrides `executeCollect`, the redundant
+  // `ColumnarToRowExec` makes the override ineffective.
+  case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      plan match {
+      val eliminatedPlan = plan transformUp {
+        case ColumnarToRowExec(rowToColumnar: CometRowToColumnarExec) => rowToColumnar.child
+      }
+
+      eliminatedPlan match {
         case ColumnarToRowExec(child: CometCollectLimitExec) =>
           child
         case other =>
@@ -714,6 +728,18 @@ object CometSparkSessionExtensions extends Logging {
 
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
+  }
+
+  private def shouldApplyRowToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+    // Only consider converting leaf nodes to columnar currently, so that all the following
+    // operators can have a chance to be converted to columnar.
+    // TODO: consider converting other intermediate operators to columnar.
+    op.isInstanceOf[LeafExecNode] && !op.supportsColumnar && isSchemaSupported(op.schema) &&
+    COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
+      val simpleClassName = Utils.getSimpleName(op.getClass)
+      val nodeName = simpleClassName.replaceAll("Exec$", "")
+      COMET_ROW_TO_COLUMNAR_SOURCE_NODE_LIST.get(conf).contains(nodeName)
+    }
   }
 
   /** Used for operations that weren't available in Spark 3.2 */
