@@ -257,7 +257,9 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     for (SpillSorter sorter : spillingSorters) {
       totalPageSize += sorter.getMemoryUsage();
     }
-    totalPageSize += activeSpillSorter.getMemoryUsage();
+    if (activeSpillSorter != null) {
+      totalPageSize += activeSpillSorter.getMemoryUsage();
+    }
     return totalPageSize;
   }
 
