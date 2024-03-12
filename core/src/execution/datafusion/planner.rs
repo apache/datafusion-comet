@@ -27,7 +27,7 @@ use datafusion::{
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, Count, FirstValue, InListExpr,
+            in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count, FirstValue, InListExpr,
             IsNotNullExpr, IsNullExpr, LastValue, Literal as DataFusionLiteral, Max, Min,
             NegativeExpr, NotExpr, Sum, UnKnownColumn,
         },
@@ -939,6 +939,21 @@ impl PhysicalPlanner {
                     vec![],
                     vec![],
                 )))
+            }
+            AggExprStruct::BitAndAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
+            }
+            AggExprStruct::BitOrAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
+            }
+            AggExprStruct::BitXorAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
             }
         }
     }

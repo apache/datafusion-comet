@@ -947,6 +947,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("bitwise aggregate") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionary =>
+        withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "test"
+          withTable(table) {
+            sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+            sql(
+              s"insert into $table values(4, 1, 1), (4, 1, 1), (3, 3, 1)," +
+                " (2, 4, 2), (1, 3, 2), (null, 1, 1)")
+            val expectedNumOfCometAggregates = 2
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1) FROM test",
+              expectedNumOfCometAggregates)
+
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), MIN(col1), COUNT(col1) FROM test",
+              expectedNumOfCometAggregates)
+
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), col3 FROM test GROUP BY col3",
+              expectedNumOfCometAggregates)
+
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), MIN(col1), COUNT(col1), col3 FROM test GROUP BY col3",
+              expectedNumOfCometAggregates)
+          }
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)
