@@ -493,16 +493,19 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|x| self.create_expr(x, input_schema.clone()).unwrap())
                     .collect::<Vec<_>>();
-                // in_list doesn't handle value being dictionary type correctly, so we need to fall
-                // back to InListExpr if in_list fails.
-                // TODO: remove the fallback when https://github.com/apache/arrow-datafusion/issues/9530 is fixed
-                in_list(
-                    value.clone(),
-                    list.clone(),
-                    &expr.negated,
-                    input_schema.as_ref(),
-                )
-                .or_else(|_| Ok(Arc::new(InListExpr::new(value, list, expr.negated, None))))
+
+                // if schema contains any dictionary type, we should use InListExpr instead of
+                // in_list as it doesn't handle value being dictionary type correctly
+                let contains_dict_type = input_schema
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)));
+                if contains_dict_type {
+                    // TODO: remove the fallback when https://github.com/apache/arrow-datafusion/issues/9530 is fixed
+                    Ok(Arc::new(InListExpr::new(value, list, expr.negated, None)))
+                } else {
+                    in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
+                }
             }
             ExprStruct::If(expr) => {
                 let if_expr =
