@@ -20,7 +20,6 @@
 package org.apache.comet
 
 import java.nio.ByteOrder
-
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -43,13 +42,13 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
+import org.apache.spark.sql.execution.window.WindowExec
 
 /**
  * The entry point of Comet extension to Spark. This class is responsible for injecting Comet
@@ -530,6 +529,16 @@ class CometSparkSessionExtensions
               CometSinkPlaceHolder(nativeOp, s, cometOp)
             case None =>
               s
+          }
+
+        case w: WindowExec =>
+          QueryPlanSerde.operator2Proto(w) match {
+            case Some(nativeOp) =>
+              val bosonOp =
+                CometWindowExec(w, w.windowExpression, w.partitionSpec, w.orderSpec, w.child)
+              CometSinkPlaceHolder(nativeOp, w, bosonOp)
+            case None =>
+              w
           }
 
         case s: TakeOrderedAndProjectExec =>

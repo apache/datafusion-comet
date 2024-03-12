@@ -42,6 +42,7 @@ message Operator {
     Expand expand = 107;
     SortMergeJoin sort_merge_join = 108;
     HashJoin hash_join = 109;
+    Window window = 110;
   }
 }
 
@@ -119,4 +120,61 @@ enum JoinType {
 enum BuildSide {
   BuildLeft = 0;
   BuildRight = 1;
+}
+
+message WindowExpr {
+  spark.spark_expression.Expr func = 1;
+  WindowSpecDefinition spec = 2;
+}
+
+enum WindowFrameType {
+  Rows = 0;
+  Range = 1;
+}
+
+message WindowFrame {
+  WindowFrameType frame_type = 1;
+  LowerWindowFrameBound lower_bound = 2;
+  UpperWindowFrameBound upper_bound = 3;
+}
+
+message LowerWindowFrameBound {
+  oneof lower_frame_bound_struct {
+    UnboundedPreceding unboundedPreceding = 1;
+    Preceding preceding = 2;
+    CurrentRow currentRow = 3;
+  }
+}
+
+message UpperWindowFrameBound {
+  oneof upper_frame_bound_struct {
+    UnboundedFollowing unboundedFollowing = 1;
+    Following following = 2;
+    CurrentRow currentRow = 3;
+  }
+}
+
+message Preceding {
+  int32 offset = 1;
+}
+
+message Following {
+  int32 offset = 1;
+}
+
+message UnboundedPreceding {}
+message UnboundedFollowing {}
+message CurrentRow {}
+
+message WindowSpecDefinition {
+  repeated spark.spark_expression.Expr partitionSpec = 1;
+  repeated spark.spark_expression.Expr orderSpec = 2;
+  WindowFrame frameSpecification = 3;
+}
+
+message Window {
+  repeated WindowExpr window_expr = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  repeated spark.spark_expression.Expr partition_by_list = 3;
+  Operator child = 4;
 }
