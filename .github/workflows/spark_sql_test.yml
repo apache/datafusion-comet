@@ -44,8 +44,16 @@ jobs:
         os: [ubuntu-latest]
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.2'}]
+        module:
+          - {name: "catalyst", args: "catalyst/test"}
+          - {name: "sql/core-1", args: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
+          - {name: "sql/core-2", args: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
+          - {name: "sql/core-3", args: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
+          - {name: "sql/hive-1", args: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {name: "sql/hive-2", args: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
+          - {name: "sql/hive-3", args: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-catalyst/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
+    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -62,187 +70,10 @@ jobs:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
           comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/catalyst tests
+      - name: Run Spark tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true build/sbt catalyst/test
-
-  spark-sql-core-1:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-core-1/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/core-1 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
-
-  spark-sql-core-2:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-core-2/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/core-2 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
-
-  spark-sql-core-3:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-core-3/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/core-3 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
-
-  spark-sql-hive-1:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-hive-1/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/hive-1 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+          ENABLE_COMET=true build/sbt ${{ matrix.module.args }}
         env:
           LC_ALL: "C.UTF-8"
 
-  spark-sql-hive-2:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-hive-2/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/hive-2 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
-        env:
-          LC_ALL: "C.UTF-8"
-
-  spark-sql-hive-3:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
-      fail-fast: false
-    name: spark-sql-hive-3/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.1.0-SNAPSHOT' # TODO: get this from pom.xml
-      - name: Run Spark sql/hive-3 tests
-        run: |
-          cd apache-spark
-          ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
-        env:
-          LC_ALL: "C.UTF-8"
