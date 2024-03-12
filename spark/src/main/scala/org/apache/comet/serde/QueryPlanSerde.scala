@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
@@ -48,7 +49,6 @@ import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.shims.CometExprShim
 import org.apache.comet.shims.ShimQueryPlanSerde
-import org.apache.spark.sql.execution.window.WindowExec
 
 /**
  * An utility object for query plan and expression serialization.
@@ -201,8 +201,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   def windowExprToProto(
-                         windowExpr: WindowExpression,
-                         inputs: Seq[Attribute]): Option[OperatorOuterClass.WindowExpr] = {
+      windowExpr: WindowExpression,
+      inputs: Seq[Attribute]): Option[OperatorOuterClass.WindowExpr] = {
     val func = exprToProto(windowExpr.windowFunction, inputs).getOrElse(return None)
 
     val f = windowExpr.windowSpec.frameSpecification
