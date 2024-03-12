@@ -53,10 +53,10 @@ public class ReadOptions {
   // to reduce the skew. This will result in a slightly larger number of connections
   // opened to the file system but may give improved performance.
   // The option is off by default.
-  public static final String BOSON_IO_ADJUST_READRANGE_SKEW =
-      "boson.parquet.read.io.adjust.readRange.skew";
+  public static final String COMET_IO_ADJUST_READRANGE_SKEW =
+      "comet.parquet.read.io.adjust.readRange.skew";
 
-  private static final boolean BOSON_IO_ADJUST_READRANGE_SKEW_DEFAULT = false;
+  private static final boolean COMET_IO_ADJUST_READRANGE_SKEW_DEFAULT = false;
 
   // Max number of concurrent tasks we expect. Used to autoconfigure S3 client connections
   public static final int S3A_MAX_EXPECTED_PARALLELISM = 32;
@@ -180,7 +180,7 @@ public class ReadOptions {
       this.ioMergeRangesDelta =
           conf.getInt(COMET_IO_MERGE_RANGES_DELTA, COMET_IO_MERGE_RANGES_DELTA_DEFAULT);
       this.adjustReadRangeSkew =
-          conf.getBoolean(BOSON_IO_ADJUST_READRANGE_SKEW, BOSON_IO_ADJUST_READRANGE_SKEW_DEFAULT);
+          conf.getBoolean(COMET_IO_ADJUST_READRANGE_SKEW, COMET_IO_ADJUST_READRANGE_SKEW_DEFAULT);
       // override some S3 defaults
       setS3Config();
     }
