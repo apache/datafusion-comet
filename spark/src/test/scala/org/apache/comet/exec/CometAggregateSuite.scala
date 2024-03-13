@@ -955,25 +955,41 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
           val table = "test"
           withTable(table) {
-            sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+            sql(s"create table $table(col1 long, col2 int, col3 short, col4 byte) using parquet")
             sql(
-              s"insert into $table values(4, 1, 1), (4, 1, 1), (3, 3, 1)," +
-                " (2, 4, 2), (1, 3, 2), (null, 1, 1)")
+              s"insert into $table values(4, 1, 1, 3), (4, 1, 1, 3), (3, 3, 1, 4)," +
+                " (2, 4, 2, 5), (1, 3, 2, 6), (null, 1, 1, 7)")
             val expectedNumOfCometAggregates = 2
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1) FROM test",
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+                " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+                " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+                " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4) FROM test",
+              expectedNumOfCometAggregates)
+
+            // Make sure the combination of BITWISE aggregates and other aggregates work OK
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+                " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+                " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+                " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4), MIN(col1), COUNT(col1) FROM test",
               expectedNumOfCometAggregates)
 
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), MIN(col1), COUNT(col1) FROM test",
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+                " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+                " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+                " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4), col3 FROM test GROUP BY col3",
               expectedNumOfCometAggregates)
 
+            // Make sure the combination of BITWISE aggregates and other aggregates work OK
+            // with group by
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), col3 FROM test GROUP BY col3",
-              expectedNumOfCometAggregates)
-
-            checkSparkAnswerAndNumOfAggregates(
-              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1), MIN(col1), COUNT(col1), col3 FROM test GROUP BY col3",
+              "SELECT BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+                " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+                " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+                " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4)," +
+                " MIN(col1), COUNT(col1), col3 FROM test GROUP BY col3",
               expectedNumOfCometAggregates)
           }
         }

@@ -188,7 +188,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
   private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
     dt match {
-      case _: IntegerType => true
+      case _: IntegerType | LongType | ShortType | ByteType => true
       case _ => false
     }
   }
