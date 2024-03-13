@@ -32,6 +32,8 @@ use std::{
     sync::Arc,
 };
 
+/// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
+/// Spark's `BloomFilterMightContain` expression.
 #[derive(Debug)]
 pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,

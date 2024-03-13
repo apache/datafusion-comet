@@ -34,16 +34,6 @@ pub struct SparkBloomFilter {
     num_hashes: u32,
 }
 
-/// similar to the `read_num_be_bytes` macro in `bit.rs` but read nums from bytes in big-endian
-macro_rules! read_num_be_bytes {
-    ($ty:ty, $size:expr, $src:expr) => {{
-        debug_assert!($size <= $src.len());
-        let mut buffer = <$ty as $crate::common::bit::FromBytes>::Buffer::default();
-        buffer.as_mut()[..$size].copy_from_slice(&$src[..$size]);
-        <$ty>::from_be_bytes(buffer)
-    }};
-}
-
 impl SparkBloomFilter {
     pub fn new_from_buf(buf: &[u8]) -> Self {
         let mut offset = 0;

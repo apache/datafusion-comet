@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
+/// used in the BloomFilter implementation. Some methods are not implemented as they are not
+/// required for the current use case.
 #[derive(Debug, Hash)]
 pub struct SparkBitArray {
     data: Vec<u64>,

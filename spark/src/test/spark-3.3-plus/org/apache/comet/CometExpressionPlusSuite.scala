@@ -60,7 +60,7 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  test("test NULl inputs for BloomFilterMightContain") {
+  test("test NULL inputs for BloomFilterMightContain") {
     val table = "test"
     withTable(table) {
       sql(s"create table $table(col1 long, col2 int) using parquet")
@@ -77,8 +77,8 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("test BloomFilterMightContain from random input") {
-    val bf = BloomFilter.create(1000, 100)
-    val longs = (0 until 100).map(_ => Random.nextLong())
+    val bf = BloomFilter.create(100000, 10000)
+    val longs = (0 until 10000).map(_ => Random.nextLong())
     longs.foreach(bf.put)
     val os = new ByteArrayOutputStream()
     bf.writeTo(os)
