@@ -944,15 +944,13 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
-          val df = sql("SELECT * FROM tbl_a")
-          val shuffled = df
-            .select($"_1" + 1 as ("a"))
-            .filter($"a" > 4)
-            .repartition(10)
-            .sortWithinPartitions($"a")
-          checkSparkAnswerAndOperator(shuffled, classOf[ShuffleQueryStageExec])
-        }
+        val df = sql("SELECT * FROM tbl_a")
+        val shuffled = df
+          .select($"_1" + 1 as ("a"))
+          .filter($"a" > 4)
+          .repartition(10)
+          .sortWithinPartitions($"a")
+        checkSparkAnswerAndOperator(shuffled, classOf[ShuffleQueryStageExec])
       }
     }
   }
