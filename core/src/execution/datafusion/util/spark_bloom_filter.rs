@@ -15,11 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    errors::CometResult,
-    execution::datafusion::{
-        spark_hash::spark_compatible_murmur3_hash, util::spark_bit_array::SparkBitArray,
-    },
+use crate::execution::datafusion::{
+    spark_hash::spark_compatible_murmur3_hash, util::spark_bit_array::SparkBitArray,
 };
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 
@@ -28,6 +25,7 @@ const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 /// A Bloom filter implementation that simulates the behavior of Spark's BloomFilter.
 /// It's not a complete implementation of Spark's BloomFilter, but just add the minimum
 /// methods to support mightContainsLong in the native side.
+
 #[derive(Debug, Hash)]
 pub struct SparkBloomFilter {
     bits: SparkBitArray,
@@ -60,9 +58,7 @@ impl SparkBloomFilter {
 
     pub fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
-        // n hash values by `h1 + i * h2` with 1 <= i <= numHashFunctions.
-        // Note that `CountMinSketch` use a different strategy, it hashes the input long element
-        // with every i to produce n hash values.
+        // n hash values by `h1 + i * h2` with 1 <= i <= num_hashes.
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
         let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
@@ -93,10 +89,10 @@ impl SparkBloomFilter {
         true
     }
 
-    pub fn might_contain_longs(&self, items: &Int64Array) -> CometResult<BooleanArray> {
-        Ok(items
+    pub fn might_contain_longs(&self, items: &Int64Array) -> BooleanArray {
+        items
             .iter()
             .map(|v| v.map(|x| self.might_contain_long(x)))
-            .collect())
+            .collect()
     }
 }

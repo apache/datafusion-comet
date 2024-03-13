@@ -19,12 +19,11 @@ use crate::{
     execution::datafusion::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes,
 };
 use arrow::record_batch::RecordBatch;
-use arrow_array::{BooleanArray, Int64Array};
-use arrow_schema::DataType;
-use datafusion::{common::Result, physical_plan::ColumnarValue};
-use datafusion_common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
+use arrow_array::{cast::as_primitive_array, BooleanArray};
+use arrow_schema::{DataType, Schema};
+use datafusion::physical_plan::ColumnarValue;
+use datafusion_common::{internal_err, DataFusionError, Result, ScalarValue};
 use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, PhysicalExpr};
-use once_cell::sync::OnceCell;
 use std::{
     any::Any,
     fmt::Display,
@@ -34,11 +33,12 @@ use std::{
 
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
 /// Spark's `BloomFilterMightContain` expression.
-#[derive(Debug)]
+
+#[derive(Debug, Hash)]
 pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
     pub value_expr: Arc<dyn PhysicalExpr>,
-    bloom_filter: OnceCell<Option<SparkBloomFilter>>,
+    bloom_filter: Option<SparkBloomFilter>,
 }
 
 impl Display for BloomFilterMightContain {
@@ -63,15 +63,33 @@ impl PartialEq<dyn Any> for BloomFilterMightContain {
     }
 }
 
+fn evaluate_bloom_filter(
+    bloom_filter_expr: &Arc<dyn PhysicalExpr>,
+) -> Result<Option<SparkBloomFilter>> {
+    // bloom_filter_expr must be a literal/scalar subquery expression, so we can evaluate it
+    // with an empty batch with empty schema
+    let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+    let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
+    match bloom_filter_bytes {
+        ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
+            Ok(v.map(|v| SparkBloomFilter::new_from_buf(v.as_bytes())))
+        }
+        _ => internal_err!("Bloom filter expression must be evaluated as a scalar binary value"),
+    }
+}
+
 impl BloomFilterMightContain {
     pub fn new(
         bloom_filter_expr: Arc<dyn PhysicalExpr>,
         value_expr: Arc<dyn PhysicalExpr>,
     ) -> Self {
+        // early evaluate the bloom_filter_expr to get the actual bloom filter
+        let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)
+            .expect("bloom_filter_expr could be evaluated statically");
         Self {
             bloom_filter_expr,
             value_expr,
-            bloom_filter: Default::default(),
+            bloom_filter,
         }
     }
 }
@@ -81,66 +99,40 @@ impl PhysicalExpr for BloomFilterMightContain {
         self
     }
 
-    fn data_type(&self, _input_schema: &arrow_schema::Schema) -> Result<DataType> {
+    fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Boolean)
     }
 
-    fn nullable(&self, _input_schema: &arrow_schema::Schema) -> Result<bool> {
+    fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         // lazily get the spark bloom filter
-        if self.bloom_filter.get().is_none() {
-            let bloom_filter_bytes = self.bloom_filter_expr.evaluate(batch)?;
-            match bloom_filter_bytes {
-                ColumnarValue::Array(_) => {
-                    return internal_err!(
-                        "Bloom filter expression must be evaluated as a scalar value"
-                    );
-                }
-                ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
-                    let filter = v.map(|v| SparkBloomFilter::new_from_buf(v.as_bytes()));
-                    self.bloom_filter.get_or_init(|| filter);
-                }
-                _ => {
-                    return internal_err!("Bloom filter expression must be binary type");
-                }
-            }
-        }
         let num_rows = batch.num_rows();
-        let lazy_filter = self.bloom_filter.get().unwrap();
-        if lazy_filter.is_none() {
-            // when the bloom filter is null, we should return a boolean array with all nulls
-            Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
-                num_rows,
-            ))))
-        } else {
-            let spark_filter = lazy_filter.as_ref().unwrap();
-            let values = self.value_expr.evaluate(batch)?;
-            match values {
-                ColumnarValue::Array(array) => {
-                    let array = array
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .expect("value_expr must be evaluated as an int64 array");
-                    Ok(ColumnarValue::Array(Arc::new(
-                        spark_filter.might_contain_longs(array)?,
-                    )))
-                }
-                ColumnarValue::Scalar(a) => match a {
-                    ScalarValue::Int64(v) => {
+        self.bloom_filter
+            .as_ref()
+            .map(|spark_filter| {
+                let values = self.value_expr.evaluate(batch)?;
+                match values {
+                    ColumnarValue::Array(array) => {
+                        let boolean_array =
+                            spark_filter.might_contain_longs(as_primitive_array(&array));
+                        Ok(ColumnarValue::Array(Arc::new(boolean_array)))
+                    }
+                    ColumnarValue::Scalar(ScalarValue::Int64(v)) => {
                         let result = v.map(|v| spark_filter.might_contain_long(v));
                         Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
                     }
-                    _ => {
-                        internal_err!(
-                            "value_expr must be evaluated as an int64 array or a int64 scalar"
-                        )
-                    }
-                },
-            }
-        }
+                    _ => internal_err!("value expression must be int64 type"),
+                }
+            })
+            .unwrap_or_else(|| {
+                // when the bloom filter is null, we should return a boolean array with all nulls
+                Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
+                    num_rows,
+                ))))
+            })
     }
 
     fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
@@ -161,5 +153,6 @@ impl PhysicalExpr for BloomFilterMightContain {
         let mut s = state;
         self.bloom_filter_expr.hash(&mut s);
         self.value_expr.hash(&mut s);
+        self.hash(&mut s);
     }
 }

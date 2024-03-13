@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
@@ -29,7 +29,7 @@ import org.apache.spark.util.sketch.BloomFilter
 import java.io.ByteArrayOutputStream
 import scala.util.Random
 
-class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometExpression3_3PlusSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   val func_might_contain = new FunctionIdentifier("might_contain")
@@ -49,6 +49,7 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
   test("test BloomFilterMightContain can take a constant value input") {
     val table = "test"
+
     withTable(table) {
       sql(s"create table $table(col1 long, col2 int) using parquet")
       sql(s"insert into $table values (201, 1)")
@@ -62,6 +63,7 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
   test("test NULL inputs for BloomFilterMightContain") {
     val table = "test"
+
     withTable(table) {
       sql(s"create table $table(col1 long, col2 int) using parquet")
       sql(s"insert into $table values (201, 1), (null, 2)")
@@ -77,13 +79,9 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("test BloomFilterMightContain from random input") {
-    val bf = BloomFilter.create(100000, 10000)
-    val longs = (0 until 10000).map(_ => Random.nextLong())
-    longs.foreach(bf.put)
-    val os = new ByteArrayOutputStream()
-    bf.writeTo(os)
-    val bfBytes = os.toByteArray
+    val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
+
     withTable(table) {
       sql(s"create table $table(col1 long, col2 binary) using parquet")
       spark.createDataset(longs).map(x => (x, bfBytes)).toDF("col1", "col2").write.insertInto(table)
@@ -97,6 +95,12 @@ class CometExpressionPlusSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-
-
+  private def bloomFilterFromRandomInput(expectedItems: Long, expectedBits: Long): (Seq[Long], Array[Byte]) = {
+    val bf = BloomFilter.create(expectedItems, expectedBits)
+    val longs = (0 until expectedItems.toInt).map(_ => Random.nextLong())
+    longs.foreach(bf.put)
+    val os = new ByteArrayOutputStream()
+    bf.writeTo(os)
+    (longs, os.toByteArray)
+  }
 }

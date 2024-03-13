@@ -18,6 +18,7 @@
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
+
 #[derive(Debug, Hash)]
 pub struct SparkBitArray {
     data: Vec<u64>,
@@ -29,15 +30,6 @@ impl SparkBitArray {
         let num_bits = buf.iter().map(|x| x.count_ones() as usize).sum();
         Self {
             data: buf,
-            bit_count: num_bits,
-        }
-    }
-
-    pub fn new_from_bit_count(num_bits: usize) -> Self {
-        let num_words = (num_bits + 63) / 64;
-        debug_assert!(num_words < u32::MAX as usize, "num_words is too large");
-        Self {
-            data: vec![0u64; num_words],
             bit_count: num_bits,
         }
     }
