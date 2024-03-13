@@ -90,13 +90,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
   }
 
-  private def fuzzCastFromString(chars: String, maxLen: Int, toType: DataType) {
+  private def fuzzCastFromString(chars: String, maxLen: Int, toType: DataType): Unit = {
     val r = new Random(0)
     val inputs = Range(0, 10000).map(_ => genString(r, chars, maxLen))
     castTest(inputs.toDF("a"), toType)
   }
 
-  private def castTest(input: DataFrame, toType: DataType) {
+  private def castTest(input: DataFrame, toType: DataType): Unit = {
     withTempPath { dir =>
       val df = roundtripParquet(input, dir)
         .withColumn("converted", col("a").cast(toType))

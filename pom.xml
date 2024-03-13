@@ -859,6 +859,7 @@ under the License.
             <exclude>**/.settings/**</exclude>
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
+            <exclude>**/apache-spark/**</exclude>
             <exclude>.git/**</exclude>
             <exclude>.github/**</exclude>
             <exclude>.gitignore</exclude>
