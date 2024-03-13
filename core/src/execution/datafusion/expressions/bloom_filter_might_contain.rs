@@ -108,7 +108,6 @@ impl PhysicalExpr for BloomFilterMightContain {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        // lazily get the spark bloom filter
         let num_rows = batch.num_rows();
         self.bloom_filter
             .as_ref()
