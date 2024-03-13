@@ -49,7 +49,7 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Psemanticdb ${{ inputs.maven_opts }}
+        ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
     - name: Run tests
       shell: bash

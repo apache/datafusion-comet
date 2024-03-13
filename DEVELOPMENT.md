@@ -84,3 +84,7 @@ in the respective source code, e.g., `CometTPCHQueryBenchmark`.
 ## Debugging
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
 It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](DEBUGGING.md)
+
+## Submitting a Pull Request
+Comet uses `cargo fmt`, [Scalafix](https://github.com/scalacenter/scalafix) and [Spotless](https://github.com/diffplug/spotless/tree/main/plugin-maven) to 
+automatically format the code. Before submitting a pull request, you can simply run `make format` to format the code.
