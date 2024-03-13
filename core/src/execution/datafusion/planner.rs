@@ -45,7 +45,7 @@ use datafusion::{
     },
 };
 use datafusion_common::{
-    tree_node::{TreeNode, VisitRecursion},
+    tree_node::{TreeNode, TreeNodeRewriter, VisitRecursion},
     JoinType as DFJoinType, ScalarValue,
 };
 use itertools::Itertools;
@@ -904,7 +904,18 @@ impl PhysicalPlanner {
 
                 // Handle join filter as DataFusion `JoinFilter` struct
                 let join_filter = if let Some(expr) = &join.condition {
-                    let physical_expr = self.create_expr(expr, left.schema())?;
+                    let left_schema = left.schema();
+                    let right_schema = right.schema();
+                    let left_fields = left_schema.fields();
+                    let right_fields = right_schema.fields();
+                    let all_fields: Vec<_> = left_fields
+                        .into_iter()
+                        .chain(right_fields.into_iter())
+                        .map(|f| f.clone())
+                        .collect();
+                    let full_schema = Arc::new(Schema::new(all_fields));
+
+                    let physical_expr = self.create_expr(expr, full_schema)?;
                     let (left_field_indices, right_field_indices) = expr_to_columns(
                         &physical_expr,
                         left.schema().fields.len(),
@@ -916,10 +927,12 @@ impl PhysicalPlanner {
                     );
 
                     let filter_fields: Vec<Field> = left_field_indices
+                        .clone()
                         .into_iter()
                         .map(|i| left.schema().field(i).clone())
                         .chain(
                             right_field_indices
+                                .clone()
                                 .into_iter()
                                 .map(|i| right.schema().field(i).clone()),
                         )
@@ -927,8 +940,21 @@ impl PhysicalPlanner {
 
                     let filter_schema = Schema::new_with_metadata(filter_fields, HashMap::new());
 
-                    Some(JoinFilter::new(
+                    // Rewrite the physical expression to use the new column indices.
+                    // DataFusion's join filter is bound to intermediate schema which contains
+                    // only the fields used in the filter expression. But the Spark's join filter
+                    // expression is bound to the full schema. We need to rewrite the physical
+                    // expression to use the new column indices.
+                    let rewritten_physical_expr = rewrite_physical_expr(
                         physical_expr,
+                        left_schema.fields.len(),
+                        right_schema.fields.len(),
+                        &left_field_indices,
+                        &right_field_indices,
+                    )?;
+
+                    Some(JoinFilter::new(
+                        rewritten_physical_expr,
                         column_indices,
                         filter_schema,
                     ))
@@ -1171,6 +1197,99 @@ fn expr_to_columns(
     right_field_indices.sort();
 
     Ok((left_field_indices, right_field_indices))
+}
+
+/// A physical join filter rewritter which rewrites the column indices in the expression
+/// to use the new column indices. See `rewrite_physical_expr`.
+struct JoinFilterRewriter<'a> {
+    left_field_len: usize,
+    right_field_len: usize,
+    left_field_indices: &'a [usize],
+    right_field_indices: &'a [usize],
+}
+
+impl JoinFilterRewriter<'_> {
+    fn new<'a>(
+        left_field_len: usize,
+        right_field_len: usize,
+        left_field_indices: &'a [usize],
+        right_field_indices: &'a [usize],
+    ) -> JoinFilterRewriter<'a> {
+        JoinFilterRewriter {
+            left_field_len,
+            right_field_len,
+            left_field_indices,
+            right_field_indices,
+        }
+    }
+}
+
+impl TreeNodeRewriter for JoinFilterRewriter<'_> {
+    type N = Arc<dyn PhysicalExpr>;
+
+    fn mutate(&mut self, node: Self::N) -> datafusion_common::Result<Self::N> {
+        let new_expr: Arc<dyn PhysicalExpr> =
+            if let Some(column) = node.as_any().downcast_ref::<Column>() {
+                if column.index() < self.left_field_len {
+                    // left side
+                    let new_index = self
+                        .left_field_indices
+                        .iter()
+                        .position(|&x| x == column.index())
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "Column index {} not found in left field indices",
+                                column.index()
+                            ))
+                        })?;
+                    Arc::new(Column::new(column.name(), new_index))
+                } else if column.index() < self.left_field_len + self.right_field_len {
+                    // right side
+                    let new_index = self
+                        .right_field_indices
+                        .iter()
+                        .position(|&x| x + self.left_field_len == column.index())
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "Column index {} not found in right field indices",
+                                column.index()
+                            ))
+                        })?;
+                    Arc::new(Column::new(
+                        column.name(),
+                        new_index + self.left_field_indices.len(),
+                    ))
+                } else {
+                    return Err(DataFusionError::Internal(format!(
+                        "Column index {} out of range",
+                        column.index()
+                    )));
+                }
+            } else {
+                node.clone()
+            };
+        Ok(new_expr)
+    }
+}
+
+/// Rewrites the physical expression to use the new column indices.
+/// This is necessary when the physical expression is used in a join filter, as the column
+/// indices are different from the original schema.
+fn rewrite_physical_expr(
+    expr: Arc<dyn PhysicalExpr>,
+    left_field_len: usize,
+    right_field_len: usize,
+    left_field_indices: &[usize],
+    right_field_indices: &[usize],
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    let mut rewriter = JoinFilterRewriter::new(
+        left_field_len,
+        right_field_len,
+        left_field_indices,
+        right_field_indices,
+    );
+
+    Ok(expr.rewrite(&mut rewriter)?)
 }
 
 #[cfg(test)]

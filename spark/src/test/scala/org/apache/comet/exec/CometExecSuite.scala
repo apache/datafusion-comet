@@ -105,6 +105,38 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("HashJoin with join filter") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Inner join: build left
+          val df1 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a JOIN tbl_b " +
+                "ON tbl_a._2 = tbl_b._1 AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df1)
+
+          // Right join: build left
+          val df2 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b " +
+                "ON tbl_a._2 = tbl_b._1 AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df2)
+
+          // Full join: build left
+          val df3 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b " +
+                "ON tbl_a._2 = tbl_b._1 AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df3)
+        }
+      }
+    }
+  }
+
   test("Fix corrupted AggregateMode when transforming plan parameters") {
     withParquetTable((0 until 5).map(i => (i, i + 1)), "table") {
       val df = sql("SELECT * FROM table").groupBy($"_1").agg(sum("_2"))
