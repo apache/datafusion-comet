@@ -31,12 +31,13 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -221,12 +222,16 @@ class CometSparkSessionExtensions
      */
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
-      def transform1(op: UnaryExecNode): Option[Operator] = {
-        op.child match {
-          case childNativeOp: CometNativeExec =>
-            QueryPlanSerde.operator2Proto(op, childNativeOp.nativeOp)
-          case _ =>
-            None
+      def transform1(op: SparkPlan): Option[Operator] = {
+        val allNativeExec = op.children.map {
+          case childNativeOp: CometNativeExec => Some(childNativeOp.nativeOp)
+          case _ => None
+        }
+
+        if (allNativeExec.forall(_.isDefined)) {
+          QueryPlanSerde.operator2Proto(op, allNativeExec.map(_.get): _*)
+        } else {
+          None
         }
       }
 
@@ -375,6 +380,31 @@ class CometSparkSessionExtensions
               val cometOp = CometBroadcastExchangeExec(b, b.child)
               CometSinkPlaceHolder(nativeOp, b, cometOp)
             case None => b
+          }
+
+        // For AQE shuffle stage on a Comet shuffle exchange
+        case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
+          val newOp = transform1(s)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSinkPlaceHolder(nativeOp, s, s)
+            case None =>
+              s
+          }
+
+        // For AQE shuffle stage on a reused Comet shuffle exchange
+        // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
+        // the query plan won't be re-optimized/planned in non-AQE mode.
+        case s @ ShuffleQueryStageExec(
+              _,
+              ReusedExchangeExec(_, _: CometShuffleExchangeExec),
+              _) =>
+          val newOp = transform1(s)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSinkPlaceHolder(nativeOp, s, s)
+            case None =>
+              s
           }
 
         // Native shuffle for Comet operators

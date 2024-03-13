@@ -26,7 +26,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.col
@@ -933,6 +933,52 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = false
 
   protected val adaptiveExecutionEnabled: Boolean = true
+
+  import testImplicits._
+
+  test("Comet native operator after ShuffleQueryStage") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        val df = sql("SELECT * FROM tbl_a")
+        val shuffled = df
+          .select($"_1" + 1 as ("a"))
+          .filter($"a" > 4)
+          .repartition(10)
+          .sortWithinPartitions($"a")
+        checkSparkAnswerAndOperator(shuffled, classOf[ShuffleQueryStageExec])
+      }
+    }
+  }
+
+  test("Comet native operator after ShuffleQueryStage + ReusedExchange") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a")
+          val left = df
+            .select($"_1" + 1 as ("a"))
+            .filter($"a" > 4)
+          val right = left.select($"a" as ("b"))
+          val join = left.join(right, $"a" === $"b")
+          checkSparkAnswerAndOperator(
+            join,
+            classOf[ShuffleQueryStageExec],
+            classOf[SortMergeJoinExec],
+            classOf[AQEShuffleReadExec])
+        }
+      }
+    }
+  }
 }
 
 class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
