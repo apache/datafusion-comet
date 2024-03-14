@@ -56,6 +56,7 @@ use crate::{
                 avg::Avg,
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
+                bloom_filter_might_contain::BloomFilterMightContain,
                 cast::Cast,
                 checkoverflow::CheckOverflow,
                 if_expr::IfExpr,
@@ -533,6 +534,15 @@ impl PhysicalPlanner {
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
+            }
+            ExprStruct::BloomFilterMightContain(expr) => {
+                let bloom_filter_expr =
+                    self.create_expr(expr.bloom_filter.as_ref().unwrap(), input_schema.clone())?;
+                let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(BloomFilterMightContain::try_new(
+                    bloom_filter_expr,
+                    value_expr,
+                )?))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

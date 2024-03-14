@@ -76,6 +76,7 @@ message Expr {
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
+    BloomFilterMightContain bloom_filter_might_contain = 52;
   }
 }
 
@@ -430,6 +431,11 @@ message Abs {
 message Subquery {
   int64 id = 1;
   DataType datatype = 2;
+}
+
+message BloomFilterMightContain {
+  Expr bloom_filter = 1;
+  Expr value = 2;
 }
 
 enum SortDirection {

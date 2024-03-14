@@ -15,20 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
-
-pub mod bitwise_not;
-pub mod cast;
-pub mod checkoverflow;
-pub mod if_expr;
-mod normalize_nan;
-pub mod scalar_funcs;
-pub use normalize_nan::NormalizeNaNAndZero;
-pub mod avg;
-pub mod avg_decimal;
-pub mod bloom_filter_might_contain;
-pub mod strings;
-pub mod subquery;
-pub mod sum_decimal;
-pub mod temporal;
-mod utils;
+pub mod spark_bit_array;
+pub mod spark_bloom_filter;

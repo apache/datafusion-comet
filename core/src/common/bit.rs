@@ -131,6 +131,17 @@ pub fn read_num_bytes_u32(size: usize, src: &[u8]) -> u32 {
     trailing_bits(v as u64, size * 8) as u32
 }
 
+/// Similar to the `read_num_bytes` but read nums from bytes in big-endian order
+/// This is used to read bytes from Java's OutputStream which writes bytes in big-endian
+macro_rules! read_num_be_bytes {
+    ($ty:ty, $size:expr, $src:expr) => {{
+        debug_assert!($size <= $src.len());
+        let mut buffer = <$ty as $crate::common::bit::FromBytes>::Buffer::default();
+        buffer.as_mut()[..$size].copy_from_slice(&$src[..$size]);
+        <$ty>::from_be_bytes(buffer)
+    }};
+}
+
 /// Converts value `val` of type `T` to a byte vector, by reading `num_bytes` from `val`.
 /// NOTE: if `val` is less than the size of `T` then it can be truncated.
 #[inline]

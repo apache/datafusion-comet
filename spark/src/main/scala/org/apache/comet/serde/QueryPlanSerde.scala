@@ -1626,6 +1626,23 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             "make_decimal",
             DecimalType(precision, scale),
             childExpr)
+        case b @ BinaryExpression(_, _) if isBloomFilterMightContain(b) =>
+          val bloomFilter = b.left
+          val value = b.right
+          val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs)
+          val valueExpr = exprToProtoInternal(value, inputs)
+          if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
+            val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
+            builder.setBloomFilter(bloomFilterExpr.get)
+            builder.setValue(valueExpr.get)
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setBloomFilterMightContain(builder)
+                .build())
+          } else {
+            None
+          }
 
         case e =>
           emitWarning(s"unsupported Spark expression: '$e' of class '${e.getClass.getName}")
