@@ -1131,8 +1131,9 @@ impl From<ExpressionError> for DataFusionError {
     }
 }
 
-/// Returns true if given operator probably returns input array as output array without
-/// modification.
+/// Returns true if given operator can return input array as output array without
+/// modification. This is used to determine if we need to copy the input batch to avoid
+/// data corruption from reusing the input batch.
 fn op_reuse_array(op: &Arc<dyn ExecutionPlan>) -> bool {
     op.as_any().downcast_ref::<ScanExec>().is_some()
         || op.as_any().downcast_ref::<LocalLimitExec>().is_some()

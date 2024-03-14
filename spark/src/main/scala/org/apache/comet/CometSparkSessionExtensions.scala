@@ -224,13 +224,9 @@ class CometSparkSessionExtensions
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
       def transform1(op: SparkPlan): Option[Operator] = {
-        val allNativeExec = op.children.map {
-          case childNativeOp: CometNativeExec => Some(childNativeOp.nativeOp)
-          case _ => None
-        }
-
-        if (allNativeExec.forall(_.isDefined)) {
-          QueryPlanSerde.operator2Proto(op, allNativeExec.map(_.get): _*)
+        if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          QueryPlanSerde.operator2Proto(op,
+            op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
         } else {
           None
         }
