@@ -910,8 +910,8 @@ impl PhysicalPlanner {
                     let right_fields = right_schema.fields();
                     let all_fields: Vec<_> = left_fields
                         .into_iter()
-                        .chain(right_fields.into_iter())
-                        .map(|f| f.clone())
+                        .chain(right_fields)
+                        .cloned()
                         .collect();
                     let full_schema = Arc::new(Schema::new(all_fields));
 
