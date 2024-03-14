@@ -25,23 +25,23 @@ const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 /// A Bloom filter implementation that simulates the behavior of Spark's BloomFilter.
 /// It's not a complete implementation of Spark's BloomFilter, but just add the minimum
 /// methods to support mightContainsLong in the native side.
-
 #[derive(Debug, Hash)]
 pub struct SparkBloomFilter {
     bits: SparkBitArray,
-    num_hashes: u32,
+    num_hash_functions: u32,
 }
 
 impl SparkBloomFilter {
-    pub fn new_from_buf(buf: &[u8]) -> Self {
+    pub fn new(buf: &[u8]) -> Self {
         let mut offset = 0;
         let version = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
         assert_eq!(
             version, SPARK_BLOOM_FILTER_VERSION_1,
-            "Unsupported BloomFilter version"
+            "Unsupported BloomFilter version: {}, expecting version: {}",
+            version, SPARK_BLOOM_FILTER_VERSION_1
         );
-        let num_hashes = read_num_be_bytes!(i32, 4, buf[offset..]);
+        let num_hash_functions = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
         let num_words = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
@@ -52,18 +52,18 @@ impl SparkBloomFilter {
         }
         Self {
             bits: SparkBitArray::new(bits),
-            num_hashes: num_hashes as u32,
+            num_hash_functions: num_hash_functions as u32,
         }
     }
 
     pub fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
-        // n hash values by `h1 + i * h2` with 1 <= i <= num_hashes.
+        // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
         let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
         let mut bit_changed = false;
-        for i in 1..=self.num_hashes {
+        for i in 1..=self.num_hash_functions {
             let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
             if combined_hash < 0 {
                 combined_hash = !combined_hash;
@@ -77,7 +77,7 @@ impl SparkBloomFilter {
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
         let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
-        for i in 1..=self.num_hashes {
+        for i in 1..=self.num_hash_functions {
             let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
             if combined_hash < 0 {
                 combined_hash = !combined_hash;

@@ -19,7 +19,7 @@ use crate::{
     execution::datafusion::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes,
 };
 use arrow::record_batch::RecordBatch;
-use arrow_array::{cast::as_primitive_array, BooleanArray};
+use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_common::{internal_err, DataFusionError, Result, ScalarValue};
@@ -33,7 +33,6 @@ use std::{
 
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
 /// Spark's `BloomFilterMightContain` expression.
-
 #[derive(Debug, Hash)]
 pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
@@ -72,25 +71,24 @@ fn evaluate_bloom_filter(
     let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
     match bloom_filter_bytes {
         ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
-            Ok(v.map(|v| SparkBloomFilter::new_from_buf(v.as_bytes())))
+            Ok(v.map(|v| SparkBloomFilter::new(v.as_bytes())))
         }
-        _ => internal_err!("Bloom filter expression must be evaluated as a scalar binary value"),
+        _ => internal_err!("Bloom filter expression should be evaluated as a scalar binary value"),
     }
 }
 
 impl BloomFilterMightContain {
-    pub fn new(
+    pub fn try_new(
         bloom_filter_expr: Arc<dyn PhysicalExpr>,
         value_expr: Arc<dyn PhysicalExpr>,
-    ) -> Self {
+    ) -> Result<Self> {
         // early evaluate the bloom_filter_expr to get the actual bloom filter
-        let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)
-            .expect("bloom_filter_expr could be evaluated statically");
-        Self {
+        let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)?;
+        Ok(Self {
             bloom_filter_expr,
             value_expr,
             bloom_filter,
-        }
+        })
     }
 }
 
@@ -108,7 +106,6 @@ impl PhysicalExpr for BloomFilterMightContain {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let num_rows = batch.num_rows();
         self.bloom_filter
             .as_ref()
             .map(|spark_filter| {
@@ -123,14 +120,12 @@ impl PhysicalExpr for BloomFilterMightContain {
                         let result = v.map(|v| spark_filter.might_contain_long(v));
                         Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
                     }
-                    _ => internal_err!("value expression must be int64 type"),
+                    _ => internal_err!("value expression should be int64 type"),
                 }
             })
             .unwrap_or_else(|| {
-                // when the bloom filter is null, we should return a boolean array with all nulls
-                Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
-                    num_rows,
-                ))))
+                // when the bloom filter is null, we should return null for all the input
+                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
             })
     }
 
@@ -142,10 +137,10 @@ impl PhysicalExpr for BloomFilterMightContain {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(BloomFilterMightContain::new(
+        Ok(Arc::new(BloomFilterMightContain::try_new(
             children[0].clone(),
             children[1].clone(),
-        )))
+        )?))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {

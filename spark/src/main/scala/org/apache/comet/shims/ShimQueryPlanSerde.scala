@@ -45,7 +45,7 @@ trait ShimQueryPlanSerde {
     }
   }
 
-  // todo: delete after drop Spark 3.2 support
+  // TODO: delete after drop Spark 3.2 support
   def isBloomFilterMightContain(binary: BinaryExpression): Boolean = {
     binary.getClass.getName == "org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain"
   }

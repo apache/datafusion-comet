@@ -18,7 +18,6 @@
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
-
 #[derive(Debug, Hash)]
 pub struct SparkBitArray {
     data: Vec<u64>,
@@ -36,6 +35,7 @@ impl SparkBitArray {
 
     pub fn set(&mut self, index: usize) -> bool {
         if !self.get(index) {
+            // see the get method for the explanation of the shift operators
             self.data[index >> 6] |= 1u64 << (index & 0x3f);
             self.bit_count += 1;
             true
@@ -45,6 +45,12 @@ impl SparkBitArray {
     }
 
     pub fn get(&self, index: usize) -> bool {
+        // Java version: (data[(int) (index >> 6)] & (1L << (index))) != 0
+        // Rust and Java have different semantics for the shift operators. Java's shift operators
+        // explicitly mask the right-hand operand with 0x3f [1], while Rust's shift operators does
+        // not do this, it will panic with shift left with overflow for large right-hand operand.
+        // To fix this, we need to mask the right-hand operand with 0x3f in the rust side.
+        // [1]: https://docs.oracle.com/javase/specs/jls/se7/html/jls-15.html#jls-15.19
         (self.data[index >> 6] & (1u64 << (index & 0x3f))) != 0
     }
 

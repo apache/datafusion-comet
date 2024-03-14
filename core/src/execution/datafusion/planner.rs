@@ -539,10 +539,10 @@ impl PhysicalPlanner {
                 let bloom_filter_expr =
                     self.create_expr(expr.bloom_filter.as_ref().unwrap(), input_schema.clone())?;
                 let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BloomFilterMightContain::new(
+                Ok(Arc::new(BloomFilterMightContain::try_new(
                     bloom_filter_expr,
                     value_expr,
-                )))
+                )?))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
