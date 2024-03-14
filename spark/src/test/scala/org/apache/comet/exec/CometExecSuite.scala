@@ -100,6 +100,13 @@ class CometExecSuite extends CometTestBase {
           //
           // Full join: build right
           // sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          //
+          // val left = sql("SELECT * FROM tbl_a")
+          // val right = sql("SELECT * FROM tbl_b")
+          //
+          // Left semi and anti joins are only supported with build right in Spark.
+          // left.join(right, left("_2") === right("_1"), "leftsemi")
+          // left.join(right, left("_2") === right("_1"), "leftanti")
         }
       }
     }
