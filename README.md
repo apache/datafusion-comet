@@ -114,3 +114,24 @@ INFO src/lib.rs: Comet native library initialized
              Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], 
              PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
+
+### Enable Comet shuffle
+
+Comet shuffle feature is disabled by default. To enable it, please add related configs:
+
+```
+--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
+--conf spark.comet.exec.shuffle.enabled=true
+```
+
+Above configs enable Comet native shuffle which only supports hash partiting and single partition.
+Comet native shuffle doesn't support complext types yet.
+
+To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
+```
+--conf spark.comet.columnar.shuffle.enabled=true
+```
+
+
+
+
