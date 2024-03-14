@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, First, Last, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
@@ -188,6 +188,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
     }
   }
 
+  private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
+    dt match {
+      case _: IntegerType | LongType | ShortType | ByteType => true
+      case _ => false
+    }
+  }
+
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
@@ -324,6 +331,57 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setLast(lastBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitAnd @ BitAndAgg(child) if bitwiseAggTypeSupported(bitAnd.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitAnd.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitAndBuilder = ExprOuterClass.BitAndAgg.newBuilder()
+          bitAndBuilder.setChild(childExpr.get)
+          bitAndBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitAndAgg(bitAndBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitOr @ BitOrAgg(child) if bitwiseAggTypeSupported(bitOr.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitOr.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitOrBuilder = ExprOuterClass.BitOrAgg.newBuilder()
+          bitOrBuilder.setChild(childExpr.get)
+          bitOrBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitOrAgg(bitOrBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitXor @ BitXorAgg(child) if bitwiseAggTypeSupported(bitXor.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitXor.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitXorBuilder = ExprOuterClass.BitXorAgg.newBuilder()
+          bitXorBuilder.setChild(childExpr.get)
+          bitXorBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitXorAgg(bitXorBuilder)
               .build())
         } else {
           None
