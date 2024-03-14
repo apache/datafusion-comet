@@ -225,7 +225,8 @@ class CometSparkSessionExtensions
     private def transform(plan: SparkPlan): SparkPlan = {
       def transform1(op: SparkPlan): Option[Operator] = {
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-          QueryPlanSerde.operator2Proto(op,
+          QueryPlanSerde.operator2Proto(
+            op,
             op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
         } else {
           None
