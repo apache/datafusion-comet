@@ -26,7 +26,7 @@ use futures::Stream;
 use itertools::Itertools;
 
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow_array::{make_array, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_array::{make_array, Array, ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow_data::ArrayData;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 

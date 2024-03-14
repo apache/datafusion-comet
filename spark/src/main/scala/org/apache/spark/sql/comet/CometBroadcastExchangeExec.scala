@@ -257,9 +257,28 @@ class CometBatchRDD(
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    val partition = split.asInstanceOf[CometBatchPartition]
+    new Iterator[ColumnarBatch] {
+      val partition = split.asInstanceOf[CometBatchPartition]
+      val batchesIter = partition.value.value.map(CometExec.decodeBatches(_)).toIterator
+      var iter: Iterator[ColumnarBatch] = null
 
-    partition.value.value.flatMap(CometExec.decodeBatches(_)).toIterator
+      override def hasNext: Boolean = {
+        if (iter != null) {
+          if (iter.hasNext) {
+            return true
+          }
+        }
+        if (batchesIter.hasNext) {
+          iter = batchesIter.next()
+          return iter.hasNext
+        }
+        false
+      }
+
+      override def next(): ColumnarBatch = {
+        iter.next()
+      }
+    }
   }
 }
 

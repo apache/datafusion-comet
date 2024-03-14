@@ -20,6 +20,7 @@
 package org.apache.comet.vector
 
 import java.io.OutputStream
+import java.nio.channels.Channels
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -28,9 +29,10 @@ import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictiona
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.dictionary.DictionaryProvider
-import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.spark.SparkException
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.CometArrowStreamWriter
 
 class NativeUtil {
   private val allocator = new RootAllocator(Long.MaxValue)
@@ -46,29 +48,27 @@ class NativeUtil {
    *   the output stream
    */
   def serializeBatches(batches: Iterator[ColumnarBatch], out: OutputStream): Long = {
-    var schemaRoot: Option[VectorSchemaRoot] = None
-    var writer: Option[ArrowStreamWriter] = None
+    var writer: Option[CometArrowStreamWriter] = None
     var rowCount = 0
 
     batches.foreach { batch =>
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
-      val root = schemaRoot.getOrElse(new VectorSchemaRoot(fieldVectors.asJava))
+      val root = new VectorSchemaRoot(fieldVectors.asJava)
       val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
       if (writer.isEmpty) {
-        writer = Some(new ArrowStreamWriter(root, provider, out))
+        writer = Some(new CometArrowStreamWriter(root, provider, Channels.newChannel(out)))
         writer.get.start()
+        writer.get.writeBatch()
+      } else {
+        writer.get.writeMoreBatch(root)
       }
-      writer.get.writeBatch()
 
       root.clear()
-      schemaRoot = Some(root)
-
       rowCount += batch.numRows()
     }
 
     writer.map(_.end())
-    schemaRoot.map(_.close())
 
     rowCount
   }

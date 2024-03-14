@@ -23,7 +23,7 @@ import java.nio.channels.ReadableByteChannel
 
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.vector.StreamReader
+import org.apache.comet.vector._
 
 class ArrowReaderIterator(channel: ReadableByteChannel) extends Iterator[ColumnarBatch] {
 
@@ -34,6 +34,13 @@ class ArrowReaderIterator(channel: ReadableByteChannel) extends Iterator[Columna
   override def hasNext: Boolean = {
     if (batch.isDefined) {
       return true
+    }
+
+    // Release the previous batch.
+    // If it is not released, when closing the reader, arrow library will complain about
+    // memory leak.
+    if (currentBatch != null) {
+      currentBatch.close()
     }
 
     batch = nextBatch()
@@ -49,13 +56,6 @@ class ArrowReaderIterator(channel: ReadableByteChannel) extends Iterator[Columna
     }
 
     val nextBatch = batch.get
-
-    // Release the previous batch.
-    // If it is not released, when closing the reader, arrow library will complain about
-    // memory leak.
-    if (currentBatch != null) {
-      currentBatch.close()
-    }
 
     currentBatch = nextBatch
     batch = None
