@@ -1,0 +1,11 @@
+FROM docker.apple.com/pie/comet-builder:stage1
+
+# Build LLVM from source
+RUN cd / && git clone -b llvmorg-15.0.7 https://github.com/llvm/llvm-project.git \
+    && mkdir /llvm-project/build \
+    && cd /llvm-project/build \
+    && scl enable devtoolset-8 "cmake3 -G 'Unix Makefiles' -DLLVM_ENABLE_PROJECTS='clang;clang-tools-extra' -DCMAKE_BUILD_TYPE=Release ../llvm" \
+    && scl enable devtoolset-8 "make -j 16 && make install" \
+    && rm -rf /llvm-project
+
+ENTRYPOINT ["/bin/bash"]

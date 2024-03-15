@@ -1,0 +1,2163 @@
+schemaVersion: '2.0'
+timeout: 120
+
+notify:
+  email:
+    enabled: false
+  pullRequestComment:
+    postOnSuccess: false
+    postOnFailure: false
+
+machine:
+  baseImage: docker.apple.com/pie/boson-builder:latest
+  env: &base_env
+    LOCAL_REPO: ".dist/local-repo"
+    COMET: true
+    COMET_VERSION: 0.3.30-SNAPSHOT
+    RUST_BACKTRACE: full
+    LANG: "en_US.UTF-8"
+    LC_ALL: "en_US.UTF-8"
+    MAVEN_OPTS: "-Xms12g -Xmx12g -Xss128M -XX:MaxMetaspaceSize=4g"
+
+builds:
+  - group: test-comet-rust
+    branchName: main-apple
+    version: platform
+    machine: &rio3-machine
+      baseImage: docker.apple.com/pie/boson-builder:latest
+      targetPlatforms:
+        - linux/amd64
+        - linux/arm64
+      resources:
+        size: xlarge
+      executor:
+        type: moes
+      env: &proxy_env
+        <<: *base_env
+        # You need to add the following 6 env vars for Rio 3
+        HTTP_PROXY: "http://proxy.config.pcp.local:3128"
+        HTTPS_PROXY: "http://proxy.config.pcp.local:3128"
+        http_proxy: "http://proxy.config.pcp.local:3128"
+        https_proxy: "http://proxy.config.pcp.local:3128"
+        NO_PROXY: "localhost,127.0.0.1,10.100.0.0/16,*.internal,*.apple.com,internal,apple.com"
+        no_proxy: "localhost,127.0.0.1,10.100.0.0/16,*.internal,*.apple.com,internal,apple.com"
+        # Proxy settings converted into Java system properties
+        PROXY_OPTS: "-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com\""
+    build:
+      template: freestyle:v4:prb
+      steps:
+        - cd core
+        - cargo fmt --all -- --check --color=never
+        - cargo clippy --color=never -- -D warnings
+        - cargo check --benches
+        - export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}$JAVA_HOME/lib:$JAVA_HOME/lib/server
+        # We need to compile CometException so that the cargo test can pass
+        - (cd ../common && ../mvnw clean compile -DskipTests)
+
+        # We create the target directory for the test results, following the naming convention used
+        # by surefire and scalatest (i.e. "${basedir}/target/${runner}-reports")
+        - mkdir -p target/cargo-reports
+
+        # Running tests results in multiple testsuites if you use "--format junit" which results in
+        # an invalid XML file.  These can be aggregated by Formatting the results as JSON and using
+        # cargo2junit to reformat the results as JUnit XML.
+        - cargo install cargo2junit
+        # TODO: enable all-features
+        - cargo test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
+    reports: &reports
+      junit:
+        paths:
+          - "**/target/**/TEST*.xml"
+      logs:
+        paths:
+          - "**/target/**/*-output.txt"
+
+  - &comet-java
+    group: test-comet-java
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.2"
+    build: &test_comet_java_build
+      template: freestyle:v4:build
+      steps:
+        - cd core
+        - cargo build
+        - cd .. && ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install
+    reports:
+      <<: *reports
+
+  - <<: *comet-java
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+
+  - <<: *comet-java
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+
+  - <<: *comet-java
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build:
+      <<: *test_comet_java_build
+      template: freestyle:v4:prb
+
+  - <<: *comet-java
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+    build:
+      <<: *test_comet_java_build
+      template: freestyle:v4:prb
+
+  - &comet-tpcds
+    group: test-comet-tpcds-queries
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build: &comet-tpcds-build
+      template: freestyle:v4:prb
+      steps:
+        - git clone https://github.com/databricks/tpcds-kit
+        - cd tpcds-kit
+        - cd tools && make OS=LINUX
+        - cd ../..
+        - make release
+        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds ./mvnw -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+
+  - &comet-tpch
+    group: test-comet-tpch-queries
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build: &comet-tpch-build
+      template: freestyle:v4:prb
+      steps:
+        - make release
+        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet ./mvnw -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+
+  - &comet-spark-32
+    group: test-spark-sql-catalyst
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    timeout: 180
+    machine: &rio2-machine
+      baseImage: docker.apple.com/pie/boson-builder:latest
+      targetPlatforms:
+        - linux/amd64
+        # FIXME Disabld due to leveldbjni
+        # - linux/arm64
+        # resources:
+        #   size: xlarge
+        # FIXME Disabled until a proxy configuration for Ivy is figured out
+        # executor:
+        #   type: moes
+      env:
+        <<: *base_env
+        PROFILES: "-Pspark-3.2"
+        SPARK_BRANCH: branch-3.2.0-apple
+        TEST1: catalyst/test
+        TEST2: ""
+    build:
+      template: freestyle:v4:build
+      steps:
+        - PROFILES="${PROFILES}" dev/install-comet-spark.sh ${SPARK_BRANCH}
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+        - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
+        - build/sbt -Phive -Dsbt.gigahorse=false ${PROXY_OPTS} -Dscala.version=$SCALA_VERSION -Pscala-$SCALA_BINARY_VERSION ${TEST1} "${TEST2}"
+    jenkins: &jenkins_config
+      concurrentBuild: true
+      maxConcurrentTotal: 8
+    reports:
+      <<: *reports
+    finally: &slack-notification
+      notify:
+        email:
+          enabled: true
+        slack:
+          enabled: true
+          channels:
+            - channel: '#project-native-execution-engine'
+              build:
+                onStart: false
+                onSuccess: false
+                onFailure: true
+
+  - &comet-spark
+    group: test-spark-sql-catalyst
+    version: 3.3_2.12
+    disabled: true
+    branchName: main-apple
+    timeout: 180
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        SPARK_BRANCH: branch-3.3.0-apple
+        TEST1: catalyst/test
+        TEST2: ""
+    build: &comet-spark-build
+      template: freestyle:v4:build
+      steps:
+        - localedef -c -f UTF-8 -i en_US en_US.UTF-8
+        # Dynamically add the hostname to the http.nonProxyHosts list
+        - export PROXY_OPTS="-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com|${HOSTNAME}\""
+        - PROFILES="${PROFILES}" dev/install-comet-spark.sh ${SPARK_BRANCH}
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+        - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
+        - build/sbt -Phive -Dsbt.gigahorse=false ${PROXY_OPTS} -Dscala.version=$SCALA_VERSION -Pscala-$SCALA_BINARY_VERSION ${TEST1} "${TEST2}"
+    reports:
+      <<: *reports
+    finally:
+      <<: *slack-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-catalyst
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        TEST1: catalyst/test
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-catalyst
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: catalyst/test
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally: &slack-no-notification
+      notify:
+        email:
+          enabled: false
+
+  - <<: *comet-spark
+    group: test-spark-sql-catalyst
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: catalyst/test
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark-32
+    group: test-spark-sql-core-1
+    machine:
+      <<: *rio2-machine
+      env:
+        <<: *base_env
+        PROFILES: "-Pspark-3.2"
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark-32
+    group: test-spark-sql-core-2
+    machine:
+      <<: *rio2-machine
+      env:
+        <<: *base_env
+        PROFILES: "-Pspark-3.2"
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-3
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: ''
+        TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-3
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: ''
+        TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark-32
+    group: test-spark-sql-hive-1
+    machine:
+      <<: *rio2-machine
+      env:
+        <<: *base_env
+        PROFILES: "-Pspark-3.2"
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark-32
+    group: test-spark-sql-hive-2
+    machine:
+      <<: *rio2-machine
+      env:
+        <<: *base_env
+        PROFILES: "-Pspark-3.2"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        SPARK_BRANCH: branch-3.4.0-apple
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        SPARK_BRANCH: branch-3.4.0-apple
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - &comet-iceberg
+    group: test-iceberg
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.2"
+        COMET_TAG: 3.2_2.12
+        ICEBERG_BRANCH: apple-0.13.x
+        ICEBERG_TAG: 3.2
+        ICEBERG_SCALA_VERSION: 2.12
+    build: &comet-iceberg-build
+      template: freestyle:v4:build
+      steps:
+        - export NEXT_VERSION="$COMET_VERSION-iceberg"
+        - ./mvnw versions:set -DnewVersion="$NEXT_VERSION"
+        - PROFILES="${PROFILES}" make clean release
+        - rm -rf apache-incubator-iceberg
+        - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
+        - cd apache-incubator-iceberg
+        -  sed -i -E "s|(com.apple.pie.comet:comet-(common\|spark)-spark${COMET_TAG} = )(.*)|\1${NEXT_VERSION}|g" versions.props
+        - ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:test
+    reports: &test_iceberg_reports
+      junit:
+        paths:
+          - "**/.out/test-results/test/TEST*.xml"
+    finally:
+      <<: *slack-notification
+
+  - <<: *comet-iceberg
+    version: 3.3_2.12
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3"
+        COMET_TAG: 3.3_2.12
+        ICEBERG_BRANCH: apple-1.0.x-preview
+        ICEBERG_TAG: 3.3_2.12
+        ICEBERG_SCALA_VERSION: 2.12
+
+  - <<: *comet-iceberg
+    version: 3.3_2.13
+    disabled: true
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        COMET_TAG: 3.3_2.13
+        ICEBERG_BRANCH: apple-1.0.x-preview
+        ICEBERG_TAG: 3.3_2.13
+        ICEBERG_SCALA_VERSION: 2.13
+
+  - <<: *comet-iceberg
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        COMET_TAG: 3.4_2.12
+        ICEBERG_BRANCH: apple-1.3.x
+        ICEBERG_TAG: 3.4_2.12
+        ICEBERG_SCALA_VERSION: 2.12
+    build:
+      <<: *comet-iceberg-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-iceberg
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        COMET_TAG: 3.4_2.13
+        ICEBERG_BRANCH: apple-1.3.x
+        ICEBERG_TAG: 3.4_2.13
+        ICEBERG_SCALA_VERSION: 2.13
+    build:
+      <<: *comet-iceberg-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - branchName: main-apple
+    group: builder
+    version: stage1
+    trigger:
+      # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
+      timer: '@weekly'
+      gitPush: false
+    machine: &base-image-machine
+      baseImage: docker.apple.com/base-images/ubi8/ubi
+      targetPlatforms:
+        - linux/amd64
+        - linux/arm64
+      env:
+        <<: *proxy_env
+      resources:
+        size: xlarge
+      executor:
+        type: moes
+    build: &stage-build
+      template: freestyle:v4:publish
+      steps:
+        - echo 'Absolute Job Timeout:' $CI_TIMEOUT
+    package:
+      dockerfile:
+        - dockerfilePath: dev/Dockerfile-stage1
+          perApplication: false
+          version: stage1
+          publish:
+            - repo: docker.apple.com/pie/comet-builder
+    finally:
+      pipelineChain:
+        - pipeline: builder-main-apple-publish-stage2
+
+  - branchName: main-apple
+    group: builder
+    version: stage2
+    timeout: 240
+    trigger:
+      gitPush: false
+    machine:
+      <<: *base-image-machine
+    build:
+      <<: *stage-build
+    package:
+      dockerfile:
+        - dockerfilePath: dev/Dockerfile-stage2
+          perApplication: false
+          version: stage2
+          publish:
+            - repo: docker.apple.com/pie/comet-builder
+    finally:
+      pipelineChain:
+        - pipeline: builder-main-apple-publish-stage3
+
+  - branchName: main-apple
+    group: builder
+    version: stage3
+    trigger:
+      gitPush: false
+    machine:
+      <<: *base-image-machine
+    build:
+      <<: *stage-build
+    package:
+      dockerfile:
+        - dockerfilePath: dev/Dockerfile-stage3
+          perApplication: false
+          publish:
+            - repo: docker.apple.com/pie/comet-builder
+
+  - branchName: main-apple
+    group: builder-ubi8
+    trigger:
+      # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
+      timer: '@weekly'
+      gitPush: false
+    machine:
+      <<: *base-image-machine
+    build:
+      <<: *stage-build
+    package:
+      dockerfile:
+        - dockerfilePath: dev/Dockerfile-ubi8
+          perApplication: false
+          publish:
+            - repo: docker.apple.com/pie/comet-builder-ubi8
+
+  - group: build
+    branchName: main-apple
+    version: platform
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+    build:
+      template: freestyle:v4:publish
+      steps:
+        # Build Comet
+        - make clean core-${RIO_ARCH}
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    package:
+      release: false
+      freeform:
+        - publish:
+            - repo: oss-patched-snapshot-local
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-platform
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: build-artifacts
+    branchName: main-apple
+    version: platform
+    trigger:
+      gitPush: false
+    machine:
+      env:
+        ARTIFACT_X86_64: $(dev/rio-context-file-artifacts.sh | grep x86_64)
+        ARTIFACT_AARCH64: $(dev/rio-context-file-artifacts.sh | grep aarch64)
+    build:
+      template: freestyle:v4:build
+      steps:
+        - cat $RIO_CONTEXT_FILE
+    finally:
+      pipelineChain:
+        - pipeline: build-main-apple-publish-3.2_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-main-apple-publish-3.3_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-main-apple-publish-3.3_2.13
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-main-apple-publish-3.4_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-main-apple-publish-3.4_2.13
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+
+  - group: build
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.2,scala-2.12"
+    build: &snapshot_build_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: ARTIFACT_X86_64
+        - parameter: ARTIFACT_AARCH64
+      steps:
+        - if [ -z "${BUILD_PARAM_ARTIFACT_X86_64}" -o -z "${BUILD_PARAM_ARTIFACT_AARCH64}" ]; then echo 'ARTIFACT_X86_64 and ARTIFACT_AARCH64 are required!'; exit 1; fi
+
+        # Clear the previous build
+        - rm -rf $LOCAL_REPO
+        - make clean
+
+        # Extract the native libraries into the "common" tree
+        - mkdir -p common/target/classes/org/apache/comet
+        - for URL in $BUILD_PARAM_ARTIFACT_X86_64 $BUILD_PARAM_ARTIFACT_AARCH64; do (cd common/target/classes/org/apache/comet && wget -q -O - $URL | jar -xv linux darwin); done
+
+        # Build and prepare for publishing
+        - SPARK_HOME=`pwd` ./mvnw ${PROFILES} deploy -DaltDeploymentRepository="local-release::default::file://$PWD/$LOCAL_REPO"
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    reports: &snapshot_build_reports
+      junit:
+        paths:
+          - "**/target/**/TEST*.xml"
+      logs:
+        paths:
+          - "**/target/**/*-output.txt"
+    package: &snapshot_build_package
+      release: false
+      freeform:
+        - publish:
+            - repo: oss-patched-snapshot-local
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-3.2_2.12
+
+  - group: build
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.12"
+    build:
+      <<: *snapshot_build_build
+    reports:
+      <<: *snapshot_build_reports
+    package:
+      <<: *snapshot_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-3.3_2.12
+
+  - group: build
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+    build:
+      <<: *snapshot_build_build
+    reports:
+      <<: *snapshot_build_reports
+    package:
+      <<: *snapshot_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-3.3_2.13
+
+  - group: build
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build:
+      <<: *snapshot_build_build
+    reports:
+      <<: *snapshot_build_reports
+    package:
+      <<: *snapshot_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-3.4_2.12
+
+  - group: build
+    branchName: main-apple
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+    build:
+      <<: *snapshot_build_build
+    reports:
+      <<: *snapshot_build_reports
+    package:
+      <<: *snapshot_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-main-apple-build-3.4_2.13
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: build-artifacts
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine: &build-artifacts-machine
+      env:
+        ARTIFACT: $(dev/rio-context-file-artifacts.sh | grep 'comet-spark-spark' | grep '[^a-zZ-Z].jar$')
+    build: &build-artifacts-build
+      template: freestyle:v4:build
+      steps:
+        - cat $RIO_CONTEXT_FILE
+    finally:
+      pipelineChain:
+        - pipeline: image-main-apple-publish-3.2_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-main-apple-publish-3.3_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-main-apple-publish-3.3_2.13
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-main-apple-publish-3.4_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: main-apple
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-main-apple-publish-3.4_2.13
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: image
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.2_2.12
+        PROFILES: "-Pspark-3.2,scala-2.12"
+        HADOOP_BINARY_VERSION: "3.2"
+        PUBLISH_JARS: false
+    build: &snapshot_image_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: ARTIFACT
+      steps:
+        - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
+
+        # Use the upstream published Comet
+        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
+        - echo "COMET_VERSION = ${COMET_VERSION}"
+
+        # Configure Spark
+        - dev/install-comet-spark.sh --use-existing-comet "$COMET_VERSION"
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+
+        # Build Spark Distribution
+        - ./dev/rio-maven-custom-build.sh --scala "$SCALA_BINARY_VERSION" --snapshot --maven-opts "${MAVEN_OPTS}" --maven-params "-Dscala.version=$SCALA_VERSION -P scala-${SCALA_BINARY_VERSION},hive,hadoop-cloud,hadoop-${HADOOP_BINARY_VERSION},hive-thriftserver,kinesis-asl,yarn,kubernetes,volcano,code-profiler"
+        - ./dev/make-distribution.sh --tgz --use-existing-build --with-hadoop --skip-java-test -DskipTests=true -Dscala-$SCALA_BINARY_VERSION=enabled -Dhive-thriftserver=enabled -Dscala.version="$SCALA_VERSION" -Dscala.binary.version="$SCALA_BINARY_VERSION" -Pscala-$SCALA_BINARY_VERSION -Phadoop-${HADOOP_BINARY_VERSION}
+    package: &snapshot_image_package
+      release: false
+      dockerfile:
+        - dockerfilePath: apache-spark/dist/kubernetes/dockerfiles/spark/Dockerfile
+          context: apache-spark/dist
+          perApplication: false
+          version: snapshot
+          publish:
+            - repo: docker.apple.com/comet-dev/spark${VERSION}
+
+  - group: image
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.12
+        PROFILES: "-Pspark-3.3,scala-2.12"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *snapshot_image_build
+    package:
+      <<: *snapshot_image_package
+
+  - group: image
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.13
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *snapshot_image_build
+    package:
+      <<: *snapshot_image_package
+
+  - group: image
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.12
+        PROFILES: "-Pspark-3.4,scala-2.12"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *snapshot_image_build
+    package:
+      <<: *snapshot_image_package
+
+  - group: image
+    branchName: main-apple
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.13
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *snapshot_image_build
+    package:
+      <<: *snapshot_image_package
+
+  - group: nightly
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      timer: '@midnight'
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.2_2.12
+    build: &nightly_image_build
+      template: buildozer:v4:publish
+      steps: ['true']
+    package: &nightly_image_package
+      dockerfile:
+        - env:
+            SPARK_PROFILE: ${VERSION}
+          dockerfilePath: dev/Dockerfile-nightly
+          perApplication: false
+          version: nightly
+          publish:
+            - repo: docker.apple.com/comet-dev/spark${VERSION}
+
+  - group: nightly
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      timer: '@midnight'
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.12
+    build:
+      <<: *nightly_image_build
+    package:
+      <<: *nightly_image_package
+
+  - group: nightly
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      timer: '@midnight'
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.13
+    build:
+      <<: *nightly_image_build
+    package:
+      <<: *nightly_image_package
+
+  - group: nightly
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      timer: '@midnight'
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.12
+    build:
+      <<: *nightly_image_build
+    package:
+      <<: *nightly_image_package
+
+  - group: nightly
+    branchName: main-apple
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      timer: '@midnight'
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.13
+    build:
+      <<: *nightly_image_build
+    package:
+      <<: *nightly_image_package
+
+  - group: build
+    branchName: release
+    version: platform
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+    # This is the same as the main-apple branch build except for the updated version (non-snapshot)
+    build:
+      template: freestyle:v4:publish
+      steps:
+        # Update to release version
+        - ./mvnw com.apple.cie.rio:rio-maven-plugin:remove-snapshot org.codehaus.mojo:versions-maven-plugin:set
+
+        # Build Comet
+        - make clean core-${RIO_ARCH}
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    package:
+      release: true
+      freeform:
+        - publish:
+            - repo: oss-patched-local
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-platform
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: build-artifacts
+    branchName: release
+    version: platform
+    trigger:
+      gitPush: false
+    machine:
+      env:
+        ARTIFACT_X86_64: $(dev/rio-context-file-artifacts.sh | grep x86_64)
+        ARTIFACT_AARCH64: $(dev/rio-context-file-artifacts.sh | grep aarch64)
+    build:
+      template: freestyle:v4:build
+      steps:
+        - cat $RIO_CONTEXT_FILE
+    finally:
+      tag:
+        enabled: true
+        expression: "0.3.30"
+      pipelineChain:
+        - pipeline: build-release-publish-3.2_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-release-publish-3.3_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-release-publish-3.3_2.13
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-release-publish-3.4_2.12
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: build-release-publish-3.4_2.13
+          buildArguments:
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+
+  - group: build
+    branchName: release
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.2,scala-2.12"
+    # This is the same as the "snapshot_build_build" except for the updated version (non-snapshot)
+    build: &release_build_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: ARTIFACT_X86_64
+        - parameter: ARTIFACT_AARCH64
+      steps:
+        - if [ -z "${BUILD_PARAM_ARTIFACT_X86_64}" -o -z "${BUILD_PARAM_ARTIFACT_AARCH64}" ]; then echo 'ARTIFACT_X86_64 and ARTIFACT_AARCH64 are required!'; exit 1; fi
+
+        # Update to release version
+        - ./mvnw com.apple.cie.rio:rio-maven-plugin:remove-snapshot org.codehaus.mojo:versions-maven-plugin:set
+
+        # Clear the previous build
+        - rm -rf $LOCAL_REPO
+        - make clean
+
+        # Extract the native libraries into the "common" tree
+        - mkdir -p common/target/classes/org/apache/comet
+        - for URL in $BUILD_PARAM_ARTIFACT_X86_64 $BUILD_PARAM_ARTIFACT_AARCH64; do (cd common/target/classes/org/apache/comet && wget -q -O - $URL | jar -xv linux darwin); done
+
+        # Build and prepare for publishing
+        - ./mvnw ${PROFILES} deploy -Prelease -DskipTests -DaltDeploymentRepository="local-release::default::file://$PWD/$LOCAL_REPO"
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    package: &release_build_package
+      release: true
+      freeform:
+        - publish:
+            - repo: oss-patched-local
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-3.2_2.12
+
+  - group: build
+    branchName: release
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.12"
+    build:
+      <<: *release_build_build
+    package:
+      <<: *release_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-3.3_2.12
+
+  - group: build
+    branchName: release
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+    build:
+      <<: *release_build_build
+    package:
+      <<: *release_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-3.3_2.13
+
+  - group: build
+    branchName: release
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build:
+      <<: *release_build_build
+    package:
+      <<: *release_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-3.4_2.12
+
+  - group: build
+    branchName: release
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+    build:
+      <<: *release_build_build
+    package:
+      <<: *release_build_package
+    finally:
+      pipelineChain:
+        - pipeline: build-artifacts-release-build-3.4_2.13
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: build-artifacts
+    branchName: release
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-release-publish-3.2_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: release
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-release-publish-3.3_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: release
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-release-publish-3.3_2.13
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: release
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-release-publish-3.4_2.12
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: build-artifacts
+    branchName: release
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: image-release-publish-3.4_2.13
+          buildArguments:
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: image
+    branchName: release
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.2_2.12
+        PROFILES: "-Pspark-3.2,scala-2.12"
+        HADOOP_BINARY_VERSION: "3.2"
+        PUBLISH_JARS: false
+    build: &release_image_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: ARTIFACT
+      steps:
+        - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
+
+        # Use the upstream published Comet
+        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
+        - echo "COMET_VERSION = ${COMET_VERSION}"
+
+        # Configure Spark
+        - dev/install-comet-spark.sh --use-existing-comet "$COMET_VERSION"
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+
+        # Build Spark Distribution
+        - ./dev/rio-maven-custom-build.sh --scala "$SCALA_BINARY_VERSION" --snapshot --maven-opts "${MAVEN_OPTS}" --maven-params "-Dscala.version=$SCALA_VERSION -P scala-${SCALA_BINARY_VERSION},hive,hadoop-cloud,hadoop-${HADOOP_BINARY_VERSION},hive-thriftserver,kinesis-asl,yarn,kubernetes,volcano,code-profiler"
+        - ./dev/make-distribution.sh --tgz --use-existing-build --with-hadoop --skip-java-test -DskipTests=true -Dscala-$SCALA_BINARY_VERSION=enabled -Dhive-thriftserver=enabled -Dscala.version="$SCALA_VERSION" -Dscala.binary.version="$SCALA_BINARY_VERSION" -Pscala-$SCALA_BINARY_VERSION -Phadoop-${HADOOP_BINARY_VERSION}
+    # This is the same as the "snapshot_image_package" except for the version (non-snapshot)
+    package: &release_image_package
+      release: true
+      dockerfile:
+        - dockerfilePath: apache-spark/dist/kubernetes/dockerfiles/spark/Dockerfile
+          context: apache-spark/dist
+          perApplication: false
+          version: latest
+          publish:
+            - repo: docker.apple.com/comet-dev/spark${VERSION}
+
+  - group: image
+    branchName: release
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.12
+        PROFILES: "-Pspark-3.3,scala-2.12"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *release_image_build
+    package:
+      <<: *release_image_package
+
+  - group: image
+    branchName: release
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.13
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *release_image_build
+    package:
+      <<: *release_image_package
+
+  - group: image
+    branchName: release
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.12
+        PROFILES: "-Pspark-3.4,scala-2.12"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *release_image_build
+    package:
+      <<: *release_image_package
+
+  - group: image
+    branchName: release
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.4_2.13
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *release_image_build
+    package:
+      <<: *release_image_package
+
+  - group: pr-build
+    branchName: main-apple
+    version: start
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+    build:
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: PR_NUMBER
+          description: The source pull request to benchmark
+        - parameter: STRIP
+          description: The strip option controls the -C strip flag, which directs rustc to strip either symbols or debuginfo from a binary.  Use "none" to disable strip completely
+          defaultValue: "debuginfo"
+      steps:
+        # Switch to PR
+        - set -e
+        - set -x
+        - git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
+        - git checkout pr_${BUILD_PARAM_PR_NUMBER}
+        - git log -n 1
+
+        # Switch to PR version
+        - COMET_VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | sed -e "s/-SNAPSHOT/-pr${BUILD_PARAM_PR_NUMBER}-SNAPSHOT/")
+        - ./mvnw versions:set -DnewVersion=$COMET_VERSION
+        - echo "COMET_VERSION=${COMET_VERSION}"
+
+        # Change the strip configuration
+        - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" core/Cargo.toml; fi
+
+        # Build Comet
+        - make clean core-${RIO_ARCH}
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    package:
+      release: false
+      freeform:
+        - publish:
+            - repo: oss-patched-local
+    finally:
+      pipelineChain:
+        - pipeline: pr-build-artifacts-main-apple-build-platform
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: pr-build-artifacts
+    branchName: main-apple
+    version: platform
+    trigger:
+      gitPush: false
+    machine:
+      env:
+        ARTIFACT_X86_64: $(dev/rio-context-file-artifacts.sh | grep x86_64)
+        ARTIFACT_AARCH64: $(dev/rio-context-file-artifacts.sh | grep aarch64)
+    build:
+      template: freestyle:v4:build
+      buildParameters:
+        - parameter: PR_NUMBER
+          description: The source pull request to benchmark
+      steps:
+        - cat $RIO_CONTEXT_FILE
+    finally:
+      pipelineChain:
+        - pipeline: pr-build-main-apple-publish-3.2_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: pr-build-main-apple-publish-3.3_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: pr-build-main-apple-publish-3.3_2.13
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: pr-build-main-apple-publish-3.4_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+        - pipeline: pr-build-main-apple-publish-3.4_2.13
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT_X86_64"
+              value: "${ARTIFACT_X86_64}"
+            - name: "ARTIFACT_AARCH64"
+              value: "${ARTIFACT_AARCH64}"
+
+  - group: pr-build
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.2,scala-2.12"
+    build: &pr_build_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: PR_NUMBER
+          description: The source pull request to benchmark
+        - parameter: ARTIFACT_X86_64
+        - parameter: ARTIFACT_AARCH64
+      steps:
+        # Switch to PR
+        - set -e
+        - set -x
+        - git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
+        - git checkout pr_${BUILD_PARAM_PR_NUMBER}
+        - git log -n 1
+
+        # Switch to PR version
+        - COMET_VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | sed -e "s/-SNAPSHOT/-pr${BUILD_PARAM_PR_NUMBER}-SNAPSHOT/")
+        - ./mvnw versions:set -DnewVersion=$COMET_VERSION
+        - echo "COMET_VERSION=${COMET_VERSION}"
+
+        - if [ -z "${BUILD_PARAM_ARTIFACT_X86_64}" -o -z "${BUILD_PARAM_ARTIFACT_AARCH64}" ]; then echo 'ARTIFACT_X86_64 and ARTIFACT_AARCH64 are required!'; exit 1; fi
+
+        # Clear the previous build
+        - rm -rf $LOCAL_REPO
+        - make clean
+
+        # Extract the native libraries into the "common" tree
+        - mkdir -p common/target/classes/org/apache/comet
+        - for URL in $BUILD_PARAM_ARTIFACT_X86_64 $BUILD_PARAM_ARTIFACT_AARCH64; do (cd common/target/classes/org/apache/comet && wget -q -O - $URL | jar -xv linux darwin); done
+
+        # Build and prepare for publishing
+        - ./mvnw ${PROFILES} deploy -DaltDeploymentRepository="local-release::default::file://$PWD/$LOCAL_REPO" -DskipTests
+        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+    package: &pr_build_package
+      release: false
+      freeform:
+        - publish:
+            - repo: oss-patched-local
+    finally:
+      pipelineChain:
+        - pipeline: pr-build-artifacts-main-apple-build-3.2_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+
+  - group: pr-build
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.12"
+    build:
+      <<: *pr_build_build
+    package:
+      <<: *pr_build_package
+    finally:
+      pipelineChain:
+        - pipeline: pr-build-artifacts-main-apple-build-3.3_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+
+  - group: pr-build
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      targetPlatforms:
+        - linux/amd64
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.3,scala-2.13"
+    build:
+      <<: *pr_build_build
+    package:
+      <<: *pr_build_package
+    finally:
+      pipelineChain:
+        - pipeline: pr-build-artifacts-main-apple-build-3.3_2.13
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+
+  - group: pr-build
+    branchName: main-apple
+    version: 3.4_2.12
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.12
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build:
+      <<: *pr_build_build
+    package: &pr_spark_image_package
+      <<: *pr_build_package
+      dockerfile:
+        - env:
+            SPARK_VERSION: ${SPARK_VERSION}
+            SCALA_VERSION: ${SCALA_VERSION}
+            PR_NUMBER: ${BUILD_PARAM_PR_NUMBER}
+          dockerfilePath: dev/Dockerfile-spark
+          perApplication: false
+          version: "pr-${BUILD_PARAM_PR_NUMBER}"
+          publish:
+            - repo: docker.apple.com/comet-dev/spark${SPARK_VERSION}_${SCALA_VERSION}
+
+  - group: pr-build
+    branchName: main-apple
+    version: 3.4_2.13
+    disabled: false
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.13
+        PROFILES: "-Pspark-3.4,scala-2.13"
+    build:
+      <<: *pr_build_build
+    package:
+      <<: *pr_spark_image_package
+
+  # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
+  # the downstream jobs so that they can be restarted when there is a Rio hiccup.
+  - group: pr-build-artifacts
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: pr-image-main-apple-publish-3.2_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: pr-build-artifacts
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: pr-image-main-apple-publish-3.3_2.12
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: pr-build-artifacts
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *build-artifacts-machine
+    build:
+      <<: *build-artifacts-build
+    finally:
+      pipelineChain:
+        - pipeline: pr-image-main-apple-publish-3.3_2.13
+          buildArguments:
+            - name: "PR_NUMBER"
+              value: "${BUILD_PARAM_PR_NUMBER}"
+            - name: "ARTIFACT"
+              value: "${ARTIFACT}"
+
+  - group: pr-image
+    branchName: main-apple
+    version: 3.2_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.2_2.12
+        PROFILES: "-Pspark-3.2,scala-2.12"
+        HADOOP_BINARY_VERSION: "3.2"
+        PUBLISH_JARS: false
+    build: &pr_image_build
+      template: freestyle:v4:publish
+      buildParameters:
+        - parameter: PR_NUMBER
+          description: The source pull request to benchmark
+        - parameter: ARTIFACT
+      steps:
+        # Switch to PR
+        - set -e
+        - set -x
+        - git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
+        - git checkout pr_${BUILD_PARAM_PR_NUMBER}
+        - git log -n 1
+
+        # Switch to PR version
+        - COMET_VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | sed -e "s/-SNAPSHOT/-pr${BUILD_PARAM_PR_NUMBER}-SNAPSHOT/")
+        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
+        - ./mvnw versions:set -DnewVersion=$COMET_VERSION
+        - echo "COMET_VERSION=${COMET_VERSION}"
+
+        - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
+
+        # Use the upstream published Comet
+        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
+        - echo "COMET_VERSION = ${COMET_VERSION}"
+
+        # Configure Spark
+        - dev/install-comet-spark.sh --use-existing-comet "$COMET_VERSION"
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+
+        # Build Spark Distribution
+        - ./dev/rio-maven-custom-build.sh --scala "$SCALA_BINARY_VERSION" --snapshot --maven-opts "${MAVEN_OPTS}" --maven-params "-Dscala.version=$SCALA_VERSION -P scala-${SCALA_BINARY_VERSION},hive,hadoop-cloud,hadoop-${HADOOP_BINARY_VERSION},hive-thriftserver,kinesis-asl,yarn,kubernetes,volcano,code-profiler"
+        - ./dev/make-distribution.sh --tgz --use-existing-build --with-hadoop --skip-java-test -DskipTests=true -Dscala-$SCALA_BINARY_VERSION=enabled -Dhive-thriftserver=enabled -Dscala.version="$SCALA_VERSION" -Dscala.binary.version="$SCALA_BINARY_VERSION" -Pscala-$SCALA_BINARY_VERSION -Phadoop-${HADOOP_BINARY_VERSION}
+
+        # Switch back to root for the copy
+        - echo 'USER root' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+
+        # Extract Comet native library
+        - (mkdir -p dist/native; cd dist/native; jar -xvf ../jars/comet-spark-spark*.jar org/apache/comet/linux; mv -v org/apache/comet/linux .; rm -rf com)
+        - echo 'COPY native /opt/spark/native' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+        - echo 'RUN if [ "$(uname -m)" == "x86_64" ]; then cp /opt/spark/native/linux/amd64/libcomet.so /lib64/lib/x86_64-linux-gnu/libcomet.so; fi' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+        - echo 'RUN if [ "$(uname -m)" == "aarch64" ]; then cp /opt/spark/native/linux/aarch64/libcomet.so /lib64/aarch64-linux-gnu/libcomet.so; fi' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+        - echo 'RUN if [ "$(uname -m)" == "x86_64" ]; then cp /opt/spark/native/linux/amd64/libcomet.so /usr/lib/libcomet.so; fi' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+        - echo 'RUN if [ "$(uname -m)" == "aarch64" ]; then cp /opt/spark/native/linux/aarch64/libcomet.so /usr/lib/libcomet.so; fi' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+
+        # Restore Spark user
+        - echo 'USER ${spark_uid}' >> dist/kubernetes/dockerfiles/spark/Dockerfile
+    package: &pr_image_package
+      release: false
+      dockerfile:
+        - dockerfilePath: apache-spark/dist/kubernetes/dockerfiles/spark/Dockerfile
+          context: apache-spark/dist
+          perApplication: false
+          version: "pr-${BUILD_PARAM_PR_NUMBER}"
+          publish:
+            - repo: docker.apple.com/comet-dev/spark${VERSION}
+
+  - group: pr-image
+    branchName: main-apple
+    version: 3.3_2.12
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.12
+        PROFILES: "-Pspark-3.3,scala-2.12"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *pr_image_build
+    package:
+      <<: *pr_image_package
+
+  - group: pr-image
+    branchName: main-apple
+    version: 3.3_2.13
+    disabled: true
+    trigger:
+      gitPush: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        VERSION: 3.3_2.13
+        PROFILES: "-Pspark-3.3,scala-2.13"
+        HADOOP_BINARY_VERSION: "3"
+        PUBLISH_JARS: false
+    build:
+      <<: *pr_image_build
+    package:
+      <<: *pr_image_package

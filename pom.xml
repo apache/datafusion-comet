@@ -25,7 +25,7 @@ under the License.
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.comet</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0-apple-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -870,6 +870,7 @@ under the License.
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
             <exclude>**/apache-spark/**</exclude>
+            <exclude>.cicd/**</exclude>
             <exclude>.git/**</exclude>
             <exclude>.github/**</exclude>
             <exclude>.gitignore</exclude>
@@ -878,11 +879,16 @@ under the License.
             <exclude>**/dependency-reduced-pom.xml</exclude>
             <exclude>**/testdata/**</exclude>
             <exclude>**/.lldbinit</exclude>
+            <exclude>rio.yaml</exclude>
             <exclude>rust-toolchain</exclude>
             <exclude>Makefile</exclude>
             <exclude>dev/Dockerfile*</exclude>
+            <exclude>dev/boson-to-comet.sh</exclude>
             <exclude>dev/diff/**</exclude>
+            <exclude>dev/diffs/**</exclude>
             <exclude>dev/deploy-file</exclude>
+            <exclude>dev/install-comet-spark.sh</exclude>
+            <exclude>dev/rio-context-file-artifacts.sh</exclude>
             <exclude>**/test/resources/**</exclude>
             <exclude>**/benchmarks/*.txt</exclude>
             <exclude>**/inspections/*.txt</exclude>

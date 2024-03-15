@@ -1,0 +1,2 @@
+ARG SPARK_PROFILE=3.4_2.13
+FROM docker.apple.com/comet-dev/spark${SPARK_PROFILE}:snapshot

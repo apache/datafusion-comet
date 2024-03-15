@@ -53,7 +53,7 @@ core-amd64:
 	jar -cf common/target/comet-native-x86_64.jar \
 		-C common/target/classes/org/apache/comet darwin \
 		-C common/target/classes/org/apache/comet linux
-	./dev/deploy-file common/target/comet-native-x86_64.jar comet-native-x86_64${COMET_CLASSIFIER} jar
+	./dev/deploy-file common/target/comet-native-x86_64.jar comet-native-x86_64 jar
 
 core-arm64:
 	rustup target add aarch64-apple-darwin
@@ -66,7 +66,7 @@ core-arm64:
 	jar -cf common/target/comet-native-aarch64.jar \
 		-C common/target/classes/org/apache/comet darwin \
 		-C common/target/classes/org/apache/comet linux
-	./dev/deploy-file common/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
+	./dev/deploy-file common/target/comet-native-aarch64.jar comet-native-aarch64 jar
 
 release-linux: clean
 	rustup target add aarch64-apple-darwin x86_64-apple-darwin

@@ -1,0 +1,84 @@
+diff --git a/pom.xml b/pom.xml
+index ed78d8c..aa14b16 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -2865,49 +2865,6 @@
+           </exclusion>
+         </exclusions>
+       </dependency>
+-      <dependency>
+-        <groupId>org.apache.iceberg</groupId>
+-        <artifactId>iceberg-spark-runtime-3.4_${scala.binary.version}</artifactId>
+-        <version>${iceberg.version}</version>
+-	<scope>runtime</scope>
+-      </dependency>
+-
+-      <!-- UC-Spark-Authz plugin for row-level filtering and column masking -->
+-      <dependency>
+-        <groupId>com.apple.pie</groupId>
+-        <artifactId>uc-spark${spark.version.short}-authz_${scala.binary.version}</artifactId>
+-        <version>${uc-spark-authz.version}</version>
+-        <exclusions>
+-          <exclusion>
+-            <groupId>org.apache.spark</groupId>
+-            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+-          </exclusion>
+-          <exclusion>
+-            <groupId>org.apache.spark</groupId>
+-            <artifactId>spark-core_${scala.binary.version}</artifactId>
+-          </exclusion>
+-          <exclusion>
+-            <groupId>org.apache.spark</groupId>
+-            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+-          </exclusion>
+-        </exclusions>
+-      </dependency>
+-
+-      <!-- Run Iceberg unit tests -->
+-      <dependency>
+-        <groupId>org.apache.iceberg</groupId>
+-        <artifactId>iceberg-spark-3.4_${scala.binary.version}</artifactId>
+-        <version>${iceberg.version}</version>
+-        <classifier>shadow-tests</classifier>
+-        <scope>test</scope>
+-      </dependency>
+-      <dependency>
+-        <groupId>org.apache.iceberg</groupId>
+-        <artifactId>iceberg-hive-metastore</artifactId>
+-        <version>${iceberg.version}</version>
+-        <classifier>shadow-tests</classifier>
+-        <scope>test</scope>
+-      </dependency>
+     </dependencies>
+   </dependencyManagement>
+ 
+diff --git a/sql/catalyst/pom.xml b/sql/catalyst/pom.xml
+index 62175be..b99bdc2 100644
+--- a/sql/catalyst/pom.xml
++++ b/sql/catalyst/pom.xml
+@@ -127,10 +127,6 @@
+       <groupId>org.apache.arrow</groupId>
+       <artifactId>arrow-memory-netty</artifactId>
+     </dependency>
+-    <dependency>
+-      <groupId>org.apache.iceberg</groupId>
+-      <artifactId>iceberg-spark-runtime-3.4_${scala.binary.version}</artifactId>
+-    </dependency>
+   </dependencies>
+   <build>
+     <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
+diff --git a/sql/core/pom.xml b/sql/core/pom.xml
+index e9f5a0e..2db9dd2 100644
+--- a/sql/core/pom.xml
++++ b/sql/core/pom.xml
+@@ -156,10 +156,6 @@
+       <groupId>com.apple.pie.boson</groupId>
+       <artifactId>boson-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
+     </dependency>
+-    <dependency>
+-      <groupId>com.apple.pie</groupId>
+-      <artifactId>uc-spark${spark.version.short}-authz_${scala.binary.version}</artifactId>
+-    </dependency>
+     <dependency>
+       <groupId>org.scalacheck</groupId>
+       <artifactId>scalacheck_${scala.binary.version}</artifactId>

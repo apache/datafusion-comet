@@ -1,0 +1,21 @@
+#!/bin/sh
+
+set -e
+set -x
+
+if [ $# -ne 3 ]; then
+  echo "deploy-file <file> <artifactId> <packaging> $#" >&2
+  exit 1
+fi
+
+FILE=$1
+ARTIFACT_ID=$2
+PACKAGING=$3
+
+GROUP_ID=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.groupId -DforceStdout 2>/dev/null)
+VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null)
+
+set -x
+
+mkdir -p .dist/local-repo
+./mvnw deploy:deploy-file -DgroupId=$GROUP_ID -DartifactId=$ARTIFACT_ID -Dversion=$VERSION -Dpackaging=$PACKAGING -Dfile=$FILE -Durl="file:.dist/local-repo"

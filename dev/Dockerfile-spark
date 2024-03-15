@@ -1,0 +1,15 @@
+ARG SPARK_VERSION=3.4
+ARG SCALA_VERSION=2.12
+
+FROM docker.apple.com/spark-dev/spark_${SCALA_VERSION}:${SPARK_VERSION}-snapshot 
+
+ARG SPARK_VERSION
+ARG SCALA_VERSION
+
+USER root
+
+RUN rm ${SPARK_HOME}/jars/comet*
+
+COPY spark/target/comet-spark-spark${SPARK_VERSION}_${SCALA_VERSION}-*SNAPSHOT.jar ${SPARK_HOME}/jars
+
+USER 185
