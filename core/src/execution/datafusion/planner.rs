@@ -44,6 +44,7 @@ use datafusion::{
         ExecutionPlan, Partitioning,
     },
 };
+use datafusion::physical_plan::joins::SortMergeJoinExec;
 use datafusion_common::{
     tree_node::{TreeNode, TreeNodeRewriter, VisitRecursion},
     JoinType as DFJoinType, ScalarValue,
@@ -861,6 +862,87 @@ impl PhysicalPlanner {
                     scans,
                     Arc::new(CometExpandExec::new(projections, child, schema)),
                 ))
+            }
+            OpStruct::SortMergeJoin(join) => {
+                assert!(children.len() == 2);
+                let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
+                let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+
+                left_scans.append(&mut right_scans);
+
+                let left_join_exprs = join
+                    .left_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, left.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let right_join_exprs = join
+                    .right_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, right.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let join_on = left_join_exprs
+                    .into_iter()
+                    .zip(right_join_exprs)
+                    .collect::<Vec<_>>();
+
+                let join_type = match join.join_type.try_into() {
+                    Ok(JoinType::Inner) => DFJoinType::Inner,
+                    Ok(JoinType::LeftOuter) => DFJoinType::Left,
+                    Ok(JoinType::RightOuter) => DFJoinType::Right,
+                    Ok(JoinType::FullOuter) => DFJoinType::Full,
+                    Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
+                    Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
+                    Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
+                    Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
+                    Err(_) => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Unsupported join type: {:?}",
+                            join.join_type
+                        )));
+                    }
+                };
+
+                let sort_options = join
+                    .sort_options
+                    .iter()
+                    .map(|sort_option| {
+                        let sort_expr = self.create_sort_expr(sort_option, left.schema()).unwrap();
+                        SortOptions {
+                            descending: sort_expr.options.descending,
+                            nulls_first: sort_expr.options.nulls_first,
+                        }
+                    })
+                    .collect();
+
+                // DataFusion `SortMergeJoinExec` operator keeps the input batch internally. We need
+                // to copy the input batch to avoid the data corruption from reusing the input
+                // batch.
+                let left = if crate::execution::datafusion::planner::can_reuse_input_batch(&left) {
+                    Arc::new(CopyExec::new(left))
+                } else {
+                    left
+                };
+
+                let right = if crate::execution::datafusion::planner::can_reuse_input_batch(&right) {
+                    Arc::new(CopyExec::new(right))
+                } else {
+                    right
+                };
+
+                let join = Arc::new(SortMergeJoinExec::try_new(
+                    left,
+                    right,
+                    join_on,
+                    None,
+                    join_type,
+                    sort_options,
+                    // null doesn't equal to null in Spark join key. If the join key is
+                    // `EqualNullSafe`, Spark will rewrite it during planning.
+                    false,
+                )?);
+
+                Ok((left_scans, join))
             }
             OpStruct::HashJoin(join) => {
                 assert!(children.len() == 2);
