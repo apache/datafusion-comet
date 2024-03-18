@@ -40,7 +40,8 @@ message Operator {
     Limit limit = 105;
     ShuffleWriter shuffle_writer = 106;
     Expand expand = 107;
-    HashJoin hash_join = 108;
+    SortMergeJoin sort_merge_join = 108;
+    HashJoin hash_join = 109;
   }
 }
 
@@ -94,6 +95,13 @@ message HashJoin {
   repeated spark.spark_expression.Expr right_join_keys = 2;
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
+}
+
+message SortMergeJoin {
+  repeated spark.spark_expression.Expr left_join_keys = 1;
+  repeated spark.spark_expression.Expr right_join_keys = 2;
+  JoinType join_type = 3;
+  repeated spark.spark_expression.Expr sort_options = 4;
 }
 
 enum JoinType {

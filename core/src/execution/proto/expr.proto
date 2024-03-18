@@ -76,6 +76,7 @@ message Expr {
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
+    BloomFilterMightContain bloom_filter_might_contain = 52;
   }
 }
 
@@ -88,6 +89,9 @@ message AggExpr {
     Avg avg = 6;
     First first = 7;
     Last last = 8;
+    BitAndAgg bitAndAgg = 9;
+    BitOrAgg bitOrAgg = 10;
+    BitXorAgg bitXorAgg = 11;
   }
 }
 
@@ -128,6 +132,21 @@ message Last {
   Expr child = 1;
   DataType datatype = 2;
   bool ignore_nulls = 3;
+}
+
+message BitAndAgg {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message BitOrAgg {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message BitXorAgg {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 message Literal {
@@ -412,6 +431,11 @@ message Abs {
 message Subquery {
   int64 id = 1;
   DataType datatype = 2;
+}
+
+message BloomFilterMightContain {
+  Expr bloom_filter = 1;
+  Expr value = 2;
 }
 
 enum SortDirection {

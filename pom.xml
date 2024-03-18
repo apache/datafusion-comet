@@ -86,6 +86,7 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
+    <additional.test.source>spark-3.3-plus</additional.test.source>
   </properties>
 
   <dependencyManagement>
@@ -494,6 +495,8 @@ under the License.
         <spark.version>3.2.2</spark.version>
         <spark.version.short>3.2</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
+        <additional.test.source>not-needed-yet</additional.test.source>
       </properties>
     </profile>
 
@@ -504,6 +507,7 @@ under the License.
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <additional.test.source>spark-3.3-plus</additional.test.source>
       </properties>
     </profile>
 
@@ -513,6 +517,7 @@ under the License.
         <scala.version>2.12.17</scala.version>
         <spark.version.short>3.4</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <additional.test.source>spark-3.3-plus</additional.test.source>
       </properties>
     </profile>
 
@@ -776,6 +781,11 @@ under the License.
           <groupId>org.jacoco</groupId>
           <artifactId>jacoco-maven-plugin</artifactId>
           <version>${jacoco.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>3.2.0</version>
         </plugin>
       </plugins>
     </pluginManagement>

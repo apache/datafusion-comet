@@ -38,7 +38,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.ShuffledHashJoinExec
+import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -224,13 +224,10 @@ class CometSparkSessionExtensions
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
       def transform1(op: SparkPlan): Option[Operator] = {
-        val allNativeExec = op.children.map {
-          case childNativeOp: CometNativeExec => Some(childNativeOp.nativeOp)
-          case _ => None
-        }
-
-        if (allNativeExec.forall(_.isDefined)) {
-          QueryPlanSerde.operator2Proto(op, allNativeExec.map(_.get): _*)
+        if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          QueryPlanSerde.operator2Proto(
+            op,
+            op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
         } else {
           None
         }
@@ -352,6 +349,26 @@ class CometSparkSessionExtensions
                 op.joinType,
                 op.condition,
                 op.buildSide,
+                op.left,
+                op.right,
+                SerializedPlan(None))
+            case None =>
+              op
+          }
+
+        case op: SortMergeJoinExec
+            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+              op.children.forall(isCometNative(_)) =>
+          val newOp = transform1(op)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSortMergeJoinExec(
+                nativeOp,
+                op,
+                op.leftKeys,
+                op.rightKeys,
+                op.joinType,
+                op.condition,
                 op.left,
                 op.right,
                 SerializedPlan(None))

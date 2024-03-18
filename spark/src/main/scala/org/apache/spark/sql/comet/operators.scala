@@ -625,6 +625,41 @@ case class CometHashJoinExec(
     Objects.hashCode(leftKeys, rightKeys, condition, left, right)
 }
 
+case class CometSortMergeJoinExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    leftKeys: Seq[Expression],
+    rightKeys: Seq[Expression],
+    joinType: JoinType,
+    condition: Option[Expression],
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(leftKeys, rightKeys, joinType, condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortMergeJoinExec =>
+        this.leftKeys == other.leftKeys &&
+        this.rightKeys == other.rightKeys &&
+        this.condition == other.condition &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(leftKeys, rightKeys, condition, left, right)
+}
+
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
