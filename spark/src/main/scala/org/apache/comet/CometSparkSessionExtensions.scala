@@ -43,7 +43,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
+import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -442,15 +442,26 @@ class CometSparkSessionExtensions
               s
           }
 
-        case b: BroadcastExchangeExec
-            if isCometNative(b.child) && isCometOperatorEnabled(conf, "broadcastExchangeExec") &&
-              isCometBroadCastEnabled(conf) =>
-          QueryPlanSerde.operator2Proto(b) match {
-            case Some(nativeOp) =>
-              val cometOp = CometBroadcastExchangeExec(b, b.child)
-              CometSinkPlaceHolder(nativeOp, b, cometOp)
-            case None => b
+        // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
+        // exchange. It is only used for Comet native execution. We only transform Spark broadcast
+        // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
+        // broadcast exchange is forced to be enabled by Comet config.
+        case plan
+            if (isCometNative(plan) || isCometBroadCastForceEnabled(conf)) &&
+              plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
+          val newChildren = plan.children.map {
+            case b: BroadcastExchangeExec
+                if isCometNative(b.child) &&
+                  isCometOperatorEnabled(conf, "broadcastExchangeExec") =>
+              QueryPlanSerde.operator2Proto(b) match {
+                case Some(nativeOp) =>
+                  val cometOp = CometBroadcastExchangeExec(b, b.child)
+                  CometSinkPlaceHolder(nativeOp, b, cometOp)
+                case None => b
+              }
+            case other => other
           }
+          plan.withNewChildren(newChildren)
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
@@ -651,8 +662,8 @@ object CometSparkSessionExtensions extends Logging {
     !conf.getConfString(operatorDisabledFlag, "false").toBoolean
   }
 
-  private[comet] def isCometBroadCastEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_BROADCAST_ENABLED.get(conf)
+  private[comet] def isCometBroadCastForceEnabled(conf: SQLConf): Boolean = {
+    COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)
   }
 
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
