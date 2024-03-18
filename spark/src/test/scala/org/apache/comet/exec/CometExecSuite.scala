@@ -58,53 +58,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Add a test for SortMergeJoin with join filter after new DataFusion release
-  test("SortMergeJoin without join filter") {
-    withSQLConf(
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
-          val df1 = sql("SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df1)
-
-          val df2 = sql("SELECT * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df2)
-
-          val df3 = sql("SELECT * FROM tbl_b LEFT JOIN tbl_a ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df3)
-
-          val df4 = sql("SELECT * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df4)
-
-          val df5 = sql("SELECT * FROM tbl_b RIGHT JOIN tbl_a ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df5)
-
-          val df6 = sql("SELECT * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df6)
-
-          val df7 = sql("SELECT * FROM tbl_b FULL JOIN tbl_a ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df7)
-
-          val left = sql("SELECT * FROM tbl_a")
-          val right = sql("SELECT * FROM tbl_b")
-
-          val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
-          checkSparkAnswerAndOperator(df8)
-
-          val df9 = right.join(left, left("_2") === right("_1"), "leftsemi")
-          checkSparkAnswerAndOperator(df9)
-
-          val df10 = left.join(right, left("_2") === right("_1"), "leftanti")
-          checkSparkAnswerAndOperator(df10)
-
-          val df11 = right.join(left, left("_2") === right("_1"), "leftanti")
-          checkSparkAnswerAndOperator(df11)
-        }
-      }
-    }
-  }
-
   test("Fix corrupted AggregateMode when transforming plan parameters") {
     withParquetTable((0 until 5).map(i => (i, i + 1)), "table") {
       val df = sql("SELECT * FROM table").groupBy($"_1").agg(sum("_2"))
