@@ -916,11 +916,8 @@ impl PhysicalPlanner {
                     let full_schema = Arc::new(Schema::new(all_fields));
 
                     let physical_expr = self.create_expr(expr, full_schema)?;
-                    let (left_field_indices, right_field_indices) = expr_to_columns(
-                        &physical_expr,
-                        left.schema().fields.len(),
-                        right.schema().fields.len(),
-                    )?;
+                    let (left_field_indices, right_field_indices) =
+                        expr_to_columns(&physical_expr, left_fields.len(), right_fields.len())?;
                     let column_indices = JoinFilter::build_column_indices(
                         left_field_indices.clone(),
                         right_field_indices.clone(),
