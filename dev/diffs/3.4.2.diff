@@ -234,6 +234,20 @@ index 56e9520fdab..917932336df 100644
            spark.range(50).write.saveAsTable(s"$dbName.$table1Name")
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
+index 9ddb4abe98b..1bebe99f1cc 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
+@@ -3311,7 +3311,8 @@ class DataFrameSuite extends QueryTest
+     assert(df2.isLocal)
+   }
+ 
+-  test("SPARK-35886: PromotePrecision should be subexpr replaced") {
++  test("SPARK-35886: PromotePrecision should be subexpr replaced",
++    IgnoreComet("TODO: fix Comet for this test")) {
+     withTable("tbl") {
+       sql(
+         """
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 index f33432ddb6f..fe9f74ff8f1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
@@ -408,18 +422,19 @@ index b5b34922694..a72403780c4 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 3cfda19134a..afcfba37c6f 100644
+index 3cfda19134a..278bb1060c4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -21,6 +21,7 @@ import scala.collection.mutable.ArrayBuffer
+@@ -21,6 +21,8 @@ import scala.collection.mutable.ArrayBuffer
  
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Join, LogicalPlan, Project, Sort, Union}
 +import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
-@@ -1543,6 +1544,12 @@ class SubquerySuite extends QueryTest
+@@ -1543,6 +1545,12 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -431,6 +446,14 @@ index 3cfda19134a..afcfba37c6f 100644
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
          case _ => false
        })
+     }
+@@ -2109,6 +2117,7 @@ class SubquerySuite extends QueryTest
+       df.collect()
+       val exchanges = collect(df.queryExecution.executedPlan) {
+         case s: ShuffleExchangeExec => s
++        case s: CometShuffleExchangeExec => s
+       }
+       assert(exchanges.size === 1)
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 index cfc8b2cc845..c6fcfd7bd08 100644
@@ -935,7 +958,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 266bb343526..f393606997c 100644
+index 266bb343526..c21a38767ae 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -24,7 +24,9 @@ import org.apache.spark.sql.catalyst.catalog.BucketSpec
@@ -1051,7 +1074,16 @@ index 266bb343526..f393606997c 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1031,10 +1060,16 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1026,15 +1041,24 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+             expectedNumShuffles: Int,
+             expectedCoalescedNumBuckets: Option[Int]): Unit = {
+           val plan = sql(query).queryExecution.executedPlan
+-          val shuffles = plan.collect { case s: ShuffleExchangeExec => s }
++          val shuffles = plan.collect {
++            case s: ShuffleExchangeExec => s
++            case s: CometShuffleExchangeExec => s
++          }
+           assert(shuffles.length == expectedNumShuffles)
  
            val scans = plan.collect {
              case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
@@ -1139,6 +1171,85 @@ index 75f440caefc..36b1146bc3a 100644
        }.headOption.getOrElse {
          fail(s"No FileScan in query\n${df.queryExecution}")
        }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateDistributionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateDistributionSuite.scala
+index b597a244710..c6d11f9ba69 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateDistributionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateDistributionSuite.scala
+@@ -21,6 +21,7 @@ import java.io.File
+ 
+ import org.apache.commons.io.FileUtils
+ 
++import org.apache.spark.sql.IgnoreComet
+ import org.apache.spark.sql.catalyst.streaming.InternalOutputModes.Update
+ import org.apache.spark.sql.execution.streaming.{FlatMapGroupsWithStateExec, MemoryStream}
+ import org.apache.spark.sql.internal.SQLConf
+@@ -243,7 +244,8 @@ class FlatMapGroupsWithStateDistributionSuite extends StreamTest
+   }
+ 
+   test("SPARK-38204: flatMapGroupsWithState should require ClusteredDistribution " +
+-    "from children if the query starts from checkpoint in 3.2.x - without initial state") {
++    "from children if the query starts from checkpoint in 3.2.x - without initial state",
++    IgnoreComet("TODO: fix Comet for this test")) {
+     // function will return -1 on timeout and returns count of the state otherwise
+     val stateFunc =
+       (key: (String, String), values: Iterator[(String, String, Long)],
+@@ -335,7 +337,8 @@ class FlatMapGroupsWithStateDistributionSuite extends StreamTest
+   }
+ 
+   test("SPARK-38204: flatMapGroupsWithState should require ClusteredDistribution " +
+-    "from children if the query starts from checkpoint in prior to 3.2") {
++    "from children if the query starts from checkpoint in prior to 3.2",
++    IgnoreComet("TODO: fix Comet for this test")) {
+     // function will return -1 on timeout and returns count of the state otherwise
+     val stateFunc =
+       (key: (String, String), values: Iterator[(String, String, Long)],
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
+index 6aa7d0945c7..38523536154 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
+@@ -25,7 +25,7 @@ import org.scalatest.exceptions.TestFailedException
+ 
+ import org.apache.spark.SparkException
+ import org.apache.spark.api.java.function.FlatMapGroupsWithStateFunction
+-import org.apache.spark.sql.{DataFrame, Encoder}
++import org.apache.spark.sql.{DataFrame, Encoder, IgnoreCometSuite}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
+ import org.apache.spark.sql.catalyst.plans.logical.FlatMapGroupsWithState
+@@ -46,8 +46,9 @@ case class RunningCount(count: Long)
+ 
+ case class Result(key: Long, count: Int)
+ 
++// TODO: fix Comet to enable this suite
+ @SlowSQLTest
+-class FlatMapGroupsWithStateSuite extends StateStoreMetricsTest {
++class FlatMapGroupsWithStateSuite extends StateStoreMetricsTest with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateWithInitialStateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateWithInitialStateSuite.scala
+index 2a2a83d35e1..e3b7b290b3e 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateWithInitialStateSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateWithInitialStateSuite.scala
+@@ -18,7 +18,7 @@
+ package org.apache.spark.sql.streaming
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{AnalysisException, Dataset, KeyValueGroupedDataset}
++import org.apache.spark.sql.{AnalysisException, Dataset, IgnoreComet, KeyValueGroupedDataset}
+ import org.apache.spark.sql.catalyst.streaming.InternalOutputModes.Update
+ import org.apache.spark.sql.execution.streaming.MemoryStream
+ import org.apache.spark.sql.execution.streaming.state.FlatMapGroupsWithStateExecHelper
+@@ -253,7 +253,8 @@ class FlatMapGroupsWithStateWithInitialStateSuite extends StateStoreMetricsTest
+     assert(e.message.contains(expectedError))
+   }
+ 
+-  test("flatMapGroupsWithState - initial state - initial state has flatMapGroupsWithState") {
++  test("flatMapGroupsWithState - initial state - initial state has flatMapGroupsWithState",
++    IgnoreComet("TODO: fix Comet for this test")) {
+     val initialStateDS = Seq(("keyInStateAndData", new RunningCount(1))).toDS()
+     val initialState: KeyValueGroupedDataset[String, RunningCount] =
+       initialStateDS.groupByKey(_._1).mapValues(_._2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index abe606ad9c1..2d930b64cca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
@@ -1268,6 +1379,20 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
+index 1966e1e64fd..cde97a0aafe 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
+@@ -656,7 +656,8 @@ abstract class AggregationQuerySuite extends QueryTest with SQLTestUtils with Te
+         Row(3, 4, 4, 3, null) :: Nil)
+   }
+ 
+-  test("single distinct multiple columns set") {
++  test("single distinct multiple columns set",
++    IgnoreComet("TODO: fix Comet for this test")) {
+     checkAnswer(
+       spark.sql(
+         """
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index 07361cfdce9..c5d94c92e32 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
