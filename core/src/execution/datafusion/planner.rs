@@ -927,14 +927,13 @@ impl PhysicalPlanner {
                 // DataFusion `SortMergeJoinExec` operator keeps the input batch internally. We need
                 // to copy the input batch to avoid the data corruption from reusing the input
                 // batch.
-                let left = if crate::execution::datafusion::planner::can_reuse_input_batch(&left) {
+                let left = if can_reuse_input_batch(&left) {
                     Arc::new(CopyExec::new(left))
                 } else {
                     left
                 };
 
-                let right = if crate::execution::datafusion::planner::can_reuse_input_batch(&right)
-                {
+                let right = if can_reuse_input_batch(&right) {
                     Arc::new(CopyExec::new(right))
                 } else {
                     right
