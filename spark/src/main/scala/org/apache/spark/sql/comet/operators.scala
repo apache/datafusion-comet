@@ -31,9 +31,10 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
+import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -324,6 +325,8 @@ abstract class CometNativeExec extends CometExec {
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
+abstract class CometBinaryExec extends CometNativeExec with BinaryExecNode
+
 /**
  * Represents the serialized plan of Comet native operators. Only the first operator in a block of
  * continuous Comet native operators has defined plan bytes which contains the serialization of
@@ -582,6 +585,41 @@ case class CometHashAggregateExec(
 
   override def hashCode(): Int =
     Objects.hashCode(groupingExpressions, aggregateExpressions, input, mode, child)
+}
+
+case class CometSortMergeJoinExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    leftKeys: Seq[Expression],
+    rightKeys: Seq[Expression],
+    joinType: JoinType,
+    condition: Option[Expression],
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(leftKeys, rightKeys, joinType, condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortMergeJoinExec =>
+        this.leftKeys == other.leftKeys &&
+        this.rightKeys == other.rightKeys &&
+        this.condition == other.condition &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(leftKeys, rightKeys, condition, left, right)
 }
 
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)

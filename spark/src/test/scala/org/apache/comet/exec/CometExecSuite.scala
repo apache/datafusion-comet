@@ -859,6 +859,7 @@ class CometExecSuite extends CometTestBase {
         .saveAsTable("bucketed_table2")
 
       withSQLConf(
+        "spark.comet.exec.sort_merge_join.disabled" -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
         val t1 = spark.table("bucketed_table1")
