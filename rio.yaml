@@ -9,7 +9,7 @@ notify:
     postOnFailure: false
 
 machine:
-  baseImage: docker.apple.com/pie/boson-builder:latest
+  baseImage: docker.apple.com/pie/comet-builder:latest
   env: &base_env
     LOCAL_REPO: ".dist/local-repo"
     COMET: true
