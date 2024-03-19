@@ -105,15 +105,13 @@ public class CometPlainVector extends CometDecodedVector {
       int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
       return UTF8String.fromAddress(null, valueBufferAddress + offset, length);
     } else {
-      // Iceberg maps UUID to StringType.
-      // The data type here must be UUID because the only FLBA -> String mapping we have is UUID.
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       int length = fixedWidthVector.getTypeWidth();
       int offset = rowId * length;
       byte[] result = new byte[length];
       Platform.copyMemory(
           null, valueBufferAddress + offset, result, Platform.BYTE_ARRAY_OFFSET, length);
-      return UTF8String.fromString(convertToUuid(result).toString());
+      return UTF8String.fromBytes(result);
     }
   }
 

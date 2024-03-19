@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Count, Final, First, Last, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -190,6 +190,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
     }
   }
 
+  private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
+    dt match {
+      case _: IntegerType | LongType | ShortType | ByteType => true
+      case _ => false
+    }
+  }
+
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
@@ -326,6 +333,57 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setLast(lastBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitAnd @ BitAndAgg(child) if bitwiseAggTypeSupported(bitAnd.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitAnd.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitAndBuilder = ExprOuterClass.BitAndAgg.newBuilder()
+          bitAndBuilder.setChild(childExpr.get)
+          bitAndBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitAndAgg(bitAndBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitOr @ BitOrAgg(child) if bitwiseAggTypeSupported(bitOr.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitOr.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitOrBuilder = ExprOuterClass.BitOrAgg.newBuilder()
+          bitOrBuilder.setChild(childExpr.get)
+          bitOrBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitOrAgg(bitOrBuilder)
+              .build())
+        } else {
+          None
+        }
+      case bitXor @ BitXorAgg(child) if bitwiseAggTypeSupported(bitXor.dataType) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(bitXor.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val bitXorBuilder = ExprOuterClass.BitXorAgg.newBuilder()
+          bitXorBuilder.setChild(childExpr.get)
+          bitXorBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBitXorAgg(bitXorBuilder)
               .build())
         } else {
           None
@@ -1570,6 +1628,23 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             "make_decimal",
             DecimalType(precision, scale),
             childExpr)
+        case b @ BinaryExpression(_, _) if isBloomFilterMightContain(b) =>
+          val bloomFilter = b.left
+          val value = b.right
+          val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs)
+          val valueExpr = exprToProtoInternal(value, inputs)
+          if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
+            val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
+            builder.setBloomFilter(bloomFilterExpr.get)
+            builder.setValue(valueExpr.get)
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setBloomFilterMightContain(builder)
+                .build())
+          } else {
+            None
+          }
 
         case e =>
           emitWarning(s"unsupported Spark expression: '$e' of class '${e.getClass.getName}")
@@ -1887,6 +1962,62 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
           condition.foreach(joinBuilder.setCondition)
           Some(result.setHashJoin(joinBuilder).build())
+        } else {
+          None
+        }
+
+      case join: SortMergeJoinExec if isCometOperatorEnabled(op.conf, "sort_merge_join") =>
+        // `requiredOrders` and `getKeyOrdering` are copied from Spark's SortMergeJoinExec.
+        def requiredOrders(keys: Seq[Expression]): Seq[SortOrder] = {
+          keys.map(SortOrder(_, Ascending))
+        }
+
+        def getKeyOrdering(
+            keys: Seq[Expression],
+            childOutputOrdering: Seq[SortOrder]): Seq[SortOrder] = {
+          val requiredOrdering = requiredOrders(keys)
+          if (SortOrder.orderingSatisfies(childOutputOrdering, requiredOrdering)) {
+            keys.zip(childOutputOrdering).map { case (key, childOrder) =>
+              val sameOrderExpressionsSet = ExpressionSet(childOrder.children) - key
+              SortOrder(key, Ascending, sameOrderExpressionsSet.toSeq)
+            }
+          } else {
+            requiredOrdering
+          }
+        }
+
+        // TODO: Support SortMergeJoin with join condition after new DataFusion release
+        if (join.condition.isDefined) {
+          return None
+        }
+
+        val joinType = join.joinType match {
+          case Inner => JoinType.Inner
+          case LeftOuter => JoinType.LeftOuter
+          case RightOuter => JoinType.RightOuter
+          case FullOuter => JoinType.FullOuter
+          case LeftSemi => JoinType.LeftSemi
+          case LeftAnti => JoinType.LeftAnti
+          case _ => return None // Spark doesn't support other join types
+        }
+
+        val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
+        val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
+
+        val sortOptions = getKeyOrdering(join.leftKeys, join.left.outputOrdering)
+          .map(exprToProto(_, join.left.output))
+
+        if (sortOptions.forall(_.isDefined) &&
+          leftKeys.forall(_.isDefined) &&
+          rightKeys.forall(_.isDefined) &&
+          childOp.nonEmpty) {
+          val joinBuilder = OperatorOuterClass.SortMergeJoin
+            .newBuilder()
+            .setJoinType(joinType)
+            .addAllSortOptions(sortOptions.map(_.get).asJava)
+            .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
+            .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+          Some(result.setSortMergeJoin(joinBuilder).build())
         } else {
           None
         }

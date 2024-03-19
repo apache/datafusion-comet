@@ -27,9 +27,9 @@ use datafusion::{
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, Count, FirstValue, InListExpr,
-            IsNotNullExpr, IsNullExpr, LastValue, Literal as DataFusionLiteral, Max, Min,
-            NegativeExpr, NotExpr, Sum, UnKnownColumn,
+            in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
+            FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
+            Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
         },
         functions::create_physical_expr,
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
@@ -37,7 +37,7 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
-        joins::{utils::JoinFilter, HashJoinExec, PartitionMode},
+        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
@@ -60,6 +60,7 @@ use crate::{
                 avg::Avg,
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
+                bloom_filter_might_contain::BloomFilterMightContain,
                 cast::Cast,
                 checkoverflow::CheckOverflow,
                 if_expr::IfExpr,
@@ -538,6 +539,15 @@ impl PhysicalPlanner {
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
             }
+            ExprStruct::BloomFilterMightContain(expr) => {
+                let bloom_filter_expr =
+                    self.create_expr(expr.bloom_filter.as_ref().unwrap(), input_schema.clone())?;
+                let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(BloomFilterMightContain::try_new(
+                    bloom_filter_expr,
+                    value_expr,
+                )?))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -862,6 +872,87 @@ impl PhysicalPlanner {
                     Arc::new(CometExpandExec::new(projections, child, schema)),
                 ))
             }
+            OpStruct::SortMergeJoin(join) => {
+                assert!(children.len() == 2);
+                let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
+                let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+
+                left_scans.append(&mut right_scans);
+
+                let left_join_exprs = join
+                    .left_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, left.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let right_join_exprs = join
+                    .right_join_keys
+                    .iter()
+                    .map(|expr| self.create_expr(expr, right.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let join_on = left_join_exprs
+                    .into_iter()
+                    .zip(right_join_exprs)
+                    .collect::<Vec<_>>();
+
+                let join_type = match join.join_type.try_into() {
+                    Ok(JoinType::Inner) => DFJoinType::Inner,
+                    Ok(JoinType::LeftOuter) => DFJoinType::Left,
+                    Ok(JoinType::RightOuter) => DFJoinType::Right,
+                    Ok(JoinType::FullOuter) => DFJoinType::Full,
+                    Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
+                    Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
+                    Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
+                    Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
+                    Err(_) => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Unsupported join type: {:?}",
+                            join.join_type
+                        )));
+                    }
+                };
+
+                let sort_options = join
+                    .sort_options
+                    .iter()
+                    .map(|sort_option| {
+                        let sort_expr = self.create_sort_expr(sort_option, left.schema()).unwrap();
+                        SortOptions {
+                            descending: sort_expr.options.descending,
+                            nulls_first: sort_expr.options.nulls_first,
+                        }
+                    })
+                    .collect();
+
+                // DataFusion `SortMergeJoinExec` operator keeps the input batch internally. We need
+                // to copy the input batch to avoid the data corruption from reusing the input
+                // batch.
+                let left = if can_reuse_input_batch(&left) {
+                    Arc::new(CopyExec::new(left))
+                } else {
+                    left
+                };
+
+                let right = if can_reuse_input_batch(&right) {
+                    Arc::new(CopyExec::new(right))
+                } else {
+                    right
+                };
+
+                let join = Arc::new(SortMergeJoinExec::try_new(
+                    left,
+                    right,
+                    join_on,
+                    None,
+                    join_type,
+                    sort_options,
+                    // null doesn't equal to null in Spark join key. If the join key is
+                    // `EqualNullSafe`, Spark will rewrite it during planning.
+                    false,
+                )?);
+
+                Ok((left_scans, join))
+            }
             OpStruct::HashJoin(join) => {
                 assert!(children.len() == 2);
                 let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
@@ -965,13 +1056,13 @@ impl PhysicalPlanner {
                 // DataFusion `HashJoinExec` operator keeps the input batch internally. We need
                 // to copy the input batch to avoid the data corruption from reusing the input
                 // batch.
-                let left = if op_reuse_array(&left) {
+                let left = if can_reuse_input_batch(&left) {
                     Arc::new(CopyExec::new(left))
                 } else {
                     left
                 };
 
-                let right = if op_reuse_array(&right) {
+                let right = if can_reuse_input_batch(&right) {
                     Arc::new(CopyExec::new(right))
                 } else {
                     right
@@ -1071,6 +1162,21 @@ impl PhysicalPlanner {
                     vec![],
                 )))
             }
+            AggExprStruct::BitAndAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
+            }
+            AggExprStruct::BitOrAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
+            }
+            AggExprStruct::BitXorAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+            }
         }
     }
 
@@ -1160,7 +1266,7 @@ impl From<ExpressionError> for DataFusionError {
 /// Returns true if given operator can return input array as output array without
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
-fn op_reuse_array(op: &Arc<dyn ExecutionPlan>) -> bool {
+fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     op.as_any().downcast_ref::<ScanExec>().is_some()
         || op.as_any().downcast_ref::<LocalLimitExec>().is_some()
         || op.as_any().downcast_ref::<ProjectionExec>().is_some()
