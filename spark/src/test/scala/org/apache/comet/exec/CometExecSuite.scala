@@ -1458,11 +1458,11 @@ class CometExecSuite extends CometTestBase {
           println("df: " + df1.collectAsList())
           checkAnswer(df1, Seq(Row(null, 2, 1), Row(null, 4, 2), Row(null, 6, 3)))
 
-          //          val bosonWindowExec = stripAQEPlan(df1.queryExecution.executedPlan).collect {
-          //            case b: BosonWindowExec => b
+          //          val cometWindowExec = stripAQEPlan(df1.queryExecution.executedPlan).collect {
+          //            case b: CometWindowExec => b
           //          }
           //
-          //          assert(bosonWindowExec.length == 1)
+          //          assert(cometWindowExec.length == 1)
           //
           //          val df2 = spark.sql("""
           //                |SELECT b, RANK() OVER(ORDER BY a, b) AS rk, DENSE_RANK(b) OVER(ORDER BY a, b) AS s
