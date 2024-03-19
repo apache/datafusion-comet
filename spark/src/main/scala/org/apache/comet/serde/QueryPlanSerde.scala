@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Final, First, Last, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans._
@@ -384,6 +384,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setBitXorAgg(bitXorBuilder)
+              .build())
+        } else {
+          None
+        }
+      case cov @ CovSample(child1, child2, _) =>
+        val child1Expr = exprToProto(child1, inputs, binding)
+        val child2Expr = exprToProto(child2, inputs, binding)
+        val dataType = serializeDataType(cov.dataType)
+
+        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+          val covBuilder = ExprOuterClass.CovSample.newBuilder()
+          covBuilder.setChild1(child1Expr.get)
+          covBuilder.setChild2(child2Expr.get)
+          covBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setCovSample(covBuilder)
+              .build())
+        } else {
+          None
+        }
+      case cov @ CovPopulation(child1, child2, _) =>
+        val child1Expr = exprToProto(child1, inputs, binding)
+        val child2Expr = exprToProto(child2, inputs, binding)
+        val dataType = serializeDataType(cov.dataType)
+
+        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+          val covBuilder = ExprOuterClass.CovPopulation.newBuilder()
+          covBuilder.setChild1(child1Expr.get)
+          covBuilder.setChild2(child2Expr.get)
+          covBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setCovPopulation(covBuilder)
               .build())
         } else {
           None

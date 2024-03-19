@@ -205,7 +205,7 @@ class NativeUtil {
       case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
-          _: FixedSizeBinaryVector | _: TimeStampMicroVector) =>
+          _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: UInt8Vector) =>
         v.asInstanceOf[FieldVector]
       case _ => throw new SparkException(s"Unsupported Arrow Vector: ${valueVector.getClass}")
     }

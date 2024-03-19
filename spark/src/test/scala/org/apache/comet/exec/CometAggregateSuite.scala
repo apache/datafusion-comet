@@ -997,6 +997,37 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("covar_pop and covar_samp") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      Seq(true, false).foreach { dictionary =>
+        withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "test"
+          withTable(table) {
+            sql(
+              s"create table $table(col1 int, col2 int, col3 int, col4 float, col5 double, col6 double, col7 int) using parquet")
+            sql(
+              s"insert into $table values(1, 4, null, 1.1, 2.2, null, 1), (2, 5, 6, 3.4, 5.6, null, 1), (3, 6, null, 7.9, 2.4, null, 2)")
+            val expectedNumOfCometAggregates = 2
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT covar_samp(col1, col2), covar_samp(col1, col3) FROM test",
+              expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT covar_pop(col1, col2), covar_pop(col1, col3) FROM test",
+              expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT covar_samp(col1, col2), covar_samp(col1, col3) FROM test GROUP BY col7",
+              expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT covar_pop(col1, col2), covar_pop(col1, col3) FROM test GROUP BY col7",
+              expectedNumOfCometAggregates)
+          }
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)
