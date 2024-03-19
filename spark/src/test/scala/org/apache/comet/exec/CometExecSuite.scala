@@ -1430,6 +1430,66 @@ class CometExecSuite extends CometTestBase {
       }
     })
   }
+
+  test("Windows support") {
+    // Disable native exec requirements because to invoke TakeOrderedAndProjectExec
+    // we can through Window which is not currently supported
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withTable("t1") {
+          val numRows = 10
+          spark
+            .range(numRows)
+            .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
+            .repartition(3) // Force repartition to test data will come to single partition
+            .write
+            .saveAsTable("t1")
+
+          val df1 = spark.sql("""
+              |SELECT a, b, lag(a) OVER(ORDER BY a) AS rn
+              |FROM t1 LIMIT 3
+              |""".stripMargin)
+
+          assert(df1.rdd.getNumPartitions == 1)
+          df1.printSchema()
+          df1.show(false)
+          println("df: " + df1.collectAsList())
+          checkAnswer(df1, Seq(Row(null, 2, 1), Row(null, 4, 2), Row(null, 6, 3)))
+
+          //          val bosonWindowExec = stripAQEPlan(df1.queryExecution.executedPlan).collect {
+          //            case b: BosonWindowExec => b
+          //          }
+          //
+          //          assert(bosonWindowExec.length == 1)
+          //
+          //          val df2 = spark.sql("""
+          //                |SELECT b, RANK() OVER(ORDER BY a, b) AS rk, DENSE_RANK(b) OVER(ORDER BY a, b) AS s
+          //                |FROM t1 LIMIT 2
+          //                |""".stripMargin)
+          //          assert(df2.rdd.getNumPartitions == 1)
+          //          checkAnswer(df2, Seq(Row(2, 1, 1), Row(4, 2, 2)))
+          //
+          //          checkSparkAnswer("select _1, rank() over (order by _2) from tbl")
+          //          checkSparkAnswer("select _1, rank() over (order by _2 nulls last) from tbl")
+          //          checkSparkAnswer("select _1, rank() over (order by _2 nulls first) from tbl")
+          //          checkSparkAnswer("select _1, rank() over (order by _2 desc) from tbl")
+          //          checkSparkAnswer("select _1, rank() over (order by _2 desc nulls last) from tbl")
+          //          checkSparkAnswer("select _1, rank() over (order by _2 desc nulls first) from tbl")
+          //
+          //          checkSparkAnswer("select _1, row_number() over (order by _2) from tbl")
+          //          checkSparkAnswer("select _1, row_number() over (partition by _2 order by _2) from tbl")
+          //
+          //          checkSparkAnswer(
+          //            "select _1, sum(_2) over (order by _2 rows between 1 preceding and 1 following) from tbl")
+          //          checkSparkAnswer(
+          //            "select _1, sum(_2) over (order by _2 rows between 1 preceding and current row) from tbl")
+          //          checkSparkAnswer(
+          //            "select _1, sum(_2) over (order by _2 rows between current row and 1 following) from tbl")
+        }
+      })
+  }
 }
 
 case class BucketedTableTestSpec(

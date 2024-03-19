@@ -92,10 +92,9 @@ use crate::{
             self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
             Expr, ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, JoinType, Operator},
         spark_operator::{
             lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-            upper_window_frame_bound::UpperFrameBoundStruct, Operator, WindowFrameType,
+            upper_window_frame_bound::UpperFrameBoundStruct, JoinType, Operator, WindowFrameType,
         },
         spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
@@ -1465,6 +1464,7 @@ impl PhysicalPlanner {
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
 
+        dbg!(&window_func);
         datafusion::physical_plan::windows::create_window_expr(
             &window_func,
             window_func_name,
