@@ -688,7 +688,7 @@ builds:
 
   - <<: *comet-iceberg
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -706,7 +706,7 @@ builds:
 
   - <<: *comet-iceberg
     version: 3.4_2.13
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
