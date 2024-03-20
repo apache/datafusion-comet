@@ -99,6 +99,11 @@ under the License.
         <scope>${spark.maven.scope}</scope>
         <exclusions>
           <exclusion>
+            <groupId>com.apple.pie.boson</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+
+          <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
           </exclusion>
@@ -124,6 +129,10 @@ under the License.
         <version>${spark.version}</version>
         <scope>${spark.maven.scope}</scope>
         <exclusions>
+          <exclusion>
+            <groupId>org.apache.iceberg</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
           <exclusion>
@@ -276,6 +285,10 @@ under the License.
         <classifier>tests</classifier>
         <scope>test</scope>
         <exclusions>
+          <exclusion>
+            <groupId>org.apache.iceberg</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
 
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
@@ -302,6 +315,10 @@ under the License.
         <classifier>tests</classifier>
         <scope>test</scope>
         <exclusions>
+          <exclusion>
+            <groupId>com.apple.pie.boson</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
           <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
@@ -911,6 +928,12 @@ under the License.
               <rules>
                 <banCircularDependencies/>
                 <banDuplicatePomDependencyVersions/>
+                <bannedDependencies>
+                  <excludes>
+                    <exclude>com.apple.pie.boson</exclude>
+                    <exclude>org.apache.iceberg</exclude>
+                  </excludes>
+                </bannedDependencies>
                 <banDuplicateClasses>
                   <scopes>
                     <scope>compile</scope>
