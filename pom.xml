@@ -102,6 +102,10 @@ under the License.
             <groupId>com.apple.pie.boson</groupId>
             <artifactId>*</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>org.apache.comet</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
 
           <exclusion>
             <groupId>org.apache.parquet</groupId>
@@ -319,6 +323,11 @@ under the License.
             <groupId>com.apple.pie.boson</groupId>
             <artifactId>*</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>org.apache.comet</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+
           <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
