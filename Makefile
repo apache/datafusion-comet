@@ -33,7 +33,7 @@ test-jvm: core
 test: test-rust test-jvm
 clean:
 	cd core && cargo clean
-	./mvnw clean
+	./mvnw clean $(PROFILES)
 	rm -rf .dist
 bench:
 	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(filter-out $@,$(MAKECMDGOALS))
