@@ -1,0 +1,13 @@
+index 680a5e1..961b284 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewTestSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewTestSuite.scala
+@@ -663,8 +663,7 @@ class PersistedViewTestSuite extends SQLViewTestSuite with SharedSparkSession {
+       val message = intercept[AnalysisException] {
+         sql("SELECT * FROM v")
+       }.getMessage
+-      assert(message.contains(s"has an incompatible schema change " +
+-        s"and column 1 cannot be resolved"))
++      assert(message.contains(s"The view spark_catalog.default.v may have been tampered with."))
+     }
+   }
+

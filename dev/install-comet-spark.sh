@@ -89,6 +89,9 @@ fi
 if [ -f "$BASEDIR/diffs/scalastyle-${SPARK_MINOR_VERSION}.diff" ]; then
   git apply "$BASEDIR/diffs/scalastyle-${SPARK_MINOR_VERSION}.diff"
 fi
+if [ -f "$BASEDIR/diffs/test-${SPARK_MINOR_VERSION}.diff" ]; then
+  git apply "$BASEDIR/diffs/test-${SPARK_MINOR_VERSION}.diff"
+fi
 
 $BASEDIR/boson-to-comet.sh
 
