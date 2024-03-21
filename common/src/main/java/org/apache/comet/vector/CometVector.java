@@ -98,22 +98,30 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  /** Reads a 16-byte byte array which are encoded big-endian for decimal128. */
+  /**
+   * Reads a 16-byte byte array which are encoded big-endian for decimal128 into internal byte
+   * array.
+   */
   byte[] getBinaryDecimal(int i) {
+    return copyBinaryDecimal(i, DECIMAL_BYTES);
+  }
+
+  /** Reads a 16-byte byte array which are encoded big-endian for decimal128. */
+  public byte[] copyBinaryDecimal(int i, byte[] dest) {
     long valueBufferAddress = getValueVector().getDataBuffer().memoryAddress();
     Platform.copyMemory(
         null,
         valueBufferAddress + (long) i * DECIMAL_BYTE_WIDTH,
-        DECIMAL_BYTES,
+        dest,
         Platform.BYTE_ARRAY_OFFSET,
         DECIMAL_BYTE_WIDTH);
     // Decimal is stored little-endian in Arrow, so we need to reverse the bytes here
     for (int j = 0, k = DECIMAL_BYTE_WIDTH - 1; j < DECIMAL_BYTE_WIDTH / 2; j++, k--) {
-      byte tmp = DECIMAL_BYTES[j];
-      DECIMAL_BYTES[j] = DECIMAL_BYTES[k];
-      DECIMAL_BYTES[k] = tmp;
+      byte tmp = dest[j];
+      dest[j] = dest[k];
+      dest[k] = tmp;
     }
-    return DECIMAL_BYTES;
+    return dest;
   }
 
   @Override
