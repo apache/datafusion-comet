@@ -156,10 +156,9 @@ public class CometDictionary implements AutoCloseable {
         binaries = new ByteArrayWrapper[numValues];
         for (int i = 0; i < numValues; i++) {
           // Need copying here since we re-use byte array for decimal
-          byte[] bytes = values.getBinaryDecimal(i);
-          byte[] copy = new byte[DECIMAL_BYTE_WIDTH];
-          System.arraycopy(bytes, 0, copy, 0, DECIMAL_BYTE_WIDTH);
-          binaries[i] = new ByteArrayWrapper(copy);
+          byte[] bytes = new byte[DECIMAL_BYTE_WIDTH];
+          bytes = values.copyBinaryDecimal(i, bytes);
+          binaries[i] = new ByteArrayWrapper(bytes);
         }
         break;
       default:
