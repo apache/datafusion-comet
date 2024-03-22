@@ -1964,16 +1964,16 @@ builds:
       <<: *pr_build_build
     package: &pr_spark_image_package
       <<: *pr_build_package
-      dockerfile:
-        - env:
-            SPARK_VERSION: ${SPARK_VERSION}
-            SCALA_VERSION: ${SCALA_VERSION}
-            PR_NUMBER: ${BUILD_PARAM_PR_NUMBER}
-          dockerfilePath: dev/Dockerfile-spark
-          perApplication: false
-          version: "pr-${BUILD_PARAM_PR_NUMBER}"
-          publish:
-            - repo: docker.apple.com/comet-dev/spark${SPARK_VERSION}_${SCALA_VERSION}
+      #dockerfile:
+      #  - env:
+      #      SPARK_VERSION: ${SPARK_VERSION}
+      #      SCALA_VERSION: ${SCALA_VERSION}
+      #      PR_NUMBER: ${BUILD_PARAM_PR_NUMBER}
+      #    dockerfilePath: dev/Dockerfile-spark
+      #    perApplication: false
+      #    version: "pr-${BUILD_PARAM_PR_NUMBER}"
+      #    publish:
+      #      - repo: docker.apple.com/comet-dev/spark${SPARK_VERSION}_${SCALA_VERSION}
 
   - group: pr-build
     branchName: main-apple
