@@ -1886,7 +1886,7 @@ builds:
 
         # Build and prepare for publishing
         - ./mvnw ${PROFILES} deploy -DaltDeploymentRepository="local-release::default::file://$PWD/$LOCAL_REPO" -DskipTests
-        - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
+        - if [ "${RIO_ARCH}" == "amd64" ]; then ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"; fi
     package: &pr_build_package
       release: false
       freeform:
