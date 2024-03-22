@@ -1772,7 +1772,7 @@ builds:
       release: false
       freeform:
         - publish:
-            - repo: oss-patched-local
+            - repo: oss-patched-snapshot-local
     finally:
       pipelineChain:
         - pipeline: pr-build-artifacts-main-apple-build-platform
@@ -1891,7 +1891,7 @@ builds:
       release: false
       freeform:
         - publish:
-            - repo: oss-patched-local
+            - repo: oss-patched-snapshot-local
     finally:
       pipelineChain:
         - pipeline: pr-build-artifacts-main-apple-build-3.2_2.12
