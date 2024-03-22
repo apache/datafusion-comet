@@ -1892,6 +1892,8 @@ builds:
       freeform:
         - publish:
             - repo: oss-patched-snapshot-local
+          # Must be optional because only one architecture publishes jars
+          optional: true
     finally:
       pipelineChain:
         - pipeline: pr-build-artifacts-main-apple-build-3.2_2.12
