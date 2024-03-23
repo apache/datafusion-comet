@@ -335,26 +335,6 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: SortMergeJoinExec
-            if isCometOperatorEnabled(conf, "sort_merge_join") &&
-              op.children.forall(isCometNative(_)) =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSortMergeJoinExec(
-                nativeOp,
-                op,
-                op.leftKeys,
-                op.rightKeys,
-                op.joinType,
-                op.condition,
-                op.left,
-                op.right,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
-
         case op: ShuffledHashJoinExec
             if isCometOperatorEnabled(conf, "hash_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -390,6 +370,26 @@ class CometSparkSessionExtensions
                 op.joinType,
                 op.condition,
                 op.buildSide,
+                op.left,
+                op.right,
+                SerializedPlan(None))
+            case None =>
+              op
+          }
+
+        case op: SortMergeJoinExec
+            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+              op.children.forall(isCometNative(_)) =>
+          val newOp = transform1(op)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSortMergeJoinExec(
+                nativeOp,
+                op,
+                op.leftKeys,
+                op.rightKeys,
+                op.joinType,
+                op.condition,
                 op.left,
                 op.right,
                 SerializedPlan(None))
