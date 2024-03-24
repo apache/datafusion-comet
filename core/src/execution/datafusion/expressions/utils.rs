@@ -31,6 +31,7 @@ use arrow_schema::DataType;
 use chrono::{DateTime, Offset, TimeZone};
 use datafusion_common::cast::as_generic_string_array;
 use datafusion_physical_expr::PhysicalExpr;
+use num::integer::div_floor;
 use std::{any::Any, sync::Arc};
 
 /// An utility function from DataFusion. It is not exposed by DataFusion.
@@ -198,13 +199,13 @@ pub(crate) fn spark_cast(array: ArrayRef, from_type: &DataType, to_type: &DataTy
     match (from_type, to_type) {
         (DataType::Timestamp(_, _), DataType::Int64) => {
             // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| v.div_floor(MICROS_PER_SECOND)).unwrap()
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
         }
         (DataType::Dictionary(_, value_type), DataType::Int64)
             if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
         {
             // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| v.div_floor(MICROS_PER_SECOND)).unwrap()
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
         }
         (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
         (DataType::Dictionary(_, value_type), DataType::Utf8)
