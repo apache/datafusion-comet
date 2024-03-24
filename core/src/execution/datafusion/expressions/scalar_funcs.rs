@@ -37,7 +37,10 @@ use datafusion_common::{
 use datafusion_physical_expr::{
     execution_props::ExecutionProps, functions::create_physical_fun, math_expressions,
 };
-use num::{BigInt, Signed, ToPrimitive};
+use num::{
+    integer::{div_ceil, div_floor},
+    BigInt, Signed, ToPrimitive,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Create a physical scalar function.
@@ -249,13 +252,13 @@ fn long_to_decimal(v: &Option<i64>, precision: u8) -> Option<i128> {
 #[inline]
 fn decimal_ceil_f(scale: &i8) -> impl Fn(i128) -> i128 {
     let div = 10_i128.pow_wrapping(*scale as u32);
-    move |x: i128| x.div_ceil(div)
+    move |x: i128| div_ceil(x, div)
 }
 
 #[inline]
 fn decimal_floor_f(scale: &i8) -> impl Fn(i128) -> i128 {
     let div = 10_i128.pow_wrapping(*scale as u32);
-    move |x: i128| x.div_floor(div)
+    move |x: i128| div_floor(x, div)
 }
 
 // Spark uses BigDecimal. See RoundBase implementation in Spark. Instead, we do the same by
