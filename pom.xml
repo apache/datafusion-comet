@@ -925,6 +925,10 @@ under the License.
                   </scopes>
                   <ignoreClasses>
                     <ignoreClass>org.apache.spark.unused.UnusedStubClass</ignoreClass>
+
+                    <!-- Ignore these annotations -->
+                    <ignoreClass>org.intellij.lang.annotations.*</ignoreClass>
+                    <ignoreClass>org.jetbrains.annotations.*</ignoreClass>
                   </ignoreClasses>
                   <dependencies>
                     <dependency>
