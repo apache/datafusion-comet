@@ -649,8 +649,17 @@ builds:
         - ./mvnw versions:set -DnewVersion="$NEXT_VERSION"
         - PROFILES="${PROFILES}" make clean release
         - rm -rf apache-incubator-iceberg
-        - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
+        # FIXME Temporarily clone entire repo and then use PR
+        #- git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
+        - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --branch ${ICEBERG_BRANCH}
         - cd apache-incubator-iceberg
+
+        # FIXME .. and use PR
+        - BUILD_PARAM_PR_NUMBER=1215
+        - git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
+        - git checkout pr_${BUILD_PARAM_PR_NUMBER}
+        - git log -n 1
+
         -  sed -i -E "s|(com.apple.pie.comet:comet-(common\|spark)-spark${COMET_TAG} = )(.*)|\1${NEXT_VERSION}|g" versions.props
         - ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:test
     reports: &test_iceberg_reports
