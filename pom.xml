@@ -99,15 +99,6 @@ under the License.
         <scope>${spark.maven.scope}</scope>
         <exclusions>
           <exclusion>
-            <groupId>com.apple.pie.boson</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.apache.comet</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-
-          <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
           </exclusion>
@@ -133,11 +124,6 @@ under the License.
         <version>${spark.version}</version>
         <scope>${spark.maven.scope}</scope>
         <exclusions>
-          <exclusion>
-            <groupId>org.apache.iceberg</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
           <exclusion>
             <groupId>commons-logging</groupId>
@@ -289,11 +275,6 @@ under the License.
         <classifier>tests</classifier>
         <scope>test</scope>
         <exclusions>
-          <exclusion>
-            <groupId>org.apache.iceberg</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
@@ -319,15 +300,6 @@ under the License.
         <classifier>tests</classifier>
         <scope>test</scope>
         <exclusions>
-          <exclusion>
-            <groupId>com.apple.pie.boson</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.apache.comet</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-
           <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
@@ -940,7 +912,6 @@ under the License.
                 <bannedDependencies>
                   <excludes>
                     <exclude>com.apple.pie.boson</exclude>
-                    <exclude>org.apache.iceberg</exclude>
                   </excludes>
                 </bannedDependencies>
                 <banDuplicateClasses>
