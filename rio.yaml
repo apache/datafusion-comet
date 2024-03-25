@@ -24,7 +24,7 @@ builds:
     branchName: main-apple
     version: platform
     machine: &rio3-machine
-      baseImage: docker.apple.com/pie/comet-builder:latest
+      baseImage: docker.apple.com/pie/boson-builder:latest
       targetPlatforms:
         - linux/amd64
         - linux/arm64
@@ -182,7 +182,7 @@ builds:
     disabled: true
     timeout: 180
     machine: &rio2-machine
-      baseImage: docker.apple.com/pie/comet-builder:latest
+      baseImage: docker.apple.com/pie/boson-builder:latest
       targetPlatforms:
         - linux/amd64
         # FIXME Disabld due to leveldbjni
@@ -321,7 +321,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -335,7 +335,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -349,7 +349,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4"
@@ -369,7 +369,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
