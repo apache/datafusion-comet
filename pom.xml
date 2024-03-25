@@ -926,6 +926,13 @@ under the License.
                   <ignoreClasses>
                     <ignoreClass>org.apache.spark.unused.UnusedStubClass</ignoreClass>
 
+                    <!-- TOOD Review these inclusions in 3 artifacts:
+                          - org.apache.parquet:parquet-column
+                          - org.apache.parquet:parquet-hadoop
+                          - org.apache.iceberg:iceberg-spark-runtime-3.4_*
+                    -->
+                    <ignoreClass>shaded.parquet.it.unimi.dsi.fastutil.*</ignoreClass>
+
                     <!-- Ignore these annotations -->
                     <ignoreClass>org.intellij.lang.annotations.*</ignoreClass>
                     <ignoreClass>org.jetbrains.annotations.*</ignoreClass>
