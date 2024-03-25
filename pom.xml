@@ -99,6 +99,10 @@ under the License.
         <scope>${spark.maven.scope}</scope>
         <exclusions>
           <exclusion>
+            <groupId>org.apache.comet</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
           </exclusion>
