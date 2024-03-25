@@ -128,6 +128,7 @@ under the License.
         <version>${spark.version}</version>
         <scope>${spark.maven.scope}</scope>
         <exclusions>
+
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
           <exclusion>
             <groupId>commons-logging</groupId>
@@ -279,6 +280,7 @@ under the License.
         <classifier>tests</classifier>
         <scope>test</scope>
         <exclusions>
+
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
