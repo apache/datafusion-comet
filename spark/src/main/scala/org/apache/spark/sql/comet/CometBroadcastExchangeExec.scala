@@ -258,8 +258,7 @@ class CometBatchRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
-
-    partition.value.value.flatMap(CometExec.decodeBatches(_)).toIterator
+    partition.value.value.toIterator.flatMap(CometExec.decodeBatches)
   }
 }
 
