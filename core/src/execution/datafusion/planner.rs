@@ -59,6 +59,8 @@ use crate::{
             expressions::{
                 avg::Avg,
                 avg_decimal::AvgDecimal,
+                covariance::Covariance,
+                covariance::CovariancePop,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 cast::Cast,
@@ -1166,6 +1168,28 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+            }
+            AggExprStruct::CovSample(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Covariance::new(
+                    child1,
+                    child2,
+                    "covariance",
+                    datatype,
+                )))
+            }
+            AggExprStruct::CovPopulation(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(CovariancePop::new(
+                    child1,
+                    child2,
+                    "covariance_pop",
+                    datatype,
+                )))
             }
         }
     }

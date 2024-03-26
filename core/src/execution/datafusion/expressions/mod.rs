@@ -32,3 +32,4 @@ pub mod subquery;
 pub mod sum_decimal;
 pub mod temporal;
 mod utils;
+pub mod covariance;
