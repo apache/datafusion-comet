@@ -34,7 +34,7 @@ use arrow_data::decimal::{
     validate_decimal_precision, MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION,
 };
 
-use num::Integer;
+use num::{integer::div_ceil, Integer};
 use DataType::*;
 
 /// AVG aggregate expression
@@ -514,7 +514,7 @@ fn avg(sum: i128, count: i128, target_min: i128, target_max: i128, scaler: i128)
     if let Some(value) = sum.checked_mul(scaler) {
         // `sum / count` with ROUND_HALF_UP
         let (div, rem) = value.div_rem(&count);
-        let half = count.div_ceil(2);
+        let half = div_ceil(count, 2);
         let half_neg = half.neg_wrapping();
         let new_value = match value >= 0 {
             true if rem >= half => div.add_wrapping(1),
