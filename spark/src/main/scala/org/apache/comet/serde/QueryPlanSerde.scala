@@ -29,14 +29,14 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometSinkPlaceHolder, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometSinkPlaceHolder, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
+import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -1915,7 +1915,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           }
         }
 
-      case join: ShuffledHashJoinExec if isCometOperatorEnabled(op.conf, "hash_join") =>
+      case join: HashJoin =>
+        // `HashJoin` has only two implementations in Spark, but we check the type of the join to
+        // make sure we are handling the correct join type.
+        if (!(isCometOperatorEnabled(op.conf, "hash_join") &&
+            join.isInstanceOf[ShuffledHashJoinExec]) &&
+          !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
+            join.isInstanceOf[BroadcastHashJoinExec])) {
+          return None
+        }
+
         if (join.buildSide == BuildRight) {
           // DataFusion HashJoin assumes build side is always left.
           // TODO: support BuildRight
@@ -2063,6 +2072,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
       case _: TakeOrderedAndProjectExec => true
+      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
       case _: BroadcastExchangeExec => true
       case _ => false
     }
