@@ -178,7 +178,7 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> ArrayRef {
                     let datetime = as_datetime::<TimestampMicrosecondType>(value).unwrap();
                     let offset = tz.offset_from_utc_datetime(&datetime).fix();
                     let datetime = datetime + offset;
-                    datetime.timestamp_micros()
+                    datetime.and_utc().timestamp_micros()
                 })
             });
 
