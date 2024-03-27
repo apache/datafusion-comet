@@ -63,6 +63,7 @@ abstract class CometTestBase
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
+    conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
     conf.set(SQLConf.ANSI_ENABLED.key, "false")
     conf.set(SHUFFLE_MANAGER, shuffleManager)
