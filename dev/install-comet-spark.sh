@@ -86,7 +86,7 @@ if [ -f "$BASEDIR/diff/$SPARK_BRANCH.diff" ]; then
   git apply "$BASEDIR/diff/$SPARK_BRANCH.diff"
 fi
 
-# Update the Boson version
+# Update the Comet version
 $COMET_WORKSPACE/mvnw -nsu -q versions:set-property -Dproperty=comet.version  -DnewVersion=$COMET_VERSION -DgenerateBackupPoms=false
 
 # Update the Scala version
