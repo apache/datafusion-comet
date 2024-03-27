@@ -950,6 +950,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
           .filter($"a" > 4)
           .repartition(10)
           .sortWithinPartitions($"a")
+          .filter($"a" >= 10)
         checkSparkAnswerAndOperator(shuffled, classOf[ShuffleQueryStageExec])
       }
     }
