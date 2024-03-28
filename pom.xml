@@ -46,11 +46,11 @@ under the License.
     <scala.plugin.version>4.7.2</scala.plugin.version>
     <scalatest.version>3.2.9</scalatest.version>
     <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
-    <spark.version>3.4.2</spark.version>
+    <spark.version>3.4.0.52-apple-pr1929-SNAPSHOT</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.19.6</protobuf.version>
-    <parquet.version>1.13.1</parquet.version>
+    <parquet.version>1.13.1.1-apple</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>14.0.2</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
@@ -98,6 +98,10 @@ under the License.
         <version>${spark.version}</version>
         <scope>${spark.maven.scope}</scope>
         <exclusions>
+          <exclusion>
+            <groupId>org.apache.comet</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
           <exclusion>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-hadoop</artifactId>
@@ -911,6 +915,11 @@ under the License.
               <rules>
                 <banCircularDependencies/>
                 <banDuplicatePomDependencyVersions/>
+                <bannedDependencies>
+                  <excludes>
+                    <exclude>com.apple.pie.boson</exclude>
+                  </excludes>
+                </bannedDependencies>
                 <banDuplicateClasses>
                   <scopes>
                     <scope>compile</scope>
@@ -918,6 +927,17 @@ under the License.
                   </scopes>
                   <ignoreClasses>
                     <ignoreClass>org.apache.spark.unused.UnusedStubClass</ignoreClass>
+
+                    <!-- TOOD Review these inclusions in 3 artifacts:
+                          - org.apache.parquet:parquet-column
+                          - org.apache.parquet:parquet-hadoop
+                          - org.apache.iceberg:iceberg-spark-runtime-3.4_*
+                    -->
+                    <ignoreClass>shaded.parquet.it.unimi.dsi.fastutil.*</ignoreClass>
+
+                    <!-- Ignore these annotations -->
+                    <ignoreClass>org.intellij.lang.annotations.*</ignoreClass>
+                    <ignoreClass>org.jetbrains.annotations.*</ignoreClass>
                   </ignoreClasses>
                   <dependencies>
                     <dependency>

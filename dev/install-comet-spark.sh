@@ -73,33 +73,24 @@ rm -rf /root/.m2/repository/com/google/protobuf
 
 cd $COMET_WORKSPACE
 rm -rf apache-spark
-git clone git@github.pie.apple.com:IPR/apache-spark.git --depth 1 --branch $SPARK_BRANCH
+git clone git@github.pie.apple.com:IPR/apache-spark.git --branch $SPARK_BRANCH
 cd apache-spark
 
+BUILD_PARAM_PR_NUMBER=1929
+git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
+git checkout pr_${BUILD_PARAM_PR_NUMBER}
+git log -n 1
+
 # Apply custom diff files, if they exist
-#if [ -f "$BASEDIR/diff/$SPARK_BRANCH.diff" ]; then
-#  git apply "$BASEDIR/diff/$SPARK_BRANCH.diff"
-#fi
-if [ -f "$BASEDIR/diffs/remove-ExtendedDataSourceV2Strategy-${SPARK_MINOR_VERSION}.diff" ]; then
-  git apply "$BASEDIR/diffs/remove-ExtendedDataSourceV2Strategy-${SPARK_MINOR_VERSION}.diff"
-fi
-if [ -f "$BASEDIR/diffs/remove-loops-${SPARK_MINOR_VERSION}.diff" ]; then
-  git apply "$BASEDIR/diffs/remove-loops-${SPARK_MINOR_VERSION}.diff"
-fi
-if [ -f "$BASEDIR/diffs/scalastyle-${SPARK_MINOR_VERSION}.diff" ]; then
-  git apply "$BASEDIR/diffs/scalastyle-${SPARK_MINOR_VERSION}.diff"
+if [ -f "$BASEDIR/diff/$SPARK_BRANCH.diff" ]; then
+  git apply "$BASEDIR/diff/$SPARK_BRANCH.diff"
 fi
 
-$BASEDIR/boson-to-comet.sh
-
-# Update the Boson version
+# Update the Comet version
 $COMET_WORKSPACE/mvnw -nsu -q versions:set-property -Dproperty=comet.version  -DnewVersion=$COMET_VERSION -DgenerateBackupPoms=false
 
 # Update the Scala version
 dev/change-scala-version.sh $SCALA_BINARY_VERSION
-
-# FIXME Temporary work around for excluded javax.servlet
-#sed -i.bak -E '0,/javax.servlet/{s/^( *)(ExclusionRule\("javax.servlet")/\1\/\/\2/}' project/SparkBuild.scala 
 
 # Use an internal Docker Hub mirror to enable Rio 3 builds
 find resource-managers/kubernetes -name Dockerfile | xargs -n 1 sed -i.bak 's|^FROM |FROM docker-upstream.apple.com/|'
