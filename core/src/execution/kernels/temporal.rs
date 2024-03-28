@@ -203,7 +203,7 @@ where
     T: Datelike + Timelike + std::ops::Sub<Duration, Output = T> + Copy,
 {
     Some(dt)
-        .map(|d| d - Duration::seconds(60 * 60 * 24 * d.weekday() as i64))
+        .map(|d| d - Duration::try_seconds(60 * 60 * 24 * d.weekday() as i64).unwrap())
         .and_then(|d| d.with_nanosecond(0))
         .and_then(|d| d.with_second(0))
         .and_then(|d| d.with_minute(0))
