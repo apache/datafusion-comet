@@ -446,9 +446,7 @@ class CometSparkSessionExtensions
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
         // broadcast exchange is forced to be enabled by Comet config.
-        case plan
-            if (isCometNative(plan) || isCometBroadCastForceEnabled(conf)) &&
-              plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
+        case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
@@ -461,7 +459,12 @@ class CometSparkSessionExtensions
               }
             case other => other
           }
-          plan.withNewChildren(newChildren)
+          val newPlan = transform(plan.withNewChildren(newChildren))
+          if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
+            newPlan
+          } else {
+            plan
+          }
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
