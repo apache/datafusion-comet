@@ -459,9 +459,13 @@ class CometSparkSessionExtensions
               }
             case other => other
           }
-          val newPlan = transform(plan.withNewChildren(newChildren))
-          if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
-            newPlan
+          if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
+            val newPlan = transform(plan.withNewChildren(newChildren))
+            if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
+              newPlan
+            } else {
+              plan
+            }
           } else {
             plan
           }
