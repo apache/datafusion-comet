@@ -30,6 +30,7 @@ The following Spark expressions are currently available:
     + If
 + Cast
 + Coalesce
++ BloomFilterMightContain
 + Boolean functions
     + And
     + Or
@@ -94,3 +95,9 @@ The following Spark expressions are currently available:
     + Sum
     + Max
     + Min
+    + Avg
+    + First
+    + Last
+    + BitAnd
+    + BitOr
+    + BitXor
