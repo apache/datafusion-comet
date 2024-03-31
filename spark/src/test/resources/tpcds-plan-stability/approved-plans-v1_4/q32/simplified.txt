@@ -1,52 +1,56 @@
 WholeStageCodegen (7)
-  HashAggregate [sum] [sum(UnscaledValue(cs_ext_discount_amt)),excess discount amount,sum]
+  ColumnarToRow
     InputAdapter
-      Exchange #1
-        WholeStageCodegen (6)
-          HashAggregate [cs_ext_discount_amt] [sum,sum]
-            Project [cs_ext_discount_amt]
-              BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
-                Project [cs_ext_discount_amt,cs_sold_date_sk]
-                  BroadcastHashJoin [i_item_sk,cs_item_sk,cs_ext_discount_amt,(1.3 * avg(cs_ext_discount_amt))]
-                    Project [cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
-                      BroadcastHashJoin [cs_item_sk,i_item_sk]
-                        ColumnarToRow
-                          InputAdapter
-                            CometFilter [cs_item_sk,cs_ext_discount_amt]
-                              CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                SubqueryBroadcast [d_date_sk] #1
-                                  BroadcastExchange #2
-                                    WholeStageCodegen (1)
-                                      ColumnarToRow
-                                        InputAdapter
-                                          CometProject [d_date_sk]
-                                            CometFilter [d_date,d_date_sk]
-                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                        InputAdapter
-                          BroadcastExchange #3
-                            WholeStageCodegen (1)
-                              ColumnarToRow
-                                InputAdapter
-                                  CometProject [i_item_sk]
-                                    CometFilter [i_manufact_id,i_item_sk]
-                                      CometScan parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
-                    InputAdapter
-                      BroadcastExchange #4
-                        WholeStageCodegen (4)
-                          Filter [(1.3 * avg(cs_ext_discount_amt))]
-                            HashAggregate [cs_item_sk,sum,count] [avg(UnscaledValue(cs_ext_discount_amt)),(1.3 * avg(cs_ext_discount_amt)),sum,count]
+      CometHashAggregate [sum]
+        CometColumnarExchange #1
+          RowToColumnar
+            WholeStageCodegen (6)
+              HashAggregate [cs_ext_discount_amt] [sum,sum]
+                Project [cs_ext_discount_amt]
+                  BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                    Project [cs_ext_discount_amt,cs_sold_date_sk]
+                      BroadcastHashJoin [i_item_sk,cs_item_sk,cs_ext_discount_amt,(1.3 * avg(cs_ext_discount_amt))]
+                        Project [cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
+                          BroadcastHashJoin [cs_item_sk,i_item_sk]
+                            ColumnarToRow
                               InputAdapter
-                                Exchange [cs_item_sk] #5
-                                  WholeStageCodegen (3)
-                                    HashAggregate [cs_item_sk,cs_ext_discount_amt] [sum,count,sum,count]
-                                      Project [cs_item_sk,cs_ext_discount_amt]
-                                        BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                                CometFilter [cs_item_sk,cs_ext_discount_amt]
+                                  CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                                    SubqueryBroadcast [d_date_sk] #1
+                                      BroadcastExchange #2
+                                        WholeStageCodegen (1)
                                           ColumnarToRow
                                             InputAdapter
-                                              CometFilter [cs_item_sk]
-                                                CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                                  ReusedSubquery [d_date_sk] #1
-                                          InputAdapter
-                                            ReusedExchange [d_date_sk] #2
-                InputAdapter
-                  ReusedExchange [d_date_sk] #2
+                                              CometProject [d_date_sk]
+                                                CometFilter [d_date,d_date_sk]
+                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                            InputAdapter
+                              BroadcastExchange #3
+                                WholeStageCodegen (1)
+                                  ColumnarToRow
+                                    InputAdapter
+                                      CometProject [i_item_sk]
+                                        CometFilter [i_manufact_id,i_item_sk]
+                                          CometScan parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
+                        InputAdapter
+                          BroadcastExchange #4
+                            WholeStageCodegen (4)
+                              ColumnarToRow
+                                InputAdapter
+                                  CometFilter [(1.3 * avg(cs_ext_discount_amt))]
+                                    CometHashAggregate [cs_item_sk,sum,count]
+                                      CometColumnarExchange [cs_item_sk] #5
+                                        RowToColumnar
+                                          WholeStageCodegen (3)
+                                            HashAggregate [cs_item_sk,cs_ext_discount_amt] [sum,count,sum,count]
+                                              Project [cs_item_sk,cs_ext_discount_amt]
+                                                BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      CometFilter [cs_item_sk]
+                                                        CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                                                          ReusedSubquery [d_date_sk] #1
+                                                  InputAdapter
+                                                    ReusedExchange [d_date_sk] #2
+                    InputAdapter
+                      ReusedExchange [d_date_sk] #2

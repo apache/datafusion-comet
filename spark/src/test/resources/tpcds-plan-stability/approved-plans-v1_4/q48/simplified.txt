@@ -1,50 +1,52 @@
 WholeStageCodegen (6)
-  HashAggregate [sum] [sum(ss_quantity),sum(ss_quantity),sum]
+  ColumnarToRow
     InputAdapter
-      Exchange #1
-        WholeStageCodegen (5)
-          HashAggregate [ss_quantity] [sum,sum]
-            Project [ss_quantity]
-              BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                Project [ss_quantity,ss_sold_date_sk]
-                  BroadcastHashJoin [ss_addr_sk,ca_address_sk,ca_state,ss_net_profit]
-                    Project [ss_addr_sk,ss_quantity,ss_net_profit,ss_sold_date_sk]
-                      BroadcastHashJoin [ss_cdemo_sk,cd_demo_sk,cd_marital_status,cd_education_status,ss_sales_price]
-                        Project [ss_cdemo_sk,ss_addr_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
-                          BroadcastHashJoin [ss_store_sk,s_store_sk]
-                            ColumnarToRow
-                              InputAdapter
-                                CometFilter [ss_store_sk,ss_cdemo_sk,ss_addr_sk,ss_sales_price,ss_net_profit]
-                                  CometScan parquet spark_catalog.default.store_sales [ss_cdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
-                                    SubqueryBroadcast [d_date_sk] #1
-                                      BroadcastExchange #2
-                                        WholeStageCodegen (1)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometProject [d_date_sk]
-                                                CometFilter [d_year,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+      CometHashAggregate [sum]
+        CometColumnarExchange #1
+          RowToColumnar
+            WholeStageCodegen (5)
+              HashAggregate [ss_quantity] [sum,sum]
+                Project [ss_quantity]
+                  BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                    Project [ss_quantity,ss_sold_date_sk]
+                      BroadcastHashJoin [ss_addr_sk,ca_address_sk,ca_state,ss_net_profit]
+                        Project [ss_addr_sk,ss_quantity,ss_net_profit,ss_sold_date_sk]
+                          BroadcastHashJoin [ss_cdemo_sk,cd_demo_sk,cd_marital_status,cd_education_status,ss_sales_price]
+                            Project [ss_cdemo_sk,ss_addr_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
+                              BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                ColumnarToRow
+                                  InputAdapter
+                                    CometFilter [ss_store_sk,ss_cdemo_sk,ss_addr_sk,ss_sales_price,ss_net_profit]
+                                      CometScan parquet spark_catalog.default.store_sales [ss_cdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
+                                        SubqueryBroadcast [d_date_sk] #1
+                                          BroadcastExchange #2
+                                            WholeStageCodegen (1)
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  CometProject [d_date_sk]
+                                                    CometFilter [d_year,d_date_sk]
+                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                InputAdapter
+                                  BroadcastExchange #3
+                                    WholeStageCodegen (1)
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometFilter [s_store_sk]
+                                            CometScan parquet spark_catalog.default.store [s_store_sk]
                             InputAdapter
-                              BroadcastExchange #3
-                                WholeStageCodegen (1)
+                              BroadcastExchange #4
+                                WholeStageCodegen (2)
                                   ColumnarToRow
                                     InputAdapter
-                                      CometFilter [s_store_sk]
-                                        CometScan parquet spark_catalog.default.store [s_store_sk]
+                                      CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                                        CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                         InputAdapter
-                          BroadcastExchange #4
-                            WholeStageCodegen (2)
+                          BroadcastExchange #5
+                            WholeStageCodegen (3)
                               ColumnarToRow
                                 InputAdapter
-                                  CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                                    CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                                  CometProject [ca_address_sk,ca_state]
+                                    CometFilter [ca_country,ca_address_sk,ca_state]
+                                      CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                     InputAdapter
-                      BroadcastExchange #5
-                        WholeStageCodegen (3)
-                          ColumnarToRow
-                            InputAdapter
-                              CometProject [ca_address_sk,ca_state]
-                                CometFilter [ca_country,ca_address_sk,ca_state]
-                                  CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
-                InputAdapter
-                  ReusedExchange [d_date_sk] #2
+                      ReusedExchange [d_date_sk] #2

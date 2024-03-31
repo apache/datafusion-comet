@@ -29,7 +29,7 @@ Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
 * Project (12)
 +- * ColumnarToRow (11)
    +- CometHashAggregate (10)
-      +- CometExchange (9)
+      +- CometColumnarExchange (9)
          +- CometHashAggregate (8)
             +- CometProject (7)
                +- CometFilter (6)
@@ -56,9 +56,9 @@ Input [2]: [ss_ext_discount_amt#18, ss_net_paid#19]
 Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#18)), partial_avg(UnscaledValue(ss_net_paid#19))]
 
-(9) CometExchange
+(9) CometColumnarExchange
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
@@ -80,7 +80,7 @@ Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
 * Project (20)
 +- * ColumnarToRow (19)
    +- CometHashAggregate (18)
-      +- CometExchange (17)
+      +- CometColumnarExchange (17)
          +- CometHashAggregate (16)
             +- CometProject (15)
                +- CometFilter (14)
@@ -107,9 +107,9 @@ Input [2]: [ss_ext_discount_amt#31, ss_net_paid#32]
 Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#31)), partial_avg(UnscaledValue(ss_net_paid#32))]
 
-(17) CometExchange
+(17) CometColumnarExchange
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (18) CometHashAggregate
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
@@ -131,7 +131,7 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
 * Project (28)
 +- * ColumnarToRow (27)
    +- CometHashAggregate (26)
-      +- CometExchange (25)
+      +- CometColumnarExchange (25)
          +- CometHashAggregate (24)
             +- CometProject (23)
                +- CometFilter (22)
@@ -158,9 +158,9 @@ Input [2]: [ss_ext_discount_amt#44, ss_net_paid#45]
 Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#44)), partial_avg(UnscaledValue(ss_net_paid#45))]
 
-(25) CometExchange
+(25) CometColumnarExchange
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (26) CometHashAggregate
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
@@ -182,7 +182,7 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
 * Project (36)
 +- * ColumnarToRow (35)
    +- CometHashAggregate (34)
-      +- CometExchange (33)
+      +- CometColumnarExchange (33)
          +- CometHashAggregate (32)
             +- CometProject (31)
                +- CometFilter (30)
@@ -209,9 +209,9 @@ Input [2]: [ss_ext_discount_amt#57, ss_net_paid#58]
 Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#57)), partial_avg(UnscaledValue(ss_net_paid#58))]
 
-(33) CometExchange
+(33) CometColumnarExchange
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (34) CometHashAggregate
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
@@ -233,7 +233,7 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
 * Project (44)
 +- * ColumnarToRow (43)
    +- CometHashAggregate (42)
-      +- CometExchange (41)
+      +- CometColumnarExchange (41)
          +- CometHashAggregate (40)
             +- CometProject (39)
                +- CometFilter (38)
@@ -260,9 +260,9 @@ Input [2]: [ss_ext_discount_amt#70, ss_net_paid#71]
 Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#70)), partial_avg(UnscaledValue(ss_net_paid#71))]
 
-(41) CometExchange
+(41) CometColumnarExchange
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
 (42) CometHashAggregate
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]

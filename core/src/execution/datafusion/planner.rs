@@ -114,6 +114,18 @@ pub struct PhysicalPlanner {
     session_ctx: Arc<SessionContext>,
 }
 
+impl Default for PhysicalPlanner {
+    fn default() -> Self {
+        let session_ctx = Arc::new(SessionContext::new());
+        let execution_props = ExecutionProps::new();
+        Self {
+            exec_context_id: TEST_EXEC_CONTEXT_ID,
+            execution_props,
+            session_ctx,
+        }
+    }
+}
+
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
         let execution_props = ExecutionProps::new();
@@ -1433,7 +1445,7 @@ mod tests {
         };
 
         let op = create_filter(op_scan, 3);
-        let planner = PhysicalPlanner::new();
+        let planner = PhysicalPlanner::default();
         let row_count = 100;
 
         // Create a dictionary array with 100 values, and use it as input to the execution.
@@ -1513,7 +1525,7 @@ mod tests {
         };
 
         let op = create_filter_literal(op_scan, STRING_TYPE_ID, lit);
-        let planner = PhysicalPlanner::new();
+        let planner = PhysicalPlanner::default();
 
         let row_count = 100;
 
@@ -1591,7 +1603,7 @@ mod tests {
         };
 
         let op = create_filter(op_scan, 0);
-        let planner = PhysicalPlanner::new();
+        let planner = PhysicalPlanner::default();
 
         let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
 

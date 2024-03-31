@@ -1,30 +1,32 @@
-TakeOrderedAndProject [sumsales,ss_customer_sk]
-  WholeStageCodegen (3)
-    HashAggregate [ss_customer_sk,sum,isEmpty] [sum(act_sales),sumsales,sum,isEmpty]
-      InputAdapter
-        Exchange [ss_customer_sk] #1
-          WholeStageCodegen (2)
-            HashAggregate [ss_customer_sk,act_sales] [sum,isEmpty,sum,isEmpty]
-              Project [ss_customer_sk,sr_return_quantity,ss_quantity,ss_sales_price]
-                BroadcastHashJoin [sr_reason_sk,r_reason_sk]
-                  ColumnarToRow
-                    InputAdapter
-                      CometProject [ss_customer_sk,ss_quantity,ss_sales_price,sr_reason_sk,sr_return_quantity]
-                        CometSortMergeJoin [ss_item_sk,ss_ticket_number,sr_item_sk,sr_ticket_number]
-                          CometSort [ss_item_sk,ss_ticket_number]
-                            CometExchange [ss_item_sk,ss_ticket_number] #2
-                              CometProject [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price]
-                                CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price,ss_sold_date_sk]
-                          CometSort [sr_item_sk,sr_ticket_number]
-                            CometExchange [sr_item_sk,sr_ticket_number] #3
-                              CometProject [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity]
-                                CometFilter [sr_item_sk,sr_ticket_number,sr_reason_sk]
-                                  CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
-                  InputAdapter
-                    BroadcastExchange #4
-                      WholeStageCodegen (1)
-                        ColumnarToRow
-                          InputAdapter
-                            CometProject [r_reason_sk]
-                              CometFilter [r_reason_desc,r_reason_sk]
-                                CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
+WholeStageCodegen (3)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [sumsales,ss_customer_sk]
+        CometHashAggregate [ss_customer_sk,sum,isEmpty]
+          CometColumnarExchange [ss_customer_sk] #1
+            RowToColumnar
+              WholeStageCodegen (2)
+                HashAggregate [ss_customer_sk,act_sales] [sum,isEmpty,sum,isEmpty]
+                  Project [ss_customer_sk,sr_return_quantity,ss_quantity,ss_sales_price]
+                    BroadcastHashJoin [sr_reason_sk,r_reason_sk]
+                      ColumnarToRow
+                        InputAdapter
+                          CometProject [ss_customer_sk,ss_quantity,ss_sales_price,sr_reason_sk,sr_return_quantity]
+                            CometSortMergeJoin [ss_item_sk,ss_ticket_number,sr_item_sk,sr_ticket_number]
+                              CometSort [ss_item_sk,ss_ticket_number]
+                                CometColumnarExchange [ss_item_sk,ss_ticket_number] #2
+                                  CometProject [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price]
+                                    CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price,ss_sold_date_sk]
+                              CometSort [sr_item_sk,sr_ticket_number]
+                                CometColumnarExchange [sr_item_sk,sr_ticket_number] #3
+                                  CometProject [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity]
+                                    CometFilter [sr_item_sk,sr_ticket_number,sr_reason_sk]
+                                      CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
+                      InputAdapter
+                        BroadcastExchange #4
+                          WholeStageCodegen (1)
+                            ColumnarToRow
+                              InputAdapter
+                                CometProject [r_reason_sk]
+                                  CometFilter [r_reason_desc,r_reason_sk]
+                                    CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]

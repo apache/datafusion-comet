@@ -17,20 +17,20 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                                 ColumnarToRow
                                   InputAdapter
                                     CometSort [rank_col]
-                                      CometExchange #1
+                                      CometColumnarExchange #1
                                         CometFilter [rank_col]
                                           Subquery #1
                                             WholeStageCodegen (1)
                                               ColumnarToRow
                                                 InputAdapter
                                                   CometHashAggregate [ss_store_sk,sum,count]
-                                                    CometExchange [ss_store_sk] #3
+                                                    CometColumnarExchange [ss_store_sk] #3
                                                       CometHashAggregate [ss_store_sk,ss_net_profit]
                                                         CometProject [ss_store_sk,ss_net_profit]
                                                           CometFilter [ss_store_sk,ss_addr_sk]
                                                             CometScan parquet spark_catalog.default.store_sales [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                           CometHashAggregate [ss_item_sk,sum,count]
-                                            CometExchange [ss_item_sk] #2
+                                            CometColumnarExchange [ss_item_sk] #2
                                               CometHashAggregate [ss_item_sk,ss_net_profit]
                                                 CometProject [ss_item_sk,ss_net_profit]
                                                   CometFilter [ss_store_sk]
