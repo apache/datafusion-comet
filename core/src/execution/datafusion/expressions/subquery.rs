@@ -18,7 +18,7 @@
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{internal_err, DataFusionError, ScalarValue};
+use datafusion_common::{internal_err, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use jni::{
     objects::JByteArray,

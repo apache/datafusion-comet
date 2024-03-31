@@ -23,7 +23,10 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
-    logical_expr::{BuiltinScalarFunction, Operator as DataFusionOperator},
+    functions::math,
+    logical_expr::{
+        BuiltinScalarFunction, Operator as DataFusionOperator, ScalarFunctionDefinition,
+    },
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
@@ -31,7 +34,6 @@ use datafusion::{
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
             Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
         },
-        functions::create_physical_expr,
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
@@ -45,7 +47,7 @@ use datafusion::{
     },
 };
 use datafusion_common::{
-    tree_node::{TreeNode, TreeNodeRewriter, VisitRecursion},
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
 use itertools::Itertools;
@@ -464,14 +466,13 @@ impl PhysicalPlanner {
             }
             ExprStruct::Abs(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let expr = create_physical_expr(
-                    &BuiltinScalarFunction::Abs,
-                    &args,
-                    &input_schema,
-                    &self.execution_props,
-                )?;
-                Ok(expr)
+                let scalar_def = ScalarFunctionDefinition::UDF(math::abs());
+
+                let expr =
+                    ScalarFunctionExpr::new("abs", scalar_def, args, return_type, None, false);
+                Ok(Arc::new(expr))
             }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
@@ -635,11 +636,7 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                let fun_expr = create_comet_physical_fun(
-                    "decimal_div",
-                    &self.execution_props,
-                    data_type.clone(),
-                )?;
+                let fun_expr = create_comet_physical_fun("decimal_div", data_type.clone())?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     "decimal_div",
                     fun_expr,
@@ -933,6 +930,7 @@ impl PhysicalPlanner {
                     join_params.join_on,
                     join_params.join_filter,
                     &join_params.join_type,
+                    None,
                     PartitionMode::Partitioned,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
@@ -1219,8 +1217,7 @@ impl PhysicalPlanner {
                 fun.return_type(&input_expr_types)?
             }
         };
-        let fun_expr =
-            create_comet_physical_fun(fun_name, &self.execution_props, data_type.clone())?;
+        let fun_expr = create_comet_physical_fun(fun_name, data_type.clone())?;
 
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,
@@ -1287,7 +1284,7 @@ fn expr_to_columns(
                     right_field_indices.push(column.index() - left_field_len);
                 }
             }
-            VisitRecursion::Continue
+            TreeNodeRecursion::Continue
         })
     })?;
 
@@ -1323,50 +1320,51 @@ impl JoinFilterRewriter<'_> {
 }
 
 impl TreeNodeRewriter for JoinFilterRewriter<'_> {
-    type N = Arc<dyn PhysicalExpr>;
+    type Node = Arc<dyn PhysicalExpr>;
 
-    fn mutate(&mut self, node: Self::N) -> datafusion_common::Result<Self::N> {
-        let new_expr: Arc<dyn PhysicalExpr> =
-            if let Some(column) = node.as_any().downcast_ref::<Column>() {
-                if column.index() < self.left_field_len {
-                    // left side
-                    let new_index = self
-                        .left_field_indices
-                        .iter()
-                        .position(|&x| x == column.index())
-                        .ok_or_else(|| {
-                            DataFusionError::Internal(format!(
-                                "Column index {} not found in left field indices",
-                                column.index()
-                            ))
-                        })?;
-                    Arc::new(Column::new(column.name(), new_index))
-                } else if column.index() < self.left_field_len + self.right_field_len {
-                    // right side
-                    let new_index = self
-                        .right_field_indices
-                        .iter()
-                        .position(|&x| x + self.left_field_len == column.index())
-                        .ok_or_else(|| {
-                            DataFusionError::Internal(format!(
-                                "Column index {} not found in right field indices",
-                                column.index()
-                            ))
-                        })?;
-                    Arc::new(Column::new(
-                        column.name(),
-                        new_index + self.left_field_indices.len(),
-                    ))
-                } else {
-                    return Err(DataFusionError::Internal(format!(
-                        "Column index {} out of range",
-                        column.index()
-                    )));
-                }
+    fn f_down(&mut self, node: Self::Node) -> datafusion_common::Result<Transformed<Self::Node>> {
+        if let Some(column) = node.as_any().downcast_ref::<Column>() {
+            if column.index() < self.left_field_len {
+                // left side
+                let new_index = self
+                    .left_field_indices
+                    .iter()
+                    .position(|&x| x == column.index())
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "Column index {} not found in left field indices",
+                            column.index()
+                        ))
+                    })?;
+                Ok(Transformed::yes(Arc::new(Column::new(
+                    column.name(),
+                    new_index,
+                ))))
+            } else if column.index() < self.left_field_len + self.right_field_len {
+                // right side
+                let new_index = self
+                    .right_field_indices
+                    .iter()
+                    .position(|&x| x + self.left_field_len == column.index())
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "Column index {} not found in right field indices",
+                            column.index()
+                        ))
+                    })?;
+                Ok(Transformed::yes(Arc::new(Column::new(
+                    column.name(),
+                    new_index + self.left_field_indices.len(),
+                ))))
             } else {
-                node.clone()
-            };
-        Ok(new_expr)
+                return Err(DataFusionError::Internal(format!(
+                    "Column index {} out of range",
+                    column.index()
+                )));
+            }
+        } else {
+            Ok(Transformed::no(node))
+        }
     }
 }
 
@@ -1387,7 +1385,7 @@ fn rewrite_physical_expr(
         right_field_indices,
     );
 
-    Ok(expr.rewrite(&mut rewriter)?)
+    Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
 #[cfg(test)]

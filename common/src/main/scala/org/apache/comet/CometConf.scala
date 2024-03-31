@@ -130,14 +130,14 @@ object CometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] = conf(
-    "spark.comet.columnar.shuffle.enabled")
-    .doc(
-      "Force Comet to only use columnar shuffle for CometScan and Spark regular operators. " +
-        "If this is enabled, Comet native shuffle will not be enabled but only Arrow shuffle. " +
-        "By default, this config is false.")
-    .booleanConf
-    .createWithDefault(false)
+  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.columnar.shuffle.enabled")
+      .doc(
+        "Whether to enable Arrow-based columnar shuffle for Comet and Spark regular operators. " +
+          "If this is enabled, Comet prefers columnar shuffle than native shuffle. " +
+          "By default, this config is true.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_EXEC_BROADCAST_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")

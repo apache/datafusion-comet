@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{cmp::min, str::FromStr, sync::Arc};
+use std::{any::Any, cmp::min, fmt::Debug, str::FromStr, sync::Arc};
 
 use arrow::{
     array::{
@@ -27,16 +27,17 @@ use arrow::{
 use arrow_array::{Array, ArrowNativeTypeOp, Decimal128Array};
 use arrow_schema::DataType;
 use datafusion::{
-    logical_expr::{BuiltinScalarFunction, ScalarFunctionImplementation},
+    logical_expr::{
+        BuiltinScalarFunction, ScalarFunctionDefinition, ScalarFunctionImplementation,
+        ScalarUDFImpl, Signature, Volatility,
+    },
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
     cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
     Result as DataFusionResult, ScalarValue,
 };
-use datafusion_physical_expr::{
-    execution_props::ExecutionProps, functions::create_physical_fun, math_expressions,
-};
+use datafusion_physical_expr::{math_expressions, udf::ScalarUDF};
 use num::{
     integer::{div_ceil, div_floor},
     BigInt, Signed, ToPrimitive,
@@ -46,20 +47,89 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Create a physical scalar function.
 pub fn create_comet_physical_fun(
     fun_name: &str,
-    execution_props: &ExecutionProps,
     data_type: DataType,
-) -> Result<ScalarFunctionImplementation, DataFusionError> {
+) -> Result<ScalarFunctionDefinition, DataFusionError> {
     match fun_name {
-        "ceil" => Ok(Arc::new(move |x| spark_ceil(x, &data_type))),
-        "floor" => Ok(Arc::new(move |x| spark_floor(x, &data_type))),
-        "rpad" => Ok(Arc::new(spark_rpad)),
-        "round" => Ok(Arc::new(move |x| spark_round(x, &data_type))),
-        "unscaled_value" => Ok(Arc::new(spark_unscaled_value)),
-        "make_decimal" => Ok(Arc::new(move |x| spark_make_decimal(x, &data_type))),
-        "decimal_div" => Ok(Arc::new(move |x| spark_decimal_div(x, &data_type))),
+        "ceil" => {
+            let scalar_func = CometScalarFunction::new(
+                "ceil".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(move |args| spark_ceil(args, &data_type)),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "floor" => {
+            let scalar_func = CometScalarFunction::new(
+                "floor".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(move |args| spark_floor(args, &data_type)),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "rpad" => {
+            let scalar_func = CometScalarFunction::new(
+                "rpad".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(spark_rpad),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "round" => {
+            let scalar_func = CometScalarFunction::new(
+                "round".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(move |args| spark_round(args, &data_type)),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "unscaled_value" => {
+            let scalar_func = CometScalarFunction::new(
+                "unscaled_value".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(spark_unscaled_value),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "make_decimal" => {
+            let scalar_func = CometScalarFunction::new(
+                "make_decimal".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(move |args| spark_make_decimal(args, &data_type)),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
+        "decimal_div" => {
+            let scalar_func = CometScalarFunction::new(
+                "decimal_div".to_string(),
+                Signature::variadic_any(Volatility::Immutable),
+                data_type.clone(),
+                Arc::new(move |args| spark_decimal_div(args, &data_type)),
+            );
+            Ok(ScalarFunctionDefinition::UDF(Arc::new(
+                ScalarUDF::new_from_impl(scalar_func),
+            )))
+        }
         _ => {
             let fun = &BuiltinScalarFunction::from_str(fun_name)?;
-            create_physical_fun(fun, execution_props)
+            Ok(ScalarFunctionDefinition::BuiltIn(*fun))
         }
     }
 }
@@ -87,6 +157,61 @@ macro_rules! downcast_compute_op {
             ))),
         }
     }};
+}
+
+struct CometScalarFunction {
+    name: String,
+    signature: Signature,
+    data_type: DataType,
+    func: ScalarFunctionImplementation,
+}
+
+impl Debug for CometScalarFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CometScalarFunction")
+            .field("name", &self.name)
+            .field("signature", &self.signature)
+            .field("data_type", &self.data_type)
+            .finish()
+    }
+}
+
+impl CometScalarFunction {
+    fn new(
+        name: String,
+        signature: Signature,
+        data_type: DataType,
+        func: ScalarFunctionImplementation,
+    ) -> Self {
+        Self {
+            name,
+            signature,
+            data_type,
+            func,
+        }
+    }
+}
+
+impl ScalarUDFImpl for CometScalarFunction {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(self.data_type.clone())
+    }
+
+    fn invoke(&self, args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        (self.func)(args)
+    }
 }
 
 /// `ceil` function that simulates Spark `ceil` expression
