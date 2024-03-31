@@ -92,9 +92,6 @@ $COMET_WORKSPACE/mvnw -nsu -q versions:set-property -Dproperty=comet.version  -D
 # Update the Scala version
 dev/change-scala-version.sh $SCALA_BINARY_VERSION
 
-# Use an internal Docker Hub mirror to enable Rio 3 builds
-find resource-managers/kubernetes -name Dockerfile | xargs -n 1 sed -i.bak 's|^FROM |FROM docker-upstream.apple.com/|'
-
 # Store the Boson parameters
 cat > comet-parameters.sh <<EOD
 export COMET_WORKSPACE=$COMET_WORKSPACE
