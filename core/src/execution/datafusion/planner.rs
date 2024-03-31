@@ -23,6 +23,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
+    execution::FunctionRegistry,
     functions::math,
     logical_expr::{
         BuiltinScalarFunction, Operator as DataFusionOperator, ScalarFunctionDefinition,
@@ -45,6 +46,7 @@ use datafusion::{
         sorts::sort::SortExec,
         ExecutionPlan, Partitioning,
     },
+    prelude::SessionContext,
 };
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -109,20 +111,16 @@ pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
     execution_props: ExecutionProps,
-}
-
-impl Default for PhysicalPlanner {
-    fn default() -> Self {
-        Self::new()
-    }
+    session_ctx: Arc<SessionContext>,
 }
 
 impl PhysicalPlanner {
-    pub fn new() -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             execution_props,
+            session_ctx,
         }
     }
 
@@ -130,6 +128,7 @@ impl PhysicalPlanner {
         Self {
             exec_context_id,
             execution_props: self.execution_props,
+            session_ctx: self.session_ctx.clone(),
         }
     }
 
@@ -636,7 +635,11 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                let fun_expr = create_comet_physical_fun("decimal_div", data_type.clone())?;
+                let fun_expr = create_comet_physical_fun(
+                    "decimal_div",
+                    data_type.clone(),
+                    &self.session_ctx.state(),
+                )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     "decimal_div",
                     fun_expr,
@@ -1213,11 +1216,19 @@ impl PhysicalPlanner {
                 // scalar function
                 // Note this assumes the `fun_name` is a defined function in DF. Otherwise, it'll
                 // throw error.
-                let fun = &BuiltinScalarFunction::from_str(fun_name)?;
-                fun.return_type(&input_expr_types)?
+                let fun = BuiltinScalarFunction::from_str(fun_name);
+                if fun.is_err() {
+                    self.session_ctx
+                        .udf(fun_name)?
+                        .inner()
+                        .return_type(&input_expr_types)?
+                } else {
+                    fun?.return_type(&input_expr_types)?
+                }
             }
         };
-        let fun_expr = create_comet_physical_fun(fun_name, data_type.clone())?;
+        let fun_expr =
+            create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
 
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,

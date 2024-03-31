@@ -27,6 +27,7 @@ use arrow::{
 use arrow_array::{Array, ArrowNativeTypeOp, Decimal128Array};
 use arrow_schema::DataType;
 use datafusion::{
+    execution::FunctionRegistry,
     logical_expr::{
         BuiltinScalarFunction, ScalarFunctionDefinition, ScalarFunctionImplementation,
         ScalarUDFImpl, Signature, Volatility,
@@ -48,6 +49,7 @@ use unicode_segmentation::UnicodeSegmentation;
 pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
+    registry: &dyn FunctionRegistry,
 ) -> Result<ScalarFunctionDefinition, DataFusionError> {
     match fun_name {
         "ceil" => {
@@ -128,8 +130,12 @@ pub fn create_comet_physical_fun(
             )))
         }
         _ => {
-            let fun = &BuiltinScalarFunction::from_str(fun_name)?;
-            Ok(ScalarFunctionDefinition::BuiltIn(*fun))
+            let fun = BuiltinScalarFunction::from_str(fun_name);
+            if fun.is_err() {
+                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
+            } else {
+                Ok(ScalarFunctionDefinition::BuiltIn(fun?))
+            }
         }
     }
 }
