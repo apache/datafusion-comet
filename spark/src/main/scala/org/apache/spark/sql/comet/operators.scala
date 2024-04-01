@@ -19,12 +19,15 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream}
+import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream, OutputStream}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
+import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
@@ -77,18 +80,44 @@ abstract class CometExec extends CometPlan {
    */
   def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
     executeColumnar().mapPartitionsInternal { iter =>
+      serializeBatches(iter)
+    }
+  }
+
+  /**
+   * Serializes a list of `ColumnarBatch` into an output stream.
+   *
+   * @param batches
+   *   the output batches, each batch is a list of Arrow vectors wrapped in `CometVector`
+   * @param out
+   *   the output stream
+   */
+  def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    val nativeUtil = new NativeUtil()
+
+    batches.map { batch =>
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
-      val count = new NativeUtil().serializeBatches(iter, out)
+      val (fieldVectors, batchProviderOpt) = nativeUtil.getBatchFieldVectors(batch)
+      val root = new VectorSchemaRoot(fieldVectors.asJava)
+      val provider = batchProviderOpt.getOrElse(nativeUtil.getDictionaryProvider)
+
+      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+      writer.start()
+      writer.writeBatch()
+
+      root.clear()
+      writer.end()
 
       out.flush()
       out.close()
+
       if (out.size() > 0) {
-        Iterator((count, cbbos.toChunkedByteBuffer))
+        (batch.numRows(), cbbos.toChunkedByteBuffer)
       } else {
-        Iterator((count, new ChunkedByteBuffer(Array.empty[ByteBuffer])))
+        (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
     }
   }
