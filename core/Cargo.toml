@@ -29,12 +29,12 @@ include = [
 
 [dependencies]
 parquet-format = "4.0.0" # This must be kept in sync with that from parquet crate
-arrow = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-array = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df" }
-arrow-data = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df" }
-arrow-schema = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df" }
-arrow-string = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df" }
-parquet = { git = "https://github.com/viirya/arrow-rs.git", rev = "c9fb7df", default-features = false, features = ["experimental"] }
+arrow = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-array = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c" }
+arrow-data = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c" }
+arrow-schema = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c" }
+arrow-string = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c" }
+parquet = { git = "https://github.com/viirya/arrow-rs.git", rev = "3f1ae0c", default-features = false, features = ["experimental"] }
 half = { version = "~2.1", default-features = false }
 futures = "0.3.28"
 mimalloc = { version = "*", default-features = false, optional = true }
@@ -66,10 +66,10 @@ itertools = "0.11.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 paste = "1.0.14"
-datafusion-common = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "71aa052" }
-datafusion = { default-features = false, git = "https://github.com/viirya/arrow-datafusion.git", rev = "71aa052", features = ["unicode_expressions"] }
-datafusion-functions = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "71aa052" }
-datafusion-physical-expr = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "71aa052", default-features = false, features = ["unicode_expressions"] }
+datafusion-common = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "111a940" }
+datafusion = { default-features = false, git = "https://github.com/viirya/arrow-datafusion.git", rev = "111a940", features = ["unicode_expressions"] }
+datafusion-functions = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "111a940" }
+datafusion-physical-expr = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "111a940", default-features = false, features = ["unicode_expressions"] }
 unicode-segmentation = "^1.10.1"
 once_cell = "1.18.0"
 regex = "1.9.6"
