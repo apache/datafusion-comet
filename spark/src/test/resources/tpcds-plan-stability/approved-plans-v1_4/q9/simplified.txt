@@ -6,7 +6,7 @@ WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
               CometHashAggregate [count,sum,count,sum,count]
-                CometColumnarExchange #1
+                CometExchange #1
                   CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity]
@@ -19,7 +19,7 @@ WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
               CometHashAggregate [count,sum,count,sum,count]
-                CometColumnarExchange #2
+                CometExchange #2
                   CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity]
@@ -32,7 +32,7 @@ WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
               CometHashAggregate [count,sum,count,sum,count]
-                CometColumnarExchange #3
+                CometExchange #3
                   CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity]
@@ -45,7 +45,7 @@ WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
               CometHashAggregate [count,sum,count,sum,count]
-                CometColumnarExchange #4
+                CometExchange #4
                   CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity]
@@ -58,7 +58,7 @@ WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
               CometHashAggregate [count,sum,count,sum,count]
-                CometColumnarExchange #5
+                CometExchange #5
                   CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity]
