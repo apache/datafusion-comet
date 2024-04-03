@@ -19,8 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream}
-import java.nio.ByteBuffer
+import java.io.{ByteArrayOutputStream, DataInputStream}
 import java.nio.channels.Channels
 
 import scala.collection.mutable.ArrayBuffer
