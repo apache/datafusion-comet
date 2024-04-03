@@ -23,11 +23,8 @@ import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
-import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.arrow.vector.VectorSchemaRoot
-import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
@@ -38,19 +35,19 @@ import org.apache.spark.sql.catalyst.optimizer.BuildSide
 import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.vector.NativeUtil
 
 /**
  * A Comet physical operator
@@ -80,45 +77,7 @@ abstract class CometExec extends CometPlan {
    */
   def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
     executeColumnar().mapPartitionsInternal { iter =>
-      serializeBatches(iter)
-    }
-  }
-
-  /**
-   * Serializes a list of `ColumnarBatch` into an output stream.
-   *
-   * @param batches
-   *   the output batches, each batch is a list of Arrow vectors wrapped in `CometVector`
-   * @param out
-   *   the output stream
-   */
-  def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
-    val nativeUtil = new NativeUtil()
-
-    batches.map { batch =>
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
-      val (fieldVectors, batchProviderOpt) = nativeUtil.getBatchFieldVectors(batch)
-      val root = new VectorSchemaRoot(fieldVectors.asJava)
-      val provider = batchProviderOpt.getOrElse(nativeUtil.getDictionaryProvider)
-
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-
-      root.clear()
-      writer.end()
-
-      out.flush()
-      out.close()
-
-      if (out.size() > 0) {
-        (batch.numRows(), cbbos.toChunkedByteBuffer)
-      } else {
-        (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
-      }
+      Utils.serializeBatches(iter)
     }
   }
 

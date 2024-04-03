@@ -189,11 +189,11 @@ public abstract class CometVector extends ColumnVector {
     getValueVector().close();
   }
 
-  DictionaryProvider getDictionaryProvider() {
+  public DictionaryProvider getDictionaryProvider() {
     throw new UnsupportedOperationException("Not implemented");
   }
 
-  abstract ValueVector getValueVector();
+  public abstract ValueVector getValueVector();
 
   /**
    * Returns a zero-copying new vector that contains the values from [offset, offset + length).

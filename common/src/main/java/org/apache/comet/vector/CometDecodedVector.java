@@ -48,7 +48,7 @@ public abstract class CometDecodedVector extends CometVector {
   }
 
   @Override
-  ValueVector getValueVector() {
+  public ValueVector getValueVector() {
     return valueVector;
   }
 
