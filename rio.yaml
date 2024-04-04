@@ -46,6 +46,9 @@ builds:
     build:
       template: freestyle:v4:prb
       steps:
+        # Verify that debuginfo is being stripped
+        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
+
         - cd core
         - cargo fmt --all -- --check --color=never
         - cargo clippy --color=never -- -D warnings
@@ -828,6 +831,9 @@ builds:
     build:
       template: freestyle:v4:publish
       steps:
+        # Verify that debuginfo is being stripped
+        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
+
         # Build Comet
         - make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
@@ -1343,6 +1349,9 @@ builds:
       steps:
         # Update to release version
         - ./mvnw com.apple.cie.rio:rio-maven-plugin:remove-snapshot org.codehaus.mojo:versions-maven-plugin:set
+
+        # Verify that debuginfo is being stripped
+        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
         - make clean core-${RIO_ARCH}
