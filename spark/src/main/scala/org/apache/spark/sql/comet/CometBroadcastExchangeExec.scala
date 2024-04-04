@@ -97,7 +97,15 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
   @transient
   private lazy val maxBroadcastRows = 512000000
 
-  private lazy val childRDD = child.executeColumnar()
+  private var numPartitions: Option[Int] = None
+
+  def setNumPartitions(numPartitions: Int): CometBroadcastExchangeExec = {
+    this.numPartitions = Some(numPartitions)
+    this
+  }
+  def getNumPartitions(): Int = {
+    numPartitions.getOrElse(child.executeColumnar().getNumPartitions)
+  }
 
   @transient
   override lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
@@ -209,7 +217,7 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
 
-    new CometBatchRDD(sparkContext, childRDD.getNumPartitions, broadcasted)
+    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
   }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
