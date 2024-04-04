@@ -119,11 +119,11 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
             CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
           case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
             throw new CometRuntimeException(
-              s"Child of CometBroadcastExchangeExec should be CometExec, " +
+              "Child of CometBroadcastExchangeExec should be CometExec, " +
                 s"but got: ${s.plan.getClass}")
           case _ =>
             throw new CometRuntimeException(
-              s"Child of CometBroadcastExchangeExec should be CometExec, " +
+              "Child of CometBroadcastExchangeExec should be CometExec, " +
                 s"but got: ${child.getClass}")
         }
 
