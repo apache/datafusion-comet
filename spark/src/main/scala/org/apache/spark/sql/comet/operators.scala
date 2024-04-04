@@ -72,19 +72,10 @@ abstract class CometExec extends CometPlan {
   override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
 
   /**
-   * Executes this Comet operator and serialized output ColumnarBatch into bytes.
-   */
-  def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
-    executeColumnar().mapPartitionsInternal { iter =>
-      Utils.serializeBatches(iter)
-    }
-  }
-
-  /**
    * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
    */
   def executeColumnarCollectIterator(): (Long, Iterator[ColumnarBatch]) = {
-    val countsAndBytes = getByteArrayRdd().collect()
+    val countsAndBytes = CometExec.getByteArrayRdd(this).collect()
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator
       .flatMap(countAndBytes => CometExec.decodeBatches(countAndBytes._2))
@@ -113,6 +104,15 @@ object CometExec {
     outputStream.close()
     val bytes = outputStream.toByteArray
     new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
+  }
+
+  /**
+   * Executes this Comet operator and serialized output ColumnarBatch into bytes.
+   */
+  def getByteArrayRdd(cometPlan: CometPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    cometPlan.executeColumnar().mapPartitionsInternal { iter =>
+      Utils.serializeBatches(iter)
+    }
   }
 
   /**

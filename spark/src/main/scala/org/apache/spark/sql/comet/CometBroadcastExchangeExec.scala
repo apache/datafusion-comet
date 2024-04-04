@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -42,6 +43,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometRuntimeException
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
 /**
@@ -95,7 +97,7 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
   @transient
   private lazy val maxBroadcastRows = 512000000
 
-  private lazy val childRDD = child.asInstanceOf[CometExec].executeColumnar()
+  private lazy val childRDD = child.executeColumnar()
 
   @transient
   override lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
@@ -110,7 +112,21 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
           interruptOnCancel = true)
         val beforeCollect = System.nanoTime()
 
-        val countsAndBytes = child.asInstanceOf[CometExec].getByteArrayRdd().collect()
+        val countsAndBytes = child match {
+          case c: CometPlan => CometExec.getByteArrayRdd(c).collect()
+          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
+              if s.plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
+          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
+            throw new CometRuntimeException(
+              s"Child of CometBroadcastExchangeExec should be CometExec, " +
+                s"but got: ${s.plan.getClass}")
+          case _ =>
+            throw new CometRuntimeException(
+              s"Child of CometBroadcastExchangeExec should be CometExec, " +
+                s"but got: ${child.getClass}")
+        }
+
         val numRows = countsAndBytes.map(_._1).sum
         val input = countsAndBytes.iterator.map(countAndBytes => countAndBytes._2)
 
