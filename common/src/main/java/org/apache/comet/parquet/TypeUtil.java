@@ -197,7 +197,7 @@ public class TypeUtil {
             || sparkType == DataTypes.BinaryType
             // for uuid, since iceberg maps uuid to StringType
             || sparkType == DataTypes.StringType
-                && descriptor.getPrimitiveType().getLogicalTypeAnnotation()
+                && logicalTypeAnnotation
                     instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation) {
           return;
         }
