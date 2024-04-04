@@ -218,14 +218,14 @@ builds:
       notify:
         email:
           enabled: true
-        slack:
-          enabled: true
-          channels:
-            - channel: '#project-native-execution-engine'
-              build:
-                onStart: false
-                onSuccess: false
-                onFailure: true
+        #slack:
+        #  enabled: true
+        #  channels:
+        #    - channel: '#project-native-execution-engine'
+        #      build:
+        #        onStart: false
+        #        onSuccess: false
+        #        onFailure: true
 
   - &comet-spark
     group: test-spark-sql-catalyst
@@ -1256,7 +1256,7 @@ builds:
         <<: *proxy_env
         VERSION: 3.2_2.12
     build: &nightly_image_build
-      template: buildozer:v4:publish
+      template: freestyle:v4:publish
       steps: ['true']
     package: &nightly_image_package
       dockerfile:
