@@ -224,11 +224,6 @@ object Utils {
           if (valueVector.getField.getDictionary != null) {
             if (provider.isEmpty) {
               provider = Some(a.getDictionaryProvider)
-            } else {
-              if (provider.get != a.getDictionaryProvider) {
-                throw new SparkException(
-                  "Comet execution only takes Arrow Arrays with the same dictionary provider")
-              }
             }
           }
 
