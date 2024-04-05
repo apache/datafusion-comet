@@ -153,7 +153,7 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
-  ValueVector getValueVector() {
+  public ValueVector getValueVector() {
     return delegate.getValueVector();
   }
 
@@ -163,7 +163,7 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
-  DictionaryProvider getDictionaryProvider() {
+  public DictionaryProvider getDictionaryProvider() {
     return delegate.getDictionaryProvider();
   }
 }

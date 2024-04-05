@@ -139,12 +139,13 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_BROADCAST_ENABLED: ConfigEntry[Boolean] =
+  val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
-        "Whether to enable broadcasting for Comet native operators. By default, " +
-          "this config is false. Note that this feature is not fully supported yet " +
-          "and only enabled for test purpose.")
+        "Whether to force enabling broadcasting for Comet native operators. By default, " +
+          "this config is false. Comet broadcast feature will be enabled automatically by " +
+          "Comet extension. But for unit tests, we need this feature to force enabling it " +
+          "for invalid cases. So this config is only used for unit test.")
       .booleanConf
       .createWithDefault(false)
 
