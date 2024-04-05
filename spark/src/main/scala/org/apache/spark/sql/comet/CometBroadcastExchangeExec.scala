@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
@@ -42,6 +43,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometRuntimeException
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
 /**
@@ -95,6 +97,16 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
   @transient
   private lazy val maxBroadcastRows = 512000000
 
+  private var numPartitions: Option[Int] = None
+
+  def setNumPartitions(numPartitions: Int): CometBroadcastExchangeExec = {
+    this.numPartitions = Some(numPartitions)
+    this
+  }
+  def getNumPartitions(): Int = {
+    numPartitions.getOrElse(child.executeColumnar().getNumPartitions)
+  }
+
   @transient
   override lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
@@ -108,7 +120,21 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
           interruptOnCancel = true)
         val beforeCollect = System.nanoTime()
 
-        val countsAndBytes = child.asInstanceOf[CometExec].getByteArrayRdd().collect()
+        val countsAndBytes = child match {
+          case c: CometPlan => CometExec.getByteArrayRdd(c).collect()
+          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
+              if s.plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
+          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
+            throw new CometRuntimeException(
+              "Child of CometBroadcastExchangeExec should be CometExec, " +
+                s"but got: ${s.plan.getClass}")
+          case _ =>
+            throw new CometRuntimeException(
+              "Child of CometBroadcastExchangeExec should be CometExec, " +
+                s"but got: ${child.getClass}")
+        }
+
         val numRows = countsAndBytes.map(_._1).sum
         val input = countsAndBytes.iterator.map(countAndBytes => countAndBytes._2)
 
@@ -191,7 +217,7 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
 
-    new CometBatchRDD(sparkContext, broadcasted.value.length, broadcasted)
+    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
   }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {

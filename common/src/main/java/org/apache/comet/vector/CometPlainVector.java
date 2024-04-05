@@ -138,7 +138,7 @@ public class CometPlainVector extends CometDecodedVector {
   }
 
   @Override
-  CDataDictionaryProvider getDictionaryProvider() {
+  public CDataDictionaryProvider getDictionaryProvider() {
     return null;
   }
 

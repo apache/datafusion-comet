@@ -19,88 +19,20 @@
 
 package org.apache.comet.vector
 
-import java.io.OutputStream
-import java.nio.channels.Channels
-
-import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector._
-import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowStreamWriter
-
 class NativeUtil {
+  import Utils._
+
   private val allocator = new RootAllocator(Long.MaxValue)
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
   private val importer = new ArrowImporter(allocator)
-
-  /**
-   * Serializes a list of `ColumnarBatch` into an output stream.
-   *
-   * @param batches
-   *   the output batches, each batch is a list of Arrow vectors wrapped in `CometVector`
-   * @param out
-   *   the output stream
-   */
-  def serializeBatches(batches: Iterator[ColumnarBatch], out: OutputStream): Long = {
-    var writer: Option[CometArrowStreamWriter] = None
-    var rowCount = 0
-
-    batches.foreach { batch =>
-      val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
-      val root = new VectorSchemaRoot(fieldVectors.asJava)
-      val provider = batchProviderOpt.getOrElse(dictionaryProvider)
-
-      if (writer.isEmpty) {
-        writer = Some(new CometArrowStreamWriter(root, provider, Channels.newChannel(out)))
-        writer.get.start()
-        writer.get.writeBatch()
-      } else {
-        writer.get.writeMoreBatch(root)
-      }
-
-      root.clear()
-      rowCount += batch.numRows()
-    }
-
-    writer.map(_.end())
-
-    rowCount
-  }
-
-  def getBatchFieldVectors(
-      batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
-    var provider: Option[DictionaryProvider] = None
-    val fieldVectors = (0 until batch.numCols()).map { index =>
-      batch.column(index) match {
-        case a: CometVector =>
-          val valueVector = a.getValueVector
-          if (valueVector.getField.getDictionary != null) {
-            if (provider.isEmpty) {
-              provider = Some(a.getDictionaryProvider)
-            } else {
-              if (provider.get != a.getDictionaryProvider) {
-                throw new SparkException(
-                  "Comet execution only takes Arrow Arrays with the same dictionary provider")
-              }
-            }
-          }
-
-          getFieldVector(valueVector)
-
-        case c =>
-          throw new SparkException(
-            "Comet execution only takes Arrow Arrays, but got " +
-              s"${c.getClass}")
-      }
-    }
-    (fieldVectors, provider)
-  }
 
   /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
@@ -198,16 +130,5 @@ class NativeUtil {
     }
 
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
-  }
-
-  private def getFieldVector(valueVector: ValueVector): FieldVector = {
-    valueVector match {
-      case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
-          _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
-          _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
-          _: FixedSizeBinaryVector | _: TimeStampMicroVector) =>
-        v.asInstanceOf[FieldVector]
-      case _ => throw new SparkException(s"Unsupported Arrow Vector: ${valueVector.getClass}")
-    }
   }
 }
