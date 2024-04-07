@@ -165,7 +165,6 @@ macro_rules! hash_array_primitive_float {
                     } else {
                         *hash = spark_compatible_murmur3_hash((*value as $ty).to_le_bytes(), *hash);
                     }
-                    *hash = spark_compatible_murmur3_hash((*value as $ty).to_le_bytes(), *hash);
                 }
             }
         }
@@ -422,15 +421,16 @@ mod tests {
             Some(0.0),
             Some(-0.0),
             Some(-1.0),
+            None,
             Some(99999999999.99999999999),
             Some(-99999999999.99999999999),
         ])) as ArrayRef;
-        let mut hashes = vec![42; 6];
+        let mut hashes = vec![42; 7];
         create_hashes(&[i], &mut hashes).unwrap();
 
         // generated with Spark Murmur3_x86_32
         let expected = vec![
-            0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86,
+            0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 42_u32, 0xcbdc340f, 0xc0361c86,
         ];
         assert_eq!(hashes, expected);
     }
@@ -441,16 +441,17 @@ mod tests {
             Some(1.0),
             Some(0.0),
             Some(-0.0),
+            None,
             Some(-1.0),
             Some(99999999999.99999999999),
             Some(-99999999999.99999999999),
         ])) as ArrayRef;
-        let mut hashes = vec![42; 6];
+        let mut hashes = vec![42; 7];
         create_hashes(&[i], &mut hashes).unwrap();
 
         // generated with Spark Murmur3_x86_32
         let expected = vec![
-            0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9,
+            0xe4876492, 0x9c67b85d, 0x9c67b85d, 42_u32, 0x13d81357, 0xb87e1595, 0xa0eef9f9,
         ];
         assert_eq!(hashes, expected);
     }
