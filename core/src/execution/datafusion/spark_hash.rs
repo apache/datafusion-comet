@@ -363,7 +363,7 @@ mod tests {
     use crate::execution::datafusion::spark_hash::{create_hashes, pmod};
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
-    macro_rules! test_primitive {
+    macro_rules! test_hashes {
         ($ty:ty, $values:expr, $expected:expr) => {
             let i = Arc::new(<$ty>::from($values)) as ArrayRef;
             let mut hashes = vec![42; $values.len()];
@@ -374,13 +374,13 @@ mod tests {
 
     #[test]
     fn test_i8() {
-        test_primitive!(
+        test_hashes!(
             Int8Array,
             vec![Some(1), Some(0), Some(-1), Some(i8::MAX), Some(i8::MIN)],
             vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x43b4d8ed, 0x422a1365]
         );
         // with null input
-        test_primitive!(
+        test_hashes!(
             Int8Array,
             vec![Some(1), None, Some(-1), Some(i8::MAX), Some(i8::MIN)],
             vec![0xdea578e3, 42, 0xa0590e3d, 0x43b4d8ed, 0x422a1365]
@@ -389,13 +389,13 @@ mod tests {
 
     #[test]
     fn test_i32() {
-        test_primitive!(
+        test_hashes!(
             Int32Array,
             vec![Some(1), Some(0), Some(-1), Some(i32::MAX), Some(i32::MIN)],
             vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x07fb67e7, 0x2b1f0fc6]
         );
         // with null input
-        test_primitive!(
+        test_hashes!(
             Int32Array,
             vec![
                 Some(1),
@@ -411,13 +411,13 @@ mod tests {
 
     #[test]
     fn test_i64() {
-        test_primitive!(
+        test_hashes!(
             Int64Array,
             vec![Some(1), Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN)],
             vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb]
         );
         // with null input
-        test_primitive!(
+        test_hashes!(
             Int64Array,
             vec![
                 Some(1),
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_f32() {
-        test_primitive!(
+        test_hashes!(
             Float32Array,
             vec![
                 Some(1.0),
@@ -446,7 +446,7 @@ mod tests {
             vec![0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86]
         );
         // with null input
-        test_primitive!(
+        test_hashes!(
             Float32Array,
             vec![
                 Some(1.0),
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_f64() {
-        test_primitive!(
+        test_hashes!(
             Float64Array,
             vec![
                 Some(1.0),
@@ -476,7 +476,7 @@ mod tests {
             vec![0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9]
         );
         // with null input
-        test_primitive!(
+        test_hashes!(
             Float64Array,
             vec![
                 Some(1.0),
@@ -493,13 +493,13 @@ mod tests {
 
     #[test]
     fn test_str() {
-        test_primitive!(
+        test_hashes!(
             StringArray,
             vec!["hello", "bar", "", "😁", "天地"],
             vec![3286402344, 2486176763, 142593372, 885025535, 2395000894]
         );
         // test with null input
-        test_primitive!(
+        test_hashes!(
             StringArray,
             vec![
                 Some("hello"),
