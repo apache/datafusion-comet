@@ -36,7 +36,6 @@ import org.slf4j.LoggerFactory;
 import org.apache.spark.SparkConf;
 import org.apache.spark.TaskContext;
 import org.apache.spark.executor.ShuffleWriteMetrics;
-import org.apache.spark.internal.config.package$;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
@@ -102,7 +101,7 @@ public final class CometDiskBlockWriter {
   private final File file;
   private long totalWritten = 0L;
   private boolean initialized = false;
-  private final int initialBufferSize;
+  private final int columnarBatchSize;
   private final boolean isAsync;
   private final int asyncThreadNum;
   private final ExecutorService threadPool;
@@ -152,8 +151,7 @@ public final class CometDiskBlockWriter {
     this.asyncThreadNum = asyncThreadNum;
     this.threadPool = threadPool;
 
-    this.initialBufferSize =
-        (int) (long) conf.get(package$.MODULE$.SHUFFLE_SORT_INIT_BUFFER_SIZE());
+    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
 
     this.numElementsForSpillThreshold =
         (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD().get();
@@ -264,10 +262,11 @@ public final class CometDiskBlockWriter {
     // While proceeding with possible spilling and inserting the record, we need to synchronize
     // it, because other threads may be spilling this writer at the same time.
     synchronized (CometDiskBlockWriter.this) {
-      if (activeWriter.numRecords() >= numElementsForSpillThreshold) {
+      if (activeWriter.numRecords() >= numElementsForSpillThreshold
+          || activeWriter.numRecords() >= columnarBatchSize) {
+        int threshold = Math.min(numElementsForSpillThreshold, columnarBatchSize);
         logger.info(
-            "Spilling data because number of spilledRecords crossed the threshold "
-                + numElementsForSpillThreshold);
+            "Spilling data because number of spilledRecords crossed the threshold " + threshold);
         // Spill the current writer
         doSpill(false);
         if (activeWriter.numRecords() != 0) {
@@ -347,7 +346,7 @@ public final class CometDiskBlockWriter {
     private final RowPartition rowPartition;
 
     ArrowIPCWriter() {
-      rowPartition = new RowPartition(initialBufferSize);
+      rowPartition = new RowPartition(columnarBatchSize);
 
       this.allocatedPages = new LinkedList<>();
       this.allocator = CometDiskBlockWriter.this.allocator;
