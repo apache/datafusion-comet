@@ -32,17 +32,9 @@ class RowPartition(initialSize: Int) {
 
   def getNumRows: Int = rowAddresses.size
 
-  def getRowAddresses: Array[Long] = {
-    val array = rowAddresses.toArray
-    rowAddresses = null
-    array
-  }
+  def getRowAddresses: Array[Long] = rowAddresses.toArray
 
-  def getRowSizes: Array[Int] = {
-    val array = rowSizes.toArray
-    rowSizes = null
-    array
-  }
+  def getRowSizes: Array[Int] = rowSizes.toArray
 
   def reset(): Unit = {
     rowAddresses = new ArrayBuffer[Long](initialSize)

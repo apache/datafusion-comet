@@ -175,6 +175,10 @@ public abstract class SpillWriter {
     long[] addresses = rowPartition.getRowAddresses();
     int[] sizes = rowPartition.getRowSizes();
 
+    // We exported the addresses and sizes, reset the row partition
+    // to release the memory as soon as possible.
+    rowPartition.reset();
+
     boolean checksumEnabled = checksum != -1;
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
@@ -194,8 +198,6 @@ public abstract class SpillWriter {
 
     long written = results[0];
     checksum = results[1];
-
-    rowPartition.reset();
 
     // Update metrics
     // Other threads may be updating the metrics at the same time, so we need to synchronize it.
