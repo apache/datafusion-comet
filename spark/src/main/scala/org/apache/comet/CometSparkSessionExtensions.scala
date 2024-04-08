@@ -744,7 +744,7 @@ object CometSparkSessionExtensions extends Logging {
     COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_ROW_TO_COLUMNAR_SOURCE_NODE_LIST.get(conf).contains(nodeName)
+      COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
   }
 
