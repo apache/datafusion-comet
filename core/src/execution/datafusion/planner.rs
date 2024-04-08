@@ -25,6 +25,11 @@ use datafusion::{
     common::DataFusionError,
     execution::FunctionRegistry,
     logical_expr::Operator as DataFusionOperator,
+    functions::math,
+    logical_expr::{
+        expr::find_df_window_func, BuiltinScalarFunction, Operator as DataFusionOperator,
+        ScalarFunctionDefinition, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    },
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
@@ -1473,6 +1478,7 @@ impl PhysicalPlanner {
             sort_exprs,
             window_frame.into(),
             &input_schema,
+            false, // TODO: Ignore nulls
         )
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
     }
