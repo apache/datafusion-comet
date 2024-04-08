@@ -1039,6 +1039,21 @@ impl PhysicalPlanner {
                 .collect();
             let full_schema = Arc::new(Schema::new(all_fields));
 
+            // Because we cast dictionary array to array in scan operator,
+            // we need to change dictionary type to data type for join filter expression.
+            let fields: Vec<_> = full_schema
+                .fields()
+                .iter()
+                .map(|f| match f.data_type() {
+                    DataType::Dictionary(_, val_type) => {
+                        Arc::new(Field::new(f.name(), val_type.as_ref().clone(), true))
+                    }
+                    _ => f.clone(),
+                })
+                .collect();
+
+            let full_schema = Arc::new(Schema::new(fields));
+
             let physical_expr = self.create_expr(expr, full_schema)?;
             let (left_field_indices, right_field_indices) =
                 expr_to_columns(&physical_expr, left_fields.len(), right_fields.len())?;
@@ -1057,6 +1072,14 @@ impl PhysicalPlanner {
                         .into_iter()
                         .map(|i| right.schema().field(i).clone()),
                 )
+                // Because we cast dictionary array to array in scan operator,
+                // we need to change dictionary type to data type for join filter expression.
+                .map(|f| match f.data_type() {
+                    DataType::Dictionary(_, val_type) => {
+                        Field::new(f.name(), val_type.as_ref().clone(), true)
+                    }
+                    _ => f.clone(),
+                })
                 .collect_vec();
 
             let filter_schema = Schema::new_with_metadata(filter_fields, HashMap::new());
