@@ -600,17 +600,23 @@ class CometSparkSessionExtensions
 
   // This rule is responsible for eliminating redundant transitions between row-based and
   // columnar-based operators for Comet. Currently, two potential redundant transitions are:
-  // 1. ColumnarToRowExec at the end of a Spark operator, which is redundant for Comet operators as
-  //    CometExec already wraps a `ColumnarToRowExec` for row-based operators.
-  // 2. Consecutive operators of CometRowToColumnarExec and ColumnarToRowExec, which might be
-  //    possible for Comet to add a `CometRowToColumnarExec` for row-based operators first, then
-  //    Spark only requests row-based output.
+  // 1. `ColumnarToRowExec` on top of an ending `CometCollectLimitExec` operator, which is
+  //    redundant as `CometCollectLimitExec` already wraps a `ColumnarToRowExec` for row-based
+  //    output.
+  // 2. Consecutive operators of `CometRowToColumnarExec` and `ColumnarToRowExec`.
   //
-  // The `ColumnarToRowExec` was added during ApplyColumnarRulesAndInsertTransitions'
-  // insertTransitions phase when Spark requests row-based output such as a `collect` call. It's
-  // correct to add a redundant `ColumnarToRowExec` for `CometExec`. However, for certain operators
-  // such as `CometCollectLimitExec` which overrides `executeCollect`, the redundant
-  // `ColumnarToRowExec` makes the override ineffective.
+  // Note about the first case: The `ColumnarToRowExec` was added during
+  // ApplyColumnarRulesAndInsertTransitions' insertTransitions phase when Spark requests row-based
+  // output such as a `collect` call. It's correct to add a redundant `ColumnarToRowExec` for
+  // `CometExec`. However, for certain operators such as `CometCollectLimitExec` which overrides
+  // `executeCollect`, the redundant `ColumnarToRowExec` makes the override ineffective.
+  //
+  // Note about the second case: When `spark.comet.rowToColumnar.enabled` is set, Comet will add
+  // `CometRowToColumnarExec` on top of row-based operators first, but the downstream operator
+  // only takes row-based input as it's a vanilla Spark operator(as Comet cannot convert it for
+  // various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
+  // another `ColumnarToRowExec` on top of `CometRowToColumnarExec`. In this case, the pair could
+  // be removed.
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
