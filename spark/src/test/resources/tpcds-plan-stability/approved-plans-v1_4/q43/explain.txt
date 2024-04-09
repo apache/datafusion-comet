@@ -1,25 +1,27 @@
 == Physical Plan ==
-TakeOrderedAndProject (21)
-+- * HashAggregate (20)
-   +- Exchange (19)
-      +- * HashAggregate (18)
-         +- * Project (17)
-            +- * BroadcastHashJoin Inner BuildRight (16)
-               :- * Project (10)
-               :  +- * BroadcastHashJoin Inner BuildRight (9)
-               :     :- * ColumnarToRow (4)
-               :     :  +- CometProject (3)
-               :     :     +- CometFilter (2)
-               :     :        +- CometScan parquet spark_catalog.default.date_dim (1)
-               :     +- BroadcastExchange (8)
-               :        +- * ColumnarToRow (7)
-               :           +- CometFilter (6)
-               :              +- CometScan parquet spark_catalog.default.store_sales (5)
-               +- BroadcastExchange (15)
-                  +- * ColumnarToRow (14)
-                     +- CometProject (13)
-                        +- CometFilter (12)
-                           +- CometScan parquet spark_catalog.default.store (11)
+* ColumnarToRow (23)
++- CometTakeOrderedAndProject (22)
+   +- CometHashAggregate (21)
+      +- CometColumnarExchange (20)
+         +- RowToColumnar (19)
+            +- * HashAggregate (18)
+               +- * Project (17)
+                  +- * BroadcastHashJoin Inner BuildRight (16)
+                     :- * Project (10)
+                     :  +- * BroadcastHashJoin Inner BuildRight (9)
+                     :     :- * ColumnarToRow (4)
+                     :     :  +- CometProject (3)
+                     :     :     +- CometFilter (2)
+                     :     :        +- CometScan parquet spark_catalog.default.date_dim (1)
+                     :     +- BroadcastExchange (8)
+                     :        +- * ColumnarToRow (7)
+                     :           +- CometFilter (6)
+                     :              +- CometScan parquet spark_catalog.default.store_sales (5)
+                     +- BroadcastExchange (15)
+                        +- * ColumnarToRow (14)
+                           +- CometProject (13)
+                              +- CometFilter (12)
+                                 +- CometScan parquet spark_catalog.default.store (11)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
@@ -108,18 +110,22 @@ Functions [7]: [partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) T
 Aggregate Attributes [7]: [sum#11, sum#12, sum#13, sum#14, sum#15, sum#16, sum#17]
 Results [9]: [s_store_name#9, s_store_id#8, sum#18, sum#19, sum#20, sum#21, sum#22, sum#23, sum#24]
 
-(19) Exchange
+(19) RowToColumnar
 Input [9]: [s_store_name#9, s_store_id#8, sum#18, sum#19, sum#20, sum#21, sum#22, sum#23, sum#24]
-Arguments: hashpartitioning(s_store_name#9, s_store_id#8, 5), ENSURE_REQUIREMENTS, [plan_id=3]
 
-(20) HashAggregate [codegen id : 4]
+(20) CometColumnarExchange
+Input [9]: [s_store_name#9, s_store_id#8, sum#18, sum#19, sum#20, sum#21, sum#22, sum#23, sum#24]
+Arguments: hashpartitioning(s_store_name#9, s_store_id#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+
+(21) CometHashAggregate
 Input [9]: [s_store_name#9, s_store_id#8, sum#18, sum#19, sum#20, sum#21, sum#22, sum#23, sum#24]
 Keys [2]: [s_store_name#9, s_store_id#8]
 Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#5 END))]
-Aggregate Attributes [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#5 END))#25, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#5 END))#26, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#5 END))#27, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#5 END))#28, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#5 END))#29, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#5 END))#30, sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#5 END))#31]
-Results [9]: [s_store_name#9, s_store_id#8, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#5 END))#25,17,2) AS sun_sales#32, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#5 END))#26,17,2) AS mon_sales#33, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#5 END))#27,17,2) AS tue_sales#34, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#5 END))#28,17,2) AS wed_sales#35, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#5 END))#29,17,2) AS thu_sales#36, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#5 END))#30,17,2) AS fri_sales#37, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#5 END))#31,17,2) AS sat_sales#38]
 
-(21) TakeOrderedAndProject
-Input [9]: [s_store_name#9, s_store_id#8, sun_sales#32, mon_sales#33, tue_sales#34, wed_sales#35, thu_sales#36, fri_sales#37, sat_sales#38]
-Arguments: 100, [s_store_name#9 ASC NULLS FIRST, s_store_id#8 ASC NULLS FIRST, sun_sales#32 ASC NULLS FIRST, mon_sales#33 ASC NULLS FIRST, tue_sales#34 ASC NULLS FIRST, wed_sales#35 ASC NULLS FIRST, thu_sales#36 ASC NULLS FIRST, fri_sales#37 ASC NULLS FIRST, sat_sales#38 ASC NULLS FIRST], [s_store_name#9, s_store_id#8, sun_sales#32, mon_sales#33, tue_sales#34, wed_sales#35, thu_sales#36, fri_sales#37, sat_sales#38]
+(22) CometTakeOrderedAndProject
+Input [9]: [s_store_name#9, s_store_id#8, sun_sales#25, mon_sales#26, tue_sales#27, wed_sales#28, thu_sales#29, fri_sales#30, sat_sales#31]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#9 ASC NULLS FIRST,s_store_id#8 ASC NULLS FIRST,sun_sales#25 ASC NULLS FIRST,mon_sales#26 ASC NULLS FIRST,tue_sales#27 ASC NULLS FIRST,wed_sales#28 ASC NULLS FIRST,thu_sales#29 ASC NULLS FIRST,fri_sales#30 ASC NULLS FIRST,sat_sales#31 ASC NULLS FIRST], output=[s_store_name#9,s_store_id#8,sun_sales#25,mon_sales#26,tue_sales#27,wed_sales#28,thu_sales#29,fri_sales#30,sat_sales#31]), 100, [s_store_name#9 ASC NULLS FIRST, s_store_id#8 ASC NULLS FIRST, sun_sales#25 ASC NULLS FIRST, mon_sales#26 ASC NULLS FIRST, tue_sales#27 ASC NULLS FIRST, wed_sales#28 ASC NULLS FIRST, thu_sales#29 ASC NULLS FIRST, fri_sales#30 ASC NULLS FIRST, sat_sales#31 ASC NULLS FIRST], [s_store_name#9, s_store_id#8, sun_sales#25, mon_sales#26, tue_sales#27, wed_sales#28, thu_sales#29, fri_sales#30, sat_sales#31]
+
+(23) ColumnarToRow [codegen id : 4]
+Input [9]: [s_store_name#9, s_store_id#8, sun_sales#25, mon_sales#26, tue_sales#27, wed_sales#28, thu_sales#29, fri_sales#30, sat_sales#31]
 

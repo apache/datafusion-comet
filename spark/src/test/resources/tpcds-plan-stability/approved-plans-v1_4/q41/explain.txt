@@ -1,24 +1,26 @@
 == Physical Plan ==
-TakeOrderedAndProject (20)
-+- * HashAggregate (19)
-   +- Exchange (18)
-      +- * HashAggregate (17)
-         +- * Project (16)
-            +- * BroadcastHashJoin Inner BuildRight (15)
-               :- * ColumnarToRow (4)
-               :  +- CometProject (3)
-               :     +- CometFilter (2)
-               :        +- CometScan parquet spark_catalog.default.item (1)
-               +- BroadcastExchange (14)
-                  +- * ColumnarToRow (13)
-                     +- CometProject (12)
-                        +- CometFilter (11)
-                           +- CometHashAggregate (10)
-                              +- CometExchange (9)
-                                 +- CometHashAggregate (8)
-                                    +- CometProject (7)
-                                       +- CometFilter (6)
-                                          +- CometScan parquet spark_catalog.default.item (5)
+* ColumnarToRow (22)
++- CometTakeOrderedAndProject (21)
+   +- CometHashAggregate (20)
+      +- CometColumnarExchange (19)
+         +- RowToColumnar (18)
+            +- * HashAggregate (17)
+               +- * Project (16)
+                  +- * BroadcastHashJoin Inner BuildRight (15)
+                     :- * ColumnarToRow (4)
+                     :  +- CometProject (3)
+                     :     +- CometFilter (2)
+                     :        +- CometScan parquet spark_catalog.default.item (1)
+                     +- BroadcastExchange (14)
+                        +- * ColumnarToRow (13)
+                           +- CometProject (12)
+                              +- CometFilter (11)
+                                 +- CometHashAggregate (10)
+                                    +- CometColumnarExchange (9)
+                                       +- CometHashAggregate (8)
+                                          +- CometProject (7)
+                                             +- CometFilter (6)
+                                                +- CometScan parquet spark_catalog.default.item (5)
 
 
 (unknown) Scan parquet spark_catalog.default.item
@@ -59,9 +61,9 @@ Input [1]: [i_manufact#5]
 Keys [1]: [i_manufact#5]
 Functions [1]: [partial_count(1)]
 
-(9) CometExchange
+(9) CometColumnarExchange
 Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [2]: [i_manufact#5, count#9]
@@ -100,18 +102,22 @@ Functions: []
 Aggregate Attributes: []
 Results [1]: [i_product_name#3]
 
-(18) Exchange
+(18) RowToColumnar
 Input [1]: [i_product_name#3]
-Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, [plan_id=3]
 
-(19) HashAggregate [codegen id : 3]
+(19) CometColumnarExchange
+Input [1]: [i_product_name#3]
+Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+
+(20) CometHashAggregate
 Input [1]: [i_product_name#3]
 Keys [1]: [i_product_name#3]
 Functions: []
-Aggregate Attributes: []
-Results [1]: [i_product_name#3]
 
-(20) TakeOrderedAndProject
+(21) CometTakeOrderedAndProject
 Input [1]: [i_product_name#3]
-Arguments: 100, [i_product_name#3 ASC NULLS FIRST], [i_product_name#3]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#3 ASC NULLS FIRST], output=[i_product_name#3]), 100, [i_product_name#3 ASC NULLS FIRST], [i_product_name#3]
+
+(22) ColumnarToRow [codegen id : 3]
+Input [1]: [i_product_name#3]
 

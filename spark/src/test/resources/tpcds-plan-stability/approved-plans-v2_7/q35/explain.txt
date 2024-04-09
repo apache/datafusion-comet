@@ -1,46 +1,48 @@
 == Physical Plan ==
-TakeOrderedAndProject (42)
-+- * HashAggregate (41)
-   +- Exchange (40)
-      +- * HashAggregate (39)
-         +- * Project (38)
-            +- * BroadcastHashJoin Inner BuildRight (37)
-               :- * Project (32)
-               :  +- * BroadcastHashJoin Inner BuildRight (31)
-               :     :- * Project (26)
-               :     :  +- * Filter (25)
-               :     :     +- * BroadcastHashJoin ExistenceJoin(exists#1) BuildRight (24)
-               :     :        :- * BroadcastHashJoin ExistenceJoin(exists#2) BuildRight (17)
-               :     :        :  :- * BroadcastHashJoin LeftSemi BuildRight (10)
-               :     :        :  :  :- * ColumnarToRow (3)
-               :     :        :  :  :  +- CometFilter (2)
-               :     :        :  :  :     +- CometScan parquet spark_catalog.default.customer (1)
-               :     :        :  :  +- BroadcastExchange (9)
-               :     :        :  :     +- * Project (8)
-               :     :        :  :        +- * BroadcastHashJoin Inner BuildRight (7)
-               :     :        :  :           :- * ColumnarToRow (5)
-               :     :        :  :           :  +- CometScan parquet spark_catalog.default.store_sales (4)
-               :     :        :  :           +- ReusedExchange (6)
-               :     :        :  +- BroadcastExchange (16)
-               :     :        :     +- * Project (15)
-               :     :        :        +- * BroadcastHashJoin Inner BuildRight (14)
-               :     :        :           :- * ColumnarToRow (12)
-               :     :        :           :  +- CometScan parquet spark_catalog.default.web_sales (11)
-               :     :        :           +- ReusedExchange (13)
-               :     :        +- BroadcastExchange (23)
-               :     :           +- * Project (22)
-               :     :              +- * BroadcastHashJoin Inner BuildRight (21)
-               :     :                 :- * ColumnarToRow (19)
-               :     :                 :  +- CometScan parquet spark_catalog.default.catalog_sales (18)
-               :     :                 +- ReusedExchange (20)
-               :     +- BroadcastExchange (30)
-               :        +- * ColumnarToRow (29)
-               :           +- CometFilter (28)
-               :              +- CometScan parquet spark_catalog.default.customer_address (27)
-               +- BroadcastExchange (36)
-                  +- * ColumnarToRow (35)
-                     +- CometFilter (34)
-                        +- CometScan parquet spark_catalog.default.customer_demographics (33)
+* ColumnarToRow (44)
++- CometTakeOrderedAndProject (43)
+   +- CometHashAggregate (42)
+      +- CometColumnarExchange (41)
+         +- RowToColumnar (40)
+            +- * HashAggregate (39)
+               +- * Project (38)
+                  +- * BroadcastHashJoin Inner BuildRight (37)
+                     :- * Project (32)
+                     :  +- * BroadcastHashJoin Inner BuildRight (31)
+                     :     :- * Project (26)
+                     :     :  +- * Filter (25)
+                     :     :     +- * BroadcastHashJoin ExistenceJoin(exists#1) BuildRight (24)
+                     :     :        :- * BroadcastHashJoin ExistenceJoin(exists#2) BuildRight (17)
+                     :     :        :  :- * BroadcastHashJoin LeftSemi BuildRight (10)
+                     :     :        :  :  :- * ColumnarToRow (3)
+                     :     :        :  :  :  +- CometFilter (2)
+                     :     :        :  :  :     +- CometScan parquet spark_catalog.default.customer (1)
+                     :     :        :  :  +- BroadcastExchange (9)
+                     :     :        :  :     +- * Project (8)
+                     :     :        :  :        +- * BroadcastHashJoin Inner BuildRight (7)
+                     :     :        :  :           :- * ColumnarToRow (5)
+                     :     :        :  :           :  +- CometScan parquet spark_catalog.default.store_sales (4)
+                     :     :        :  :           +- ReusedExchange (6)
+                     :     :        :  +- BroadcastExchange (16)
+                     :     :        :     +- * Project (15)
+                     :     :        :        +- * BroadcastHashJoin Inner BuildRight (14)
+                     :     :        :           :- * ColumnarToRow (12)
+                     :     :        :           :  +- CometScan parquet spark_catalog.default.web_sales (11)
+                     :     :        :           +- ReusedExchange (13)
+                     :     :        +- BroadcastExchange (23)
+                     :     :           +- * Project (22)
+                     :     :              +- * BroadcastHashJoin Inner BuildRight (21)
+                     :     :                 :- * ColumnarToRow (19)
+                     :     :                 :  +- CometScan parquet spark_catalog.default.catalog_sales (18)
+                     :     :                 +- ReusedExchange (20)
+                     :     +- BroadcastExchange (30)
+                     :        +- * ColumnarToRow (29)
+                     :           +- CometFilter (28)
+                     :              +- CometScan parquet spark_catalog.default.customer_address (27)
+                     +- BroadcastExchange (36)
+                        +- * ColumnarToRow (35)
+                           +- CometFilter (34)
+                              +- CometScan parquet spark_catalog.default.customer_demographics (33)
 
 
 (unknown) Scan parquet spark_catalog.default.customer
@@ -67,7 +69,7 @@ ReadSchema: struct<ss_customer_sk:int>
 (5) ColumnarToRow [codegen id : 2]
 Input [2]: [ss_customer_sk#6, ss_sold_date_sk#7]
 
-(6) ReusedExchange [Reuses operator id: 47]
+(6) ReusedExchange [Reuses operator id: 49]
 Output [1]: [d_date_sk#9]
 
 (7) BroadcastHashJoin [codegen id : 2]
@@ -100,7 +102,7 @@ ReadSchema: struct<ws_bill_customer_sk:int>
 (12) ColumnarToRow [codegen id : 4]
 Input [2]: [ws_bill_customer_sk#10, ws_sold_date_sk#11]
 
-(13) ReusedExchange [Reuses operator id: 47]
+(13) ReusedExchange [Reuses operator id: 49]
 Output [1]: [d_date_sk#13]
 
 (14) BroadcastHashJoin [codegen id : 4]
@@ -133,7 +135,7 @@ ReadSchema: struct<cs_ship_customer_sk:int>
 (19) ColumnarToRow [codegen id : 6]
 Input [2]: [cs_ship_customer_sk#14, cs_sold_date_sk#15]
 
-(20) ReusedExchange [Reuses operator id: 47]
+(20) ReusedExchange [Reuses operator id: 49]
 Output [1]: [d_date_sk#17]
 
 (21) BroadcastHashJoin [codegen id : 6]
@@ -227,50 +229,54 @@ Functions [10]: [partial_count(1), partial_avg(cd_dep_count#23), partial_max(cd_
 Aggregate Attributes [13]: [count#26, sum#27, count#28, max#29, sum#30, sum#31, count#32, max#33, sum#34, sum#35, count#36, max#37, sum#38]
 Results [19]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, count#39, sum#40, count#41, max#42, sum#43, sum#44, count#45, max#46, sum#47, sum#48, count#49, max#50, sum#51]
 
-(40) Exchange
+(40) RowToColumnar
 Input [19]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, count#39, sum#40, count#41, max#42, sum#43, sum#44, count#45, max#46, sum#47, sum#48, count#49, max#50, sum#51]
-Arguments: hashpartitioning(ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, 5), ENSURE_REQUIREMENTS, [plan_id=6]
 
-(41) HashAggregate [codegen id : 10]
+(41) CometColumnarExchange
+Input [19]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, count#39, sum#40, count#41, max#42, sum#43, sum#44, count#45, max#46, sum#47, sum#48, count#49, max#50, sum#51]
+Arguments: hashpartitioning(ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
+
+(42) CometHashAggregate
 Input [19]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25, count#39, sum#40, count#41, max#42, sum#43, sum#44, count#45, max#46, sum#47, sum#48, count#49, max#50, sum#51]
 Keys [6]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cd_dep_employed_count#24, cd_dep_college_count#25]
 Functions [10]: [count(1), avg(cd_dep_count#23), max(cd_dep_count#23), sum(cd_dep_count#23), avg(cd_dep_employed_count#24), max(cd_dep_employed_count#24), sum(cd_dep_employed_count#24), avg(cd_dep_college_count#25), max(cd_dep_college_count#25), sum(cd_dep_college_count#25)]
-Aggregate Attributes [10]: [count(1)#52, avg(cd_dep_count#23)#53, max(cd_dep_count#23)#54, sum(cd_dep_count#23)#55, avg(cd_dep_employed_count#24)#56, max(cd_dep_employed_count#24)#57, sum(cd_dep_employed_count#24)#58, avg(cd_dep_college_count#25)#59, max(cd_dep_college_count#25)#60, sum(cd_dep_college_count#25)#61]
-Results [18]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, count(1)#52 AS cnt1#62, avg(cd_dep_count#23)#53 AS avg(cd_dep_count)#63, max(cd_dep_count#23)#54 AS max(cd_dep_count)#64, sum(cd_dep_count#23)#55 AS sum(cd_dep_count)#65, cd_dep_employed_count#24, count(1)#52 AS cnt2#66, avg(cd_dep_employed_count#24)#56 AS avg(cd_dep_employed_count)#67, max(cd_dep_employed_count#24)#57 AS max(cd_dep_employed_count)#68, sum(cd_dep_employed_count#24)#58 AS sum(cd_dep_employed_count)#69, cd_dep_college_count#25, count(1)#52 AS cnt3#70, avg(cd_dep_college_count#25)#59 AS avg(cd_dep_college_count)#71, max(cd_dep_college_count#25)#60 AS max(cd_dep_college_count)#72, sum(cd_dep_college_count#25)#61 AS sum(cd_dep_college_count)#73]
 
-(42) TakeOrderedAndProject
-Input [18]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cnt1#62, avg(cd_dep_count)#63, max(cd_dep_count)#64, sum(cd_dep_count)#65, cd_dep_employed_count#24, cnt2#66, avg(cd_dep_employed_count)#67, max(cd_dep_employed_count)#68, sum(cd_dep_employed_count)#69, cd_dep_college_count#25, cnt3#70, avg(cd_dep_college_count)#71, max(cd_dep_college_count)#72, sum(cd_dep_college_count)#73]
-Arguments: 100, [ca_state#19 ASC NULLS FIRST, cd_gender#21 ASC NULLS FIRST, cd_marital_status#22 ASC NULLS FIRST, cd_dep_count#23 ASC NULLS FIRST, cd_dep_employed_count#24 ASC NULLS FIRST, cd_dep_college_count#25 ASC NULLS FIRST], [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cnt1#62, avg(cd_dep_count)#63, max(cd_dep_count)#64, sum(cd_dep_count)#65, cd_dep_employed_count#24, cnt2#66, avg(cd_dep_employed_count)#67, max(cd_dep_employed_count)#68, sum(cd_dep_employed_count)#69, cd_dep_college_count#25, cnt3#70, avg(cd_dep_college_count)#71, max(cd_dep_college_count)#72, sum(cd_dep_college_count)#73]
+(43) CometTakeOrderedAndProject
+Input [18]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cnt1#52, avg(cd_dep_count)#53, max(cd_dep_count)#54, sum(cd_dep_count)#55, cd_dep_employed_count#24, cnt2#56, avg(cd_dep_employed_count)#57, max(cd_dep_employed_count)#58, sum(cd_dep_employed_count)#59, cd_dep_college_count#25, cnt3#60, avg(cd_dep_college_count)#61, max(cd_dep_college_count)#62, sum(cd_dep_college_count)#63]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_state#19 ASC NULLS FIRST,cd_gender#21 ASC NULLS FIRST,cd_marital_status#22 ASC NULLS FIRST,cd_dep_count#23 ASC NULLS FIRST,cd_dep_employed_count#24 ASC NULLS FIRST,cd_dep_college_count#25 ASC NULLS FIRST], output=[ca_state#19,cd_gender#21,cd_marital_status#22,cd_dep_count#23,cnt1#52,avg(cd_dep_count)#53,max(cd_dep_count)#54,sum(cd_dep_count)#55,cd_dep_employed_count#24,cnt2#56,avg(cd_dep_employed_count)#57,max(cd_dep_employed_count)#58,sum(cd_dep_employed_count)#59,cd_dep_college_count#25,cnt3#60,avg(cd_dep_college_count)#61,max(cd_dep_college_count)#62,sum(cd_dep_college_count)#63]), 100, [ca_state#19 ASC NULLS FIRST, cd_gender#21 ASC NULLS FIRST, cd_marital_status#22 ASC NULLS FIRST, cd_dep_count#23 ASC NULLS FIRST, cd_dep_employed_count#24 ASC NULLS FIRST, cd_dep_college_count#25 ASC NULLS FIRST], [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cnt1#52, avg(cd_dep_count)#53, max(cd_dep_count)#54, sum(cd_dep_count)#55, cd_dep_employed_count#24, cnt2#56, avg(cd_dep_employed_count)#57, max(cd_dep_employed_count)#58, sum(cd_dep_employed_count)#59, cd_dep_college_count#25, cnt3#60, avg(cd_dep_college_count)#61, max(cd_dep_college_count)#62, sum(cd_dep_college_count)#63]
+
+(44) ColumnarToRow [codegen id : 10]
+Input [18]: [ca_state#19, cd_gender#21, cd_marital_status#22, cd_dep_count#23, cnt1#52, avg(cd_dep_count)#53, max(cd_dep_count)#54, sum(cd_dep_count)#55, cd_dep_employed_count#24, cnt2#56, avg(cd_dep_employed_count)#57, max(cd_dep_employed_count)#58, sum(cd_dep_employed_count)#59, cd_dep_college_count#25, cnt3#60, avg(cd_dep_college_count)#61, max(cd_dep_college_count)#62, sum(cd_dep_college_count)#63]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
-BroadcastExchange (47)
-+- * ColumnarToRow (46)
-   +- CometProject (45)
-      +- CometFilter (44)
-         +- CometScan parquet spark_catalog.default.date_dim (43)
+BroadcastExchange (49)
++- * ColumnarToRow (48)
+   +- CometProject (47)
+      +- CometFilter (46)
+         +- CometScan parquet spark_catalog.default.date_dim (45)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#9, d_year#74, d_qoy#75]
+Output [3]: [d_date_sk#9, d_year#64, d_qoy#65]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_qoy), EqualTo(d_year,2002), LessThan(d_qoy,4), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 
-(44) CometFilter
-Input [3]: [d_date_sk#9, d_year#74, d_qoy#75]
-Condition : ((((isnotnull(d_year#74) AND isnotnull(d_qoy#75)) AND (d_year#74 = 2002)) AND (d_qoy#75 < 4)) AND isnotnull(d_date_sk#9))
+(46) CometFilter
+Input [3]: [d_date_sk#9, d_year#64, d_qoy#65]
+Condition : ((((isnotnull(d_year#64) AND isnotnull(d_qoy#65)) AND (d_year#64 = 2002)) AND (d_qoy#65 < 4)) AND isnotnull(d_date_sk#9))
 
-(45) CometProject
-Input [3]: [d_date_sk#9, d_year#74, d_qoy#75]
+(47) CometProject
+Input [3]: [d_date_sk#9, d_year#64, d_qoy#65]
 Arguments: [d_date_sk#9], [d_date_sk#9]
 
-(46) ColumnarToRow [codegen id : 1]
+(48) ColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#9]
 
-(47) BroadcastExchange
+(49) BroadcastExchange
 Input [1]: [d_date_sk#9]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=7]
 

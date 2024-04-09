@@ -1,43 +1,45 @@
-WholeStageCodegen (7)
-  Sort [i_category,i_class,i_item_id,i_item_desc,revenueratio]
+WholeStageCodegen (6)
+  ColumnarToRow
     InputAdapter
-      Exchange [i_category,i_class,i_item_id,i_item_desc,revenueratio] #1
-        WholeStageCodegen (6)
-          Project [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,_we0]
-            InputAdapter
-              Window [_w0,i_class]
-                WholeStageCodegen (5)
-                  Sort [i_class]
-                    InputAdapter
-                      Exchange [i_class] #2
-                        WholeStageCodegen (4)
-                          HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum] [sum(UnscaledValue(ss_ext_sales_price)),itemrevenue,_w0,sum]
-                            InputAdapter
-                              Exchange [i_item_id,i_item_desc,i_category,i_class,i_current_price] #3
-                                WholeStageCodegen (3)
-                                  HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,ss_ext_sales_price] [sum,sum]
-                                    Project [ss_ext_sales_price,i_item_id,i_item_desc,i_current_price,i_class,i_category]
-                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                        Project [ss_ext_sales_price,ss_sold_date_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
-                                          BroadcastHashJoin [ss_item_sk,i_item_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometFilter [ss_item_sk]
-                                                  CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                                    SubqueryBroadcast [d_date_sk] #1
-                                                      BroadcastExchange #4
-                                                        WholeStageCodegen (1)
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              CometProject [d_date_sk]
-                                                                CometFilter [d_date,d_date_sk]
-                                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+      CometSort [i_category,i_class,i_item_id,i_item_desc,revenueratio]
+        CometColumnarExchange [i_category,i_class,i_item_id,i_item_desc,revenueratio] #1
+          RowToColumnar
+            WholeStageCodegen (5)
+              Project [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,_we0]
+                InputAdapter
+                  Window [_w0,i_class]
+                    WholeStageCodegen (4)
+                      ColumnarToRow
+                        InputAdapter
+                          CometSort [i_class]
+                            CometColumnarExchange [i_class] #2
+                              CometHashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum]
+                                CometColumnarExchange [i_item_id,i_item_desc,i_category,i_class,i_current_price] #3
+                                  RowToColumnar
+                                    WholeStageCodegen (3)
+                                      HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,ss_ext_sales_price] [sum,sum]
+                                        Project [ss_ext_sales_price,i_item_id,i_item_desc,i_current_price,i_class,i_category]
+                                          BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                            Project [ss_ext_sales_price,ss_sold_date_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
+                                              BroadcastHashJoin [ss_item_sk,i_item_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    CometFilter [ss_item_sk]
+                                                      CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                                        SubqueryBroadcast [d_date_sk] #1
+                                                          BroadcastExchange #4
+                                                            WholeStageCodegen (1)
+                                                              ColumnarToRow
+                                                                InputAdapter
+                                                                  CometProject [d_date_sk]
+                                                                    CometFilter [d_date,d_date_sk]
+                                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                                InputAdapter
+                                                  BroadcastExchange #5
+                                                    WholeStageCodegen (1)
+                                                      ColumnarToRow
+                                                        InputAdapter
+                                                          CometFilter [i_category,i_item_sk]
+                                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
                                             InputAdapter
-                                              BroadcastExchange #5
-                                                WholeStageCodegen (1)
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      CometFilter [i_category,i_item_sk]
-                                                        CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
-                                        InputAdapter
-                                          ReusedExchange [d_date_sk] #4
+                                              ReusedExchange [d_date_sk] #4

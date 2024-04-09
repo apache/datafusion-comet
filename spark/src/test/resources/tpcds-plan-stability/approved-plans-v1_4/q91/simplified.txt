@@ -1,11 +1,11 @@
-WholeStageCodegen (9)
-  Sort [Returns_Loss]
+WholeStageCodegen (8)
+  ColumnarToRow
     InputAdapter
-      Exchange [Returns_Loss] #1
-        WholeStageCodegen (8)
-          HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum] [sum(UnscaledValue(cr_net_loss)),Call_Center,Call_Center_Name,Manager,Returns_Loss,sum]
-            InputAdapter
-              Exchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
+      CometSort [Returns_Loss]
+        CometColumnarExchange [Returns_Loss] #1
+          CometHashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum]
+            CometColumnarExchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
+              RowToColumnar
                 WholeStageCodegen (7)
                   HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,cr_net_loss] [sum,sum]
                     Project [cc_call_center_id,cc_name,cc_manager,cr_net_loss,cd_marital_status,cd_education_status]

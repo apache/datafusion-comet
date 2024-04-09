@@ -1,74 +1,78 @@
 WholeStageCodegen (10)
   Project [amc,pmc]
     BroadcastNestedLoopJoin
-      HashAggregate [count] [count(1),amc,count]
+      ColumnarToRow
         InputAdapter
-          Exchange #1
-            WholeStageCodegen (4)
-              HashAggregate [count,count]
-                Project
-                  BroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
-                    Project [ws_web_page_sk]
-                      BroadcastHashJoin [ws_sold_time_sk,t_time_sk]
-                        Project [ws_sold_time_sk,ws_web_page_sk]
-                          BroadcastHashJoin [ws_ship_hdemo_sk,hd_demo_sk]
-                            ColumnarToRow
-                              InputAdapter
-                                CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
-                                  CometFilter [ws_ship_hdemo_sk,ws_sold_time_sk,ws_web_page_sk]
-                                    CometScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
+          CometHashAggregate [count]
+            CometColumnarExchange #1
+              RowToColumnar
+                WholeStageCodegen (4)
+                  HashAggregate [count,count]
+                    Project
+                      BroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
+                        Project [ws_web_page_sk]
+                          BroadcastHashJoin [ws_sold_time_sk,t_time_sk]
+                            Project [ws_sold_time_sk,ws_web_page_sk]
+                              BroadcastHashJoin [ws_ship_hdemo_sk,hd_demo_sk]
+                                ColumnarToRow
+                                  InputAdapter
+                                    CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
+                                      CometFilter [ws_ship_hdemo_sk,ws_sold_time_sk,ws_web_page_sk]
+                                        CometScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
+                                InputAdapter
+                                  BroadcastExchange #2
+                                    WholeStageCodegen (1)
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometProject [hd_demo_sk]
+                                            CometFilter [hd_dep_count,hd_demo_sk]
+                                              CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
                             InputAdapter
-                              BroadcastExchange #2
-                                WholeStageCodegen (1)
+                              BroadcastExchange #3
+                                WholeStageCodegen (2)
                                   ColumnarToRow
                                     InputAdapter
-                                      CometProject [hd_demo_sk]
-                                        CometFilter [hd_dep_count,hd_demo_sk]
-                                          CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
+                                      CometProject [t_time_sk]
+                                        CometFilter [t_hour,t_time_sk]
+                                          CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
                         InputAdapter
-                          BroadcastExchange #3
-                            WholeStageCodegen (2)
+                          BroadcastExchange #4
+                            WholeStageCodegen (3)
                               ColumnarToRow
                                 InputAdapter
-                                  CometProject [t_time_sk]
-                                    CometFilter [t_hour,t_time_sk]
-                                      CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
-                    InputAdapter
-                      BroadcastExchange #4
-                        WholeStageCodegen (3)
-                          ColumnarToRow
-                            InputAdapter
-                              CometProject [wp_web_page_sk]
-                                CometFilter [wp_char_count,wp_web_page_sk]
-                                  CometScan parquet spark_catalog.default.web_page [wp_web_page_sk,wp_char_count]
+                                  CometProject [wp_web_page_sk]
+                                    CometFilter [wp_char_count,wp_web_page_sk]
+                                      CometScan parquet spark_catalog.default.web_page [wp_web_page_sk,wp_char_count]
       InputAdapter
         BroadcastExchange #5
           WholeStageCodegen (9)
-            HashAggregate [count] [count(1),pmc,count]
+            ColumnarToRow
               InputAdapter
-                Exchange #6
-                  WholeStageCodegen (8)
-                    HashAggregate [count,count]
-                      Project
-                        BroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
-                          Project [ws_web_page_sk]
-                            BroadcastHashJoin [ws_sold_time_sk,t_time_sk]
-                              Project [ws_sold_time_sk,ws_web_page_sk]
-                                BroadcastHashJoin [ws_ship_hdemo_sk,hd_demo_sk]
-                                  ColumnarToRow
-                                    InputAdapter
-                                      CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
-                                        CometFilter [ws_ship_hdemo_sk,ws_sold_time_sk,ws_web_page_sk]
-                                          CometScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
-                                  InputAdapter
-                                    ReusedExchange [hd_demo_sk] #2
-                              InputAdapter
-                                BroadcastExchange #7
-                                  WholeStageCodegen (6)
-                                    ColumnarToRow
+                CometHashAggregate [count]
+                  CometColumnarExchange #6
+                    RowToColumnar
+                      WholeStageCodegen (8)
+                        HashAggregate [count,count]
+                          Project
+                            BroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
+                              Project [ws_web_page_sk]
+                                BroadcastHashJoin [ws_sold_time_sk,t_time_sk]
+                                  Project [ws_sold_time_sk,ws_web_page_sk]
+                                    BroadcastHashJoin [ws_ship_hdemo_sk,hd_demo_sk]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
+                                            CometFilter [ws_ship_hdemo_sk,ws_sold_time_sk,ws_web_page_sk]
+                                              CometScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
                                       InputAdapter
-                                        CometProject [t_time_sk]
-                                          CometFilter [t_hour,t_time_sk]
-                                            CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
-                          InputAdapter
-                            ReusedExchange [wp_web_page_sk] #4
+                                        ReusedExchange [hd_demo_sk] #2
+                                  InputAdapter
+                                    BroadcastExchange #7
+                                      WholeStageCodegen (6)
+                                        ColumnarToRow
+                                          InputAdapter
+                                            CometProject [t_time_sk]
+                                              CometFilter [t_hour,t_time_sk]
+                                                CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
+                              InputAdapter
+                                ReusedExchange [wp_web_page_sk] #4
