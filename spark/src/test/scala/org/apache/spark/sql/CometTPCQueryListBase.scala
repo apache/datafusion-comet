@@ -31,12 +31,15 @@ import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.shims.ShimCometSparkSessionExtensions
+import org.apache.comet.shims.ShimCometSparkSessionExtensions.supportsExtendedExplainInfo
 
 trait CometTPCQueryListBase
     extends CometTPCQueryBase
     with AdaptiveSparkPlanHelper
-    with SQLHelper {
+    with SQLHelper
+    with ShimCometSparkSessionExtensions {
   var output: Option[OutputStream] = None
 
   def main(args: Array[String]): Unit = {
@@ -84,11 +87,13 @@ trait CometTPCQueryListBase
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
 
         val df = cometSpark.sql(queryString)
         val cometPlans = mutable.HashSet.empty[String]
-        stripAQEPlan(df.queryExecution.executedPlan).foreach {
+        val executedPlan = df.queryExecution.executedPlan
+        stripAQEPlan(executedPlan).foreach {
           case op: CometExec =>
             cometPlans += s"${op.nodeName}"
           case _ =>
@@ -99,6 +104,11 @@ trait CometTPCQueryListBase
             s"Query: $name$nameSuffix. Comet Exec: Enabled (${cometPlans.mkString(", ")})")
         } else {
           out.println(s"Query: $name$nameSuffix. Comet Exec: Disabled")
+        }
+        if (supportsExtendedExplainInfo(df.queryExecution)) {
+          out.println(
+            s"Query: $name$nameSuffix: ExplainInfo:\n" +
+              s"${new ExtendedExplainInfo().generateExtendedInfo(executedPlan)}\n")
         }
       }
     }

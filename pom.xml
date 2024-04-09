@@ -932,6 +932,9 @@ under the License.
                         <ignoreClass>javax.annotation.meta.TypeQualifierValidator</ignoreClass>
                         <!-- this class is not properly excluded from comet-spark right now -->
                         <ignoreClass>org.apache.parquet.filter2.predicate.SparkFilterApi</ignoreClass>
+                        <!-- we explicitly include a duplicate to allow older versions of Spark -->
+                        <!-- this can be removed once we no longer support spark 3.x  -->
+                        <ignoreClass>org.apache.spark.sql.ExtendedExplainGenerator</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                     <dependency>

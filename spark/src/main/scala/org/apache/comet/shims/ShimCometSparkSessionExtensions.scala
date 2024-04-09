@@ -20,7 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.execution.{LimitExec, SparkPlan}
+import org.apache.spark.sql.execution.{LimitExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
@@ -49,4 +49,17 @@ object ShimCometSparkSessionExtensions {
     .filter(_.isInstanceOf[Int])
     .map(_.asInstanceOf[Int])
     .headOption
+
+  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
+    try {
+      // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
+      qe.getClass.getDeclaredMethod(
+        "extendedExplainInfo",
+        classOf[String => Unit],
+        classOf[SparkPlan])
+    } catch {
+      case _: NoSuchMethodException | _: SecurityException => return false
+    }
+    true
+  }
 }

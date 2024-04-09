@@ -1357,4 +1357,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     testCastedColumn(inputValues = Seq("car", "Truck"))
   }
 
+  test("explain comet") {
+    assume(isSpark34Plus)
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+      "spark.sql.extendedExplainProvider" -> "org.apache.comet.ExtendedExplainInfo") {
+      val table = "test"
+      withTable(table) {
+        sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
+        sql(s"insert into $table values(0, 1, 100.000001)")
+
+        Seq(
+          (
+            s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
+            "make_interval is not supported"),
+          (
+            "SELECT "
+              + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
+              + " + "
+              + "date_part('MONTH', make_interval(c0, c1, c0, c1, c0, c0, c2))"
+              + s" as yrs_and_mths from $table",
+            "extractintervalyears is not supported\n" +
+              "extractintervalmonths is not supported"),
+          (
+            s"SELECT sum(c0), sum(c2) from $table group by c1",
+            "Native shuffle is not enabled\n" +
+              "AQEShuffleRead is not supported"),
+          (
+            "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
+              + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
+              + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
+              + "where A.c1 = B.c1 ",
+            "Native shuffle is not enabled\n" +
+              "AQEShuffleRead is not supported\n" +
+              "make_interval is not supported\n" +
+              "BroadcastExchange is not supported\n" +
+              "BroadcastHashJoin is not supported"))
+          .foreach(test => {
+            val qry = test._1
+            val expected = test._2
+            val df = sql(qry)
+            df.collect() // force an execution
+            checkSparkAnswerAndCompareExplainPlan(df, expected)
+          })
+      }
+    }
+  }
+
 }

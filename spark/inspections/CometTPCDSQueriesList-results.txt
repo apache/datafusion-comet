@@ -1,0 +1,622 @@
+Query: q1. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q1: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q2. Comet Exec: Enabled (CometUnion, CometProject, CometFilter)
+Query: q2: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q3. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q3: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q4. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q4: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q5. Comet Exec: Enabled (CometUnion, CometProject, CometFilter)
+Query: q5: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q6. Comet Exec: Enabled (CometHashAggregate, CometProject, CometFilter)
+Query: q6: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q8. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q8: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q9. Comet Exec: Enabled (CometFilter)
+Query: q9: ExplainInfo:
+named_struct is not supported
+getstructfield is not supported
+
+Query: q10. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q10: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q11. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q11: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q12. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q12: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q13. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q13: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q14a. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q14a: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q14b. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q14b: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q15. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q15: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q16. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q16: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q17. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q17: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q18. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q18: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q19. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q19: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q20. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q20: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q21. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q21: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q22. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q22: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q23a. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q23a: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q23b. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q23b: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q24a. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q24a: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q24b. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q24b: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q25. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q25: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q26. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q26: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q27. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q27: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q28. Comet Exec: Enabled (CometHashAggregate, CometProject, CometFilter)
+Query: q28: ExplainInfo:
+Unsupported aggregation mode PartialMerge
+BroadcastNestedLoopJoin is not supported
+
+Query: q29. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q29: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q30. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q30: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q31. Comet Exec: Enabled (CometFilter)
+Query: q31: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q32. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q32: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q33. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q33: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q34. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q34: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q35. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q35: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q36. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q36: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q37. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q37: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q38. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q38: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q39a. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q39a: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q39b. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q39b: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q40. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q40: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q41. Comet Exec: Enabled (CometHashAggregate, CometProject, CometFilter)
+Query: q41: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q42. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q42: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q43. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q43: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q44. Comet Exec: Enabled (CometHashAggregate, CometSort, CometProject, CometFilter)
+Query: q44: ExplainInfo:
+Window is not supported
+BroadcastHashJoin is not supported
+
+Query: q45. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q45: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q46. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q46: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q47. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q47: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q48. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q48: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q49. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q49: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+Not all subqueries for union are native
+
+Query: q50. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q50: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q51. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q51: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+SortMergeJoin is not supported
+
+Query: q52. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q52: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q53. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q53: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q54. Comet Exec: Enabled (CometUnion, CometProject, CometFilter)
+Query: q54: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q55. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q55: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q56. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q56: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q57. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q57: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q58. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q58: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q59. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q59: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q60. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q60: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q61. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q61: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+
+Query: q62. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q62: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q63. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q63: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q64. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q64: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q65. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q65: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q66. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q66: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q67. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q67: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q68. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q68: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q69. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q69: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q70. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q70: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q71. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q71: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q72. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q72: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q73. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q73: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q74. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q74: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q75. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q75: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q76. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q76: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q77. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q77: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+Not all subqueries for union are native
+
+Query: q78. Comet Exec: Enabled (CometFilter)
+Query: q78: ExplainInfo:
+BroadcastHashJoin is not supported
+Comet does not support Spark's BigDecimal rounding
+
+Query: q79. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q79: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q80. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q80: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q81. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q81: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q82. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q82: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q83. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q83: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q84. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q84: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q85. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q85: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q86. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q86: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q87. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q87: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q88. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q88: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+
+Query: q89. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q89: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q90. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q90: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+
+Query: q91. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q91: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q92. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q92: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q93. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q93: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q94. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q94: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q95. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q95: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q96. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q96: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q97. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q97: ExplainInfo:
+BroadcastHashJoin is not supported
+SortMergeJoin is not supported
+
+Query: q98. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q98: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q99. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q99: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q5a-v2.7. Comet Exec: Enabled (CometUnion, CometProject, CometFilter)
+Query: q5a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometProject, CometFilter)
+Query: q6-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q10a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q10a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q11-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q11-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q12-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q12-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q14-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q14-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q14a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q14a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q18a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q18a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q20-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q20-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q22-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q22-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+
+Query: q22a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q22a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q24-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q24-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q27a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q27a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q34-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q34-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q35-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q35-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q35a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q35a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q36a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q36a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+Window is not supported
+
+Query: q47-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q47-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q49-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q49-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+Not all subqueries for union are native
+
+Query: q51a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q51a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+SortMergeJoin is not supported
+
+Query: q57-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q57-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+
+Query: q64-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q64-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q67a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q67a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+Window is not supported
+
+Query: q70a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q70a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+Not all subqueries for union are native
+
+Query: q72-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q72-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q74-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q74-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q75-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q75-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q77a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q77a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+BroadcastNestedLoopJoin is not supported
+Not all subqueries for union are native
+
+Query: q78-v2.7. Comet Exec: Enabled (CometFilter)
+Query: q78-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+
+Query: q80a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q80a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+
+Query: q86a-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q86a-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Not all subqueries for union are native
+Window is not supported
+
+Query: q98-v2.7. Comet Exec: Enabled (CometProject, CometFilter)
+Query: q98-v2.7: ExplainInfo:
+BroadcastHashJoin is not supported
+Window is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
