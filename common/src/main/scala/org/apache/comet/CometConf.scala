@@ -341,7 +341,7 @@ object CometConf {
   val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.rowToColumnar.enabled")
       .internal()
-      .doc(s"""
+      .doc("""
          |Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will
          |convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into
          |columnar based before processing.""".stripMargin)
