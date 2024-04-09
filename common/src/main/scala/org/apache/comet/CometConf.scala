@@ -343,8 +343,8 @@ object CometConf {
       .internal()
       .doc(s"""
          |Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will
-         |convert row-based operators in '${COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key}'
-         |into columnar based before processing.""".stripMargin)
+         |convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into
+         |columnar based before processing.""".stripMargin)
       .booleanConf
       .createWithDefault(false)
 
@@ -352,7 +352,7 @@ object CometConf {
     conf("spark.comet.rowToColumnar.supportedOperatorList")
       .doc(
         "A comma-separated list of row-based operators that will be converted to columnar " +
-          s"format when '${COMET_ROW_TO_COLUMNAR_ENABLED.key}' is true")
+          "format when 'spark.comet.rowToColumnar.enabled' is true")
       .stringConf
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
