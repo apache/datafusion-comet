@@ -19,6 +19,7 @@
 
 use std::{any::Any, sync::Arc};
 
+use crate::execution::datafusion::expressions::stats::StatsType;
 use arrow::{
     array::{ArrayRef, Float64Array},
     compute::cast,
@@ -29,11 +30,9 @@ use datafusion_common::{
     downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
 };
 use datafusion_physical_expr::{
-    aggregate::utils::down_cast_any_ref,
-    expressions::format_state_name,
-    AggregateExpr, PhysicalExpr,
+    aggregate::utils::down_cast_any_ref, expressions::format_state_name, AggregateExpr,
+    PhysicalExpr,
 };
-use crate::execution::datafusion::expressions::stats::StatsType;
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
 #[derive(Debug, Clone)]
@@ -116,8 +115,12 @@ impl PartialEq<dyn Any> for Covariance {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2)
-                 && self.stats_type == x.stats_type)
+            .map(|x| {
+                self.name == x.name
+                    && self.expr1.eq(&x.expr1)
+                    && self.expr2.eq(&x.expr2)
+                    && self.stats_type == x.stats_type
+            })
             .unwrap_or(false)
     }
 }

@@ -70,6 +70,7 @@ use crate::{
                 covariance::Covariance,
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
+                stats::StatsType,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
@@ -90,7 +91,6 @@ use crate::{
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
-use crate::execution::datafusion::expressions::stats::StatsType;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -1191,7 +1191,7 @@ impl PhysicalPlanner {
                     child2,
                     "covariance",
                     datatype,
-                    StatsType::Sample
+                    StatsType::Sample,
                 )))
             }
             AggExprStruct::CovPopulation(expr) => {
@@ -1203,7 +1203,7 @@ impl PhysicalPlanner {
                     child2,
                     "covariance_pop",
                     datatype,
-                    StatsType::Population
+                    StatsType::Population,
                 )))
             }
         }
