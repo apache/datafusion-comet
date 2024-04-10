@@ -196,7 +196,9 @@ public class TypeUtil {
             || canReadAsBinaryDecimal(descriptor, sparkType)
             || sparkType == DataTypes.BinaryType
             // for uuid, since iceberg maps uuid to StringType
-            || sparkType == DataTypes.StringType) {
+            || sparkType == DataTypes.StringType
+                && logicalTypeAnnotation
+                    instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation) {
           return;
         }
         break;

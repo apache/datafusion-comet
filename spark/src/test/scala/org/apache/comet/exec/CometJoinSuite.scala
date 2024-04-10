@@ -45,7 +45,6 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-      "spark.comet.exec.broadcast.enabled" -> "true",
       "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -74,7 +73,6 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-      "spark.comet.exec.broadcast.enabled" -> "true",
       "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {

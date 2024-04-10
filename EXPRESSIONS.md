@@ -30,6 +30,7 @@ The following Spark expressions are currently available:
     + If
 + Cast
 + Coalesce
++ BloomFilterMightContain
 + Boolean functions
     + And
     + Or

@@ -34,7 +34,7 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometRowToColumnarExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -75,6 +75,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
+    conf.set(CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf
   }
@@ -155,9 +156,11 @@ abstract class CometTestBase
   }
 
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
-    plan.foreach {
+    val wrapped = wrapCometRowToColumnar(plan)
+    wrapped.foreach {
       case _: CometScanExec | _: CometBatchScanExec => true
       case _: CometSinkPlaceHolder | _: CometScanWrapper => false
+      case _: CometRowToColumnarExec => false
       case _: CometExec | _: CometShuffleExchangeExec => true
       case _: CometBroadcastExchangeExec => true
       case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter => true
@@ -181,6 +184,14 @@ abstract class CometTestBase
           s"Expected plan to contain ${planClass.getSimpleName}, but not.\n" +
             s"plan: $plan")
       }
+    }
+  }
+
+  /** Wraps the CometRowToColumn as ScanWrapper, so the child operators will not be checked */
+  private def wrapCometRowToColumnar(plan: SparkPlan): SparkPlan = {
+    plan.transformDown {
+      // don't care the native operators
+      case p: CometRowToColumnarExec => CometScanWrapper(null, p)
     }
   }
 

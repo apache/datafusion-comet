@@ -47,7 +47,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats, DataTypes.StringType)
   }
 
-  ignore("cast string to bool") {
+  test("cast string to bool") {
     castTest(
       Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "").toDF("a"),
       DataTypes.BooleanType)

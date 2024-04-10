@@ -139,12 +139,13 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_BROADCAST_ENABLED: ConfigEntry[Boolean] =
+  val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
-        "Whether to enable broadcasting for Comet native operators. By default, " +
-          "this config is false. Note that this feature is not fully supported yet " +
-          "and only enabled for test purpose.")
+        "Whether to force enabling broadcasting for Comet native operators. By default, " +
+          "this config is false. Comet broadcast feature will be enabled automatically by " +
+          "Comet extension. But for unit tests, we need this feature to force enabling it " +
+          "for invalid cases. So this config is only used for unit test.")
       .booleanConf
       .createWithDefault(false)
 
@@ -336,6 +337,26 @@ object CometConf {
         "enabled when reading from Iceberg tables.")
     .booleanConf
     .createWithDefault(false)
+
+  val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.rowToColumnar.enabled")
+      .internal()
+      .doc("""
+         |Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will
+         |convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into
+         |columnar based before processing.""".stripMargin)
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+    conf("spark.comet.rowToColumnar.supportedOperatorList")
+      .doc(
+        "A comma-separated list of row-based operators that will be converted to columnar " +
+          "format when 'spark.comet.rowToColumnar.enabled' is true")
+      .stringConf
+      .toSequence
+      .createWithDefault(Seq("Range,InMemoryTableScan"))
+
 }
 
 object ConfigHelpers {

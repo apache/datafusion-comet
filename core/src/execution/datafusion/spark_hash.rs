@@ -165,7 +165,6 @@ macro_rules! hash_array_primitive_float {
                     } else {
                         *hash = spark_compatible_murmur3_hash((*value as $ty).to_le_bytes(), *hash);
                     }
-                    *hash = spark_compatible_murmur3_hash((*value as $ty).to_le_bytes(), *hash);
                 }
             }
         }
@@ -364,107 +363,154 @@ mod tests {
     use crate::execution::datafusion::spark_hash::{create_hashes, pmod};
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
+    macro_rules! test_hashes {
+        ($ty:ty, $values:expr, $expected:expr) => {
+            let i = Arc::new(<$ty>::from($values)) as ArrayRef;
+            let mut hashes = vec![42; $values.len()];
+            create_hashes(&[i], &mut hashes).unwrap();
+            assert_eq!(hashes, $expected);
+        };
+    }
+
     #[test]
     fn test_i8() {
-        let i = Arc::new(Int8Array::from(vec![
-            Some(1),
-            Some(0),
-            Some(-1),
-            Some(i8::MAX),
-            Some(i8::MIN),
-        ])) as ArrayRef;
-        let mut hashes = vec![42; 5];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Spark Murmur3_x86_32
-        let expected = vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x43b4d8ed, 0x422a1365];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            Int8Array,
+            vec![Some(1), Some(0), Some(-1), Some(i8::MAX), Some(i8::MIN)],
+            vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x43b4d8ed, 0x422a1365]
+        );
+        // with null input
+        test_hashes!(
+            Int8Array,
+            vec![Some(1), None, Some(-1), Some(i8::MAX), Some(i8::MIN)],
+            vec![0xdea578e3, 42, 0xa0590e3d, 0x43b4d8ed, 0x422a1365]
+        );
     }
 
     #[test]
     fn test_i32() {
-        let i = Arc::new(Int32Array::from(vec![
-            Some(1),
-            Some(0),
-            Some(-1),
-            Some(i32::MAX),
-            Some(i32::MIN),
-        ])) as ArrayRef;
-        let mut hashes = vec![42; 5];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Spark Murmur3_x86_32
-        let expected = vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x07fb67e7, 0x2b1f0fc6];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            Int32Array,
+            vec![Some(1), Some(0), Some(-1), Some(i32::MAX), Some(i32::MIN)],
+            vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x07fb67e7, 0x2b1f0fc6]
+        );
+        // with null input
+        test_hashes!(
+            Int32Array,
+            vec![
+                Some(1),
+                Some(0),
+                Some(-1),
+                None,
+                Some(i32::MAX),
+                Some(i32::MIN)
+            ],
+            vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 42, 0x07fb67e7, 0x2b1f0fc6]
+        );
     }
 
     #[test]
     fn test_i64() {
-        let i = Arc::new(Int64Array::from(vec![
-            Some(1),
-            Some(0),
-            Some(-1),
-            Some(i64::MAX),
-            Some(i64::MIN),
-        ])) as ArrayRef;
-        let mut hashes = vec![42; 5];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Spark Murmur3_x86_32
-        let expected = vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            Int64Array,
+            vec![Some(1), Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN)],
+            vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb]
+        );
+        // with null input
+        test_hashes!(
+            Int64Array,
+            vec![
+                Some(1),
+                Some(0),
+                Some(-1),
+                None,
+                Some(i64::MAX),
+                Some(i64::MIN)
+            ],
+            vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 42, 0xa05b5d7b, 0xcd1e64fb]
+        );
     }
 
     #[test]
     fn test_f32() {
-        let i = Arc::new(Float32Array::from(vec![
-            Some(1.0),
-            Some(0.0),
-            Some(-0.0),
-            Some(-1.0),
-            Some(99999999999.99999999999),
-            Some(-99999999999.99999999999),
-        ])) as ArrayRef;
-        let mut hashes = vec![42; 6];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Spark Murmur3_x86_32
-        let expected = vec![
-            0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86,
-        ];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            Float32Array,
+            vec![
+                Some(1.0),
+                Some(0.0),
+                Some(-0.0),
+                Some(-1.0),
+                Some(99999999999.99999999999),
+                Some(-99999999999.99999999999),
+            ],
+            vec![0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86]
+        );
+        // with null input
+        test_hashes!(
+            Float32Array,
+            vec![
+                Some(1.0),
+                Some(0.0),
+                Some(-0.0),
+                Some(-1.0),
+                None,
+                Some(99999999999.99999999999),
+                Some(-99999999999.99999999999)
+            ],
+            vec![0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 42, 0xcbdc340f, 0xc0361c86]
+        );
     }
 
     #[test]
     fn test_f64() {
-        let i = Arc::new(Float64Array::from(vec![
-            Some(1.0),
-            Some(0.0),
-            Some(-0.0),
-            Some(-1.0),
-            Some(99999999999.99999999999),
-            Some(-99999999999.99999999999),
-        ])) as ArrayRef;
-        let mut hashes = vec![42; 6];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Spark Murmur3_x86_32
-        let expected = vec![
-            0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9,
-        ];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            Float64Array,
+            vec![
+                Some(1.0),
+                Some(0.0),
+                Some(-0.0),
+                Some(-1.0),
+                Some(99999999999.99999999999),
+                Some(-99999999999.99999999999),
+            ],
+            vec![0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9]
+        );
+        // with null input
+        test_hashes!(
+            Float64Array,
+            vec![
+                Some(1.0),
+                Some(0.0),
+                Some(-0.0),
+                Some(-1.0),
+                None,
+                Some(99999999999.99999999999),
+                Some(-99999999999.99999999999)
+            ],
+            vec![0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 42, 0xb87e1595, 0xa0eef9f9]
+        );
     }
 
     #[test]
     fn test_str() {
-        let i = Arc::new(StringArray::from(vec!["hello", "bar", "", "😁", "天地"]));
-        let mut hashes = vec![42; 5];
-        create_hashes(&[i], &mut hashes).unwrap();
-
-        // generated with Murmur3Hash(Seq(Literal("")), 42).eval() since Spark is tested against
-        // this as well
-        let expected = vec![3286402344, 2486176763, 142593372, 885025535, 2395000894];
-        assert_eq!(hashes, expected);
+        test_hashes!(
+            StringArray,
+            vec!["hello", "bar", "", "😁", "天地"],
+            vec![3286402344, 2486176763, 142593372, 885025535, 2395000894]
+        );
+        // test with null input
+        test_hashes!(
+            StringArray,
+            vec![
+                Some("hello"),
+                Some("bar"),
+                None,
+                Some(""),
+                Some("😁"),
+                Some("天地")
+            ],
+            vec![3286402344, 2486176763, 42, 142593372, 885025535, 2395000894]
+        );
     }
 
     #[test]

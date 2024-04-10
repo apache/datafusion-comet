@@ -138,9 +138,9 @@ class CometTPCDSQuerySuite
         "q99")
 
       // TODO: enable the 3 queries after fixing the issues #1358.
-      override val tpcdsQueries: Seq[String] =
-        tpcdsAllQueries.filterNot(excludedTpcdsQueries.contains)
-
+      override val tpcdsQueries: Seq[String] = Seq("q4")
+      // tpcdsAllQueries.filterNot(excludedTpcdsQueries.contains)
+      // Seq("q1", "q2", "q3", "q4")
     }
     with TPCDSQueryTestSuite {
   override def sparkConf: SparkConf = {

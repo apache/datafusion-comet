@@ -22,7 +22,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, DataFusionError, Result, ScalarValue};
+use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, PhysicalExpr};
 use std::{
     any::Any,

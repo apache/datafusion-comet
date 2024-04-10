@@ -61,6 +61,7 @@ pub struct ScanExec {
     /// The input batch of input data. Used to determine the schema of the input data.
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    cache: PlanProperties,
 }
 
 impl ScanExec {
@@ -76,11 +77,20 @@ impl ScanExec {
             InputBatch::EOF
         };
 
+        let schema = scan_schema(&first_batch, &data_types);
+
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+        );
+
         Ok(Self {
             exec_context_id,
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
+            cache,
         })
     }
 
@@ -197,6 +207,34 @@ impl ScanExec {
     }
 }
 
+fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
+    let fields = match input_batch {
+        // Note that if `columns` is empty, we'll get an empty schema
+        InputBatch::Batch(columns, _) => {
+            columns
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| {
+                    let datatype = ScanExec::unpack_dictionary_type(c.data_type());
+                    // We don't use the field name. Put a placeholder.
+                    if matches!(datatype, DataType::Dictionary(_, _)) {
+                        Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
+                    } else {
+                        Field::new(format!("col_{}", idx), datatype, true)
+                    }
+                })
+                .collect::<Vec<Field>>()
+        }
+        _ => data_types
+            .iter()
+            .enumerate()
+            .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
+            .collect(),
+    };
+
+    Arc::new(Schema::new(fields))
+}
+
 impl ExecutionPlan for ScanExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -207,47 +245,7 @@ impl ExecutionPlan for ScanExec {
         // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
         let binding = self.batch.try_lock().unwrap();
         let input_batch = binding.as_ref().unwrap();
-
-        let fields = match input_batch {
-            // Note that if `columns` is empty, we'll get an empty schema
-            InputBatch::Batch(columns, _) => {
-                columns
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, c)| {
-                        let datatype = Self::unpack_dictionary_type(c.data_type());
-                        // We don't use the field name. Put a placeholder.
-                        if matches!(datatype, DataType::Dictionary(_, _)) {
-                            Field::new_dict(
-                                format!("col_{}", idx),
-                                datatype,
-                                true,
-                                idx as i64,
-                                false,
-                            )
-                        } else {
-                            Field::new(format!("col_{}", idx), datatype, true)
-                        }
-                    })
-                    .collect::<Vec<Field>>()
-            }
-            _ => self
-                .data_types
-                .iter()
-                .enumerate()
-                .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
-                .collect(),
-        };
-
-        Arc::new(Schema::new(fields))
-    }
-
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+        scan_schema(input_batch, &self.data_types)
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
@@ -267,6 +265,10 @@ impl ExecutionPlan for ScanExec {
         _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         Ok(Box::pin(ScanStream::new(self.clone(), self.schema())))
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 }
 

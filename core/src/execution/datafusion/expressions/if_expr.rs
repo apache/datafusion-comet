@@ -112,8 +112,8 @@ impl PhysicalExpr for IfExpr {
 
     fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
         vec![
-            self.true_expr.clone(),
             self.if_expr.clone(),
+            self.true_expr.clone(),
             self.false_expr.clone(),
         ]
     }
@@ -217,5 +217,19 @@ mod tests {
         assert_eq!(expected, result);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_if_children() {
+        let if_expr = lit(true);
+        let true_expr = lit(123i32);
+        let false_expr = lit(999i32);
+
+        let expr = if_fn(if_expr, true_expr, false_expr);
+        let children = expr.unwrap().children();
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0].to_string(), "true");
+        assert_eq!(children[1].to_string(), "123");
+        assert_eq!(children[2].to_string(), "999");
     }
 }

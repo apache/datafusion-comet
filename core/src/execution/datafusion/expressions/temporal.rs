@@ -23,7 +23,7 @@ use std::{
 };
 
 use arrow::{
-    compute::{hour_dyn, minute_dyn, second_dyn},
+    compute::{date_part, DatePart},
     record_batch::RecordBatch,
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
@@ -101,7 +101,7 @@ impl PhysicalExpr for HourExec {
                         Some(self.timezone.clone().into()),
                     )),
                 );
-                let result = hour_dyn(&array)?;
+                let result = date_part(&array, DatePart::Hour)?;
 
                 Ok(ColumnarValue::Array(result))
             }
@@ -195,7 +195,7 @@ impl PhysicalExpr for MinuteExec {
                         Some(self.timezone.clone().into()),
                     )),
                 );
-                let result = minute_dyn(&array)?;
+                let result = date_part(&array, DatePart::Minute)?;
 
                 Ok(ColumnarValue::Array(result))
             }
@@ -289,7 +289,7 @@ impl PhysicalExpr for SecondExec {
                         Some(self.timezone.clone().into()),
                     )),
                 );
-                let result = second_dyn(&array)?;
+                let result = date_part(&array, DatePart::Second)?;
 
                 Ok(ColumnarValue::Array(result))
             }

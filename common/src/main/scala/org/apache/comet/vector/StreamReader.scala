@@ -21,13 +21,11 @@ package org.apache.comet.vector
 
 import java.nio.channels.ReadableByteChannel
 
-import scala.collection.JavaConverters.collectionAsScalaIterableConverter
-
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ReadChannel}
 import org.apache.arrow.vector.ipc.message.MessageChannelReader
-import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
  * A reader that consumes Arrow data from an input channel, and produces Comet batches.
@@ -47,13 +45,7 @@ case class StreamReader(channel: ReadableByteChannel) extends AutoCloseable {
   }
 
   private def rootAsBatch(root: VectorSchemaRoot): ColumnarBatch = {
-    val columns = root.getFieldVectors.asScala.map { vector =>
-      // Native shuffle always uses decimal128.
-      CometVector.getVector(vector, true, arrowReader).asInstanceOf[ColumnVector]
-    }.toArray
-    val batch = new ColumnarBatch(columns)
-    batch.setNumRows(root.getRowCount)
-    batch
+    NativeUtil.rootAsBatch(root, arrowReader)
   }
 
   override def close(): Unit = {
