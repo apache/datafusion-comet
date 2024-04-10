@@ -240,7 +240,7 @@ index 9ddb4abe98b..1bebe99f1cc 100644
        sql(
          """
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..6160c8d241a 100644
+index f33432ddb6f..060f874ea72 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -261,7 +261,17 @@ index f33432ddb6f..6160c8d241a 100644
        case _ => Nil
      }
    }
-@@ -1238,7 +1242,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1187,7 +1191,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("Make sure dynamic pruning works on uncorrelated queries") {
++  test("Make sure dynamic pruning works on uncorrelated queries",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+         """
+@@ -1238,7 +1243,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -271,7 +281,7 @@ index f33432ddb6f..6160c8d241a 100644
      Given("dynamic pruning filter on the build side")
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
-@@ -1485,7 +1490,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1485,7 +1491,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
@@ -280,7 +290,7 @@ index f33432ddb6f..6160c8d241a 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        Seq(
          "f.store_id = 1" -> false,
-@@ -1729,6 +1734,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1735,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
