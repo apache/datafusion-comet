@@ -30,24 +30,18 @@ use datafusion_common::{
 };
 use datafusion_physical_expr::{
     aggregate::utils::down_cast_any_ref,
-    expressions::{format_state_name, StatsType},
+    expressions::format_state_name,
     AggregateExpr, PhysicalExpr,
 };
+use crate::execution::datafusion::expressions::stats::StatsType;
 
-/// COVAR and COVAR_SAMP aggregate expression
+/// COVAR_SAMP and COVAR_POP aggregate expression
 #[derive(Debug, Clone)]
 pub struct Covariance {
     name: String,
     expr1: Arc<dyn PhysicalExpr>,
     expr2: Arc<dyn PhysicalExpr>,
-}
-
-/// COVAR_POP aggregate expression
-#[derive(Debug)]
-pub struct CovariancePop {
-    name: String,
-    expr1: Arc<dyn PhysicalExpr>,
-    expr2: Arc<dyn PhysicalExpr>,
+    stats_type: StatsType,
 }
 
 impl Covariance {
@@ -57,6 +51,7 @@ impl Covariance {
         expr2: Arc<dyn PhysicalExpr>,
         name: impl Into<String>,
         data_type: DataType,
+        stats_type: StatsType,
     ) -> Self {
         // the result of covariance just support FLOAT64 data type.
         assert!(matches!(data_type, DataType::Float64));
@@ -64,6 +59,7 @@ impl Covariance {
             name: name.into(),
             expr1,
             expr2,
+            stats_type,
         }
     }
 }
@@ -79,7 +75,7 @@ impl AggregateExpr for Covariance {
     }
 
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(CovarianceAccumulator::try_new(StatsType::Sample)?))
+        Ok(Box::new(CovarianceAccumulator::try_new(self.stats_type)?))
     }
 
     fn state_fields(&self) -> Result<Vec<Field>> {
@@ -120,84 +116,8 @@ impl PartialEq<dyn Any> for Covariance {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2))
-            .unwrap_or(false)
-    }
-}
-
-impl CovariancePop {
-    /// Create a new COVAR_POP aggregate function
-    pub fn new(
-        expr1: Arc<dyn PhysicalExpr>,
-        expr2: Arc<dyn PhysicalExpr>,
-        name: impl Into<String>,
-        data_type: DataType,
-    ) -> Self {
-        // the result of covariance just support FLOAT64 data type.
-        assert!(matches!(data_type, DataType::Float64));
-        Self {
-            name: name.into(),
-            expr1,
-            expr2,
-        }
-    }
-}
-
-impl AggregateExpr for CovariancePop {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, DataType::Float64, true))
-    }
-
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(CovarianceAccumulator::try_new(
-            StatsType::Population,
-        )?))
-    }
-
-    fn state_fields(&self) -> Result<Vec<Field>> {
-        Ok(vec![
-            Field::new(
-                format_state_name(&self.name, "count"),
-                DataType::Float64,
-                true,
-            ),
-            Field::new(
-                format_state_name(&self.name, "mean1"),
-                DataType::Float64,
-                true,
-            ),
-            Field::new(
-                format_state_name(&self.name, "mean2"),
-                DataType::Float64,
-                true,
-            ),
-            Field::new(
-                format_state_name(&self.name, "algo_const"),
-                DataType::Float64,
-                true,
-            ),
-        ])
-    }
-
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr1.clone(), self.expr2.clone()]
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-impl PartialEq<dyn Any> for CovariancePop {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2))
+            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2)
+                 && self.stats_type == x.stats_type)
             .unwrap_or(false)
     }
 }
@@ -362,7 +282,7 @@ impl Accumulator for CovarianceAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         let count = match self.stats_type {
-            datafusion_physical_expr::expressions::StatsType::Population => self.count,
+            StatsType::Population => self.count,
             StatsType::Sample => {
                 if self.count > 0.0 {
                     self.count - 1.0

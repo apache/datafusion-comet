@@ -63,7 +63,7 @@ use crate::{
                 bloom_filter_might_contain::BloomFilterMightContain,
                 cast::Cast,
                 checkoverflow::CheckOverflow,
-                covariance::{Covariance, CovariancePop},
+                covariance::Covariance,
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
@@ -86,6 +86,7 @@ use crate::{
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
+use crate::execution::datafusion::expressions::stats::StatsType;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -1177,17 +1178,19 @@ impl PhysicalPlanner {
                     child2,
                     "covariance",
                     datatype,
+                    StatsType::Sample
                 )))
             }
             AggExprStruct::CovPopulation(expr) => {
                 let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
                 let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(CovariancePop::new(
+                Ok(Arc::new(Covariance::new(
                     child1,
                     child2,
                     "covariance_pop",
                     datatype,
+                    StatsType::Population
                 )))
             }
         }

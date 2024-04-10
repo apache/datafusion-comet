@@ -28,6 +28,7 @@ pub mod avg;
 pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
 pub mod covariance;
+pub mod stats;
 pub mod strings;
 pub mod subquery;
 pub mod sum_decimal;
