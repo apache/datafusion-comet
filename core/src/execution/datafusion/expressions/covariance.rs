@@ -17,21 +17,22 @@
 
 //! Defines physical expressions that can evaluated at runtime during query execution
 
-use std::any::Any;
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
-use arrow::array::Float64Array;
 use arrow::{
-    array::{ArrayRef, Int64Array},
+    array::{ArrayRef, Float64Array},
     compute::cast,
-    datatypes::DataType,
-    datatypes::Field,
+    datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use datafusion_common::{downcast_value, unwrap_or_internal_err, ScalarValue};
-use datafusion_common::{DataFusionError, Result};
-use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, expressions::format_state_name, AggregateExpr, PhysicalExpr};
-use datafusion_physical_expr::expressions::StatsType;
+use datafusion_common::{
+    downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
+};
+use datafusion_physical_expr::{
+    aggregate::utils::down_cast_any_ref,
+    expressions::{format_state_name, StatsType},
+    AggregateExpr, PhysicalExpr,
+};
 
 /// COVAR and COVAR_SAMP aggregate expression
 #[derive(Debug, Clone)]
@@ -85,7 +86,7 @@ impl AggregateExpr for Covariance {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "count"),
-                DataType::Int64,
+                DataType::Float64,
                 true,
             ),
             Field::new(
@@ -119,9 +120,7 @@ impl PartialEq<dyn Any> for Covariance {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| {
-                self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2)
-            })
+            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2))
             .unwrap_or(false)
     }
 }
@@ -164,7 +163,7 @@ impl AggregateExpr for CovariancePop {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "count"),
-                DataType::Int64,
+                DataType::Float64,
                 true,
             ),
             Field::new(
@@ -198,9 +197,7 @@ impl PartialEq<dyn Any> for CovariancePop {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| {
-                self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2)
-            })
+            .map(|x| self.name == x.name && self.expr1.eq(&x.expr1) && self.expr2.eq(&x.expr2))
             .unwrap_or(false)
     }
 }
@@ -211,7 +208,7 @@ pub struct CovarianceAccumulator {
     algo_const: f64,
     mean1: f64,
     mean2: f64,
-    count: i64,
+    count: f64,
     stats_type: StatsType,
 }
 
@@ -222,12 +219,12 @@ impl CovarianceAccumulator {
             algo_const: 0_f64,
             mean1: 0_f64,
             mean2: 0_f64,
-            count: 0_i64,
+            count: 0_f64,
             stats_type: s_type,
         })
     }
 
-    pub fn get_count(&self) -> i64 {
+    pub fn get_count(&self) -> f64 {
         self.count
     }
 
@@ -279,14 +276,14 @@ impl Accumulator for CovarianceAccumulator {
 
             let value1 = unwrap_or_internal_err!(value1);
             let value2 = unwrap_or_internal_err!(value2);
-            let new_count = self.count + 1;
+            let new_count = self.count + 1.0;
             let delta1 = value1 - self.mean1;
-            let new_mean1 = delta1 / new_count as f64 + self.mean1;
+            let new_mean1 = delta1 / new_count + self.mean1;
             let delta2 = value2 - self.mean2;
-            let new_mean2 = delta2 / new_count as f64 + self.mean2;
+            let new_mean2 = delta2 / new_count + self.mean2;
             let new_c = delta1 * (value2 - new_mean2) + self.algo_const;
 
-            self.count += 1;
+            self.count += 1.0;
             self.mean1 = new_mean1;
             self.mean2 = new_mean2;
             self.algo_const = new_c;
@@ -320,14 +317,14 @@ impl Accumulator for CovarianceAccumulator {
             let value1 = unwrap_or_internal_err!(value1);
             let value2 = unwrap_or_internal_err!(value2);
 
-            let new_count = self.count - 1;
+            let new_count = self.count - 1.0;
             let delta1 = self.mean1 - value1;
-            let new_mean1 = delta1 / new_count as f64 + self.mean1;
+            let new_mean1 = delta1 / new_count + self.mean1;
             let delta2 = self.mean2 - value2;
-            let new_mean2 = delta2 / new_count as f64 + self.mean2;
+            let new_mean2 = delta2 / new_count + self.mean2;
             let new_c = self.algo_const - delta1 * (new_mean2 - value2);
 
-            self.count -= 1;
+            self.count -= 1.0;
             self.mean1 = new_mean1;
             self.mean2 = new_mean2;
             self.algo_const = new_c;
@@ -337,28 +334,23 @@ impl Accumulator for CovarianceAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        let counts = downcast_value!(states[0], Int64Array);
+        let counts = downcast_value!(states[0], Float64Array);
         let means1 = downcast_value!(states[1], Float64Array);
         let means2 = downcast_value!(states[2], Float64Array);
         let cs = downcast_value!(states[3], Float64Array);
 
         for i in 0..counts.len() {
             let c = counts.value(i);
-            if c == 0 {
+            if c == 0.0 {
                 continue;
             }
             let new_count = self.count + c;
-            let new_count_casted = new_count as f64;
-            let count_casted = self.count as f64;
-            let new_mean1 = self.mean1 * count_casted / new_count_casted
-                + means1.value(i) * c as f64 / new_count_casted;
-            let new_mean2 = self.mean2 * count_casted / new_count_casted
-                + means2.value(i) * c as f64 / new_count_casted;
+            let new_mean1 = self.mean1 * self.count / new_count + means1.value(i) * c / new_count;
+            let new_mean2 = self.mean2 * self.count / new_count + means2.value(i) * c / new_count;
             let delta1 = self.mean1 - means1.value(i);
             let delta2 = self.mean2 - means2.value(i);
-            let new_c = self.algo_const
-                + cs.value(i)
-                + delta1 * delta2 * self.count as f64 * c as f64 / new_count as f64;
+            let new_c =
+                self.algo_const + cs.value(i) + delta1 * delta2 * self.count * c / new_count;
 
             self.count = new_count;
             self.mean1 = new_mean1;
@@ -369,22 +361,21 @@ impl Accumulator for CovarianceAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        println!("evaluate evaluate evaluate");
         let count = match self.stats_type {
             datafusion_physical_expr::expressions::StatsType::Population => self.count,
             StatsType::Sample => {
-                if self.count > 0 {
-                    self.count - 1
+                if self.count > 0.0 {
+                    self.count - 1.0
                 } else {
                     self.count
                 }
             }
         };
 
-        if count == 0 {
+        if count == 0.0 {
             Ok(ScalarValue::Float64(None))
         } else {
-            Ok(ScalarValue::Float64(Some(self.algo_const / count as f64)))
+            Ok(ScalarValue::Float64(Some(self.algo_const / count)))
         }
     }
 
