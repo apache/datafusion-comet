@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometScanExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -1115,6 +1115,58 @@ class CometExecSuite extends CometTestBase {
           val df3 = df.groupBy("id").sum("value")
           checkSparkAnswerAndOperator(df3)
         }
+      }
+    })
+  }
+
+  test("RowToColumnar over RangeExec") {
+    Seq("true", "false").foreach(aqe => {
+      Seq(500, 900).foreach { batchSize =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> batchSize.toString) {
+          val df = spark.range(1000).selectExpr("id", "id % 8 as k").groupBy("k").sum("id")
+          checkSparkAnswerAndOperator(df)
+          // empty record batch should also be handled
+          val df2 = spark.range(0).selectExpr("id", "id % 8 as k").groupBy("k").sum("id")
+          checkSparkAnswerAndOperator(df2, includeClasses = Seq(classOf[CometRowToColumnarExec]))
+        }
+      }
+    })
+  }
+
+  test("RowToColumnar over RangeExec directly is eliminated for row output") {
+    Seq("true", "false").foreach(aqe => {
+      Seq(500, 900).foreach { batchSize =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> batchSize.toString) {
+          val df = spark.range(1000)
+          val qe = df.queryExecution
+          qe.executedPlan.collectFirst({ case r: CometRowToColumnarExec => r }) match {
+            case Some(_) => fail("CometRowToColumnarExec should be eliminated")
+            case _ =>
+          }
+        }
+      }
+    })
+  }
+
+  test("RowToColumnar over InMemoryTableScanExec") {
+    Seq("true", "false").foreach(aqe => {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
+        spark
+          .range(1000)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .selectExpr("key", "value", "key+1")
+          .createOrReplaceTempView("abc")
+        spark.catalog.cacheTable("abc")
+        val df = spark.sql("SELECT * FROM abc").groupBy("key").count()
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometRowToColumnarExec]))
       }
     })
   }

@@ -54,6 +54,11 @@ object Utils {
     str.split(",").map(_.trim()).filter(_.nonEmpty)
   }
 
+  /** bridges the function call to Spark's Util */
+  def getSimpleName(cls: Class[_]): String = {
+    org.apache.spark.util.Utils.getSimpleName(cls)
+  }
+
   def fromArrowField(field: Field): DataType = {
     field.getType match {
       case _: ArrowType.Map =>
@@ -90,12 +95,22 @@ object Utils {
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
+    case ts: ArrowType.Timestamp
+        if ts.getUnit == TimeUnit.MICROSECOND && ts.getTimezone == null =>
+      TimestampNTZType
     case ts: ArrowType.Timestamp if ts.getUnit == TimeUnit.MICROSECOND => TimestampType
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
     case _ => throw new UnsupportedOperationException(s"Unsupported data type: ${dt.toString}")
+  }
+
+  def fromArrowSchema(schema: Schema): StructType = {
+    StructType(schema.getFields.asScala.map { field =>
+      val dt = fromArrowField(field)
+      StructField(field.getName, dt, field.isNullable)
+    }.toArray)
   }
 
   /** Maps data type from Spark to Arrow. NOTE: timeZoneId required for TimestampTypes */
