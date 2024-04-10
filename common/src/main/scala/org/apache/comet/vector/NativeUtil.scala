@@ -23,6 +23,8 @@ import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -130,5 +132,20 @@ class NativeUtil {
     }
 
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
+  }
+}
+
+object NativeUtil {
+  def rootAsBatch(arrowRoot: VectorSchemaRoot): ColumnarBatch = {
+    rootAsBatch(arrowRoot, null)
+  }
+
+  def rootAsBatch(arrowRoot: VectorSchemaRoot, provider: DictionaryProvider): ColumnarBatch = {
+    val vectors = (0 until arrowRoot.getFieldVectors.size()).map { i =>
+      val vector = arrowRoot.getFieldVectors.get(i)
+      // Native shuffle always uses decimal128.
+      CometVector.getVector(vector, true, provider)
+    }
+    new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
 }
