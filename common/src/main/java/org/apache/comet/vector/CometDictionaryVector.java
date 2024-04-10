@@ -58,7 +58,7 @@ public class CometDictionaryVector extends CometDecodedVector {
   }
 
   @Override
-  DictionaryProvider getDictionaryProvider() {
+  public DictionaryProvider getDictionaryProvider() {
     return this.provider;
   }
 

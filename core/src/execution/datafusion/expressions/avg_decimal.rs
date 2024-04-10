@@ -25,7 +25,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
-use datafusion_common::{not_impl_err, DataFusionError, Result, ScalarValue};
+use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 

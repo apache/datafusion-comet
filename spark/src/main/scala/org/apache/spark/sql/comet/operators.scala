@@ -19,8 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream}
-import java.nio.ByteBuffer
+import java.io.{ByteArrayOutputStream, DataInputStream}
 import java.nio.channels.Channels
 
 import scala.collection.mutable.ArrayBuffer
@@ -35,19 +34,19 @@ import org.apache.spark.sql.catalyst.optimizer.BuildSide
 import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.vector.NativeUtil
 
 /**
  * A Comet physical operator
@@ -73,31 +72,10 @@ abstract class CometExec extends CometPlan {
   override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
 
   /**
-   * Executes this Comet operator and serialized output ColumnarBatch into bytes.
-   */
-  def getByteArrayRdd(): RDD[(Long, ChunkedByteBuffer)] = {
-    executeColumnar().mapPartitionsInternal { iter =>
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
-      val count = new NativeUtil().serializeBatches(iter, out)
-
-      out.flush()
-      out.close()
-      if (out.size() > 0) {
-        Iterator((count, cbbos.toChunkedByteBuffer))
-      } else {
-        Iterator((count, new ChunkedByteBuffer(Array.empty[ByteBuffer])))
-      }
-    }
-  }
-
-  /**
    * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
    */
   def executeColumnarCollectIterator(): (Long, Iterator[ColumnarBatch]) = {
-    val countsAndBytes = getByteArrayRdd().collect()
+    val countsAndBytes = CometExec.getByteArrayRdd(this).collect()
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator
       .flatMap(countAndBytes => CometExec.decodeBatches(countAndBytes._2))
@@ -126,6 +104,15 @@ object CometExec {
     outputStream.close()
     val bytes = outputStream.toByteArray
     new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
+  }
+
+  /**
+   * Executes this Comet operator and serialized output ColumnarBatch into bytes.
+   */
+  def getByteArrayRdd(cometPlan: CometPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    cometPlan.executeColumnar().mapPartitionsInternal { iter =>
+      Utils.serializeBatches(iter)
+    }
   }
 
   /**
@@ -235,12 +222,55 @@ abstract class CometNativeExec extends CometExec {
 
         // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
         // to execute the native plan.
+        val sparkPlans = ArrayBuffer.empty[SparkPlan]
         val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
 
-        foreachUntilCometInput(this)(inputs += _.executeColumnar())
+        foreachUntilCometInput(this)(sparkPlans += _)
+
+        // Find the first non broadcast plan
+        val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
+          case (_: CometBroadcastExchangeExec, _) => false
+          case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
+          case _ => true
+        }
+
+        // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
+        // This is not expected, so throw an exception.
+        if (firstNonBroadcastPlan.isEmpty) {
+          throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
+        }
+
+        // If the first non broadcast plan is found, we need to adjust the partition number of
+        // the broadcast plans to make sure they have the same partition number as the first non
+        // broadcast plan.
+        val firstNonBroadcastPlanRDD = firstNonBroadcastPlan.get._1.executeColumnar()
+        val firstNonBroadcastPlanNumPartitions = firstNonBroadcastPlanRDD.getNumPartitions
+
+        // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
+        // same partition number. But for Comet, we need to zip them so we need to adjust the
+        // partition number of Broadcast RDDs to make sure they have the same partition number.
+        sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
+          plan match {
+            case c: CometBroadcastExchangeExec =>
+              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
+              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+            case _ if idx == firstNonBroadcastPlan.get._2 =>
+              inputs += firstNonBroadcastPlanRDD
+            case _ =>
+              val rdd = plan.executeColumnar()
+              if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
+                throw new CometRuntimeException(
+                  s"Partition number mismatch: ${rdd.getNumPartitions} != " +
+                    s"$firstNonBroadcastPlanNumPartitions")
+              } else {
+                inputs += rdd
+              }
+          }
+        }
 
         if (inputs.isEmpty) {
-          throw new CometRuntimeException(s"No input for CometNativeExec: $this")
+          throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
         ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
@@ -270,7 +300,8 @@ abstract class CometNativeExec extends CometExec {
       case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
           _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec =>
+          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+          _: CometRowToColumnarExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.

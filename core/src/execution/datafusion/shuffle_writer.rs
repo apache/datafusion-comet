@@ -47,13 +47,13 @@ use datafusion::{
         runtime_env::RuntimeEnv,
     },
     physical_plan::{
-        expressions::PhysicalSortExpr,
         metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet},
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
-        SendableRecordBatchStream, Statistics,
+        DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+        RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
+use datafusion_physical_expr::EquivalenceProperties;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
@@ -79,6 +79,7 @@ pub struct ShuffleWriterExec {
     output_index_file: String,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    cache: PlanProperties,
 }
 
 impl DisplayAs for ShuffleWriterExec {
@@ -101,14 +102,6 @@ impl ExecutionPlan for ShuffleWriterExec {
     /// Get the schema for this execution plan
     fn schema(&self) -> SchemaRef {
         self.input.schema()
-    }
-
-    fn output_partitioning(&self) -> Partitioning {
-        self.partitioning.clone()
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
@@ -163,6 +156,10 @@ impl ExecutionPlan for ShuffleWriterExec {
     fn statistics(&self) -> Result<Statistics> {
         self.input.statistics()
     }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
 }
 
 impl ShuffleWriterExec {
@@ -173,12 +170,19 @@ impl ShuffleWriterExec {
         output_data_file: String,
         output_index_file: String,
     ) -> Result<Self> {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(input.schema().clone()),
+            partitioning.clone(),
+            ExecutionMode::Bounded,
+        );
+
         Ok(ShuffleWriterExec {
             input,
             partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
             output_data_file,
             output_index_file,
+            cache,
         })
     }
 }

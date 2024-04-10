@@ -82,6 +82,7 @@ pub fn convert_encoding(ordinal: jint) -> Encoding {
     match ordinal {
         0 => Encoding::PLAIN,
         1 => Encoding::RLE,
+        #[allow(deprecated)]
         3 => Encoding::BIT_PACKED,
         4 => Encoding::PLAIN_DICTIONARY,
         5 => Encoding::DELTA_BINARY_PACKED,

@@ -41,6 +41,7 @@ use super::copy_or_cast_array;
 pub struct CopyExec {
     input: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
+    cache: PlanProperties,
 }
 
 impl CopyExec {
@@ -59,7 +60,17 @@ impl CopyExec {
 
         let schema = Arc::new(Schema::new(fields));
 
-        Self { input, schema }
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+        );
+
+        Self {
+            input,
+            schema,
+            cache,
+        }
     }
 }
 
@@ -82,14 +93,6 @@ impl ExecutionPlan for CopyExec {
         self.schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        self.input.output_partitioning()
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        self.input.output_ordering()
-    }
-
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![self.input.clone()]
     }
@@ -103,6 +106,7 @@ impl ExecutionPlan for CopyExec {
         Ok(Arc::new(CopyExec {
             input: new_input,
             schema: self.schema.clone(),
+            cache: self.cache.clone(),
         }))
     }
 
@@ -117,6 +121,10 @@ impl ExecutionPlan for CopyExec {
 
     fn statistics(&self) -> DataFusionResult<Statistics> {
         self.input.statistics()
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 }
 

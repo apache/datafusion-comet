@@ -19,14 +19,26 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.File
+import java.io.{DataOutputStream, File}
+import java.nio.ByteBuffer
+import java.nio.channels.Channels
 
 import scala.collection.JavaConverters._
 
+import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.MapVector
+import org.apache.arrow.vector.dictionary.DictionaryProvider
+import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.spark.{SparkEnv, SparkException}
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+
+import org.apache.comet.vector.CometVector
 
 object Utils {
   def getConfPath(confFileName: String): String = {
@@ -40,6 +52,11 @@ object Utils {
 
   def stringToSeq(str: String): Seq[String] = {
     str.split(",").map(_.trim()).filter(_.nonEmpty)
+  }
+
+  /** bridges the function call to Spark's Util */
+  def getSimpleName(cls: Class[_]): String = {
+    org.apache.spark.util.Utils.getSimpleName(cls)
   }
 
   def fromArrowField(field: Field): DataType = {
@@ -78,12 +95,22 @@ object Utils {
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
+    case ts: ArrowType.Timestamp
+        if ts.getUnit == TimeUnit.MICROSECOND && ts.getTimezone == null =>
+      TimestampNTZType
     case ts: ArrowType.Timestamp if ts.getUnit == TimeUnit.MICROSECOND => TimestampType
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
     case _ => throw new UnsupportedOperationException(s"Unsupported data type: ${dt.toString}")
+  }
+
+  def fromArrowSchema(schema: Schema): StructType = {
+    StructType(schema.getFields.asScala.map { field =>
+      val dt = fromArrowField(field)
+      StructField(field.getName, dt, field.isNullable)
+    }.toArray)
   }
 
   /** Maps data type from Spark to Arrow. NOTE: timeZoneId required for TimestampTypes */
@@ -160,5 +187,80 @@ object Utils {
     new Schema(schema.map { field =>
       toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
     }.asJava)
+  }
+
+  /**
+   * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
+   * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
+   * classes, it must be in `common` module.
+   *
+   * @param batches
+   *   the output batches, each batch is a list of Arrow vectors wrapped in `CometVector`
+   * @param out
+   *   the output stream
+   */
+  def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    batches.map { batch =>
+      val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
+
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+
+      val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
+      val root = new VectorSchemaRoot(fieldVectors.asJava)
+      val provider = batchProviderOpt.getOrElse(dictionaryProvider)
+
+      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+      writer.start()
+      writer.writeBatch()
+
+      root.clear()
+      writer.end()
+
+      out.flush()
+      out.close()
+
+      if (out.size() > 0) {
+        (batch.numRows(), cbbos.toChunkedByteBuffer)
+      } else {
+        (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
+      }
+    }
+  }
+
+  def getBatchFieldVectors(
+      batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
+    var provider: Option[DictionaryProvider] = None
+    val fieldVectors = (0 until batch.numCols()).map { index =>
+      batch.column(index) match {
+        case a: CometVector =>
+          val valueVector = a.getValueVector
+          if (valueVector.getField.getDictionary != null) {
+            if (provider.isEmpty) {
+              provider = Some(a.getDictionaryProvider)
+            }
+          }
+
+          getFieldVector(valueVector)
+
+        case c =>
+          throw new SparkException(
+            "Comet execution only takes Arrow Arrays, but got " +
+              s"${c.getClass}")
+      }
+    }
+    (fieldVectors, provider)
+  }
+
+  def getFieldVector(valueVector: ValueVector): FieldVector = {
+    valueVector match {
+      case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
+          _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
+          _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
+          _: FixedSizeBinaryVector | _: TimeStampMicroVector) =>
+        v.asInstanceOf[FieldVector]
+      case _ => throw new SparkException(s"Unsupported Arrow Vector: ${valueVector.getClass}")
+    }
   }
 }

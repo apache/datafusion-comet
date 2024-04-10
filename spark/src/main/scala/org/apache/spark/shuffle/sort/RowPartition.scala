@@ -22,8 +22,8 @@ package org.apache.spark.shuffle.sort
 import scala.collection.mutable.ArrayBuffer
 
 class RowPartition(initialSize: Int) {
-  private val rowAddresses: ArrayBuffer[Long] = new ArrayBuffer[Long](initialSize)
-  private val rowSizes: ArrayBuffer[Int] = new ArrayBuffer[Int](initialSize)
+  private var rowAddresses: ArrayBuffer[Long] = new ArrayBuffer[Long](initialSize)
+  private var rowSizes: ArrayBuffer[Int] = new ArrayBuffer[Int](initialSize)
 
   def addRow(addr: Long, size: Int): Unit = {
     rowAddresses += addr
@@ -32,11 +32,20 @@ class RowPartition(initialSize: Int) {
 
   def getNumRows: Int = rowAddresses.size
 
-  def getRowAddresses: Array[Long] = rowAddresses.toArray
-  def getRowSizes: Array[Int] = rowSizes.toArray
+  def getRowAddresses: Array[Long] = {
+    val array = rowAddresses.toArray
+    rowAddresses = null
+    array
+  }
+
+  def getRowSizes: Array[Int] = {
+    val array = rowSizes.toArray
+    rowSizes = null
+    array
+  }
 
   def reset(): Unit = {
-    rowAddresses.clear()
-    rowSizes.clear()
+    rowAddresses = new ArrayBuffer[Long](initialSize)
+    rowSizes = new ArrayBuffer[Int](initialSize)
   }
 }
