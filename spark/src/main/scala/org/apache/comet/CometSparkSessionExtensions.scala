@@ -536,9 +536,9 @@ class CometSparkSessionExtensions
         case w: WindowExec =>
           QueryPlanSerde.operator2Proto(w) match {
             case Some(nativeOp) =>
-              val bosonOp =
+              val cometOp =
                 CometWindowExec(w, w.windowExpression, w.partitionSpec, w.orderSpec, w.child)
-              CometSinkPlaceHolder(nativeOp, w, bosonOp)
+              CometSinkPlaceHolder(nativeOp, w, cometOp)
             case None =>
               w
           }

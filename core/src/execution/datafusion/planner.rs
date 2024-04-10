@@ -880,11 +880,11 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Window(wnd) => {
-                dbg!(&inputs);
-                //dbg!(&children);
+                dbg!(&children[0]);
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
+                //dbg!(&child);
                 let input_schema = child.schema();
-                //dbg!(&input_schema);
+                dbg!(&input_schema);
                 let sort_exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = wnd
                     .order_by_list
                     .iter()

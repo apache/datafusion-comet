@@ -310,6 +310,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
+        //dbg!(&exec_context.spark_plan.children[0]);
 
         let exec_context_id = exec_context.id;
 

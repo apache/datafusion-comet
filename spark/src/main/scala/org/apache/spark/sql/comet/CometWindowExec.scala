@@ -104,7 +104,9 @@ object CometWindowExec {
     }
 
     val windowExprs = windowExpression.map(w =>
-      windowExprToProto(w.asInstanceOf[Alias].child.asInstanceOf[WindowExpression], child.output))
+      windowExprToProto(
+        w.asInstanceOf[Alias].child.asInstanceOf[WindowExpression],
+        outputAttributes))
 
     val windowBuilder = OperatorOuterClass.Window
       .newBuilder()
