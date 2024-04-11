@@ -127,6 +127,14 @@ Comet shuffle feature is disabled by default. To enable it, please add related c
 Above configs enable Comet native shuffle which only supports hash partiting and single partition.
 Comet native shuffle doesn't support complext types yet.
 
+Depending on your deployment mode you may also need to set the driver & executor class path(s) to explicitly contain comet otherwise Spark may use a different class-loader for the comet components than it's internal components which will then fail at runtime. For example:
+
+```
+--driver-class-path spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar
+```
+
+Some cluster managers may require additional configuration, see https://spark.apache.org/docs/latest/cluster-overview.html
+
 To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
 ```
 --conf spark.comet.columnar.shuffle.enabled=true
