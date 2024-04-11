@@ -40,6 +40,21 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test(
+    "Average expression in Comet Final should handle " +
+      "all null inputs from partial Spark aggregation") {
+    withTempView("allNulls") {
+      allNulls.createOrReplaceTempView("allNulls")
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        val df = sql("select sum(a), avg(a) from allNulls")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("Aggregation without aggregate expressions should use correct result expressions") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
