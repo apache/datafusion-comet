@@ -76,7 +76,7 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with SQLQueryTestH
     "q20",
     "q21",
     "q22")
-  val disabledTpchQueries: Seq[String] = Seq("q1", "q15", "q17", "q18")
+  val disabledTpchQueries: Seq[String] = Seq()
 
   // To make output results deterministic
   def testSparkConf: SparkConf = {
