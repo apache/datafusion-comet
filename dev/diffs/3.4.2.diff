@@ -1395,10 +1395,10 @@ index dd55fcfe42c..cc18147d17a 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..4cfe0093da7 100644
+index ed2e309fa07..f51a2395a53 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,21 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,22 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -1415,6 +1415,7 @@ index ed2e309fa07..4cfe0093da7 100644
 +          .set("spark.shuffle.manager",
 +            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +          .set("spark.comet.exec.shuffle.enabled", "true")
++          .set("spark.comet.memoryOverhead", "10g")
 +      }
 +    }
      conf.set(
