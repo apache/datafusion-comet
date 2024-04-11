@@ -435,7 +435,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
         this.inMemSorter = new ShuffleInMemorySorter(allocator, 1, true);
       } catch (java.lang.IllegalAccessError e) {
         throw new java.lang.RuntimeException(
-            "Error lodaing in memory sorter check class path -- see "
+            "Error loading in-memory sorter check class path -- see "
                 + "https://github.com/apache/arrow-datafusion-comet?tab=readme-ov-file#enable-comet-shuffle",
             e);
       }
