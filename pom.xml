@@ -888,6 +888,7 @@ under the License.
             <exclude>Makefile</exclude>
             <exclude>dev/Dockerfile*</exclude>
             <exclude>dev/boson-to-comet.sh</exclude>
+            <exclude>dev/bump-version.sh</exclude>
             <exclude>dev/diff/**</exclude>
             <exclude>dev/diffs/**</exclude>
             <exclude>dev/deploy-file</exclude>
