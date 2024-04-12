@@ -73,13 +73,8 @@ rm -rf /root/.m2/repository/com/google/protobuf
 
 cd $COMET_WORKSPACE
 rm -rf apache-spark
-git clone git@github.pie.apple.com:IPR/apache-spark.git --branch $SPARK_BRANCH
+git clone git@github.pie.apple.com:IPR/apache-spark.git --depth 1 --branch $SPARK_BRANCH
 cd apache-spark
-
-BUILD_PARAM_PR_NUMBER=1929
-git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
-git checkout pr_${BUILD_PARAM_PR_NUMBER}
-git log -n 1
 
 # Apply custom diff files, if they exist
 if [ -f "$BASEDIR/diff/$SPARK_BRANCH.diff" ]; then
