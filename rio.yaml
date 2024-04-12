@@ -1337,7 +1337,7 @@ builds:
       <<: *nightly_image_package
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: platform
     machine:
       <<: *rio3-machine
@@ -1363,12 +1363,12 @@ builds:
             - repo: oss-patched-local
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-platform
+        - pipeline: build-artifacts-main-apple-release-build-platform
 
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: platform
     trigger:
       gitPush: false
@@ -1385,31 +1385,31 @@ builds:
         enabled: true
         expression: "0.3.30"
       pipelineChain:
-        - pipeline: build-release-publish-3.2_2.12
+        - pipeline: build-main-apple-release-publish-3.2_2.12
           buildArguments:
             - name: "ARTIFACT_X86_64"
               value: "${ARTIFACT_X86_64}"
             - name: "ARTIFACT_AARCH64"
               value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-release-publish-3.3_2.12
+        - pipeline: build-main-apple-release-publish-3.3_2.12
           buildArguments:
             - name: "ARTIFACT_X86_64"
               value: "${ARTIFACT_X86_64}"
             - name: "ARTIFACT_AARCH64"
               value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-release-publish-3.3_2.13
+        - pipeline: build-main-apple-release-publish-3.3_2.13
           buildArguments:
             - name: "ARTIFACT_X86_64"
               value: "${ARTIFACT_X86_64}"
             - name: "ARTIFACT_AARCH64"
               value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-release-publish-3.4_2.12
+        - pipeline: build-main-apple-release-publish-3.4_2.12
           buildArguments:
             - name: "ARTIFACT_X86_64"
               value: "${ARTIFACT_X86_64}"
             - name: "ARTIFACT_AARCH64"
               value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-release-publish-3.4_2.13
+        - pipeline: build-main-apple-release-publish-3.4_2.13
           buildArguments:
             - name: "ARTIFACT_X86_64"
               value: "${ARTIFACT_X86_64}"
@@ -1417,7 +1417,7 @@ builds:
               value: "${ARTIFACT_AARCH64}"
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1459,10 +1459,10 @@ builds:
             - repo: oss-patched-local
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-3.2_2.12
+        - pipeline: build-artifacts-main-apple-release-build-3.2_2.12
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1480,10 +1480,10 @@ builds:
       <<: *release_build_package
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-3.3_2.12
+        - pipeline: build-artifacts-main-apple-release-build-3.3_2.12
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1501,10 +1501,10 @@ builds:
       <<: *release_build_package
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-3.3_2.13
+        - pipeline: build-artifacts-main-apple-release-build-3.3_2.13
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1522,10 +1522,10 @@ builds:
       <<: *release_build_package
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-3.4_2.12
+        - pipeline: build-artifacts-main-apple-release-build-3.4_2.12
 
   - group: build
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1543,12 +1543,12 @@ builds:
       <<: *release_build_package
     finally:
       pipelineChain:
-        - pipeline: build-artifacts-release-build-3.4_2.13
+        - pipeline: build-artifacts-main-apple-release-build-3.4_2.13
 
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1559,13 +1559,13 @@ builds:
       <<: *build-artifacts-build
     finally:
       pipelineChain:
-        - pipeline: image-release-publish-3.2_2.12
+        - pipeline: image-main-apple-release-publish-3.2_2.12
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1576,13 +1576,13 @@ builds:
       <<: *build-artifacts-build
     finally:
       pipelineChain:
-        - pipeline: image-release-publish-3.3_2.12
+        - pipeline: image-main-apple-release-publish-3.3_2.12
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1593,13 +1593,13 @@ builds:
       <<: *build-artifacts-build
     finally:
       pipelineChain:
-        - pipeline: image-release-publish-3.3_2.13
+        - pipeline: image-main-apple-release-publish-3.3_2.13
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1610,13 +1610,13 @@ builds:
       <<: *build-artifacts-build
     finally:
       pipelineChain:
-        - pipeline: image-release-publish-3.4_2.12
+        - pipeline: image-main-apple-release-publish-3.4_2.12
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1627,13 +1627,13 @@ builds:
       <<: *build-artifacts-build
     finally:
       pipelineChain:
-        - pipeline: image-release-publish-3.4_2.13
+        - pipeline: image-main-apple-release-publish-3.4_2.13
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
 
   - group: image
-    branchName: release
+    branchName: main-apple-release
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1677,7 +1677,7 @@ builds:
             - repo: docker.apple.com/comet-dev/spark${VERSION}
 
   - group: image
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1696,7 +1696,7 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: release
+    branchName: main-apple-release
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1715,7 +1715,7 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1734,7 +1734,7 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: release
+    branchName: main-apple-release
     version: 3.4_2.13
     disabled: false
     trigger:
