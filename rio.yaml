@@ -1360,7 +1360,7 @@ builds:
       release: true
       freeform:
         - publish:
-            - repo: oss-patched-local
+            - repo: m2:oss-patched
     finally:
       pipelineChain:
         - pipeline: build-artifacts-main-apple-release-build-platform
@@ -1456,7 +1456,7 @@ builds:
       release: true
       freeform:
         - publish:
-            - repo: oss-patched-local
+            - repo: m2:oss-patched
     finally:
       pipelineChain:
         - pipeline: build-artifacts-main-apple-release-build-3.2_2.12
