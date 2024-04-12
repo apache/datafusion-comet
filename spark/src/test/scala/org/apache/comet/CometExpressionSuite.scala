@@ -19,15 +19,13 @@
 
 package org.apache.comet
 
-import java.util
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType, StructType}
+import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
@@ -1288,30 +1286,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "select a, typeof(a) from (select c1 * c2 a from tbl)",
           s"mixed_errs_and_results (allowPrecisionLoss = ${allowPrecisionLoss})")
       }
-    }
-  }
-
-  // tests one liner query without necessity to create external table
-  def testSingleLineQuery(
-      prepareQuery: String,
-      testQuery: String,
-      testName: String = "test",
-      tableName: String = "tbl"): Unit = {
-
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, testName).toUri.toString
-      var data: java.util.List[Row] = new util.ArrayList()
-      var schema: StructType = null
-
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark.sql(prepareQuery)
-        data = df.collectAsList()
-        schema = df.schema
-      }
-
-      spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
-      readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
-      checkSparkAnswerAndOperator(testQuery)
     }
   }
 

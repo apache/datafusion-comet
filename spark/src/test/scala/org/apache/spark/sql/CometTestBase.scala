@@ -718,4 +718,36 @@ abstract class CometTestBase
       Seq.empty
     }
   }
+
+  // tests one liner query without necessity to create external table
+  def testSingleLineQuery(
+      prepareQuery: String,
+      testQuery: String,
+      testName: String = "test",
+      tableName: String = "tbl"): Unit = {
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, testName).toUri.toString
+      var data: java.util.List[Row] = new java.util.ArrayList()
+      var schema: StructType = null
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark.sql(prepareQuery)
+        data = df.collectAsList()
+        schema = df.schema
+      }
+
+      spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
+      readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
+      checkSparkAnswerAndOperator(testQuery)
+    }
+  }
+
+  def showString[T](
+      df: Dataset[T],
+      _numRows: Int,
+      truncate: Int = 20,
+      vertical: Boolean = false): String = {
+    df.showString(_numRows, truncate, vertical)
+  }
 }
