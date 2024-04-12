@@ -176,9 +176,15 @@ impl Accumulator for AvgAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(
-            self.sum.map(|f| f / self.count as f64),
-        ))
+        if self.count == 0 {
+            // If all input are nulls, count will be 0 and we will get null after the division.
+            // This is consistent with Spark Average implementation.
+            Ok(ScalarValue::Float64(None))
+        } else {
+            Ok(ScalarValue::Float64(
+                self.sum.map(|f| f / self.count as f64),
+            ))
+        }
     }
 
     fn size(&self) -> usize {
