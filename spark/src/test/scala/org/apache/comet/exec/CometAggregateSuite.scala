@@ -40,6 +40,19 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("Only trigger Comet Final aggregation on Comet partial aggregation") {
+    withTempView("lowerCaseData") {
+      lowerCaseData.createOrReplaceTempView("lowerCaseData")
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        val df = sql("SELECT LAST(n) FROM lowerCaseData")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test(
     "Average expression in Comet Final should handle " +
       "all null inputs from partial Spark aggregation") {
