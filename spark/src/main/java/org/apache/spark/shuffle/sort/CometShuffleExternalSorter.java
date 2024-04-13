@@ -431,7 +431,14 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       // As we cannot access the address of the internal array in the sorter, so we need to
       // allocate the array manually and expand the pointer array in the sorter.
       // We don't want in-memory sorter to allocate memory but the initial size cannot be zero.
-      this.inMemSorter = new ShuffleInMemorySorter(allocator, 1, true);
+      try {
+        this.inMemSorter = new ShuffleInMemorySorter(allocator, 1, true);
+      } catch (java.lang.IllegalAccessError e) {
+        throw new java.lang.RuntimeException(
+            "Error loading in-memory sorter check class path -- see "
+                + "https://github.com/apache/arrow-datafusion-comet?tab=readme-ov-file#enable-comet-shuffle",
+            e);
+      }
       sorterArray = allocator.allocateArray(initialSize);
       this.inMemSorter.expandPointerArray(sorterArray);
 
