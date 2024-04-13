@@ -1,8 +1,8 @@
-WholeStageCodegen (4)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [sum(ss_ext_sales_price),d_year,i_category_id,i_category]
-        CometHashAggregate [d_year,i_category_id,i_category,sum]
+TakeOrderedAndProject [sum(ss_ext_sales_price),d_year,i_category_id,i_category]
+  WholeStageCodegen (4)
+    HashAggregate [d_year,i_category_id,i_category,sum] [sum(UnscaledValue(ss_ext_sales_price)),sum(ss_ext_sales_price),sum]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [d_year,i_category_id,i_category] #1
             RowToColumnar
               WholeStageCodegen (3)

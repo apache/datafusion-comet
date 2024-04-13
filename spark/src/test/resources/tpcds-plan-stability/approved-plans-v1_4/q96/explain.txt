@@ -1,6 +1,6 @@
 == Physical Plan ==
-* ColumnarToRow (30)
-+- CometHashAggregate (29)
+* HashAggregate (30)
++- * ColumnarToRow (29)
    +- CometColumnarExchange (28)
       +- RowToColumnar (27)
          +- * HashAggregate (26)
@@ -159,11 +159,13 @@ Input [1]: [count#13]
 Input [1]: [count#13]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(29) CometHashAggregate
+(29) ColumnarToRow [codegen id : 5]
+Input [1]: [count#13]
+
+(30) HashAggregate [codegen id : 5]
 Input [1]: [count#13]
 Keys: []
 Functions [1]: [count(1)]
-
-(30) ColumnarToRow [codegen id : 5]
-Input [1]: [count(1)#14]
+Aggregate Attributes [1]: [count(1)#14]
+Results [1]: [count(1)#14 AS count(1)#15]
 

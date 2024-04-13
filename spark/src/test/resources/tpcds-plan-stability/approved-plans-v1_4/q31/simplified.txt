@@ -13,9 +13,9 @@ WholeStageCodegen (25)
                         Project [ca_county,d_year,store_sales,store_sales,store_sales]
                           BroadcastHashJoin [ca_county,ca_county]
                             BroadcastHashJoin [ca_county,ca_county]
-                              ColumnarToRow
-                                InputAdapter
-                                  CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                              HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometColumnarExchange [ca_county,d_qoy,d_year] #2
                                       RowToColumnar
                                         WholeStageCodegen (3)
@@ -47,9 +47,9 @@ WholeStageCodegen (25)
                               InputAdapter
                                 BroadcastExchange #5
                                   WholeStageCodegen (7)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                                    HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
+                                      ColumnarToRow
+                                        InputAdapter
                                           CometColumnarExchange [ca_county,d_qoy,d_year] #6
                                             RowToColumnar
                                               WholeStageCodegen (6)
@@ -76,9 +76,9 @@ WholeStageCodegen (25)
                             InputAdapter
                               BroadcastExchange #8
                                 WholeStageCodegen (11)
-                                  ColumnarToRow
-                                    InputAdapter
-                                      CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                                  HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
+                                    ColumnarToRow
+                                      InputAdapter
                                         CometColumnarExchange [ca_county,d_qoy,d_year] #9
                                           RowToColumnar
                                             WholeStageCodegen (10)
@@ -105,9 +105,9 @@ WholeStageCodegen (25)
                         InputAdapter
                           BroadcastExchange #11
                             WholeStageCodegen (15)
-                              ColumnarToRow
-                                InputAdapter
-                                  CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                              HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometColumnarExchange [ca_county,d_qoy,d_year] #12
                                       RowToColumnar
                                         WholeStageCodegen (14)
@@ -128,9 +128,9 @@ WholeStageCodegen (25)
                       InputAdapter
                         BroadcastExchange #13
                           WholeStageCodegen (19)
-                            ColumnarToRow
-                              InputAdapter
-                                CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                            HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
+                              ColumnarToRow
+                                InputAdapter
                                   CometColumnarExchange [ca_county,d_qoy,d_year] #14
                                     RowToColumnar
                                       WholeStageCodegen (18)
@@ -151,9 +151,9 @@ WholeStageCodegen (25)
                   InputAdapter
                     BroadcastExchange #15
                       WholeStageCodegen (23)
-                        ColumnarToRow
-                          InputAdapter
-                            CometHashAggregate [ca_county,d_qoy,d_year,sum]
+                        HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
+                          ColumnarToRow
+                            InputAdapter
                               CometColumnarExchange [ca_county,d_qoy,d_year] #16
                                 RowToColumnar
                                   WholeStageCodegen (22)

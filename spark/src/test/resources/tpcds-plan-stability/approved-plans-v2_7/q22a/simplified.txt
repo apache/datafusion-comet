@@ -1,11 +1,11 @@
-WholeStageCodegen (21)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
-        CometUnion
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
-            CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh]
-              CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
+TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
+  Union
+    WholeStageCodegen (5)
+      HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(qoh),qoh,sum,count]
+        HashAggregate [i_product_name,i_brand,i_class,i_category,qoh] [sum,count,sum,count]
+          HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+            ColumnarToRow
+              InputAdapter
                 CometColumnarExchange [i_product_name,i_brand,i_class,i_category] #1
                   RowToColumnar
                     WholeStageCodegen (4)
@@ -44,23 +44,51 @@ WholeStageCodegen (21)
                                     InputAdapter
                                       CometFilter [w_warehouse_sk]
                                         CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk]
-          CometHashAggregate [i_product_name,i_brand,i_class,sum,count]
+    WholeStageCodegen (11)
+      HashAggregate [i_product_name,i_brand,i_class,sum,count] [avg(qoh),i_category,qoh,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_product_name,i_brand,i_class] #5
-              CometHashAggregate [i_product_name,i_brand,i_class,qoh]
-                CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
-                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [i_product_name,i_brand,sum,count]
+              RowToColumnar
+                WholeStageCodegen (10)
+                  HashAggregate [i_product_name,i_brand,i_class,qoh] [sum,count,sum,count]
+                    HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                      ColumnarToRow
+                        InputAdapter
+                          ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+    WholeStageCodegen (17)
+      HashAggregate [i_product_name,i_brand,sum,count] [avg(qoh),i_class,i_category,qoh,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_product_name,i_brand] #6
-              CometHashAggregate [i_product_name,i_brand,qoh]
-                CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
-                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [i_product_name,sum,count]
+              RowToColumnar
+                WholeStageCodegen (16)
+                  HashAggregate [i_product_name,i_brand,qoh] [sum,count,sum,count]
+                    HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                      ColumnarToRow
+                        InputAdapter
+                          ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+    WholeStageCodegen (23)
+      HashAggregate [i_product_name,sum,count] [avg(qoh),i_brand,i_class,i_category,qoh,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_product_name] #7
-              CometHashAggregate [i_product_name,qoh]
-                CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
-                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [sum,count]
+              RowToColumnar
+                WholeStageCodegen (22)
+                  HashAggregate [i_product_name,qoh] [sum,count,sum,count]
+                    HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                      ColumnarToRow
+                        InputAdapter
+                          ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+    WholeStageCodegen (29)
+      HashAggregate [sum,count] [avg(qoh),i_product_name,i_brand,i_class,i_category,qoh,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange #8
-              CometHashAggregate [qoh]
-                CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count]
-                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+              RowToColumnar
+                WholeStageCodegen (28)
+                  HashAggregate [qoh] [sum,count,sum,count]
+                    HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                      ColumnarToRow
+                        InputAdapter
+                          ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1

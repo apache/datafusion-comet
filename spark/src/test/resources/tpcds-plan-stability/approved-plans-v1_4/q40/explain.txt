@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (34)
-+- CometTakeOrderedAndProject (33)
-   +- CometHashAggregate (32)
+TakeOrderedAndProject (34)
++- * HashAggregate (33)
+   +- * ColumnarToRow (32)
       +- CometColumnarExchange (31)
          +- RowToColumnar (30)
             +- * HashAggregate (29)
@@ -177,17 +177,19 @@ Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
 Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
 Arguments: hashpartitioning(w_state#12, i_item_id#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(32) CometHashAggregate
+(32) ColumnarToRow [codegen id : 5]
+Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
+
+(33) HashAggregate [codegen id : 5]
 Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
 Keys [2]: [w_state#12, i_item_id#14]
 Functions [2]: [sum(CASE WHEN (d_date#17 < 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END), sum(CASE WHEN (d_date#17 >= 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END)]
+Aggregate Attributes [2]: [sum(CASE WHEN (d_date#17 < 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END)#26, sum(CASE WHEN (d_date#17 >= 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END)#27]
+Results [4]: [w_state#12, i_item_id#14, sum(CASE WHEN (d_date#17 < 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END)#26 AS sales_before#28, sum(CASE WHEN (d_date#17 >= 2000-03-11) THEN (cs_sales_price#4 - coalesce(cast(cr_refunded_cash#9 as decimal(12,2)), 0.00)) ELSE 0.00 END)#27 AS sales_after#29]
 
-(33) CometTakeOrderedAndProject
-Input [4]: [w_state#12, i_item_id#14, sales_before#26, sales_after#27]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_state#12 ASC NULLS FIRST,i_item_id#14 ASC NULLS FIRST], output=[w_state#12,i_item_id#14,sales_before#26,sales_after#27]), 100, [w_state#12 ASC NULLS FIRST, i_item_id#14 ASC NULLS FIRST], [w_state#12, i_item_id#14, sales_before#26, sales_after#27]
-
-(34) ColumnarToRow [codegen id : 5]
-Input [4]: [w_state#12, i_item_id#14, sales_before#26, sales_after#27]
+(34) TakeOrderedAndProject
+Input [4]: [w_state#12, i_item_id#14, sales_before#28, sales_after#29]
+Arguments: 100, [w_state#12 ASC NULLS FIRST, i_item_id#14 ASC NULLS FIRST], [w_state#12, i_item_id#14, sales_before#28, sales_after#29]
 
 ===== Subqueries =====
 

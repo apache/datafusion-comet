@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (24)
-+- CometTakeOrderedAndProject (23)
-   +- CometHashAggregate (22)
+TakeOrderedAndProject (24)
++- * HashAggregate (23)
+   +- * ColumnarToRow (22)
       +- CometColumnarExchange (21)
          +- RowToColumnar (20)
             +- * HashAggregate (19)
@@ -120,17 +120,19 @@ Input [7]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grou
 Input [7]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grouping_id#15, sum#18, count#19]
 Arguments: hashpartitioning(i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grouping_id#15, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(22) CometHashAggregate
+(22) ColumnarToRow [codegen id : 5]
+Input [7]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grouping_id#15, sum#18, count#19]
+
+(23) HashAggregate [codegen id : 5]
 Input [7]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grouping_id#15, sum#18, count#19]
 Keys [5]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, spark_grouping_id#15]
 Functions [1]: [avg(inv_quantity_on_hand#2)]
+Aggregate Attributes [1]: [avg(inv_quantity_on_hand#2)#20]
+Results [5]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, avg(inv_quantity_on_hand#2)#20 AS qoh#21]
 
-(23) CometTakeOrderedAndProject
-Input [5]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, qoh#20]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#20 ASC NULLS FIRST,i_product_name#11 ASC NULLS FIRST,i_brand#12 ASC NULLS FIRST,i_class#13 ASC NULLS FIRST,i_category#14 ASC NULLS FIRST], output=[i_product_name#11,i_brand#12,i_class#13,i_category#14,qoh#20]), 100, [qoh#20 ASC NULLS FIRST, i_product_name#11 ASC NULLS FIRST, i_brand#12 ASC NULLS FIRST, i_class#13 ASC NULLS FIRST, i_category#14 ASC NULLS FIRST], [i_product_name#11, i_brand#12, i_class#13, i_category#14, qoh#20]
-
-(24) ColumnarToRow [codegen id : 5]
-Input [5]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, qoh#20]
+(24) TakeOrderedAndProject
+Input [5]: [i_product_name#11, i_brand#12, i_class#13, i_category#14, qoh#21]
+Arguments: 100, [qoh#21 ASC NULLS FIRST, i_product_name#11 ASC NULLS FIRST, i_brand#12 ASC NULLS FIRST, i_class#13 ASC NULLS FIRST, i_category#14 ASC NULLS FIRST], [i_product_name#11, i_brand#12, i_class#13, i_category#14, qoh#21]
 
 ===== Subqueries =====
 
@@ -143,18 +145,18 @@ BroadcastExchange (29)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#5, d_month_seq#21]
+Output [2]: [d_date_sk#5, d_month_seq#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), GreaterThanOrEqual(d_month_seq,1200), LessThanOrEqual(d_month_seq,1211), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_month_seq:int>
 
 (26) CometFilter
-Input [2]: [d_date_sk#5, d_month_seq#21]
-Condition : (((isnotnull(d_month_seq#21) AND (d_month_seq#21 >= 1200)) AND (d_month_seq#21 <= 1211)) AND isnotnull(d_date_sk#5))
+Input [2]: [d_date_sk#5, d_month_seq#22]
+Condition : (((isnotnull(d_month_seq#22) AND (d_month_seq#22 >= 1200)) AND (d_month_seq#22 <= 1211)) AND isnotnull(d_date_sk#5))
 
 (27) CometProject
-Input [2]: [d_date_sk#5, d_month_seq#21]
+Input [2]: [d_date_sk#5, d_month_seq#22]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
 (28) ColumnarToRow [codegen id : 1]

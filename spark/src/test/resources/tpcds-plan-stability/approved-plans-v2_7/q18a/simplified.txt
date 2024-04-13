@@ -1,9 +1,9 @@
-WholeStageCodegen (36)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,agg4,agg5,agg6,agg7]
-        CometUnion
-          CometHashAggregate [i_item_id,ca_country,ca_state,ca_county,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,agg4,agg5,agg6,agg7]
+  Union
+    WholeStageCodegen (8)
+      HashAggregate [i_item_id,ca_country,ca_state,ca_county,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_item_id,ca_country,ca_state,ca_county] #1
               RowToColumnar
                 WholeStageCodegen (7)
@@ -71,10 +71,13 @@ WholeStageCodegen (36)
                                 InputAdapter
                                   CometFilter [i_item_sk]
                                     CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
-          CometHashAggregate [i_item_id,ca_country,ca_state,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+    WholeStageCodegen (16)
+      HashAggregate [i_item_id,ca_country,ca_state,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_item_id,ca_country,ca_state] #8
               RowToColumnar
-                WholeStageCodegen (14)
+                WholeStageCodegen (15)
                   HashAggregate [i_item_id,ca_country,ca_state,agg1,agg2,agg3,agg4,agg5,agg6,agg7] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
                     Project [i_item_id,ca_country,ca_state,cs_quantity,cs_list_price,cs_coupon_amt,cs_sales_price,cs_net_profit,c_birth_year,cd_dep_count]
                       BroadcastHashJoin [cs_item_sk,i_item_sk]
@@ -101,7 +104,7 @@ WholeStageCodegen (36)
                                       ReusedExchange [cd_demo_sk] #5
                                 InputAdapter
                                   BroadcastExchange #9
-                                    WholeStageCodegen (11)
+                                    WholeStageCodegen (12)
                                       ColumnarToRow
                                         InputAdapter
                                           CometFilter [ca_state,ca_address_sk]
@@ -110,10 +113,13 @@ WholeStageCodegen (36)
                               ReusedExchange [d_date_sk] #2
                         InputAdapter
                           ReusedExchange [i_item_sk,i_item_id] #7
-          CometHashAggregate [i_item_id,ca_country,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+    WholeStageCodegen (24)
+      HashAggregate [i_item_id,ca_country,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),ca_state,county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_item_id,ca_country] #10
               RowToColumnar
-                WholeStageCodegen (21)
+                WholeStageCodegen (23)
                   HashAggregate [i_item_id,ca_country,agg1,agg2,agg3,agg4,agg5,agg6,agg7] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
                     Project [i_item_id,ca_country,cs_quantity,cs_list_price,cs_coupon_amt,cs_sales_price,cs_net_profit,c_birth_year,cd_dep_count]
                       BroadcastHashJoin [cs_item_sk,i_item_sk]
@@ -140,7 +146,7 @@ WholeStageCodegen (36)
                                       ReusedExchange [cd_demo_sk] #5
                                 InputAdapter
                                   BroadcastExchange #11
-                                    WholeStageCodegen (18)
+                                    WholeStageCodegen (20)
                                       ColumnarToRow
                                         InputAdapter
                                           CometProject [ca_address_sk,ca_country]
@@ -150,10 +156,13 @@ WholeStageCodegen (36)
                               ReusedExchange [d_date_sk] #2
                         InputAdapter
                           ReusedExchange [i_item_sk,i_item_id] #7
-          CometHashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+    WholeStageCodegen (32)
+      HashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),ca_country,ca_state,county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [i_item_id] #12
               RowToColumnar
-                WholeStageCodegen (28)
+                WholeStageCodegen (31)
                   HashAggregate [i_item_id,agg1,agg2,agg3,agg4,agg5,agg6,agg7] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
                     Project [i_item_id,cs_quantity,cs_list_price,cs_coupon_amt,cs_sales_price,cs_net_profit,c_birth_year,cd_dep_count]
                       BroadcastHashJoin [cs_item_sk,i_item_sk]
@@ -180,7 +189,7 @@ WholeStageCodegen (36)
                                       ReusedExchange [cd_demo_sk] #5
                                 InputAdapter
                                   BroadcastExchange #13
-                                    WholeStageCodegen (25)
+                                    WholeStageCodegen (28)
                                       ColumnarToRow
                                         InputAdapter
                                           CometProject [ca_address_sk]
@@ -190,10 +199,13 @@ WholeStageCodegen (36)
                               ReusedExchange [d_date_sk] #2
                         InputAdapter
                           ReusedExchange [i_item_sk,i_item_id] #7
-          CometHashAggregate [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+    WholeStageCodegen (40)
+      HashAggregate [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),i_item_id,ca_country,ca_state,county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange #14
               RowToColumnar
-                WholeStageCodegen (35)
+                WholeStageCodegen (39)
                   HashAggregate [agg1,agg2,agg3,agg4,agg5,agg6,agg7] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
                     Project [cs_quantity,cs_list_price,cs_coupon_amt,cs_sales_price,cs_net_profit,c_birth_year,cd_dep_count]
                       BroadcastHashJoin [cs_item_sk,i_item_sk]
@@ -224,7 +236,7 @@ WholeStageCodegen (36)
                               ReusedExchange [d_date_sk] #2
                         InputAdapter
                           BroadcastExchange #15
-                            WholeStageCodegen (34)
+                            WholeStageCodegen (38)
                               ColumnarToRow
                                 InputAdapter
                                   CometFilter [i_item_sk]

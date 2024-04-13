@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (40)
-+- CometTakeOrderedAndProject (39)
-   +- CometHashAggregate (38)
+TakeOrderedAndProject (40)
++- * HashAggregate (39)
+   +- * ColumnarToRow (38)
       +- CometColumnarExchange (37)
          +- RowToColumnar (36)
             +- * HashAggregate (35)
@@ -210,15 +210,17 @@ Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, count#39, 
 Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, count#39, sum#40]
 Arguments: hashpartitioning(channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(38) CometHashAggregate
+(38) ColumnarToRow [codegen id : 11]
+Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, count#39, sum#40]
+
+(39) HashAggregate [codegen id : 11]
 Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, count#39, sum#40]
 Keys [5]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6]
 Functions [2]: [count(1), sum(UnscaledValue(ext_sales_price#12))]
+Aggregate Attributes [2]: [count(1)#41, sum(UnscaledValue(ext_sales_price#12))#42]
+Results [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, count(1)#41 AS sales_cnt#43, MakeDecimal(sum(UnscaledValue(ext_sales_price#12))#42,17,2) AS sales_amt#44]
 
-(39) CometTakeOrderedAndProject
-Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#41, sales_amt#42]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#10 ASC NULLS FIRST,col_name#11 ASC NULLS FIRST,d_year#8 ASC NULLS FIRST,d_qoy#9 ASC NULLS FIRST,i_category#6 ASC NULLS FIRST], output=[channel#10,col_name#11,d_year#8,d_qoy#9,i_category#6,sales_cnt#41,sales_amt#42]), 100, [channel#10 ASC NULLS FIRST, col_name#11 ASC NULLS FIRST, d_year#8 ASC NULLS FIRST, d_qoy#9 ASC NULLS FIRST, i_category#6 ASC NULLS FIRST], [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#41, sales_amt#42]
-
-(40) ColumnarToRow [codegen id : 11]
-Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#41, sales_amt#42]
+(40) TakeOrderedAndProject
+Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#43, sales_amt#44]
+Arguments: 100, [channel#10 ASC NULLS FIRST, col_name#11 ASC NULLS FIRST, d_year#8 ASC NULLS FIRST, d_qoy#9 ASC NULLS FIRST, i_category#6 ASC NULLS FIRST], [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#43, sales_amt#44]
 

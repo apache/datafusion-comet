@@ -1,8 +1,8 @@
-WholeStageCodegen (5)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
-        CometHashAggregate [ca_zip,sum]
+TakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
+  WholeStageCodegen (5)
+    HashAggregate [ca_zip,sum] [sum(UnscaledValue(cs_sales_price)),sum(cs_sales_price),sum]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [ca_zip] #1
             RowToColumnar
               WholeStageCodegen (4)

@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (23)
-+- CometTakeOrderedAndProject (22)
-   +- CometHashAggregate (21)
+TakeOrderedAndProject (23)
++- * HashAggregate (22)
+   +- * ColumnarToRow (21)
       +- CometColumnarExchange (20)
          +- RowToColumnar (19)
             +- * HashAggregate (18)
@@ -117,15 +117,17 @@ Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
 Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
 Arguments: hashpartitioning(d_year#2, i_brand#9, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(21) CometHashAggregate
+(21) ColumnarToRow [codegen id : 4]
+Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
+
+(22) HashAggregate [codegen id : 4]
 Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
 Keys [3]: [d_year#2, i_brand#9, i_brand_id#8]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#13]
+Results [4]: [d_year#2, i_brand_id#8 AS brand_id#14, i_brand#9 AS brand#15, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#13,17,2) AS sum_agg#16]
 
-(22) CometTakeOrderedAndProject
-Input [4]: [d_year#2, brand_id#13, brand#14, sum_agg#15]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[d_year#2 ASC NULLS FIRST,sum_agg#15 DESC NULLS LAST,brand_id#13 ASC NULLS FIRST], output=[d_year#2,brand_id#13,brand#14,sum_agg#15]), 100, [d_year#2 ASC NULLS FIRST, sum_agg#15 DESC NULLS LAST, brand_id#13 ASC NULLS FIRST], [d_year#2, brand_id#13, brand#14, sum_agg#15]
-
-(23) ColumnarToRow [codegen id : 4]
-Input [4]: [d_year#2, brand_id#13, brand#14, sum_agg#15]
+(23) TakeOrderedAndProject
+Input [4]: [d_year#2, brand_id#14, brand#15, sum_agg#16]
+Arguments: 100, [d_year#2 ASC NULLS FIRST, sum_agg#16 DESC NULLS LAST, brand_id#14 ASC NULLS FIRST], [d_year#2, brand_id#14, brand#15, sum_agg#16]
 

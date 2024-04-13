@@ -6,9 +6,9 @@ WholeStageCodegen (40)
           BroadcastNestedLoopJoin
             BroadcastNestedLoopJoin
               BroadcastNestedLoopJoin
-                ColumnarToRow
-                  InputAdapter
-                    CometHashAggregate [count]
+                HashAggregate [count] [count(1),h8_30_to_9,count]
+                  ColumnarToRow
+                    InputAdapter
                       CometColumnarExchange #1
                         RowToColumnar
                           WholeStageCodegen (4)
@@ -51,9 +51,9 @@ WholeStageCodegen (40)
                 InputAdapter
                   BroadcastExchange #5
                     WholeStageCodegen (9)
-                      ColumnarToRow
-                        InputAdapter
-                          CometHashAggregate [count]
+                      HashAggregate [count] [count(1),h9_to_9_30,count]
+                        ColumnarToRow
+                          InputAdapter
                             CometColumnarExchange #6
                               RowToColumnar
                                 WholeStageCodegen (8)
@@ -84,9 +84,9 @@ WholeStageCodegen (40)
               InputAdapter
                 BroadcastExchange #8
                   WholeStageCodegen (14)
-                    ColumnarToRow
-                      InputAdapter
-                        CometHashAggregate [count]
+                    HashAggregate [count] [count(1),h9_30_to_10,count]
+                      ColumnarToRow
+                        InputAdapter
                           CometColumnarExchange #9
                             RowToColumnar
                               WholeStageCodegen (13)
@@ -117,9 +117,9 @@ WholeStageCodegen (40)
             InputAdapter
               BroadcastExchange #11
                 WholeStageCodegen (19)
-                  ColumnarToRow
-                    InputAdapter
-                      CometHashAggregate [count]
+                  HashAggregate [count] [count(1),h10_to_10_30,count]
+                    ColumnarToRow
+                      InputAdapter
                         CometColumnarExchange #12
                           RowToColumnar
                             WholeStageCodegen (18)
@@ -150,9 +150,9 @@ WholeStageCodegen (40)
           InputAdapter
             BroadcastExchange #14
               WholeStageCodegen (24)
-                ColumnarToRow
-                  InputAdapter
-                    CometHashAggregate [count]
+                HashAggregate [count] [count(1),h10_30_to_11,count]
+                  ColumnarToRow
+                    InputAdapter
                       CometColumnarExchange #15
                         RowToColumnar
                           WholeStageCodegen (23)
@@ -183,9 +183,9 @@ WholeStageCodegen (40)
         InputAdapter
           BroadcastExchange #17
             WholeStageCodegen (29)
-              ColumnarToRow
-                InputAdapter
-                  CometHashAggregate [count]
+              HashAggregate [count] [count(1),h11_to_11_30,count]
+                ColumnarToRow
+                  InputAdapter
                     CometColumnarExchange #18
                       RowToColumnar
                         WholeStageCodegen (28)
@@ -216,9 +216,9 @@ WholeStageCodegen (40)
       InputAdapter
         BroadcastExchange #20
           WholeStageCodegen (34)
-            ColumnarToRow
-              InputAdapter
-                CometHashAggregate [count]
+            HashAggregate [count] [count(1),h11_30_to_12,count]
+              ColumnarToRow
+                InputAdapter
                   CometColumnarExchange #21
                     RowToColumnar
                       WholeStageCodegen (33)
@@ -249,9 +249,9 @@ WholeStageCodegen (40)
     InputAdapter
       BroadcastExchange #23
         WholeStageCodegen (39)
-          ColumnarToRow
-            InputAdapter
-              CometHashAggregate [count]
+          HashAggregate [count] [count(1),h12_to_12_30,count]
+            ColumnarToRow
+              InputAdapter
                 CometColumnarExchange #24
                   RowToColumnar
                     WholeStageCodegen (38)

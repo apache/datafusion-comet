@@ -1,8 +1,8 @@
-WholeStageCodegen (14)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [channel,id,sales,returns,profit]
-        CometHashAggregate [channel,id,spark_grouping_id,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+TakeOrderedAndProject [channel,id,sales,returns,profit]
+  WholeStageCodegen (14)
+    HashAggregate [channel,id,spark_grouping_id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [channel,id,spark_grouping_id] #1
             RowToColumnar
               WholeStageCodegen (13)

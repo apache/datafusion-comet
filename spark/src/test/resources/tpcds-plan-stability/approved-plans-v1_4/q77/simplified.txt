@@ -1,8 +1,8 @@
-WholeStageCodegen (24)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [channel,id,sales,returns,profit]
-        CometHashAggregate [channel,id,spark_grouping_id,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+TakeOrderedAndProject [channel,id,sales,returns,profit]
+  WholeStageCodegen (24)
+    HashAggregate [channel,id,spark_grouping_id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [channel,id,spark_grouping_id] #1
             RowToColumnar
               WholeStageCodegen (23)
@@ -13,9 +13,9 @@ WholeStageCodegen (24)
                         WholeStageCodegen (8)
                           Project [sales,returns,profit,profit_loss,s_store_sk]
                             BroadcastHashJoin [s_store_sk,s_store_sk]
-                              ColumnarToRow
-                                InputAdapter
-                                  CometHashAggregate [s_store_sk,sum,sum]
+                              HashAggregate [s_store_sk,sum,sum] [sum(UnscaledValue(ss_ext_sales_price)),sum(UnscaledValue(ss_net_profit)),sales,profit,sum,sum]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometColumnarExchange [s_store_sk] #2
                                       RowToColumnar
                                         WholeStageCodegen (3)
@@ -48,9 +48,9 @@ WholeStageCodegen (24)
                               InputAdapter
                                 BroadcastExchange #5
                                   WholeStageCodegen (7)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometHashAggregate [s_store_sk,sum,sum]
+                                    HashAggregate [s_store_sk,sum,sum] [sum(UnscaledValue(sr_return_amt)),sum(UnscaledValue(sr_net_loss)),returns,profit_loss,sum,sum]
+                                      ColumnarToRow
+                                        InputAdapter
                                           CometColumnarExchange [s_store_sk] #6
                                             RowToColumnar
                                               WholeStageCodegen (6)
@@ -74,9 +74,9 @@ WholeStageCodegen (24)
                               InputAdapter
                                 BroadcastExchange #7
                                   WholeStageCodegen (11)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometHashAggregate [cs_call_center_sk,sum,sum]
+                                    HashAggregate [cs_call_center_sk,sum,sum] [sum(UnscaledValue(cs_ext_sales_price)),sum(UnscaledValue(cs_net_profit)),sales,profit,sum,sum]
+                                      ColumnarToRow
+                                        InputAdapter
                                           CometColumnarExchange [cs_call_center_sk] #8
                                             RowToColumnar
                                               WholeStageCodegen (10)
@@ -89,9 +89,9 @@ WholeStageCodegen (24)
                                                             ReusedSubquery [d_date_sk] #1
                                                       InputAdapter
                                                         ReusedExchange [d_date_sk] #3
-                              ColumnarToRow
-                                InputAdapter
-                                  CometHashAggregate [sum,sum]
+                              HashAggregate [sum,sum] [sum(UnscaledValue(cr_return_amount)),sum(UnscaledValue(cr_net_loss)),returns,profit_loss,sum,sum]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometColumnarExchange #9
                                       RowToColumnar
                                         WholeStageCodegen (13)
@@ -107,9 +107,9 @@ WholeStageCodegen (24)
                         WholeStageCodegen (22)
                           Project [sales,returns,profit,profit_loss,wp_web_page_sk]
                             BroadcastHashJoin [wp_web_page_sk,wp_web_page_sk]
-                              ColumnarToRow
-                                InputAdapter
-                                  CometHashAggregate [wp_web_page_sk,sum,sum]
+                              HashAggregate [wp_web_page_sk,sum,sum] [sum(UnscaledValue(ws_ext_sales_price)),sum(UnscaledValue(ws_net_profit)),sales,profit,sum,sum]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometColumnarExchange [wp_web_page_sk] #10
                                       RowToColumnar
                                         WholeStageCodegen (17)
@@ -135,9 +135,9 @@ WholeStageCodegen (24)
                               InputAdapter
                                 BroadcastExchange #12
                                   WholeStageCodegen (21)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometHashAggregate [wp_web_page_sk,sum,sum]
+                                    HashAggregate [wp_web_page_sk,sum,sum] [sum(UnscaledValue(wr_return_amt)),sum(UnscaledValue(wr_net_loss)),returns,profit_loss,sum,sum]
+                                      ColumnarToRow
+                                        InputAdapter
                                           CometColumnarExchange [wp_web_page_sk] #13
                                             RowToColumnar
                                               WholeStageCodegen (20)

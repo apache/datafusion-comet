@@ -1,9 +1,9 @@
-WholeStageCodegen (7)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [cnt,state]
-        CometFilter [cnt]
-          CometHashAggregate [ca_state,count]
+TakeOrderedAndProject [cnt,state]
+  WholeStageCodegen (7)
+    Filter [cnt]
+      HashAggregate [ca_state,count] [count(1),state,cnt,count]
+        ColumnarToRow
+          InputAdapter
             CometColumnarExchange [ca_state] #1
               RowToColumnar
                 WholeStageCodegen (6)

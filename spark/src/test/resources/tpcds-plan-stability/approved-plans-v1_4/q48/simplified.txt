@@ -1,7 +1,7 @@
 WholeStageCodegen (6)
-  ColumnarToRow
-    InputAdapter
-      CometHashAggregate [sum]
+  HashAggregate [sum] [sum(ss_quantity),sum(ss_quantity),sum]
+    ColumnarToRow
+      InputAdapter
         CometColumnarExchange #1
           RowToColumnar
             WholeStageCodegen (5)

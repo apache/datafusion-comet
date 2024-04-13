@@ -1,6 +1,6 @@
 == Physical Plan ==
-* ColumnarToRow (36)
-+- CometHashAggregate (35)
+* HashAggregate (36)
++- * ColumnarToRow (35)
    +- CometColumnarExchange (34)
       +- RowToColumnar (33)
          +- * HashAggregate (32)
@@ -195,13 +195,15 @@ Input [7]: [sum#29, count#30, sum#31, count#32, sum#33, count#34, sum#35]
 Input [7]: [sum#29, count#30, sum#31, count#32, sum#33, count#34, sum#35]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(35) CometHashAggregate
+(35) ColumnarToRow [codegen id : 7]
+Input [7]: [sum#29, count#30, sum#31, count#32, sum#33, count#34, sum#35]
+
+(36) HashAggregate [codegen id : 7]
 Input [7]: [sum#29, count#30, sum#31, count#32, sum#33, count#34, sum#35]
 Keys: []
 Functions [4]: [avg(ss_quantity#5), avg(UnscaledValue(ss_ext_sales_price#7)), avg(UnscaledValue(ss_ext_wholesale_cost#8)), sum(UnscaledValue(ss_ext_wholesale_cost#8))]
-
-(36) ColumnarToRow [codegen id : 7]
-Input [4]: [avg(ss_quantity)#36, avg(ss_ext_sales_price)#37, avg(ss_ext_wholesale_cost)#38, sum(ss_ext_wholesale_cost)#39]
+Aggregate Attributes [4]: [avg(ss_quantity#5)#36, avg(UnscaledValue(ss_ext_sales_price#7))#37, avg(UnscaledValue(ss_ext_wholesale_cost#8))#38, sum(UnscaledValue(ss_ext_wholesale_cost#8))#39]
+Results [4]: [avg(ss_quantity#5)#36 AS avg(ss_quantity)#40, cast((avg(UnscaledValue(ss_ext_sales_price#7))#37 / 100.0) as decimal(11,6)) AS avg(ss_ext_sales_price)#41, cast((avg(UnscaledValue(ss_ext_wholesale_cost#8))#38 / 100.0) as decimal(11,6)) AS avg(ss_ext_wholesale_cost)#42, MakeDecimal(sum(UnscaledValue(ss_ext_wholesale_cost#8))#39,17,2) AS sum(ss_ext_wholesale_cost)#43]
 
 ===== Subqueries =====
 
@@ -214,18 +216,18 @@ BroadcastExchange (41)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#16, d_year#40]
+Output [2]: [d_date_sk#16, d_year#44]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
 (38) CometFilter
-Input [2]: [d_date_sk#16, d_year#40]
-Condition : ((isnotnull(d_year#40) AND (d_year#40 = 2001)) AND isnotnull(d_date_sk#16))
+Input [2]: [d_date_sk#16, d_year#44]
+Condition : ((isnotnull(d_year#44) AND (d_year#44 = 2001)) AND isnotnull(d_date_sk#16))
 
 (39) CometProject
-Input [2]: [d_date_sk#16, d_year#40]
+Input [2]: [d_date_sk#16, d_year#44]
 Arguments: [d_date_sk#16], [d_date_sk#16]
 
 (40) ColumnarToRow [codegen id : 1]

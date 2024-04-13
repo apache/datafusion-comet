@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (42)
-+- CometTakeOrderedAndProject (41)
-   +- CometHashAggregate (40)
+TakeOrderedAndProject (42)
++- * HashAggregate (41)
+   +- * ColumnarToRow (40)
       +- CometColumnarExchange (39)
          +- RowToColumnar (38)
             +- * HashAggregate (37)
@@ -225,17 +225,19 @@ Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, sum#31
 Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, sum#31, sum#32, sum#33]
 Arguments: hashpartitioning(i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(40) CometHashAggregate
+(40) ColumnarToRow [codegen id : 9]
+Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, sum#31, sum#32, sum#33]
+
+(41) HashAggregate [codegen id : 9]
 Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, sum#31, sum#32, sum#33]
 Keys [4]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24]
 Functions [3]: [sum(UnscaledValue(ss_net_profit#5)), sum(UnscaledValue(sr_net_loss#11)), sum(UnscaledValue(cs_net_profit#16))]
+Aggregate Attributes [3]: [sum(UnscaledValue(ss_net_profit#5))#34, sum(UnscaledValue(sr_net_loss#11))#35, sum(UnscaledValue(cs_net_profit#16))#36]
+Results [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, MakeDecimal(sum(UnscaledValue(ss_net_profit#5))#34,17,2) AS store_sales_profit#37, MakeDecimal(sum(UnscaledValue(sr_net_loss#11))#35,17,2) AS store_returns_loss#38, MakeDecimal(sum(UnscaledValue(cs_net_profit#16))#36,17,2) AS catalog_sales_profit#39]
 
-(41) CometTakeOrderedAndProject
-Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, store_sales_profit#34, store_returns_loss#35, catalog_sales_profit#36]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#26 ASC NULLS FIRST,i_item_desc#27 ASC NULLS FIRST,s_store_id#23 ASC NULLS FIRST,s_store_name#24 ASC NULLS FIRST], output=[i_item_id#26,i_item_desc#27,s_store_id#23,s_store_name#24,store_sales_profit#34,store_returns_loss#35,catalog_sales_profit#36]), 100, [i_item_id#26 ASC NULLS FIRST, i_item_desc#27 ASC NULLS FIRST, s_store_id#23 ASC NULLS FIRST, s_store_name#24 ASC NULLS FIRST], [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, store_sales_profit#34, store_returns_loss#35, catalog_sales_profit#36]
-
-(42) ColumnarToRow [codegen id : 9]
-Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, store_sales_profit#34, store_returns_loss#35, catalog_sales_profit#36]
+(42) TakeOrderedAndProject
+Input [7]: [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39]
+Arguments: 100, [i_item_id#26 ASC NULLS FIRST, i_item_desc#27 ASC NULLS FIRST, s_store_id#23 ASC NULLS FIRST, s_store_name#24 ASC NULLS FIRST], [i_item_id#26, i_item_desc#27, s_store_id#23, s_store_name#24, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39]
 
 ===== Subqueries =====
 
@@ -248,18 +250,18 @@ BroadcastExchange (47)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#19, d_year#37, d_moy#38]
+Output [3]: [d_date_sk#19, d_year#40, d_moy#41]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_moy), IsNotNull(d_year), EqualTo(d_moy,4), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (44) CometFilter
-Input [3]: [d_date_sk#19, d_year#37, d_moy#38]
-Condition : ((((isnotnull(d_moy#38) AND isnotnull(d_year#37)) AND (d_moy#38 = 4)) AND (d_year#37 = 2001)) AND isnotnull(d_date_sk#19))
+Input [3]: [d_date_sk#19, d_year#40, d_moy#41]
+Condition : ((((isnotnull(d_moy#41) AND isnotnull(d_year#40)) AND (d_moy#41 = 4)) AND (d_year#40 = 2001)) AND isnotnull(d_date_sk#19))
 
 (45) CometProject
-Input [3]: [d_date_sk#19, d_year#37, d_moy#38]
+Input [3]: [d_date_sk#19, d_year#40, d_moy#41]
 Arguments: [d_date_sk#19], [d_date_sk#19]
 
 (46) ColumnarToRow [codegen id : 1]
@@ -278,18 +280,18 @@ BroadcastExchange (52)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#20, d_year#39, d_moy#40]
+Output [3]: [d_date_sk#20, d_year#42, d_moy#43]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_moy), IsNotNull(d_year), GreaterThanOrEqual(d_moy,4), LessThanOrEqual(d_moy,10), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (49) CometFilter
-Input [3]: [d_date_sk#20, d_year#39, d_moy#40]
-Condition : (((((isnotnull(d_moy#40) AND isnotnull(d_year#39)) AND (d_moy#40 >= 4)) AND (d_moy#40 <= 10)) AND (d_year#39 = 2001)) AND isnotnull(d_date_sk#20))
+Input [3]: [d_date_sk#20, d_year#42, d_moy#43]
+Condition : (((((isnotnull(d_moy#43) AND isnotnull(d_year#42)) AND (d_moy#43 >= 4)) AND (d_moy#43 <= 10)) AND (d_year#42 = 2001)) AND isnotnull(d_date_sk#20))
 
 (50) CometProject
-Input [3]: [d_date_sk#20, d_year#39, d_moy#40]
+Input [3]: [d_date_sk#20, d_year#42, d_moy#43]
 Arguments: [d_date_sk#20], [d_date_sk#20]
 
 (51) ColumnarToRow [codegen id : 1]

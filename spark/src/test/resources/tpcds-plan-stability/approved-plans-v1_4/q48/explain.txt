@@ -1,6 +1,6 @@
 == Physical Plan ==
-* ColumnarToRow (30)
-+- CometHashAggregate (29)
+* HashAggregate (30)
++- * ColumnarToRow (29)
    +- CometColumnarExchange (28)
       +- RowToColumnar (27)
          +- * HashAggregate (26)
@@ -161,13 +161,15 @@ Input [1]: [sum#18]
 Input [1]: [sum#18]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(29) CometHashAggregate
+(29) ColumnarToRow [codegen id : 6]
+Input [1]: [sum#18]
+
+(30) HashAggregate [codegen id : 6]
 Input [1]: [sum#18]
 Keys: []
 Functions [1]: [sum(ss_quantity#4)]
-
-(30) ColumnarToRow [codegen id : 6]
-Input [1]: [sum(ss_quantity)#19]
+Aggregate Attributes [1]: [sum(ss_quantity#4)#19]
+Results [1]: [sum(ss_quantity#4)#19 AS sum(ss_quantity)#20]
 
 ===== Subqueries =====
 
@@ -180,18 +182,18 @@ BroadcastExchange (35)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#16, d_year#20]
+Output [2]: [d_date_sk#16, d_year#21]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
 (32) CometFilter
-Input [2]: [d_date_sk#16, d_year#20]
-Condition : ((isnotnull(d_year#20) AND (d_year#20 = 2001)) AND isnotnull(d_date_sk#16))
+Input [2]: [d_date_sk#16, d_year#21]
+Condition : ((isnotnull(d_year#21) AND (d_year#21 = 2001)) AND isnotnull(d_date_sk#16))
 
 (33) CometProject
-Input [2]: [d_date_sk#16, d_year#20]
+Input [2]: [d_date_sk#16, d_year#21]
 Arguments: [d_date_sk#16], [d_date_sk#16]
 
 (34) ColumnarToRow [codegen id : 1]

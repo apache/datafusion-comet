@@ -1,7 +1,7 @@
 WholeStageCodegen (9)
-  ColumnarToRow
-    InputAdapter
-      CometHashAggregate [sum,sum,count]
+  HashAggregate [sum,sum,count] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),order count ,total shipping cost ,total net profit ,sum,sum,count]
+    ColumnarToRow
+      InputAdapter
         CometColumnarExchange #1
           RowToColumnar
             WholeStageCodegen (8)

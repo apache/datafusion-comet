@@ -4,10 +4,10 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
       BroadcastHashJoin [item_id,item_id,ss_item_rev,ws_item_rev,cs_item_rev]
         Project [item_id,ss_item_rev,cs_item_rev]
           BroadcastHashJoin [item_id,item_id,ss_item_rev,cs_item_rev]
-            ColumnarToRow
-              InputAdapter
-                CometFilter [ss_item_rev]
-                  CometHashAggregate [i_item_id,sum]
+            Filter [ss_item_rev]
+              HashAggregate [i_item_id,sum] [sum(UnscaledValue(ss_ext_sales_price)),item_id,ss_item_rev,sum]
+                ColumnarToRow
+                  InputAdapter
                     CometColumnarExchange [i_item_id] #1
                       RowToColumnar
                         WholeStageCodegen (4)
@@ -56,10 +56,10 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
             InputAdapter
               BroadcastExchange #5
                 WholeStageCodegen (9)
-                  ColumnarToRow
-                    InputAdapter
-                      CometFilter [cs_item_rev]
-                        CometHashAggregate [i_item_id,sum]
+                  Filter [cs_item_rev]
+                    HashAggregate [i_item_id,sum] [sum(UnscaledValue(cs_ext_sales_price)),item_id,cs_item_rev,sum]
+                      ColumnarToRow
+                        InputAdapter
                           CometColumnarExchange [i_item_id] #6
                             RowToColumnar
                               WholeStageCodegen (8)
@@ -80,10 +80,10 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
         InputAdapter
           BroadcastExchange #7
             WholeStageCodegen (14)
-              ColumnarToRow
-                InputAdapter
-                  CometFilter [ws_item_rev]
-                    CometHashAggregate [i_item_id,sum]
+              Filter [ws_item_rev]
+                HashAggregate [i_item_id,sum] [sum(UnscaledValue(ws_ext_sales_price)),item_id,ws_item_rev,sum]
+                  ColumnarToRow
+                    InputAdapter
                       CometColumnarExchange [i_item_id] #8
                         RowToColumnar
                           WholeStageCodegen (13)

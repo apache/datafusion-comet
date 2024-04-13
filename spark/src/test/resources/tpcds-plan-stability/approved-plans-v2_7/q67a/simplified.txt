@@ -1,90 +1,150 @@
 TakeOrderedAndProject [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales,rk]
-  WholeStageCodegen (38)
+  WholeStageCodegen (55)
     Filter [rk]
       InputAdapter
         Window [sumsales,i_category]
-          WholeStageCodegen (37)
+          WholeStageCodegen (54)
             ColumnarToRow
               InputAdapter
                 CometSort [i_category,sumsales]
                   CometColumnarExchange [i_category] #1
-                    CometUnion
-                      CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id] #2
-                          RowToColumnar
-                            WholeStageCodegen (4)
-                              HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,ss_sales_price,ss_quantity] [sum,isEmpty,sum,isEmpty]
-                                Project [ss_quantity,ss_sales_price,d_year,d_moy,d_qoy,s_store_id,i_brand,i_class,i_category,i_product_name]
-                                  BroadcastHashJoin [ss_item_sk,i_item_sk]
-                                    Project [ss_item_sk,ss_quantity,ss_sales_price,d_year,d_moy,d_qoy,s_store_id]
-                                      BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                        Project [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,d_year,d_moy,d_qoy]
-                                          BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometFilter [ss_store_sk,ss_item_sk]
-                                                  CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk]
-                                                    SubqueryBroadcast [d_date_sk] #1
-                                                      BroadcastExchange #3
-                                                        WholeStageCodegen (1)
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              CometProject [d_date_sk,d_year,d_moy,d_qoy]
-                                                                CometFilter [d_month_seq,d_date_sk]
-                                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
-                                            InputAdapter
-                                              ReusedExchange [d_date_sk,d_year,d_moy,d_qoy] #3
-                                        InputAdapter
-                                          BroadcastExchange #4
-                                            WholeStageCodegen (2)
-                                              ColumnarToRow
+                    RowToColumnar
+                      Union
+                        WholeStageCodegen (5)
+                          HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id] #2
+                                  RowToColumnar
+                                    WholeStageCodegen (4)
+                                      HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,ss_sales_price,ss_quantity] [sum,isEmpty,sum,isEmpty]
+                                        Project [ss_quantity,ss_sales_price,d_year,d_moy,d_qoy,s_store_id,i_brand,i_class,i_category,i_product_name]
+                                          BroadcastHashJoin [ss_item_sk,i_item_sk]
+                                            Project [ss_item_sk,ss_quantity,ss_sales_price,d_year,d_moy,d_qoy,s_store_id]
+                                              BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                Project [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,d_year,d_moy,d_qoy]
+                                                  BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        CometFilter [ss_store_sk,ss_item_sk]
+                                                          CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk]
+                                                            SubqueryBroadcast [d_date_sk] #1
+                                                              BroadcastExchange #3
+                                                                WholeStageCodegen (1)
+                                                                  ColumnarToRow
+                                                                    InputAdapter
+                                                                      CometProject [d_date_sk,d_year,d_moy,d_qoy]
+                                                                        CometFilter [d_month_seq,d_date_sk]
+                                                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
+                                                    InputAdapter
+                                                      ReusedExchange [d_date_sk,d_year,d_moy,d_qoy] #3
                                                 InputAdapter
-                                                  CometFilter [s_store_sk]
-                                                    CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
-                                    InputAdapter
-                                      BroadcastExchange #5
-                                        WholeStageCodegen (3)
+                                                  BroadcastExchange #4
+                                                    WholeStageCodegen (2)
+                                                      ColumnarToRow
+                                                        InputAdapter
+                                                          CometFilter [s_store_sk]
+                                                            CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                                            InputAdapter
+                                              BroadcastExchange #5
+                                                WholeStageCodegen (3)
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      CometFilter [i_item_sk]
+                                                        CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                        WholeStageCodegen (11)
+                          HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,sum,isEmpty] [sum(sumsales),s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy] #6
+                                  RowToColumnar
+                                    WholeStageCodegen (10)
+                                      HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
                                           ColumnarToRow
                                             InputAdapter
-                                              CometFilter [i_item_sk]
-                                                CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_class,i_category,i_product_name]
-                      CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy] #6
-                          CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy] #7
-                          CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year] #8
-                          CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,i_class,i_brand,i_product_name,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand,i_product_name] #9
-                          CometHashAggregate [i_category,i_class,i_brand,i_product_name,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,i_class,i_brand,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class,i_brand] #10
-                          CometHashAggregate [i_category,i_class,i_brand,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,i_class,sum,isEmpty]
-                        CometColumnarExchange [i_category,i_class] #11
-                          CometHashAggregate [i_category,i_class,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [i_category,sum,isEmpty]
-                        CometColumnarExchange [i_category] #12
-                          CometHashAggregate [i_category,sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
-                      CometHashAggregate [sum,isEmpty]
-                        CometColumnarExchange #13
-                          CometHashAggregate [sumsales]
-                            CometHashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty]
-                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (17)
+                          HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,sum,isEmpty] [sum(sumsales),d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy] #7
+                                  RowToColumnar
+                                    WholeStageCodegen (16)
+                                      HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (23)
+                          HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,sum,isEmpty] [sum(sumsales),d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand,i_product_name,d_year] #8
+                                  RowToColumnar
+                                    WholeStageCodegen (22)
+                                      HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (29)
+                          HashAggregate [i_category,i_class,i_brand,i_product_name,sum,isEmpty] [sum(sumsales),d_year,d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand,i_product_name] #9
+                                  RowToColumnar
+                                    WholeStageCodegen (28)
+                                      HashAggregate [i_category,i_class,i_brand,i_product_name,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (35)
+                          HashAggregate [i_category,i_class,i_brand,sum,isEmpty] [sum(sumsales),i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class,i_brand] #10
+                                  RowToColumnar
+                                    WholeStageCodegen (34)
+                                      HashAggregate [i_category,i_class,i_brand,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (41)
+                          HashAggregate [i_category,i_class,sum,isEmpty] [sum(sumsales),i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category,i_class] #11
+                                  RowToColumnar
+                                    WholeStageCodegen (40)
+                                      HashAggregate [i_category,i_class,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (47)
+                          HashAggregate [i_category,sum,isEmpty] [sum(sumsales),i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [i_category] #12
+                                  RowToColumnar
+                                    WholeStageCodegen (46)
+                                      HashAggregate [i_category,sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2
+                        WholeStageCodegen (53)
+                          HashAggregate [sum,isEmpty] [sum(sumsales),i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales,sum,isEmpty]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange #13
+                                  RowToColumnar
+                                    WholeStageCodegen (52)
+                                      HashAggregate [sumsales] [sum,isEmpty,sum,isEmpty]
+                                        HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] [sum(coalesce((ss_sales_price * cast(ss_quantity as decimal(10,0))), 0.00)),sumsales,sum,isEmpty]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              ReusedExchange [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sum,isEmpty] #2

@@ -1,8 +1,8 @@
-WholeStageCodegen (6)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
-        CometHashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count]
+TakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
+  WholeStageCodegen (6)
+    HashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count] [avg(ss_quantity),avg(UnscaledValue(ss_list_price)),avg(UnscaledValue(ss_coupon_amt)),avg(UnscaledValue(ss_sales_price)),agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [i_item_id] #1
             RowToColumnar
               WholeStageCodegen (5)

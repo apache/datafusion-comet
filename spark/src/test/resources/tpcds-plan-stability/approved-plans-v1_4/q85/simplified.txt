@@ -1,8 +1,8 @@
-WholeStageCodegen (8)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee)]
-        CometHashAggregate [r_reason_desc,sum,count,sum,count,sum,count]
+TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee)]
+  WholeStageCodegen (8)
+    HashAggregate [r_reason_desc,sum,count,sum,count,sum,count] [avg(ws_quantity),avg(UnscaledValue(wr_refunded_cash)),avg(UnscaledValue(wr_fee)),substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee),sum,count,sum,count,sum,count]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [r_reason_desc] #1
             RowToColumnar
               WholeStageCodegen (7)

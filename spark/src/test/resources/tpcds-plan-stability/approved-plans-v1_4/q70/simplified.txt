@@ -1,76 +1,80 @@
 TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_county]
-  WholeStageCodegen (10)
+  WholeStageCodegen (11)
     Project [total_sum,s_state,s_county,lochierarchy,rank_within_parent]
       InputAdapter
         Window [_w0,_w1,_w2]
-          WholeStageCodegen (9)
+          WholeStageCodegen (10)
             ColumnarToRow
               InputAdapter
                 CometSort [_w1,_w2,_w0]
                   CometColumnarExchange [_w1,_w2] #1
-                    CometHashAggregate [s_state,s_county,spark_grouping_id,sum]
-                      CometColumnarExchange [s_state,s_county,spark_grouping_id] #2
-                        RowToColumnar
-                          WholeStageCodegen (8)
-                            HashAggregate [s_state,s_county,spark_grouping_id,ss_net_profit] [sum,sum]
-                              Expand [ss_net_profit,s_state,s_county]
-                                Project [ss_net_profit,s_state,s_county]
-                                  BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                    Project [ss_store_sk,ss_net_profit]
-                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometFilter [ss_store_sk]
-                                              CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                SubqueryBroadcast [d_date_sk] #1
-                                                  BroadcastExchange #3
-                                                    WholeStageCodegen (1)
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          CometProject [d_date_sk]
-                                                            CometFilter [d_month_seq,d_date_sk]
-                                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                        InputAdapter
-                                          ReusedExchange [d_date_sk] #3
-                                    InputAdapter
-                                      BroadcastExchange #4
-                                        WholeStageCodegen (7)
-                                          BroadcastHashJoin [s_state,s_state]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometFilter [s_store_sk]
-                                                  CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
+                    RowToColumnar
+                      WholeStageCodegen (9)
+                        HashAggregate [s_state,s_county,spark_grouping_id,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,lochierarchy,_w0,_w1,_w2,sum]
+                          ColumnarToRow
+                            InputAdapter
+                              CometColumnarExchange [s_state,s_county,spark_grouping_id] #2
+                                RowToColumnar
+                                  WholeStageCodegen (8)
+                                    HashAggregate [s_state,s_county,spark_grouping_id,ss_net_profit] [sum,sum]
+                                      Expand [ss_net_profit,s_state,s_county]
+                                        Project [ss_net_profit,s_state,s_county]
+                                          BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                            Project [ss_store_sk,ss_net_profit]
+                                              BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    CometFilter [ss_store_sk]
+                                                      CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                        SubqueryBroadcast [d_date_sk] #1
+                                                          BroadcastExchange #3
+                                                            WholeStageCodegen (1)
+                                                              ColumnarToRow
+                                                                InputAdapter
+                                                                  CometProject [d_date_sk]
+                                                                    CometFilter [d_month_seq,d_date_sk]
+                                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                InputAdapter
+                                                  ReusedExchange [d_date_sk] #3
                                             InputAdapter
-                                              BroadcastExchange #5
-                                                WholeStageCodegen (6)
-                                                  Project [s_state]
-                                                    Filter [ranking]
+                                              BroadcastExchange #4
+                                                WholeStageCodegen (7)
+                                                  BroadcastHashJoin [s_state,s_state]
+                                                    ColumnarToRow
                                                       InputAdapter
-                                                        Window [_w0,s_state]
-                                                          WholeStageCodegen (5)
-                                                            ColumnarToRow
+                                                        CometFilter [s_store_sk]
+                                                          CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
+                                                    InputAdapter
+                                                      BroadcastExchange #5
+                                                        WholeStageCodegen (6)
+                                                          Project [s_state]
+                                                            Filter [ranking]
                                                               InputAdapter
-                                                                CometSort [s_state,_w0]
-                                                                  CometHashAggregate [s_state,sum]
-                                                                    CometColumnarExchange [s_state] #6
-                                                                      RowToColumnar
-                                                                        WholeStageCodegen (4)
-                                                                          HashAggregate [s_state,ss_net_profit] [sum,sum]
-                                                                            Project [ss_net_profit,s_state]
-                                                                              BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                                Project [ss_net_profit,ss_sold_date_sk,s_state]
-                                                                                  BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                                                                    ColumnarToRow
-                                                                                      InputAdapter
-                                                                                        CometFilter [ss_store_sk]
-                                                                                          CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                                            ReusedSubquery [d_date_sk] #1
-                                                                                    InputAdapter
-                                                                                      BroadcastExchange #7
-                                                                                        WholeStageCodegen (2)
-                                                                                          ColumnarToRow
+                                                                Window [_w0,s_state]
+                                                                  WholeStageCodegen (5)
+                                                                    Sort [s_state,_w0]
+                                                                      HashAggregate [sum] [sum(UnscaledValue(ss_net_profit)),_w0,s_state,sum]
+                                                                        ColumnarToRow
+                                                                          InputAdapter
+                                                                            CometColumnarExchange [s_state] #6
+                                                                              RowToColumnar
+                                                                                WholeStageCodegen (4)
+                                                                                  HashAggregate [s_state,ss_net_profit] [sum,sum]
+                                                                                    Project [ss_net_profit,s_state]
+                                                                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                                                        Project [ss_net_profit,ss_sold_date_sk,s_state]
+                                                                                          BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                                                            ColumnarToRow
+                                                                                              InputAdapter
+                                                                                                CometFilter [ss_store_sk]
+                                                                                                  CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                                                    ReusedSubquery [d_date_sk] #1
                                                                                             InputAdapter
-                                                                                              CometFilter [s_store_sk]
-                                                                                                CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
-                                                                                InputAdapter
-                                                                                  ReusedExchange [d_date_sk] #3
+                                                                                              BroadcastExchange #7
+                                                                                                WholeStageCodegen (2)
+                                                                                                  ColumnarToRow
+                                                                                                    InputAdapter
+                                                                                                      CometFilter [s_store_sk]
+                                                                                                        CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
+                                                                                        InputAdapter
+                                                                                          ReusedExchange [d_date_sk] #3

@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (78)
-+- CometTakeOrderedAndProject (77)
-   +- CometHashAggregate (76)
+TakeOrderedAndProject (78)
++- * HashAggregate (77)
+   +- * ColumnarToRow (76)
       +- CometColumnarExchange (75)
          +- RowToColumnar (74)
             +- * HashAggregate (73)
@@ -430,17 +430,19 @@ Input [9]: [channel#129, id#130, spark_grouping_id#131, sum#138, isEmpty#139, su
 Input [9]: [channel#129, id#130, spark_grouping_id#131, sum#138, isEmpty#139, sum#140, isEmpty#141, sum#142, isEmpty#143]
 Arguments: hashpartitioning(channel#129, id#130, spark_grouping_id#131, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(76) CometHashAggregate
+(76) ColumnarToRow [codegen id : 14]
+Input [9]: [channel#129, id#130, spark_grouping_id#131, sum#138, isEmpty#139, sum#140, isEmpty#141, sum#142, isEmpty#143]
+
+(77) HashAggregate [codegen id : 14]
 Input [9]: [channel#129, id#130, spark_grouping_id#131, sum#138, isEmpty#139, sum#140, isEmpty#141, sum#142, isEmpty#143]
 Keys [3]: [channel#129, id#130, spark_grouping_id#131]
 Functions [3]: [sum(sales#37), sum(returns#38), sum(profit#39)]
+Aggregate Attributes [3]: [sum(sales#37)#144, sum(returns#38)#145, sum(profit#39)#146]
+Results [5]: [channel#129, id#130, sum(sales#37)#144 AS sales#147, sum(returns#38)#145 AS returns#148, sum(profit#39)#146 AS profit#149]
 
-(77) CometTakeOrderedAndProject
-Input [5]: [channel#129, id#130, sales#144, returns#145, profit#146]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#129 ASC NULLS FIRST,id#130 ASC NULLS FIRST], output=[channel#129,id#130,sales#144,returns#145,profit#146]), 100, [channel#129 ASC NULLS FIRST, id#130 ASC NULLS FIRST], [channel#129, id#130, sales#144, returns#145, profit#146]
-
-(78) ColumnarToRow [codegen id : 14]
-Input [5]: [channel#129, id#130, sales#144, returns#145, profit#146]
+(78) TakeOrderedAndProject
+Input [5]: [channel#129, id#130, sales#147, returns#148, profit#149]
+Arguments: 100, [channel#129 ASC NULLS FIRST, id#130 ASC NULLS FIRST], [channel#129, id#130, sales#147, returns#148, profit#149]
 
 ===== Subqueries =====
 
@@ -453,18 +455,18 @@ BroadcastExchange (83)
 
 
 (unknown) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#22, d_date#147]
+Output [2]: [d_date_sk#22, d_date#150]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,2000-08-23), LessThanOrEqual(d_date,2000-09-06), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_date:date>
 
 (80) CometFilter
-Input [2]: [d_date_sk#22, d_date#147]
-Condition : (((isnotnull(d_date#147) AND (d_date#147 >= 2000-08-23)) AND (d_date#147 <= 2000-09-06)) AND isnotnull(d_date_sk#22))
+Input [2]: [d_date_sk#22, d_date#150]
+Condition : (((isnotnull(d_date#150) AND (d_date#150 >= 2000-08-23)) AND (d_date#150 <= 2000-09-06)) AND isnotnull(d_date_sk#22))
 
 (81) CometProject
-Input [2]: [d_date_sk#22, d_date#147]
+Input [2]: [d_date_sk#22, d_date#150]
 Arguments: [d_date_sk#22], [d_date_sk#22]
 
 (82) ColumnarToRow [codegen id : 1]

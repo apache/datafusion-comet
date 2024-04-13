@@ -1,8 +1,8 @@
-WholeStageCodegen (5)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
-        CometHashAggregate [w_state,i_item_id,sum,isEmpty,sum,isEmpty]
+TakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
+  WholeStageCodegen (5)
+    HashAggregate [w_state,i_item_id,sum,isEmpty,sum,isEmpty] [sum(CASE WHEN (d_date < 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sales_before,sales_after,sum,isEmpty,sum,isEmpty]
+      ColumnarToRow
+        InputAdapter
           CometColumnarExchange [w_state,i_item_id] #1
             RowToColumnar
               WholeStageCodegen (4)

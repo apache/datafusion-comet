@@ -1,89 +1,109 @@
 TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_county]
-  WholeStageCodegen (26)
+  WholeStageCodegen (32)
     Project [total_sum,s_state,s_county,lochierarchy,rank_within_parent]
       InputAdapter
         Window [total_sum,lochierarchy,_w0]
-          WholeStageCodegen (25)
+          WholeStageCodegen (31)
             ColumnarToRow
               InputAdapter
                 CometSort [lochierarchy,_w0,total_sum]
                   CometColumnarExchange [lochierarchy,_w0] #1
                     CometHashAggregate [total_sum,s_state,s_county,g_state,g_county,lochierarchy]
                       CometColumnarExchange [total_sum,s_state,s_county,g_state,g_county,lochierarchy] #2
-                        CometHashAggregate [total_sum,s_state,s_county,g_state,g_county,lochierarchy]
-                          CometUnion
-                            CometHashAggregate [s_state,s_county,sum]
-                              CometColumnarExchange [s_state,s_county] #3
-                                RowToColumnar
-                                  WholeStageCodegen (8)
-                                    HashAggregate [s_state,s_county,ss_net_profit] [sum,sum]
-                                      Project [ss_net_profit,s_county,s_state]
-                                        BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                          Project [ss_store_sk,ss_net_profit]
-                                            BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                              ColumnarToRow
-                                                InputAdapter
-                                                  CometFilter [ss_store_sk]
-                                                    CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                      SubqueryBroadcast [d_date_sk] #1
-                                                        BroadcastExchange #4
-                                                          WholeStageCodegen (1)
-                                                            ColumnarToRow
-                                                              InputAdapter
-                                                                CometProject [d_date_sk]
-                                                                  CometFilter [d_month_seq,d_date_sk]
-                                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                              InputAdapter
-                                                ReusedExchange [d_date_sk] #4
-                                          InputAdapter
-                                            BroadcastExchange #5
-                                              WholeStageCodegen (7)
-                                                BroadcastHashJoin [s_state,s_state]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      CometFilter [s_store_sk]
-                                                        CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
-                                                  InputAdapter
-                                                    BroadcastExchange #6
-                                                      WholeStageCodegen (6)
-                                                        Project [s_state]
-                                                          Filter [ranking]
+                        RowToColumnar
+                          WholeStageCodegen (30)
+                            HashAggregate [total_sum,s_state,s_county,g_state,g_county,lochierarchy]
+                              InputAdapter
+                                Union
+                                  WholeStageCodegen (9)
+                                    HashAggregate [s_state,s_county,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,g_state,g_county,lochierarchy,sum]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometColumnarExchange [s_state,s_county] #3
+                                            RowToColumnar
+                                              WholeStageCodegen (8)
+                                                HashAggregate [s_state,s_county,ss_net_profit] [sum,sum]
+                                                  Project [ss_net_profit,s_county,s_state]
+                                                    BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                      Project [ss_store_sk,ss_net_profit]
+                                                        BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                          ColumnarToRow
                                                             InputAdapter
-                                                              Window [_w0,s_state]
-                                                                WholeStageCodegen (5)
-                                                                  ColumnarToRow
-                                                                    InputAdapter
-                                                                      CometSort [s_state,_w0]
-                                                                        CometHashAggregate [s_state,sum]
-                                                                          CometColumnarExchange [s_state] #7
-                                                                            RowToColumnar
-                                                                              WholeStageCodegen (4)
-                                                                                HashAggregate [s_state,ss_net_profit] [sum,sum]
-                                                                                  Project [ss_net_profit,s_state]
-                                                                                    BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                                      Project [ss_net_profit,ss_sold_date_sk,s_state]
-                                                                                        BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                                                                          ColumnarToRow
-                                                                                            InputAdapter
-                                                                                              CometFilter [ss_store_sk]
-                                                                                                CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                                                  ReusedSubquery [d_date_sk] #1
-                                                                                          InputAdapter
-                                                                                            BroadcastExchange #8
-                                                                                              WholeStageCodegen (2)
-                                                                                                ColumnarToRow
+                                                              CometFilter [ss_store_sk]
+                                                                CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                  SubqueryBroadcast [d_date_sk] #1
+                                                                    BroadcastExchange #4
+                                                                      WholeStageCodegen (1)
+                                                                        ColumnarToRow
+                                                                          InputAdapter
+                                                                            CometProject [d_date_sk]
+                                                                              CometFilter [d_month_seq,d_date_sk]
+                                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                          InputAdapter
+                                                            ReusedExchange [d_date_sk] #4
+                                                      InputAdapter
+                                                        BroadcastExchange #5
+                                                          WholeStageCodegen (7)
+                                                            BroadcastHashJoin [s_state,s_state]
+                                                              ColumnarToRow
+                                                                InputAdapter
+                                                                  CometFilter [s_store_sk]
+                                                                    CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
+                                                              InputAdapter
+                                                                BroadcastExchange #6
+                                                                  WholeStageCodegen (6)
+                                                                    Project [s_state]
+                                                                      Filter [ranking]
+                                                                        InputAdapter
+                                                                          Window [_w0,s_state]
+                                                                            WholeStageCodegen (5)
+                                                                              Sort [s_state,_w0]
+                                                                                HashAggregate [sum] [sum(UnscaledValue(ss_net_profit)),_w0,s_state,sum]
+                                                                                  ColumnarToRow
+                                                                                    InputAdapter
+                                                                                      CometColumnarExchange [s_state] #7
+                                                                                        RowToColumnar
+                                                                                          WholeStageCodegen (4)
+                                                                                            HashAggregate [s_state,ss_net_profit] [sum,sum]
+                                                                                              Project [ss_net_profit,s_state]
+                                                                                                BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                                                                  Project [ss_net_profit,ss_sold_date_sk,s_state]
+                                                                                                    BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                                                                      ColumnarToRow
+                                                                                                        InputAdapter
+                                                                                                          CometFilter [ss_store_sk]
+                                                                                                            CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                                                              ReusedSubquery [d_date_sk] #1
+                                                                                                      InputAdapter
+                                                                                                        BroadcastExchange #8
+                                                                                                          WholeStageCodegen (2)
+                                                                                                            ColumnarToRow
+                                                                                                              InputAdapter
+                                                                                                                CometFilter [s_store_sk]
+                                                                                                                  CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
                                                                                                   InputAdapter
-                                                                                                    CometFilter [s_store_sk]
-                                                                                                      CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
-                                                                                      InputAdapter
-                                                                                        ReusedExchange [d_date_sk] #4
-                            CometHashAggregate [s_state,sum,isEmpty]
-                              CometColumnarExchange [s_state] #9
-                                CometHashAggregate [s_state,total_sum]
-                                  CometHashAggregate [s_state,s_county,sum]
-                                    ReusedExchange [s_state,s_county,sum] #3
-                            CometHashAggregate [sum,isEmpty]
-                              CometColumnarExchange #10
-                                CometHashAggregate [total_sum]
-                                  CometHashAggregate [s_state,s_county,sum]
-                                    ReusedExchange [s_state,s_county,sum] #3
+                                                                                                    ReusedExchange [d_date_sk] #4
+                                  WholeStageCodegen (19)
+                                    HashAggregate [s_state,sum,isEmpty] [sum(total_sum),total_sum,s_county,g_state,g_county,lochierarchy,sum,isEmpty]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometColumnarExchange [s_state] #9
+                                            RowToColumnar
+                                              WholeStageCodegen (18)
+                                                HashAggregate [s_state,total_sum] [sum,isEmpty,sum,isEmpty]
+                                                  HashAggregate [s_state,s_county,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,sum]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        ReusedExchange [s_state,s_county,sum] #3
+                                  WholeStageCodegen (29)
+                                    HashAggregate [sum,isEmpty] [sum(total_sum),total_sum,s_state,s_county,g_state,g_county,lochierarchy,sum,isEmpty]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometColumnarExchange #10
+                                            RowToColumnar
+                                              WholeStageCodegen (28)
+                                                HashAggregate [total_sum] [sum,isEmpty,sum,isEmpty]
+                                                  HashAggregate [s_state,s_county,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,sum]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        ReusedExchange [s_state,s_county,sum] #3

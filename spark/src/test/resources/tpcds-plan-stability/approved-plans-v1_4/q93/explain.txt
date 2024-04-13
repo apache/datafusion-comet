@@ -1,7 +1,7 @@
 == Physical Plan ==
-* ColumnarToRow (25)
-+- CometTakeOrderedAndProject (24)
-   +- CometHashAggregate (23)
+TakeOrderedAndProject (25)
++- * HashAggregate (24)
+   +- * ColumnarToRow (23)
       +- CometColumnarExchange (22)
          +- RowToColumnar (21)
             +- * HashAggregate (20)
@@ -125,15 +125,17 @@ Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
 Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
 Arguments: hashpartitioning(ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(23) CometHashAggregate
+(23) ColumnarToRow [codegen id : 3]
+Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
+
+(24) HashAggregate [codegen id : 3]
 Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
 Keys [1]: [ss_customer_sk#2]
 Functions [1]: [sum(act_sales#14)]
+Aggregate Attributes [1]: [sum(act_sales#14)#19]
+Results [2]: [ss_customer_sk#2, sum(act_sales#14)#19 AS sumsales#20]
 
-(24) CometTakeOrderedAndProject
-Input [2]: [ss_customer_sk#2, sumsales#19]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[sumsales#19 ASC NULLS FIRST,ss_customer_sk#2 ASC NULLS FIRST], output=[ss_customer_sk#2,sumsales#19]), 100, [sumsales#19 ASC NULLS FIRST, ss_customer_sk#2 ASC NULLS FIRST], [ss_customer_sk#2, sumsales#19]
-
-(25) ColumnarToRow [codegen id : 3]
-Input [2]: [ss_customer_sk#2, sumsales#19]
+(25) TakeOrderedAndProject
+Input [2]: [ss_customer_sk#2, sumsales#20]
+Arguments: 100, [sumsales#20 ASC NULLS FIRST, ss_customer_sk#2 ASC NULLS FIRST], [ss_customer_sk#2, sumsales#20]
 
