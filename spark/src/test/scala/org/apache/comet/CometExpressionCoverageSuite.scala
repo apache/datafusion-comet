@@ -21,16 +21,19 @@ package org.apache.comet
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
+
 import scala.collection.mutable
+
+import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.scalatest.Ignore
 
 /**
- *  Manual test to calculate Spark builtin functions coverage support by the Comet
+ * Manual test to calculate Spark builtin functions coverage support by the Comet
  *
- *  The test will update files doc/spark_coverage.txt, doc/spark_coverage_agg.txt
+ * The test will update files doc/spark_coverage.txt, doc/spark_coverage_agg.txt
  */
 
 @Ignore
