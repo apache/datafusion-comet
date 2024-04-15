@@ -40,6 +40,27 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("lead/lag should return the default value if the offset row does not exist") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      checkSparkAnswer(sql("""
+                             |SELECT
+                             |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
+                             |  lead(123, 100, 321) OVER (ORDER BY id) as lead
+                             |FROM (SELECT 1 as id) tmp
+      """.stripMargin))
+
+      checkSparkAnswer(sql("""
+                             |SELECT
+                             |  lag(123, 100, a) OVER (ORDER BY id) as lag,
+                             |  lead(123, 100, a) OVER (ORDER BY id) as lead
+                             |FROM (SELECT 1 as id, 2 as a) tmp
+      """.stripMargin))
+    }
+  }
+
   test("multiple column distinct count") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",

@@ -24,7 +24,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 
-use arrow_array::{ArrayRef, RecordBatch};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
@@ -149,7 +149,10 @@ impl CopyStream {
             .iter()
             .map(|v| copy_or_cast_array(v))
             .collect::<Result<Vec<ArrayRef>, _>>()?;
-        RecordBatch::try_new(self.schema.clone(), vectors).map_err(|e| arrow_datafusion_err!(e))
+
+        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
+            .map_err(|e| arrow_datafusion_err!(e))
     }
 }
 
