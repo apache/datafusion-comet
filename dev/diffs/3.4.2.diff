@@ -571,6 +571,21 @@ index 418ca3430bb..eb8267192f8 100644
      Seq("json", "orc", "parquet").foreach { format =>
        withTempPath { path =>
          val dir = path.getCanonicalPath
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
+index 743ec41dbe7..9f30d6c8e04 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
+@@ -53,6 +53,10 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiv
+     case ColumnarToRowExec(i: InputAdapter) => isScanPlanTree(i.child)
+     case p: ProjectExec => isScanPlanTree(p.child)
+     case f: FilterExec => isScanPlanTree(f.child)
++    // Comet produces scan plan tree like:
++    // ColumnarToRow
++    //  +- ReusedExchange
++    case _: ReusedExchangeExec => false
+     case _: LeafExecNode => true
+     case _ => false
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 index 9e9d717db3b..91a4f9a38d5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
