@@ -28,7 +28,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.sum
+import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -39,6 +39,25 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("multiple column distinct count") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      val df1 = Seq(
+        ("a", "b", "c"),
+        ("a", "b", "c"),
+        ("a", "b", "d"),
+        ("x", "y", "z"),
+        ("x", "q", null.asInstanceOf[String]))
+        .toDF("key1", "key2", "key3")
+
+      checkSparkAnswer(df1.agg(count_distinct($"key1", $"key2")))
+      checkSparkAnswer(df1.agg(count_distinct($"key1", $"key2", $"key3")))
+      checkSparkAnswer(df1.groupBy($"key1").agg(count_distinct($"key2", $"key3")))
+    }
+  }
 
   test("Only trigger Comet Final aggregation on Comet partial aggregation") {
     withTempView("lowerCaseData") {

@@ -1094,8 +1094,16 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn AggregateExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
-                let child = self.create_expr(&expr.children[0], schema)?;
-                Ok(Arc::new(Count::new(child, "count", DataType::Int64)))
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(Count::new_with_multiple_exprs(
+                    children,
+                    "count",
+                    DataType::Int64,
+                )))
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
