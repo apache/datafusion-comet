@@ -489,14 +489,29 @@ impl PhysicalPlanner {
                 let when_then_pairs = case_when
                     .when
                     .iter()
-                    .map(|x| self.create_expr(x, input_schema.clone()).unwrap())
+                    .map(|x| self.create_expr(x, input_schema.clone()))
                     .zip(
                         case_when
                             .then
                             .iter()
-                            .map(|then| self.create_expr(then, input_schema.clone()).unwrap()),
+                            .map(|then| self.create_expr(then, input_schema.clone())),
                     )
-                    .collect::<Vec<_>>();
+                    .try_fold(
+                        Vec::<(
+                            Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+                            Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+                        )>::new(),
+                        |mut acc, (a, b)| {
+                            acc.push((a?, b?));
+                            Ok::<
+                                Vec<(
+                                    Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+                                    Arc<dyn datafusion_physical_expr::PhysicalExpr>,
+                                )>,
+                                ExecutionError,
+                            >(acc)
+                        },
+                    )?;
 
                 let else_phy_expr = match &case_when.else_expr {
                     None => None,
@@ -516,8 +531,8 @@ impl PhysicalPlanner {
                 let list = expr
                     .lists
                     .iter()
-                    .map(|x| self.create_expr(x, input_schema.clone()).unwrap())
-                    .collect::<Vec<_>>();
+                    .map(|x| self.create_expr(x, input_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 // if schema contains any dictionary type, we should use InListExpr instead of
                 // in_list as it doesn't handle value being dictionary type correctly
@@ -1213,14 +1228,14 @@ impl PhysicalPlanner {
         let args = expr
             .args
             .iter()
-            .map(|x| self.create_expr(x, input_schema.clone()).unwrap())
-            .collect::<Vec<_>>();
+            .map(|x| self.create_expr(x, input_schema.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
         let input_expr_types = args
             .iter()
-            .map(|x| x.data_type(input_schema.as_ref()).unwrap())
-            .collect::<Vec<_>>();
+            .map(|x| x.data_type(input_schema.as_ref()))
+            .collect::<Result<Vec<_>, _>>()?;
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
             None => {
