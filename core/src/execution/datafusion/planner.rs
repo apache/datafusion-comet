@@ -496,22 +496,12 @@ impl PhysicalPlanner {
                             .iter()
                             .map(|then| self.create_expr(then, input_schema.clone())),
                     )
-                    .try_fold(
-                        Vec::<(
-                            Arc<dyn datafusion_physical_expr::PhysicalExpr>,
-                            Arc<dyn datafusion_physical_expr::PhysicalExpr>,
-                        )>::new(),
-                        |mut acc, (a, b)| {
-                            acc.push((a?, b?));
-                            Ok::<
-                                Vec<(
-                                    Arc<dyn datafusion_physical_expr::PhysicalExpr>,
-                                    Arc<dyn datafusion_physical_expr::PhysicalExpr>,
-                                )>,
-                                ExecutionError,
-                            >(acc)
-                        },
-                    )?;
+                    .try_fold(Vec::new(), |mut acc, (a, b)| {
+                        acc.push((a?, b?));
+                        Ok::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>, ExecutionError>(
+                            acc,
+                        )
+                    })?;
 
                 let else_phy_expr = match &case_when.else_expr {
                     None => None,
