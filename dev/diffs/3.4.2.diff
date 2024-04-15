@@ -53,19 +53,10 @@ index 5b6cc8cb7af..5ce708adc38 100644
      <!--
        This spark-tags test-dep is needed even though it isn't used in this module, otherwise testing-cmds that exclude
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
-index c595b50950b..483508dc076 100644
+index c595b50950b..6b60213e775 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
-@@ -26,6 +26,8 @@ import scala.collection.JavaConverters._
- import scala.reflect.runtime.universe.TypeTag
- import scala.util.control.NonFatal
- 
-+import org.apache.comet.CometConf
-+
- import org.apache.spark.{SPARK_VERSION, SparkConf, SparkContext, TaskContext}
- import org.apache.spark.annotation.{DeveloperApi, Experimental, Stable, Unstable}
- import org.apache.spark.api.java.JavaRDD
-@@ -102,7 +104,7 @@ class SparkSession private(
+@@ -102,7 +102,7 @@ class SparkSession private(
        sc: SparkContext,
        initialSessionOptions: java.util.HashMap[String, String]) = {
      this(sc, None, None,
@@ -74,7 +65,7 @@ index c595b50950b..483508dc076 100644
          sc.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS).getOrElse(Seq.empty),
          new SparkSessionExtensions), initialSessionOptions.asScala.toMap)
    }
-@@ -1028,7 +1030,7 @@ object SparkSession extends Logging {
+@@ -1028,7 +1028,7 @@ object SparkSession extends Logging {
          }
  
          loadExtensions(extensions)
@@ -83,12 +74,12 @@ index c595b50950b..483508dc076 100644
            sparkContext.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS).getOrElse(Seq.empty),
            extensions)
  
-@@ -1282,14 +1284,24 @@ object SparkSession extends Logging {
+@@ -1282,14 +1282,24 @@ object SparkSession extends Logging {
      }
    }
  
 +  private def loadCometExtension(sparkContext: SparkContext): Seq[String] = {
-+    if (sparkContext.getConf.getBoolean(CometConf.COMET_ENABLED.key, false)) {
++    if (sparkContext.getConf.getBoolean("spark.comet.enabled", false)) {
 +      Seq("org.apache.comet.CometSparkSessionExtensions")
 +    } else {
 +      Seq.empty
