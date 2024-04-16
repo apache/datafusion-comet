@@ -19,6 +19,8 @@
 
 package org.apache.comet.exec
 
+import java.time.{Duration, Period}
+
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.util.Random
@@ -38,7 +40,7 @@ import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecuti
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.functions.{date_add, expr, sum}
+import org.apache.spark.sql.functions.{col, date_add, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
@@ -55,6 +57,19 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
+    }
+  }
+
+  test("try_sum should return null if overflow happens before merging") {
+    val longDf = Seq(Long.MaxValue, Long.MaxValue, 2).toDF("v")
+    val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
+      .map(Period.ofMonths)
+      .toDF("v")
+    val dayTimeDf = Seq(106751991L, 106751991L, 2L)
+      .map(Duration.ofDays)
+      .toDF("v")
+    Seq(longDf, yearMonthDf, dayTimeDf).foreach { df =>
+      checkSparkAnswer(df.repartitionByRange(2, col("v")).selectExpr("try_sum(v)"))
     }
   }
 

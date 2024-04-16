@@ -202,7 +202,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[AggExpr] = {
     aggExpr.aggregateFunction match {
-      case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) =>
+      case s @ Sum(child, evalMode)
+          if sumDataTypeSupported(s.dataType) &&
+            evalMode == EvalMode.LEGACY =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(s.dataType)
 
@@ -220,7 +222,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         } else {
           None
         }
-      case s @ Average(child, _) if avgDataTypeSupported(s.dataType) =>
+      case s @ Average(child, evalMode)
+          if avgDataTypeSupported(s.dataType) &&
+            evalMode == EvalMode.LEGACY =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(s.dataType)
 
