@@ -35,6 +35,9 @@ use datafusion_physical_expr::{
 };
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
+/// The implementation mostly is the same as the DataFusion's implementation. The reason
+/// we have our own implementation is that DataFusion has UInt64 for state_field count,
+/// while Spark has Double for count.
 #[derive(Debug, Clone)]
 pub struct Covariance {
     name: String,
