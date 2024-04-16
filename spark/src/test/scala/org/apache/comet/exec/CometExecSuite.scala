@@ -46,7 +46,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -61,6 +61,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("try_sum should return null if overflow happens before merging") {
+    assume(isSpark33Plus, "try_sum is available in Spark 3.3+")
     val longDf = Seq(Long.MaxValue, Long.MaxValue, 2).toDF("v")
     val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
       .map(Period.ofMonths)
