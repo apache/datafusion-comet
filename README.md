@@ -124,8 +124,8 @@ Comet shuffle feature is disabled by default. To enable it, please add related c
 --conf spark.comet.exec.shuffle.enabled=true
 ```
 
-Above configs enable Comet native shuffle which only supports hash partiting and single partition.
-Comet native shuffle doesn't support complext types yet.
+Above configs enable Comet native shuffle which only supports hash partition and single partition.
+Comet native shuffle doesn't support complex types yet.
 
 Comet doesn't have official release yet so currently the only way to test it is to build jar and include it in your Spark application. Depending on your deployment mode you may also need to set the driver & executor class path(s) to explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal components which will then fail at runtime. For example:
 
