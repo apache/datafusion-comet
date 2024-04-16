@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::SchemaRef;
 use datafusion::{
     execution::TaskContext,
@@ -169,7 +169,9 @@ impl ExpandStream {
             Ok::<(), DataFusionError>(())
         })?;
 
-        RecordBatch::try_new(self.schema.clone(), columns).map_err(|e| e.into())
+        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options)
+            .map_err(|e| e.into())
     }
 }
 
