@@ -680,7 +680,7 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
     if (!COMET_ENABLED.get(conf)) {
-      logInfo(s"Comet extension is disabled, please turn on s${COMET_ENABLED.key} to enable it")
+      logInfo(s"Comet extension is disabled, please turn on ${COMET_ENABLED.key} to enable it")
       return false
     }
 
