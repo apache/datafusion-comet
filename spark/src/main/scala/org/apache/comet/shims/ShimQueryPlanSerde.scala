@@ -59,7 +59,7 @@ trait ShimQueryPlanSerde {
     if (evalMode.isEmpty) {
       true
     } else {
-     "legacy".equalsIgnoreCase(evalMode.head.toString)
+      "legacy".equalsIgnoreCase(evalMode.head.toString)
     }
   }
 
