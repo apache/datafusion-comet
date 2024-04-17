@@ -59,9 +59,7 @@ trait ShimQueryPlanSerde {
     if (evalMode.isEmpty) {
       true
     } else {
-      // scalastyle:off caselocale
-      evalMode.head.toString.toLowerCase == "legacy"
-      // scalastyle:on caselocale
+     "legacy".equalsIgnoreCase(evalMode.head.toString)
     }
   }
 
