@@ -21,28 +21,31 @@ package org.apache.comet
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
+
 import scala.collection.mutable
+
+import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.scalatest.Ignore
 
 /**
- * Manual test to calculate Spark builtin functions coverage support by the Comet
+ * Manual test to calculate Spark builtin expressions coverage support by the Comet
  *
  * The test will update files doc/spark_builtin_expr_coverage.txt,
  * doc/spark_builtin_expr_coverage_agg.txt
  */
 
-@Ignore
+//@Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
 
-  val rawCoverageFilePath = "doc/spark_builtin_expr_coverage.txt"
-  val aggCoverageFilePath = "doc/spark_builtin_expr_coverage_agg.txt"
+  private val rawCoverageFilePath = "doc/spark_builtin_expr_coverage.txt"
+  private val aggCoverageFilePath = "doc/spark_builtin_expr_coverage_agg.txt"
 
-  test("Test Spark builtin functions coverage") {
+  test("Test Spark builtin expressions coverage") {
     val queryPattern = """(?i)SELECT (.+?);""".r
     val valuesPattern = """(?i)FROM VALUES(.+?);""".r
     val selectPattern = """(i?)SELECT(.+?)FROM""".r
@@ -78,36 +81,44 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 case (Some(s), Some(v)) =>
                   testSingleLineQuery(s"select * $v", s"$s tbl")
 
-                case _ => sys.error(s"Query $q cannot be parsed properly")
+                case _ =>
+                  resultsMap.put(
+                    funcName,
+                    CoverageResult("FAILED", Seq((q, "Cannot parse properly"))))
               }
             } else {
               // Plain example like SELECT cos(0);
               testSingleLineQuery("select 'dummy' x", s"${q.dropRight(1)}, x from tbl")
             }
-            CoverageResult("PASSED", Seq((q, "OK")))
+            CoverageResult(CoverageResultStatus.Passed.toString, Seq((q, "OK")))
           } catch {
             case e: TestFailedException
                 if e.message.getOrElse("").contains("Expected only Comet native operators") =>
-              CoverageResult("FAILED", Seq((q, "Unsupported")))
+              CoverageResult(CoverageResultStatus.Failed.toString, Seq((q, "Unsupported")))
             case e if e.getMessage.contains("CometNativeException") =>
-              CoverageResult("FAILED", Seq((q, "Failed on native side")))
+              CoverageResult(
+                CoverageResultStatus.Failed.toString,
+                Seq((q, "Failed on native side")))
             case _ =>
-              CoverageResult("FAILED", Seq((q, "Failed on something else. Check query manually")))
+              CoverageResult(
+                CoverageResultStatus.Failed.toString,
+                Seq((q, "Failed on something else. Check query manually")))
           }
         resultsMap.put(funcName, queryResult)
+
       case (funcName, List()) =>
         resultsMap.put(
           funcName,
           CoverageResult(
-            "SKIPPED",
-            Seq(("", "No examples found in spark.sessionState.functionRegistryspar"))))
+            CoverageResultStatus.Skipped.toString,
+            Seq(("", "No examples found in spark.sessionState.functionRegistry"))))
     }
 
     // TODO: convert results into HTML
     resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
     val str_agg = showString(
       spark.sql(
-        "select result, d._2 as details, count(1) cnt from (select name, t.details.result, explode_outer(t.details.details) as d from t) group by 1, 2"),
+        "select result, d._2 as details, count(1) cnt from (select name, t.details.result, explode_outer(t.details.details) as d from t) group by 1, 2 order by 1"),
       1000,
       0)
     Files.write(Paths.get(aggCoverageFilePath), str_agg.getBytes(StandardCharsets.UTF_8))
@@ -118,3 +129,11 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 }
 
 case class CoverageResult(result: String, details: Seq[(String, String)])
+
+object CoverageResultStatus extends Enumeration {
+  type CoverageResultStatus = Value
+
+  val Failed: Value = Value("FAILED")
+  val Passed: Value = Value("PASSED")
+  val Skipped: Value = Value("SKIPPED")
+}
