@@ -21,25 +21,26 @@ package org.apache.comet
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
-
 import scala.collection.mutable
-
-import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.scalatest.Ignore
 
 /**
  * Manual test to calculate Spark builtin functions coverage support by the Comet
  *
- * The test will update files doc/spark_coverage.txt, doc/spark_coverage_agg.txt
+ * The test will update files doc/spark_builtin_expr_coverage.txt,
+ * doc/spark_builtin_expr_coverage_agg.txt
  */
 
 @Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
+
+  val rawCoverageFilePath = "doc/spark_builtin_expr_coverage.txt"
+  val aggCoverageFilePath = "doc/spark_builtin_expr_coverage_agg.txt"
 
   test("Test Spark builtin functions coverage") {
     val queryPattern = """(?i)SELECT (.+?);""".r
@@ -49,8 +50,9 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
       .filter(_.getSource.toLowerCase == "built-in")
+      // exclude spark streaming functions, Comet has no plans to support streaming in near future
       .filter(f =>
-        !List("window").contains(f.getName.toLowerCase)) // exclude exotics, will run it manually
+        !List("window", "session_window", "window_time").contains(f.getName.toLowerCase))
       .map(f => {
         val selectRows = queryPattern.findAllMatchIn(f.getExamples).map(_.group(0)).toList
         (f.getName, selectRows.filter(_.nonEmpty))
@@ -94,20 +96,24 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
           }
         resultsMap.put(funcName, queryResult)
       case (funcName, List()) =>
-        resultsMap.put(funcName, CoverageResult("SKIPPED", Seq.empty))
+        resultsMap.put(
+          funcName,
+          CoverageResult(
+            "SKIPPED",
+            Seq(("", "No examples found in spark.sessionState.functionRegistryspar"))))
     }
 
-    // later we Convert resultMap into some HTML
+    // TODO: convert results into HTML
     resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
     val str_agg = showString(
       spark.sql(
-        "select result, d._2 as reason, count(1) cnt from (select name, t.details.result, explode_outer(t.details.details) as d from t) group by 1, 2"),
-      500,
+        "select result, d._2 as details, count(1) cnt from (select name, t.details.result, explode_outer(t.details.details) as d from t) group by 1, 2"),
+      1000,
       0)
-    Files.write(Paths.get("doc/spark_coverage_agg.txt"), str_agg.getBytes(StandardCharsets.UTF_8))
+    Files.write(Paths.get(aggCoverageFilePath), str_agg.getBytes(StandardCharsets.UTF_8))
 
-    val str = showString(spark.sql("select * from t order by 1"), 500, 0)
-    Files.write(Paths.get("doc/spark_coverage.txt"), str.getBytes(StandardCharsets.UTF_8))
+    val str = showString(spark.sql("select * from t order by 1"), 1000, 0)
+    Files.write(Paths.get(rawCoverageFilePath), str.getBytes(StandardCharsets.UTF_8))
   }
 }
 

@@ -1,9 +1,0 @@
-+-------+----------------------------------------------+---+
-|result |reason                                        |cnt|
-+-------+----------------------------------------------+---+
-|FAILED |Unsupported                                   |137|
-|FAILED |Failed on native side                         |4  |
-|PASSED |OK                                            |254|
-|SKIPPED|null                                          |12 |
-|FAILED |Failed on something else. Check query manually|10 |
-+-------+----------------------------------------------+---+
