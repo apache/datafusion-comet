@@ -24,7 +24,6 @@ import java.nio.file.{Files, Paths}
 
 import scala.collection.mutable
 
-import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
 
 import org.apache.spark.sql.CometTestBase
