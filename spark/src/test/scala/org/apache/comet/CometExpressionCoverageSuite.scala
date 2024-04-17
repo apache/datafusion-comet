@@ -87,7 +87,11 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
               }
             } else {
               // Plain example like SELECT cos(0);
-              testSingleLineQuery("select 'dummy' x", s"${q.dropRight(1)}, x from tbl")
+              testSingleLineQuery(
+                "select 'dummy' x",
+                s"${q.dropRight(1)}, x from tbl",
+                excludedOptimizerRules =
+                  Some("org.apache.spark.sql.catalyst.optimizer.ConstantFolding"))
             }
             CoverageResult(CoverageResultStatus.Passed.toString, Seq((q, "OK")))
           } catch {

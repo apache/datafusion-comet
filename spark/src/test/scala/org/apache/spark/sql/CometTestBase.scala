@@ -724,7 +724,8 @@ abstract class CometTestBase
       prepareQuery: String,
       testQuery: String,
       testName: String = "test",
-      tableName: String = "tbl"): Unit = {
+      tableName: String = "tbl",
+      excludedOptimizerRules: Option[String] = None): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -746,7 +747,8 @@ abstract class CometTestBase
       // ConstantFolding is a operator optimization rule in Catalyst that replaces expressions
       // that can be statically evaluated with their equivalent literal values.
       withSQLConf(
-        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        "spark.sql.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse(""),
+        "spark.sql.adaptive.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse("")) {
         checkSparkAnswerAndOperator(sql(testQuery))
       }
     }
