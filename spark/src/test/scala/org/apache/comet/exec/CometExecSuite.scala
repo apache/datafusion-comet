@@ -60,6 +60,15 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("offset") {
+    assume(isSpark34Plus, "Dataset.offset is not available before Spark 3.4")
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      checkSparkAnswer(testData.offset(90))
+      checkSparkAnswer(arrayData.toDF().offset(99))
+      checkSparkAnswer(mapData.toDF().offset(99))
+    }
+  }
+
   test("try_sum should return null if overflow happens before merging") {
     assume(isSpark33Plus, "try_sum is available in Spark 3.3+")
     val longDf = Seq(Long.MaxValue, Long.MaxValue, 2).toDF("v")
