@@ -1843,6 +1843,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           return None
         }
 
+        // Aggregate expressions with filter are not supported yet.
+        if (aggregateExpressions.exists(_.filter.isDefined)) {
+          return None
+        }
+
         val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
 
         // In some of the cases, the aggregateExpressions could be empty.

@@ -40,6 +40,19 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("count with aggregation filter") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      val df1 = sql("SELECT count(DISTINCT 2), count(DISTINCT 2,3)")
+      checkSparkAnswer(df1)
+
+      val df2 = sql("SELECT count(DISTINCT 2), count(DISTINCT 3,2)")
+      checkSparkAnswer(df2)
+    }
+  }
+
   test("lead/lag should return the default value if the offset row does not exist") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
