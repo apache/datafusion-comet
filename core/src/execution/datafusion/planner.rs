@@ -67,8 +67,10 @@ use crate::{
                 bloom_filter_might_contain::BloomFilterMightContain,
                 cast::Cast,
                 checkoverflow::CheckOverflow,
+                covariance::Covariance,
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
+                stats::StatsType,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
@@ -1192,6 +1194,30 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+            }
+            AggExprStruct::CovSample(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Covariance::new(
+                    child1,
+                    child2,
+                    "covariance",
+                    datatype,
+                    StatsType::Sample,
+                )))
+            }
+            AggExprStruct::CovPopulation(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Covariance::new(
+                    child1,
+                    child2,
+                    "covariance_pop",
+                    datatype,
+                    StatsType::Population,
+                )))
             }
         }
     }
