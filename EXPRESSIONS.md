@@ -101,3 +101,6 @@ The following Spark expressions are currently available:
     + BitAnd
     + BitOr
     + BitXor
+    + BoolAnd
+    + BoolOr
+    + Covariance

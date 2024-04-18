@@ -92,6 +92,8 @@ message AggExpr {
     BitAndAgg bitAndAgg = 9;
     BitOrAgg bitOrAgg = 10;
     BitXorAgg bitXorAgg = 11;
+    CovSample covSample = 12;
+    CovPopulation covPopulation = 13;
   }
 }
 
@@ -147,6 +149,20 @@ message BitOrAgg {
 message BitXorAgg {
   Expr child = 1;
   DataType datatype = 2;
+}
+
+message CovSample {
+  Expr child1 = 1;
+  Expr child2 = 2;
+  bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
+}
+
+message CovPopulation {
+  Expr child1 = 1;
+  Expr child2 = 2;
+  bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
 }
 
 message Literal {
