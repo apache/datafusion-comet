@@ -36,7 +36,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * The test will update files doc/spark_builtin_expr_coverage.txt,
  * doc/spark_builtin_expr_coverage_agg.txt
  */
-
 @Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
