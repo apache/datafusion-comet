@@ -50,11 +50,10 @@ object CometExecUtils {
   def getNativeLimitRDD(
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
-      limit: Int,
-      ansiMode: Boolean): RDD[ColumnarBatch] = {
+      limit: Int): RDD[ColumnarBatch] = {
     childPlan.mapPartitionsInternal { iter =>
       val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit).get
-      CometExec.getCometIterator(Seq(iter), limitOp, ansiMode)
+      CometExec.getCometIterator(Seq(iter), limitOp)
     }
   }
 

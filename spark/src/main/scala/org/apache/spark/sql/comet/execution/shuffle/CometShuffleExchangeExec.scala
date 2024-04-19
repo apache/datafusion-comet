@@ -33,7 +33,6 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriteProcessor}
 import org.apache.spark.shuffle.sort.SortShuffleManager
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
@@ -463,11 +462,7 @@ class CometShuffleWriteProcessor(
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     val rawIter = cometRDD.iterator(partition, context)
-    val cometIter = CometExec.getCometIterator(
-      Seq(rawIter),
-      nativePlan,
-      nativeMetrics,
-      SparkSession.active.conf.get(SQLConf.ANSI_ENABLED))
+    val cometIter = CometExec.getCometIterator(Seq(rawIter), nativePlan, nativeMetrics)
 
     while (cometIter.hasNext) {
       cometIter.next()

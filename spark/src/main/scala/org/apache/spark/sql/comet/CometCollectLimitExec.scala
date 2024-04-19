@@ -21,12 +21,10 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
@@ -75,11 +73,7 @@ case class CometCollectLimitExec(
         childRDD
       } else {
         val localLimitedRDD = if (limit >= 0) {
-          CometExecUtils.getNativeLimitRDD(
-            childRDD,
-            output,
-            limit,
-            SparkSession.active.conf.get(SQLConf.ANSI_ENABLED))
+          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
         } else {
           childRDD
         }
@@ -94,11 +88,7 @@ case class CometCollectLimitExec(
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
-      CometExecUtils.getNativeLimitRDD(
-        singlePartitionRDD,
-        output,
-        limit,
-        SparkSession.active.conf.get(SQLConf.ANSI_ENABLED))
+      CometExecUtils.getNativeLimitRDD(singlePartitionRDD, output, limit)
     }
   }
 
