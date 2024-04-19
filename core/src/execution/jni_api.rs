@@ -216,6 +216,9 @@ fn prepare_datafusion_session_context(
         }
     }
 
+    // Get Datafusion configuration from Spark Execution context
+    // can be configured in Comet Spark JVM using Spark --conf parameters
+    // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
     let mut session_config = SessionConfig::new().with_batch_size(batch_size);
 
     for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
