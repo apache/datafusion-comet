@@ -346,7 +346,12 @@ impl PhysicalPlanner {
                 let eval_mode = match expr.eval_mode.as_str() {
                     "ANSI" => EvalMode::Ansi,
                     "TRY" => EvalMode::Try,
-                    _ => EvalMode::Legacy,
+                    "LEGACY" => EvalMode::Legacy,
+                    other => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Invalid Cast EvalMode: {other}"
+                        )))
+                    }
                 };
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }

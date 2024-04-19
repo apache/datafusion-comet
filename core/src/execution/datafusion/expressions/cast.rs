@@ -31,7 +31,7 @@ use arrow::{
 use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-git use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
+use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
 use crate::execution::datafusion::expressions::utils::{
