@@ -20,7 +20,9 @@
 package org.apache.comet
 
 import org.apache.spark._
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
@@ -44,7 +46,8 @@ class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
     protobufQueryPlan: Array[Byte],
-    nativeMetrics: CometMetricNode)
+    nativeMetrics: CometMetricNode,
+    ansiEnabled: Boolean)
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
@@ -99,6 +102,7 @@ class CometExecIterator(
     result.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
     result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
+    result.put("ansi_mode", String.valueOf(ansiEnabled))
 
     // Strip mandatory prefix spark. which is not required for DataFusion session params
     conf.getAll.foreach {

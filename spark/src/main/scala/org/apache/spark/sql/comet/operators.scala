@@ -91,19 +91,21 @@ object CometExec {
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
-      nativePlan: Operator): CometExecIterator = {
-    getCometIterator(inputs, nativePlan, CometMetricNode(Map.empty))
+      nativePlan: Operator,
+      ansiMode: Boolean): CometExecIterator = {
+    getCometIterator(inputs, nativePlan, CometMetricNode(Map.empty), ansiMode)
   }
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       nativePlan: Operator,
-      nativeMetrics: CometMetricNode): CometExecIterator = {
+      nativeMetrics: CometMetricNode,
+      ansiMode: Boolean): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-    new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
+    new CometExecIterator(newIterId, inputs, bytes, nativeMetrics, ansiMode)
   }
 
   /**
@@ -199,6 +201,7 @@ abstract class CometNativeExec extends CometExec {
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
         SQLConf.get.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+        val ansiEnabled: Boolean = SQLConf.get.getConf[Boolean](SQLConf.ANSI_ENABLED)
 
         val serializedPlanCopy = serializedPlan
         // TODO: support native metrics for all operators.
@@ -206,7 +209,12 @@ abstract class CometNativeExec extends CometExec {
 
         def createCometExecIter(inputs: Seq[Iterator[ColumnarBatch]]): CometExecIterator = {
           val it =
-            new CometExecIterator(CometExec.newIterId, inputs, serializedPlanCopy, nativeMetrics)
+            new CometExecIterator(
+              CometExec.newIterId,
+              inputs,
+              serializedPlanCopy,
+              nativeMetrics,
+              ansiEnabled)
 
           setSubqueries(it.id, originalPlan)
 

@@ -317,11 +317,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
         let exec_context_id = exec_context.id;
 
+        // TODO there must be a cleaner way to write this
+        let ansi_mode = match exec_context.conf.get("ansi_mode") {
+            Some(value) if value == "true" => true,
+            _ => false,
+        };
+
         // Initialize the execution stream.
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
-            let planner = PhysicalPlanner::new(exec_context.session_ctx.clone())
+            let planner = PhysicalPlanner::new(exec_context.session_ctx.clone(), ansi_mode)
                 .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,

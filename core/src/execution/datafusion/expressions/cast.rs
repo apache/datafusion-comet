@@ -22,6 +22,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
     record_batch::RecordBatch,
@@ -49,6 +50,7 @@ static CAST_OPTIONS: CastOptions = CastOptions {
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
+    pub ansi_mode: bool,
 
     /// When cast from/to timezone related types, we need timezone, which will be resolved with
     /// session local timezone by an analyzer in Spark.
@@ -56,19 +58,30 @@ pub struct Cast {
 }
 
 impl Cast {
-    pub fn new(child: Arc<dyn PhysicalExpr>, data_type: DataType, timezone: String) -> Self {
+    pub fn new(
+        child: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        ansi_mode: bool,
+        timezone: String,
+    ) -> Self {
         Self {
             child,
             data_type,
             timezone,
+            ansi_mode,
         }
     }
 
-    pub fn new_without_timezone(child: Arc<dyn PhysicalExpr>, data_type: DataType) -> Self {
+    pub fn new_without_timezone(
+        child: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        ansi_mode: bool,
+    ) -> Self {
         Self {
             child,
             data_type,
             timezone: "".to_string(),
+            ansi_mode,
         }
     }
 
@@ -77,17 +90,22 @@ impl Cast {
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
         let from_type = array.data_type();
         let cast_result = match (from_type, to_type) {
-            (DataType::Utf8, DataType::Boolean) => Self::spark_cast_utf8_to_boolean::<i32>(&array),
-            (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array)
+            (DataType::Utf8, DataType::Boolean) => {
+                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.ansi_mode)
             }
-            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
+            (DataType::LargeUtf8, DataType::Boolean) => {
+                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.ansi_mode)
+            }
+            _ => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         };
-        let result = spark_cast(cast_result, from_type, to_type);
+        let result = spark_cast(cast_result?, from_type, to_type);
         Ok(result)
     }
 
-    fn spark_cast_utf8_to_boolean<OffsetSize>(from: &dyn Array) -> ArrayRef
+    fn spark_cast_utf8_to_boolean<OffsetSize>(
+        from: &dyn Array,
+        ansi_mode: bool,
+    ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
@@ -100,15 +118,22 @@ impl Cast {
             .iter()
             .map(|value| match value {
                 Some(value) => match value.to_ascii_lowercase().trim() {
-                    "t" | "true" | "y" | "yes" | "1" => Some(true),
-                    "f" | "false" | "n" | "no" | "0" => Some(false),
-                    _ => None,
+                    "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
+                    "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
+                    other if ansi_mode => {
+                        return Err(CometError::CastInvalidValue {
+                            value: other.to_string(),
+                            from_type: "STRING".to_string(),
+                            to_type: "BOOLEAN".to_string(),
+                        })
+                    }
+                    _ => Ok(None),
                 },
-                _ => None,
+                _ => Ok(None),
             })
-            .collect::<BooleanArray>();
+            .collect::<Result<BooleanArray, _>>()?;
 
-        Arc::new(output_array)
+        Ok(Arc::new(output_array))
     }
 }
 
@@ -174,6 +199,7 @@ impl PhysicalExpr for Cast {
         Ok(Arc::new(Cast::new(
             children[0].clone(),
             self.data_type.clone(),
+            self.ansi_mode,
             self.timezone.clone(),
         )))
     }

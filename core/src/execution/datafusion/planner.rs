@@ -112,27 +112,17 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
-}
-
-impl Default for PhysicalPlanner {
-    fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
-        let execution_props = ExecutionProps::new();
-        Self {
-            exec_context_id: TEST_EXEC_CONTEXT_ID,
-            execution_props,
-            session_ctx,
-        }
-    }
+    ansi_mode: bool,
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, ansi_mode: bool) -> Self {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             execution_props,
             session_ctx,
+            ansi_mode,
         }
     }
 
@@ -141,6 +131,7 @@ impl PhysicalPlanner {
             exec_context_id,
             execution_props: self.execution_props,
             session_ctx: self.session_ctx.clone(),
+            ansi_mode: self.ansi_mode,
         }
     }
 
@@ -343,7 +334,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                Ok(Arc::new(Cast::new(child, datatype, timezone)))
+                Ok(Arc::new(Cast::new(
+                    child,
+                    datatype,
+                    self.ansi_mode,
+                    timezone,
+                )))
             }
             ExprStruct::Hour(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -638,13 +634,19 @@ impl PhysicalPlanner {
                 let left = Arc::new(Cast::new_without_timezone(
                     left,
                     DataType::Decimal256(p1, s1),
+                    self.ansi_mode,
                 ));
                 let right = Arc::new(Cast::new_without_timezone(
                     right,
                     DataType::Decimal256(p2, s2),
+                    self.ansi_mode,
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new_without_timezone(child, data_type)))
+                Ok(Arc::new(Cast::new_without_timezone(
+                    child,
+                    data_type,
+                    self.ansi_mode,
+                )))
             }
             (
                 DataFusionOperator::Divide,
@@ -1432,7 +1434,9 @@ mod tests {
 
     use arrow_array::{DictionaryArray, Int32Array, StringArray};
     use arrow_schema::DataType;
-    use datafusion::{physical_plan::common::collect, prelude::SessionContext};
+    use datafusion::{
+        execution::context::ExecutionProps, physical_plan::common::collect, prelude::SessionContext,
+    };
     use tokio::sync::mpsc;
 
     use crate::execution::{
@@ -1442,8 +1446,22 @@ mod tests {
         spark_operator,
     };
 
+    use crate::execution::datafusion::planner::TEST_EXEC_CONTEXT_ID;
     use spark_expression::expr::ExprStruct::*;
     use spark_operator::{operator::OpStruct, Operator};
+
+    impl Default for PhysicalPlanner {
+        fn default() -> Self {
+            let session_ctx = Arc::new(SessionContext::new());
+            let execution_props = ExecutionProps::new();
+            Self {
+                exec_context_id: TEST_EXEC_CONTEXT_ID,
+                execution_props,
+                session_ctx,
+                ansi_mode: false,
+            }
+        }
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {

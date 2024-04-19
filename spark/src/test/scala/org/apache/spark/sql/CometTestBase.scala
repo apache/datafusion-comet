@@ -22,6 +22,7 @@ package org.apache.spark.sql
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+import scala.util.Try
 
 import org.scalatest.BeforeAndAfterEach
 
@@ -213,6 +214,17 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswerWithTol(dfComet, expected, absTol: Double)
+  }
+
+  protected def checkSparkThrows(df: => DataFrame): (Throwable, Throwable) = {
+    var expected: Option[Throwable] = None
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      expected = Try(dfSpark.collect()).failed.toOption
+    }
+    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    val actual = Try(dfComet.collect()).failed.get
+    (expected.get.getCause, actual.getCause)
   }
 
   private var _spark: SparkSession = _

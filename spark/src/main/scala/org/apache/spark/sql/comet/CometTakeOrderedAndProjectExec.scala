@@ -21,12 +21,14 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
@@ -73,18 +75,19 @@ case class CometTakeOrderedAndProjectExec(
     if (childRDD.getNumPartitions == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
+      val ansiEnabled = SparkSession.active.conf.get(SQLConf.ANSI_ENABLED)
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
         childRDD
       } else {
         val localTopK = if (orderingSatisfies) {
-          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(childRDD, output, limit, ansiEnabled)
         } else {
           childRDD.mapPartitionsInternal { iter =>
             val topK =
               CometExecUtils
                 .getTopKNativePlan(output, sortOrder, child, limit)
                 .get
-            CometExec.getCometIterator(Seq(iter), topK)
+            CometExec.getCometIterator(Seq(iter), topK, ansiEnabled)
           }
         }
 
@@ -104,7 +107,7 @@ case class CometTakeOrderedAndProjectExec(
         val topKAndProjection = CometExecUtils
           .getProjectionNativePlan(projectList, output, sortOrder, child, limit)
           .get
-        CometExec.getCometIterator(Seq(iter), topKAndProjection)
+        CometExec.getCometIterator(Seq(iter), topKAndProjection, ansiEnabled)
       }
     }
   }
