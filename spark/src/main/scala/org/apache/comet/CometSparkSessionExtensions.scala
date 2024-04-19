@@ -567,10 +567,14 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
-//      if (isANSIEnabled(conf)) {
-//        logInfo("Comet extension disabled for ANSI mode")
-//        return plan
-//      }
+      if (isANSIEnabled(conf)) {
+        if (COMET_ANSI_MODE_ENABLED.get()) {
+          logWarning("Using Comet's experimental support for ANSI mode.")
+        } else {
+          logInfo("Comet extension disabled for ANSI mode")
+          return plan
+        }
+      }
 
       // We shouldn't transform Spark query plan if Comet is disabled.
       if (!isCometEnabled(conf)) return plan
