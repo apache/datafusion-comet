@@ -121,7 +121,7 @@ impl Cast {
                     "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
                     "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
                     other if ansi_mode => {
-                        return Err(CometError::CastInvalidValue {
+                        Err(CometError::CastInvalidValue {
                             value: other.to_string(),
                             from_type: "STRING".to_string(),
                             to_type: "BOOLEAN".to_string(),
