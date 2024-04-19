@@ -49,9 +49,12 @@ object CometTPCHQueriesList extends CometTPCQueryListBase with CometTPCQueryBase
 
     // List of all TPC-H queries
     val tpchQueries = (1 to 22).map(n => s"q$n")
+    // Only q1 in the extended queries
+    val tpchExtendedQueries = Seq("q1")
 
     // If `--query-filter` defined, filters the queries that this option selects
     val queries = filterQueries(tpchQueries, benchmarkArgs.queryFilter)
+    val extendedQueries = filterQueries(tpchExtendedQueries, benchmarkArgs.queryFilter)
 
     if (queries.isEmpty) {
       throw new RuntimeException(
@@ -63,6 +66,6 @@ object CometTPCHQueriesList extends CometTPCQueryListBase with CometTPCQueryBase
     setupCBO(cometSpark, benchmarkArgs.cboEnabled, tables)
 
     runQueries("tpch", queries, " TPCH Snappy")
-    runQueries("tpch-extended", queries, " TPCH Extended Snappy")
+    runQueries("tpch-extended", extendedQueries, " TPCH Extended Snappy")
   }
 }

@@ -88,8 +88,10 @@ trait CometTPCQueryListBase
 
         val df = cometSpark.sql(queryString)
         val cometPlans = mutable.HashSet.empty[String]
-        stripAQEPlan(df.queryExecution.executedPlan).foreach { case op: CometExec =>
-          cometPlans += s"${op.nodeName}"
+        stripAQEPlan(df.queryExecution.executedPlan).foreach {
+          case op: CometExec =>
+            cometPlans += s"${op.nodeName}"
+          case _ =>
         }
 
         if (cometPlans.nonEmpty) {
