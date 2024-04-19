@@ -31,7 +31,7 @@ use arrow::{
 use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{Result as DataFusionResult, ScalarValue};
+git use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
 use crate::execution::datafusion::expressions::utils::{
@@ -127,13 +127,11 @@ impl Cast {
                 Some(value) => match value.to_ascii_lowercase().trim() {
                     "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
                     "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
-                    _ if eval_mode == EvalMode::Ansi => {
-                        Err(CometError::CastInvalidValue {
-                            value: value.to_string(),
-                            from_type: "STRING".to_string(),
-                            to_type: "BOOLEAN".to_string(),
-                        })
-                    }
+                    _ if eval_mode == EvalMode::Ansi => Err(CometError::CastInvalidValue {
+                        value: value.to_string(),
+                        from_type: "STRING".to_string(),
+                        to_type: "BOOLEAN".to_string(),
+                    }),
                     _ => Ok(None),
                 },
                 _ => Ok(None),
@@ -207,15 +205,11 @@ impl PhysicalExpr for Cast {
             1 => Ok(Arc::new(Cast::new(
                 children[0].clone(),
                 self.data_type.clone(),
+                self.eval_mode,
                 self.timezone.clone(),
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }
-            children[0].clone(),
-            self.data_type.clone(),
-            self.eval_mode,
-            self.timezone.clone(),
-        )))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {

@@ -65,7 +65,7 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::Cast,
+                cast::{Cast, EvalMode},
                 checkoverflow::CheckOverflow,
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
@@ -89,7 +89,6 @@ use crate::{
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
-use crate::execution::datafusion::expressions::cast::EvalMode;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -349,12 +348,7 @@ impl PhysicalPlanner {
                     "TRY" => EvalMode::Try,
                     _ => EvalMode::Legacy,
                 };
-                Ok(Arc::new(Cast::new(
-                    child,
-                    datatype,
-                    eval_mode,
-                    timezone,
-                )))
+                Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -649,15 +643,19 @@ impl PhysicalPlanner {
                 let left = Arc::new(Cast::new_without_timezone(
                     left,
                     DataType::Decimal256(p1, s1),
-                    EvalMode::Legacy
+                    EvalMode::Legacy,
                 ));
                 let right = Arc::new(Cast::new_without_timezone(
                     right,
                     DataType::Decimal256(p2, s2),
-                    EvalMode::Legacy
+                    EvalMode::Legacy,
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new_without_timezone(child, data_type, EvalMode::Legacy)))
+                Ok(Arc::new(Cast::new_without_timezone(
+                    child,
+                    data_type,
+                    EvalMode::Legacy,
+                )))
             }
             (
                 DataFusionOperator::Divide,
