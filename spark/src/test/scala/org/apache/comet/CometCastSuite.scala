@@ -152,8 +152,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = data.withColumn("converted", col("a").cast(toType))
         val (expected, actual) = checkSparkThrows(df)
 
-        // TODO we have to strip off a prefix that is added by DataFusion and it would be nice
-        // to stop this being added
+        // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
+        // removing the "Execution error: " error message prefix that is added by DataFusion
         assert(expected.getMessage == actual.getMessage.substring("Execution error: ".length))
 
         // try_cast() should always return null for invalid inputs
