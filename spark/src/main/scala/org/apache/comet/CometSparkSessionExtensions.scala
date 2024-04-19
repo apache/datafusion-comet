@@ -463,10 +463,6 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
           withInfo(op, "BroadcastHashJoin is not enabled")
           op
 
-        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "BroadcastHashJoin disabled because not all child plans are native")
-          op
-
         case op: SortMergeJoinExec
             if isCometOperatorEnabled(conf, "sort_merge_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -574,8 +570,7 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
                   isCometOperatorEnabled(conf, "broadcastExchangeExec") =>
-              val newOp = QueryPlanSerde.operator2Proto(b)
-              newOp match {
+              QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
                   val cometOp = CometBroadcastExchangeExec(b, b.child)
                   CometSinkPlaceHolder(nativeOp, b, cometOp)
@@ -590,7 +585,7 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
             } else {
               if (!isCometOperatorEnabled(
                   conf,
-                  "broadcastExchangeExec") || !isCometBroadCastForceEnabled(conf)) {
+                  "broadcastExchangeExec") && !isCometBroadCastForceEnabled(conf)) {
                 withInfo(plan, "Native Broadcast is not enabled")
               }
               plan
@@ -598,6 +593,13 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
           } else {
             plan
           }
+
+        // this case should be checked only after the previous case checking for a
+        // child BroadcastExchange has been applied, otherwise that transform
+        // never gets applied
+        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "BroadcastHashJoin disabled because not all child plans are native")
+          op
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>

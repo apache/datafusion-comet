@@ -1306,6 +1306,7 @@ None
             } else {
               val unboundRef = ExprOuterClass.UnboundReference
                 .newBuilder()
+                .setName(attr.name)
                 .setDatatype(dataType.get)
                 .build()
 
