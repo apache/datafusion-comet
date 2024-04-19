@@ -741,11 +741,6 @@ abstract class CometTestBase
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
-      // disable constant folding. This optimization rule precompute and select value as literal
-      // which subsequently leads to false positives
-      //
-      // ConstantFolding is a operator optimization rule in Catalyst that replaces expressions
-      // that can be statically evaluated with their equivalent literal values.
       withSQLConf(
         "spark.sql.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse(""),
         "spark.sql.adaptive.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse("")) {

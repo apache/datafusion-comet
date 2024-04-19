@@ -87,7 +87,13 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                     CoverageResult("FAILED", Seq((q, "Cannot parse properly"))))
               }
             } else {
-              // Plain example like SELECT cos(0);
+              // Process the simple example like `SELECT cos(0);`
+              //
+              // The execution disables constant folding. This optimization rule precomputes and selects the value as literal
+              // which subsequently leads to false positives
+              //
+              // ConstantFolding is a operator optimization rule in Catalyst that replaces expressions
+              // that can be statically evaluated with their equivalent literal values.
               testSingleLineQuery(
                 "select 'dummy' x",
                 s"${q.dropRight(1)}, x from tbl",
