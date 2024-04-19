@@ -246,10 +246,44 @@ index 56e9520fdab..917932336df 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-index 9ddb4abe98b..1bebe99f1cc 100644
+index 9ddb4abe98b..2bd28d4041d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-@@ -3311,7 +3311,8 @@ class DataFrameSuite extends QueryTest
+@@ -39,6 +39,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Attri
+ import org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
+ import org.apache.spark.sql.catalyst.plans.logical.{ColumnStat, LeafNode, LocalRelation, LogicalPlan, OneRowRelation, Statistics}
+ import org.apache.spark.sql.catalyst.util.DateTimeUtils
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.connector.FakeV2Provider
+ import org.apache.spark.sql.execution.{FilterExec, LogicalRDD, QueryExecution, SortExec, WholeStageCodegenExec}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+@@ -2291,7 +2292,7 @@ class DataFrameSuite extends QueryTest
+       checkAnswer(join, df)
+       assert(
+         collect(join.queryExecution.executedPlan) {
+-          case e: ShuffleExchangeExec => true }.size === 1)
++          case _: ShuffleExchangeExec | _: CometShuffleExchangeExec => true }.size === 1)
+       assert(
+         collect(join.queryExecution.executedPlan) { case e: ReusedExchangeExec => true }.size === 1)
+       val broadcasted = broadcast(join)
+@@ -2299,7 +2300,7 @@ class DataFrameSuite extends QueryTest
+       checkAnswer(join2, df)
+       assert(
+         collect(join2.queryExecution.executedPlan) {
+-          case e: ShuffleExchangeExec => true }.size == 1)
++          case _: ShuffleExchangeExec | _: CometShuffleExchangeExec => true }.size == 1)
+       assert(
+         collect(join2.queryExecution.executedPlan) {
+           case e: BroadcastExchangeExec => true }.size === 1)
+@@ -2863,6 +2864,7 @@ class DataFrameSuite extends QueryTest
+     // Assert that no extra shuffle introduced by cogroup.
+     val exchanges = collect(df3.queryExecution.executedPlan) {
+       case h: ShuffleExchangeExec => h
++      case h: CometShuffleExchangeExec => h
+     }
+     assert(exchanges.size == 2)
+   }
+@@ -3311,7 +3313,8 @@ class DataFrameSuite extends QueryTest
      assert(df2.isLocal)
    }
  
