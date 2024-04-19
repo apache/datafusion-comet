@@ -20,14 +20,12 @@
 package org.apache.comet
 
 import java.io.File
-import java.sql.SQLException
 
 import scala.util.Random
 
-import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, exp, expr}
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
