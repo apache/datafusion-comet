@@ -62,10 +62,10 @@ pub enum CometError {
 
     // TODO this error message is likely to change between Spark versions and it would be better
     // to have the full error in Scala and just pass the invalid value back here
-    #[error("[[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
         Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
-        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error")]
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     CastInvalidValue {
         value: String,
         from_type: String,

@@ -46,11 +46,18 @@ static CAST_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
 
+#[derive(Debug, Hash, PartialEq, Clone, Copy)]
+pub enum EvalMode {
+    Legacy,
+    Ansi,
+    Try,
+}
+
 #[derive(Debug, Hash)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
-    pub ansi_mode: bool,
+    pub eval_mode: EvalMode,
 
     /// When cast from/to timezone related types, we need timezone, which will be resolved with
     /// session local timezone by an analyzer in Spark.
@@ -61,27 +68,27 @@ impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
-        ansi_mode: bool,
+        eval_mode: EvalMode,
         timezone: String,
     ) -> Self {
         Self {
             child,
             data_type,
             timezone,
-            ansi_mode,
+            eval_mode,
         }
     }
 
     pub fn new_without_timezone(
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
-        ansi_mode: bool,
+        eval_mode: EvalMode,
     ) -> Self {
         Self {
             child,
             data_type,
             timezone: "".to_string(),
-            ansi_mode,
+            eval_mode,
         }
     }
 
@@ -91,10 +98,10 @@ impl Cast {
         let from_type = array.data_type();
         let cast_result = match (from_type, to_type) {
             (DataType::Utf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.ansi_mode)?
+                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)?
             }
             (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.ansi_mode)?
+                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
@@ -104,7 +111,7 @@ impl Cast {
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
         from: &dyn Array,
-        ansi_mode: bool,
+        eval_mode: EvalMode,
     ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
@@ -120,9 +127,9 @@ impl Cast {
                 Some(value) => match value.to_ascii_lowercase().trim() {
                     "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
                     "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
-                    other if ansi_mode => {
+                    _ if eval_mode == EvalMode::Ansi => {
                         Err(CometError::CastInvalidValue {
-                            value: other.to_string(),
+                            value: value.to_string(),
                             from_type: "STRING".to_string(),
                             to_type: "BOOLEAN".to_string(),
                         })
@@ -199,7 +206,7 @@ impl PhysicalExpr for Cast {
         Ok(Arc::new(Cast::new(
             children[0].clone(),
             self.data_type.clone(),
-            self.ansi_mode,
+            self.eval_mode,
             self.timezone.clone(),
         )))
     }

@@ -414,7 +414,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
     def castToProto(
         timeZoneId: Option[String],
         dt: DataType,
-        childExpr: Option[Expr]): Option[Expr] = {
+        childExpr: Option[Expr],
+        evalMode: EvalMode.Value): Option[Expr] = {
       val dataType = serializeDataType(dt)
 
       if (childExpr.isDefined && dataType.isDefined) {
@@ -424,6 +425,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
+
+        castBuilder.setEvalMode(evalMode.toString)
 
         Some(
           ExprOuterClass.Expr
@@ -446,9 +449,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case Cast(child, dt, timeZoneId, _) =>
+        case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
-          castToProto(timeZoneId, dt, childExpr)
+          castToProto(timeZoneId, dt, childExpr, evalMode)
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
@@ -1565,7 +1568,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val childExpr = scalarExprToProto("coalesce", exprChildren: _*)
           // TODO: Remove this once we have new DataFusion release which includes
           // the fix: https://github.com/apache/arrow-datafusion/pull/9459
-          castToProto(None, a.dataType, childExpr)
+          castToProto(None, a.dataType, childExpr, EvalMode.LEGACY)
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.

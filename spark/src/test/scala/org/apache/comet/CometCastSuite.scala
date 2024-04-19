@@ -130,7 +130,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
     withTempPath { dir =>
-      val data = roundtripParquet(input, dir)
+      val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
@@ -151,7 +151,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // cast() should throw exception on invalid inputs when ansi mode is enabled
         val df = data.withColumn("converted", col("a").cast(toType))
         val (expected, actual) = checkSparkThrows(df)
-        assert(expected.getMessage == actual.getMessage)
+
+        // TODO we have to strip off a prefix that is added by DataFusion and it would be nice
+        // to stop this being added
+        assert(expected.getMessage == actual.getMessage.substring("Execution error: ".length))
 
         // try_cast() should always return null for invalid inputs
         val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
