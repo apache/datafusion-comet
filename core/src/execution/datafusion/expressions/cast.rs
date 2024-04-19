@@ -91,14 +91,14 @@ impl Cast {
         let from_type = array.data_type();
         let cast_result = match (from_type, to_type) {
             (DataType::Utf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.ansi_mode)
+                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.ansi_mode)?
             }
             (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.ansi_mode)
+                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.ansi_mode)?
             }
-            _ => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
+            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
-        let result = spark_cast(cast_result?, from_type, to_type);
+        let result = spark_cast(cast_result, from_type, to_type);
         Ok(result)
     }
 
