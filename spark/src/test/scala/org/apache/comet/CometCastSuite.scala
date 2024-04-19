@@ -100,11 +100,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast string to date") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.DoubleType)
+    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
   ignore("cast string to timestamp") {
-    val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(numericPattern, 8)
+    val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
     castTest(values.toDF("a"), DataTypes.DoubleType)
   }
 
