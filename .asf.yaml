@@ -26,7 +26,7 @@ notifications:
   pullrequests: github@arrow.apache.org
   jira_options: link label worklog
 github:
-  description: "Apache Arrow DataFusion Comet Spark Accelerator"
+  description: "Apache DataFusion Comet Spark Accelerator"
   homepage: https://arrow.apache.org/datafusion-comet
   labels:
     - arrow
