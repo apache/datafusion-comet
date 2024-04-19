@@ -317,11 +317,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
         let exec_context_id = exec_context.id;
 
-        // TODO there must be a cleaner way to write this
-        let ansi_mode = match exec_context.conf.get("ansi_mode") {
-            Some(value) if value == "true" => true,
-            _ => false,
-        };
+        let ansi_mode =
+            matches!(exec_context.conf.get("ansi_mode"), Some(value) if value == "true");
 
         // Initialize the execution stream.
         // Because we don't know if input arrays are dictionary-encoded when we create
