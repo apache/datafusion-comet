@@ -216,18 +216,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    // Get Datafusion configuration from Spark Execution context
-    // can be configured in Comet Spark JVM using Spark --conf parameters
-    // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let df_config = conf
-        .iter()
-        .filter(|(k, _)| k.starts_with("datafusion."))
-        .map(|kv| (kv.0.to_owned(), kv.1.to_owned()))
-        .collect::<Vec<(String, String)>>();
+    let mut session_config = SessionConfig::new().with_batch_size(batch_size);
 
-    let session_config =
-        SessionConfig::from_string_hash_map(std::collections::HashMap::from_iter(df_config))?
-            .with_batch_size(batch_size);
+    for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
+        session_config = session_config.set_str(key, value);
+    }
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
