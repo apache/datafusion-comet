@@ -203,7 +203,14 @@ impl PhysicalExpr for Cast {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(Cast::new(
+        match children.len() {
+            1 => Ok(Arc::new(Cast::new(
+                children[0].clone(),
+                self.data_type.clone(),
+                self.timezone.clone(),
+            ))),
+            _ => internal_err!("Cast should have exactly one child"),
+        }
             children[0].clone(),
             self.data_type.clone(),
             self.eval_mode,
