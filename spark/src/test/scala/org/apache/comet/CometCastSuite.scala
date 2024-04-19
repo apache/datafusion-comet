@@ -62,7 +62,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast string to bool") {
     val testValues =
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
-        generateStrings("truefalseTRUEFALSEyesno10 \t\r\n", 8)).toDF("a")
+        generateStrings("truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
     castTest(testValues, DataTypes.BooleanType)
   }
 
