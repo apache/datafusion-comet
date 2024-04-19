@@ -33,7 +33,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
-import org.apache.comet.shims.ShimCometSparkSessionExtensions.supportsExtendedExplainInfo
 
 trait CometTPCQueryListBase
     extends CometTPCQueryBase
@@ -88,7 +87,9 @@ trait CometTPCQueryListBase
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+        "spark.sql.optimizer.runtime.bloomFilter.creationSideThreshold" -> "1MB",
+        "spark.sql.optimizer.runtime.bloomFilter.applicationSideScanSizeThreshold" -> "1MB") {
 
         val df = cometSpark.sql(queryString)
         val cometPlans = mutable.HashSet.empty[String]
@@ -105,11 +106,9 @@ trait CometTPCQueryListBase
         } else {
           out.println(s"Query: $name$nameSuffix. Comet Exec: Disabled")
         }
-        if (supportsExtendedExplainInfo(df.queryExecution)) {
-          out.println(
-            s"Query: $name$nameSuffix: ExplainInfo:\n" +
-              s"${new ExtendedExplainInfo().generateExtendedInfo(executedPlan)}\n")
-        }
+        out.println(
+          s"Query: $name$nameSuffix: ExplainInfo:\n" +
+            s"${new ExtendedExplainInfo().generateExtendedInfo(executedPlan)}\n")
       }
     }
   }

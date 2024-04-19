@@ -46,7 +46,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -101,20 +101,17 @@ class CometSparkSessionExtensions
           // unsupported parquet data source V2
           case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
             val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
-            var info1: Option[String] = None
-            if (isSchemaSupported(requiredSchema)) {
-              info1 = Some(s"Schema $requiredSchema is not supported")
-            }
+            val info1 = createMessage(
+              !isSchemaSupported(requiredSchema),
+              s"Schema $requiredSchema is not supported")
             val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
-            var info2: Option[String] = None
-            if (isSchemaSupported(readPartitionSchema)) {
-              info2 = Some(s"Schema $readPartitionSchema is not supported")
-            }
+            val info2 = createMessage(
+              !isSchemaSupported(readPartitionSchema),
+              s"Schema $readPartitionSchema is not supported")
             // Comet does not support pushedAggregate
-            var info3: Option[String] = None
-            if (!getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isEmpty) {
-              info3 = Some("Comet does not support pushed aggregate")
-            }
+            val info3 = createMessage(
+              getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isDefined,
+              "Comet does not support pushed aggregate")
             withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString("\n"))
             scanExec
 
@@ -173,14 +170,12 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _) =>
-            var info1: Option[String] = None
-            if (!isSchemaSupported(requiredSchema)) {
-              info1 = Some(s"Schema $requiredSchema is not supported")
-            }
-            var info2: Option[String] = None
-            if (!isSchemaSupported(partitionSchema)) {
-              info2 = Some(s"Schema $partitionSchema is not supported")
-            }
+            val info1 = createMessage(
+              !isSchemaSupported(requiredSchema),
+              s"Schema $requiredSchema is not supported")
+            val info2 = createMessage(
+              !isSchemaSupported(partitionSchema),
+              s"Schema $partitionSchema is not supported")
             withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
             scanExec
         }
@@ -435,6 +430,14 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               op
           }
 
+        case op: ShuffledHashJoinExec if !isCometOperatorEnabled(conf, "hash_join") =>
+          withInfo(op, "ShuffleHashJoin is not enabled")
+          op
+
+        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "ShuffleHashJoin disabled because not all child plans are native")
+          op
+
         case op: BroadcastHashJoinExec
             if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -456,6 +459,14 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               op
           }
 
+        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
+          withInfo(op, "BroadcastHashJoin is not enabled")
+          op
+
+        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "BroadcastHashJoin disabled because not all child plans are native")
+          op
+
         case op: SortMergeJoinExec
             if isCometOperatorEnabled(conf, "sort_merge_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -475,6 +486,13 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
             case None =>
               op
           }
+        case op: SortMergeJoinExec if !isCometOperatorEnabled(conf, "sort_merge_join") =>
+          withInfo(op, "SortMergeJoin is not enabled")
+          op
+
+        case op: SortMergeJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "SortMergeJoin disabled because not all child plans are native")
+          op
 
         case c @ CoalesceExec(numPartitions, child)
             if isCometOperatorEnabled(conf, "coalesce")
@@ -486,6 +504,14 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
             case None =>
               c
           }
+
+        case c @ CoalesceExec(_, _) if !isCometOperatorEnabled(conf, "coalesce") =>
+          withInfo(c, "Coalesce is not enabled")
+          c
+
+        case op: CoalesceExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "Coalesce disabled because not all child plans are native")
+          op
 
         case s: TakeOrderedAndProjectExec
             if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
@@ -501,14 +527,12 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
           }
 
         case s: TakeOrderedAndProjectExec =>
-          var info1: Option[String] = None
-          if (!isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")) {
-            info1 = Some("TakeOrderedAndProject is not enabled")
-          }
-          var info2: Option[String] = None
-          if (!isCometShuffleEnabled(conf)) {
-            info2 = Some("TakeOrderedAndProject requires shuffle to be enabled")
-          }
+          val info1 = createMessage(
+            !isCometOperatorEnabled(conf, "takeOrderedAndProjectExec"),
+            "TakeOrderedAndProject is not enabled")
+          val info2 = createMessage(
+            !isCometShuffleEnabled(conf),
+            "TakeOrderedAndProject requires shuffle to be enabled")
           withInfo(s, Seq(info1, info2).flatten.mkString(","))
           s
 
@@ -523,17 +547,13 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               u
           }
 
-        case u: UnionExec =>
-          var info1: Option[String] = None
-          if (!isCometOperatorEnabled(conf, "union")) {
-            info1 = Some("Union is not enabled")
-          }
-          var info2: Option[String] = None
-          if (!u.children.forall(isCometNative)) {
-            info2 = Some("Not all subqueries for union are native")
-          }
-          withInfo(u, Seq(info1, info2).flatten.mkString(","))
+        case u: UnionExec if !isCometOperatorEnabled(conf, "union") =>
+          withInfo(u, "Union is not enabled")
           u
+
+        case op: UnionExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "Union disabled because not all child plans are native")
+          op
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -649,27 +669,19 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
 
         case s: ShuffleExchangeExec =>
           val isShuffleEnabled = isCometShuffleEnabled(conf)
-          var msg1: Option[String] = None
-          if (!isShuffleEnabled) {
-            msg1 = Some("Native shuffle is not enabled")
-          }
+          val msg1 = createMessage(!isShuffleEnabled, "Native shuffle is not enabled")
           val columnarShuffleEnabled = isCometColumnarShuffleEnabled(conf)
-          var msg2: Option[String] = None
-          if (isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
+          val msg2 = createMessage(
+            isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
               .supportPartitioning(s.child.output, s.outputPartitioning)
-              ._1) {
-            msg2 = Some(
-              "Shuffle: " +
-                s"${QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._2}")
-          }
-          var msg3: Option[String] = None
-          if (isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
+              ._1,
+            "Shuffle: " +
+              s"${QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._2}")
+          val msg3 = createMessage(
+            isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
               .supportPartitioningTypes(s.child.output)
-              ._1) {
-            val info =
-              QueryPlanSerde.supportPartitioningTypes(s.child.output)._2
-            msg3 = Some(s"Columnar shuffle: $info")
-          }
+              ._1,
+            s"Columnar shuffle: ${QueryPlanSerde.supportPartitioningTypes(s.child.output)._2}")
           withInfo(s, Seq(msg1, msg2, msg3).flatten.mkString(","))
           s
 
@@ -1000,5 +1012,14 @@ object CometSparkSessionExtensions extends Logging {
       node.setTagValue(CometExplainInfo.EXTENSION_INFO, info)
     }
     node
+  }
+
+  // Helper to reduce boilerplate
+  def createMessage(condition: Boolean, message: => String): Option[String] = {
+    if (condition) {
+      Some(message)
+    } else {
+      None
+    }
   }
 }

@@ -2048,7 +2048,7 @@ None
           val filterBuilder = OperatorOuterClass.Filter.newBuilder().setPredicate(cond.get)
           Some(result.setFilter(filterBuilder).build())
         } else {
-          withInfo(op, null, child)
+          withInfo(op, null, condition, child)
           None
         }
 
@@ -2159,7 +2159,7 @@ None
           if (resultExprs.exists(_.isEmpty)) {
             val msg = s"Unsupported result expressions found in: ${resultExpressions}"
             emitWarning(msg)
-            withInfo(op, msg)
+            withInfo(op, msg, resultExpressions: _*)
             return None
           }
           hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
@@ -2203,7 +2203,7 @@ None
               if (resultExprs.exists(_.isEmpty)) {
                 val msg = s"Unsupported result expressions found in: ${resultExpressions}"
                 emitWarning(msg)
-                withInfo(op, msg)
+                withInfo(op, msg, resultExpressions: _*)
                 return None
               }
               hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
@@ -2338,6 +2338,10 @@ None
           withInfo(join, null, allExprs: _*)
           None
         }
+
+      case join: SortMergeJoinExec if !isCometOperatorEnabled(op.conf, "sort_merge_join") =>
+        withInfo(join, "SortMergeJoin is not enabled")
+        None
 
       case op if isCometSink(op) =>
         // These operators are source of Comet native execution chain

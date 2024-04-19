@@ -1396,7 +1396,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "AQEShuffleRead is not supported\n" +
               "make_interval is not supported\n" +
               "BroadcastExchange is not supported\n" +
-              "BroadcastHashJoin is not supported"))
+              "BroadcastHashJoin disabled because not all child plans are native"))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
