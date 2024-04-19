@@ -1837,14 +1837,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         }
 
       case globalLimitExec: GlobalLimitExec if isCometOperatorEnabled(op.conf, "global_limit") =>
-        if (childOp.nonEmpty) {
+        // TODO: We don't support negative limit for now.
+        if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
 
           // Spark 3.2 doesn't support offset for GlobalLimit, but newer Spark versions
           // support it. Before we upgrade to Spark 3.3, just set it zero.
           // TODO: Spark 3.3 might have negative limit (-1) for Offset usage.
           // When we upgrade to Spark 3.3., we need to address it here.
-          assert(globalLimitExec.limit >= 0, "limit should be greater or equal to zero")
           limitBuilder.setLimit(globalLimitExec.limit)
           limitBuilder.setOffset(0)
 
