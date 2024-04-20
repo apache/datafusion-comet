@@ -146,8 +146,8 @@ impl Display for Cast {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Cast [data_type: {}, timezone: {}, child: {}]",
-            self.data_type, self.timezone, self.child
+            "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
+            self.data_type, self.timezone, self.child, &self.eval_mode
         )
     }
 }
@@ -160,6 +160,7 @@ impl PartialEq<dyn Any> for Cast {
                 self.child.eq(&x.child)
                     && self.timezone.eq(&x.timezone)
                     && self.data_type.eq(&x.data_type)
+                    && self.eval_mode.eq(&x.eval_mode)
             })
             .unwrap_or(false)
     }
@@ -217,6 +218,7 @@ impl PhysicalExpr for Cast {
         self.child.hash(&mut s);
         self.data_type.hash(&mut s);
         self.timezone.hash(&mut s);
+        self.eval_mode.hash(&mut s);
         self.hash(&mut s);
     }
 }

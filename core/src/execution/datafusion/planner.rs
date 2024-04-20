@@ -349,7 +349,7 @@ impl PhysicalPlanner {
                     "LEGACY" => EvalMode::Legacy,
                     other => {
                         return Err(ExecutionError::GeneralError(format!(
-                            "Invalid Cast EvalMode: {other}"
+                            "Invalid Cast EvalMode: \"{other}\""
                         )))
                     }
                 };

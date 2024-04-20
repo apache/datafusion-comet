@@ -1000,6 +1000,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
+                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
                     .build())
                 .build()
             })
