@@ -2133,6 +2133,7 @@ None
 
         // Aggregate expressions with filter are not supported yet.
         if (aggregateExpressions.exists(_.filter.isDefined)) {
+          withInfo(op, "Aggregate expression with filter is not supported")
           return None
         }
 
