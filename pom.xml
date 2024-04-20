@@ -903,6 +903,8 @@ under the License.
             <exclude>**/inspections/*.txt</exclude>
             <exclude>tpcds-kit/**</exclude>
             <exclude>tpcds-sf-1/**</exclude>
+            <exclude>tpch/**</exclude>
+            <exclude>doc/*.txt</exclude>
           </excludes>
         </configuration>
       </plugin>
