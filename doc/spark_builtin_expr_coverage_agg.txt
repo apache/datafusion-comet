@@ -1,0 +1,9 @@
++-------+--------------------------------------------------------+---+
+|result |details                                                 |cnt|
++-------+--------------------------------------------------------+---+
+|FAILED |Unsupported                                             |282|
+|FAILED |Failed on native side                                   |16 |
+|FAILED |Failed on something else. Check query manually          |4  |
+|PASSED |OK                                                      |101|
+|SKIPPED|No examples found in spark.sessionState.functionRegistry|12 |
++-------+--------------------------------------------------------+---+
