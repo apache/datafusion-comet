@@ -62,10 +62,12 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Repeated shuffle exchange don't fail") {
+    assume(isSpark33Plus)
     Seq("true", "false").foreach { aqeEnabled =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
-        SQLConf.REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION.key -> "true",
+        // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
+        "spark.sql.requireAllClusterKeysForDistribution" -> "true",
         CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
