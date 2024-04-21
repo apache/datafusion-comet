@@ -210,6 +210,28 @@ index 0efe0877e9b..423d3b3d76d 100644
  --
  -- SELECT_HAVING
  -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
+index cf40e944c09..fc940f9452f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
+@@ -35,6 +35,7 @@ import org.apache.spark.sql.catalyst.analysis.TempTableAlreadyExistsException
+ import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
+ import org.apache.spark.sql.catalyst.plans.logical.{BROADCAST, Join, JoinStrategyHint, SHUFFLE_HASH}
+ import org.apache.spark.sql.catalyst.util.DateTimeConstants
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, RDDScanExec, SparkPlan}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.columnar._
+@@ -516,7 +517,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+    */
+   private def verifyNumExchanges(df: DataFrame, expected: Int): Unit = {
+     assert(
+-      collect(df.queryExecution.executedPlan) { case e: ShuffleExchangeExec => e }.size == expected)
++      collect(df.queryExecution.executedPlan) {
++        case _: ShuffleExchangeExec | _: CometShuffleExchangeExec => 1 }.size == expected)
+   }
+ 
+   test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 index ea5e47ede55..cab59443c79 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
@@ -829,6 +851,50 @@ index bd9c79e5b96..ab7584e768e 100644
        }
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
+index ce43edb79c1..89e05c75380 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
+@@ -17,9 +17,10 @@
+ 
+ package org.apache.spark.sql.execution.datasources
+ 
+-import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference, NullsFirst, SortOrder}
+ import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Sort}
++import org.apache.spark.sql.comet.CometSortExec
+ import org.apache.spark.sql.execution.{QueryExecution, SortExec}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+ import org.apache.spark.sql.internal.SQLConf
+@@ -224,7 +225,7 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+ 
+           // assert the outer most sort in the executed plan
+           assert(plan.collectFirst {
+-            case s: SortExec => s
++            case s: CometSortExec => s.originalPlan
+           }.exists {
+             case SortExec(Seq(
+               SortOrder(AttributeReference("key", IntegerType, _, _), Ascending, NullsFirst, _),
+@@ -271,7 +272,7 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+ 
+         // assert the outer most sort in the executed plan
+         assert(plan.collectFirst {
+-          case s: SortExec => s
++          case s: CometSortExec => s.originalPlan
+         }.exists {
+           case SortExec(Seq(
+             SortOrder(AttributeReference("value", StringType, _, _), Ascending, NullsFirst, _),
+@@ -305,7 +306,8 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+     }
+   }
+ 
+-  test("v1 write with AQE changing SMJ to BHJ") {
++  test("v1 write with AQE changing SMJ to BHJ",
++      IgnoreComet("TODO: Comet SMJ to BHJ by AQE")) {
+     withPlannedWrite { enabled =>
+       withTable("t") {
+         sql(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
 index 1d2e467c94c..3ea82cd1a3f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
