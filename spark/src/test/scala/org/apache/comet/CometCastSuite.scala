@@ -152,7 +152,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
         // removing the "Execution error: " error message prefix that is added by DataFusion
-        assert(expected.getMessage == actual.getMessage.substring("Execution error: ".length))
+        val actualCometMessage = actual.getMessage
+          .substring("Execution error: ".length)
+
+        val cometMessage = if (CometSparkSessionExtensions.isSpark34Plus) {
+          actualCometMessage
+        } else {
+          // Comet follows Spark 3.4 behavior and starts the string with [CAST_INVALID_INPUT] but
+          // this does not appear in Spark 3.2 or 3.3, so we strip it off before comparing
+          actualCometMessage.replace("[CAST_INVALID_INPUT]", "")
+        }
+
+        assert(expected.getMessage == cometMessage)
 
         // try_cast() should always return null for invalid inputs
         val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
