@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -460,6 +460,42 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             ExprOuterClass.AggExpr
               .newBuilder()
               .setCovPopulation(covBuilder)
+              .build())
+        } else {
+          None
+        }
+      case variance @ VarianceSamp(child, nullOnDivideByZero) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(variance.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val varBuilder = ExprOuterClass.VarianceSample.newBuilder()
+          varBuilder.setChild(childExpr.get)
+          varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          varBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setVarianceSample(varBuilder)
+              .build())
+        } else {
+          None
+        }
+      case variancePop @ VariancePop(child, nullOnDivideByZero) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(variancePop.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val varBuilder = ExprOuterClass.VariancePopulation.newBuilder()
+          varBuilder.setChild(childExpr.get)
+          varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          varBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setVariancePopulation(varBuilder)
               .build())
         } else {
           None

@@ -75,6 +75,7 @@ use crate::{
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
                 temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
+                variance::Variance,
                 NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
@@ -1233,6 +1234,28 @@ impl PhysicalPlanner {
                     "covariance_pop",
                     datatype,
                     StatsType::Population,
+                )))
+            }
+            AggExprStruct::VarianceSample(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Variance::new(
+                    child,
+                    "variance",
+                    datatype,
+                    StatsType::Sample,
+                    expr.null_on_divide_by_zero,
+                )))
+            }
+            AggExprStruct::VariancePopulation(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Variance::new(
+                    child,
+                    "variance_pop",
+                    datatype,
+                    StatsType::Population,
+                    expr.null_on_divide_by_zero,
                 )))
             }
         }

@@ -94,6 +94,8 @@ message AggExpr {
     BitXorAgg bitXorAgg = 11;
     CovSample covSample = 12;
     CovPopulation covPopulation = 13;
+    VarianceSample varianceSample = 14;
+    VariancePopulation variancePopulation = 15;
   }
 }
 
@@ -163,6 +165,18 @@ message CovPopulation {
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
   DataType datatype = 4;
+}
+
+message VarianceSample {
+  Expr child = 1;
+  bool null_on_divide_by_zero = 2;
+  DataType datatype = 3;
+}
+
+message VariancePopulation {
+  Expr child = 1;
+  bool null_on_divide_by_zero = 2;
+  DataType datatype = 3;
 }
 
 message Literal {
