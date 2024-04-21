@@ -151,7 +151,8 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(
               s.child)) && isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output) =>
+              QueryPlanSerde.supportPartitioningTypes(s.child.output) &&
+              !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
           CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
       }
@@ -538,10 +539,13 @@ class CometSparkSessionExtensions
           }
 
         // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-        // (if configured)
+        // (if configured).
+        // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
+        // convert it to CometColumnarShuffle,
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) && isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output) =>
+              QueryPlanSerde.supportPartitioningTypes(s.child.output) &&
+              !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
 
           val newOp = QueryPlanSerde.operator2Proto(s)
@@ -626,6 +630,18 @@ class CometSparkSessionExtensions
         case a: AQEShuffleReadExec => findPartialAgg(a.child)
         case s: ShuffleQueryStageExec => findPartialAgg(s.plan)
       }.flatten
+    }
+
+    /**
+     * Returns true if a given spark plan is Comet shuffle operator.
+     */
+    def isShuffleOperator(op: SparkPlan): Boolean = {
+      op match {
+        case op: ShuffleQueryStageExec if op.plan.isInstanceOf[CometShuffleExchangeExec] => true
+        case _: CometShuffleExchangeExec => true
+        case op: CometSinkPlaceHolder => isShuffleOperator(op.child)
+        case _ => false
+      }
     }
   }
 
