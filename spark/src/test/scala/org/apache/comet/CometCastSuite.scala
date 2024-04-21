@@ -150,20 +150,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = data.withColumn("converted", col("a").cast(toType))
         val (expected, actual) = checkSparkThrows(df)
 
-        // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
-        // removing the "Execution error: " error message prefix that is added by DataFusion
-        val actualCometMessage = actual.getMessage
-          .substring("Execution error: ".length)
+        if (CometSparkSessionExtensions.isSpark34Plus) {
+          // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
+          // removing the "Execution error: " error message prefix that is added by DataFusion
+          val cometMessage = actual.getMessage
+            .substring("Execution error: ".length)
 
-        val cometMessage = if (CometSparkSessionExtensions.isSpark34Plus) {
-          actualCometMessage
+          assert(expected.getMessage == cometMessage)
         } else {
-          // Comet follows Spark 3.4 behavior and starts the string with [CAST_INVALID_INPUT] but
-          // this does not appear in Spark 3.2 or 3.3, so we strip it off before comparing
-          actualCometMessage.replace("[CAST_INVALID_INPUT]", "")
+          // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
+          // comparison between Spark and Comet.
+          // Spark message is in format `invalid input syntax for type TYPE: VALUE`
+          // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
+          // We just check that the comet message contains the same invalid value as the Spark message
+          val sparkInvalidValue =
+            expected.getMessage.substring(expected.getMessage.indexOf(':') + 1)
+          assert(actual.getMessage.contains(sparkInvalidValue))
         }
-
-        assert(expected.getMessage == cometMessage)
 
         // try_cast() should always return null for invalid inputs
         val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
