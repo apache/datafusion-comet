@@ -40,7 +40,8 @@ import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecuti
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.functions.{col, date_add, expr, sum}
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.{col, date_add, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
@@ -56,6 +57,26 @@ class CometExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  test("Repeated shuffle exchange don't fail") {
+    Seq("true", "false").foreach { aqeEnabled =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+        SQLConf.REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION.key -> "true",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        val df =
+          Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
+        val windowSpec = Window.partitionBy("key1", "key2").orderBy("value")
+
+        val windowed = df
+          // repartition by subset of window partitionBy keys which satisfies ClusteredDistribution
+          .repartition($"key1")
+          .select(lead($"key1", 1).over(windowSpec), lead($"value", 1).over(windowSpec))
+
+        checkSparkAnswer(windowed)
       }
     }
   }
