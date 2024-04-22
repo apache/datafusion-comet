@@ -22,6 +22,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
     record_batch::RecordBatch,
@@ -30,7 +31,7 @@ use arrow::{
 use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{Result as DataFusionResult, ScalarValue};
+use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
 use crate::execution::datafusion::expressions::utils::{
@@ -45,10 +46,18 @@ static CAST_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
 
+#[derive(Debug, Hash, PartialEq, Clone, Copy)]
+pub enum EvalMode {
+    Legacy,
+    Ansi,
+    Try,
+}
+
 #[derive(Debug, Hash)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
+    pub eval_mode: EvalMode,
 
     /// When cast from/to timezone related types, we need timezone, which will be resolved with
     /// session local timezone by an analyzer in Spark.
@@ -56,19 +65,30 @@ pub struct Cast {
 }
 
 impl Cast {
-    pub fn new(child: Arc<dyn PhysicalExpr>, data_type: DataType, timezone: String) -> Self {
+    pub fn new(
+        child: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        eval_mode: EvalMode,
+        timezone: String,
+    ) -> Self {
         Self {
             child,
             data_type,
             timezone,
+            eval_mode,
         }
     }
 
-    pub fn new_without_timezone(child: Arc<dyn PhysicalExpr>, data_type: DataType) -> Self {
+    pub fn new_without_timezone(
+        child: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        eval_mode: EvalMode,
+    ) -> Self {
         Self {
             child,
             data_type,
             timezone: "".to_string(),
+            eval_mode,
         }
     }
 
@@ -77,9 +97,11 @@ impl Cast {
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
         let from_type = array.data_type();
         let cast_result = match (from_type, to_type) {
-            (DataType::Utf8, DataType::Boolean) => Self::spark_cast_utf8_to_boolean::<i32>(&array),
+            (DataType::Utf8, DataType::Boolean) => {
+                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)?
+            }
             (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array)
+                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
@@ -87,7 +109,10 @@ impl Cast {
         Ok(result)
     }
 
-    fn spark_cast_utf8_to_boolean<OffsetSize>(from: &dyn Array) -> ArrayRef
+    fn spark_cast_utf8_to_boolean<OffsetSize>(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
@@ -100,15 +125,20 @@ impl Cast {
             .iter()
             .map(|value| match value {
                 Some(value) => match value.to_ascii_lowercase().trim() {
-                    "t" | "true" | "y" | "yes" | "1" => Some(true),
-                    "f" | "false" | "n" | "no" | "0" => Some(false),
-                    _ => None,
+                    "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
+                    "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
+                    _ if eval_mode == EvalMode::Ansi => Err(CometError::CastInvalidValue {
+                        value: value.to_string(),
+                        from_type: "STRING".to_string(),
+                        to_type: "BOOLEAN".to_string(),
+                    }),
+                    _ => Ok(None),
                 },
-                _ => None,
+                _ => Ok(None),
             })
-            .collect::<BooleanArray>();
+            .collect::<Result<BooleanArray, _>>()?;
 
-        Arc::new(output_array)
+        Ok(Arc::new(output_array))
     }
 }
 
@@ -116,8 +146,8 @@ impl Display for Cast {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Cast [data_type: {}, timezone: {}, child: {}]",
-            self.data_type, self.timezone, self.child
+            "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
+            self.data_type, self.timezone, self.child, &self.eval_mode
         )
     }
 }
@@ -130,6 +160,7 @@ impl PartialEq<dyn Any> for Cast {
                 self.child.eq(&x.child)
                     && self.timezone.eq(&x.timezone)
                     && self.data_type.eq(&x.data_type)
+                    && self.eval_mode.eq(&x.eval_mode)
             })
             .unwrap_or(false)
     }
@@ -171,11 +202,15 @@ impl PhysicalExpr for Cast {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(Cast::new(
-            children[0].clone(),
-            self.data_type.clone(),
-            self.timezone.clone(),
-        )))
+        match children.len() {
+            1 => Ok(Arc::new(Cast::new(
+                children[0].clone(),
+                self.data_type.clone(),
+                self.eval_mode,
+                self.timezone.clone(),
+            ))),
+            _ => internal_err!("Cast should have exactly one child"),
+        }
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
@@ -183,6 +218,7 @@ impl PhysicalExpr for Cast {
         self.child.hash(&mut s);
         self.data_type.hash(&mut s);
         self.timezone.hash(&mut s);
+        self.eval_mode.hash(&mut s);
         self.hash(&mut s);
     }
 }

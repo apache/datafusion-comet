@@ -357,6 +357,14 @@ object CometConf {
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
+  val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
+    .doc(
+      "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
+        "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
+        "support for ANSI mode. This should not be used in production.")
+    .booleanConf
+    .createWithDefault(false)
+
 }
 
 object ConfigHelpers {

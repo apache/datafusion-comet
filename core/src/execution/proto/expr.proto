@@ -224,6 +224,8 @@ message Cast {
   Expr child = 1;
   DataType datatype = 2;
   string timezone = 3;
+  // LEGACY, ANSI, or TRY
+  string eval_mode = 4;
 }
 
 message Equal {

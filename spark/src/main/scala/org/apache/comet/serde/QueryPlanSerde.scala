@@ -451,13 +451,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
     def castToProto(
         timeZoneId: Option[String],
         dt: DataType,
-        childExpr: Option[Expr]): Option[Expr] = {
+        childExpr: Option[Expr],
+        evalMode: String): Option[Expr] = {
       val dataType = serializeDataType(dt)
 
       if (childExpr.isDefined && dataType.isDefined) {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
+        castBuilder.setEvalMode(evalMode)
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
@@ -483,9 +485,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case Cast(child, dt, timeZoneId, _) =>
+        case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
-          castToProto(timeZoneId, dt, childExpr)
+          val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
+            // Spark 3.2 & 3.3 has ansiEnabled boolean
+            if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+          } else {
+            // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+            evalMode.toString
+          }
+          castToProto(timeZoneId, dt, childExpr, evalModeStr)
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
@@ -1028,6 +1037,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
+                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
                     .build())
                 .build()
             })
@@ -1602,7 +1612,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val childExpr = scalarExprToProto("coalesce", exprChildren: _*)
           // TODO: Remove this once we have new DataFusion release which includes
           // the fix: https://github.com/apache/arrow-datafusion/pull/9459
-          castToProto(None, a.dataType, childExpr)
+          castToProto(None, a.dataType, childExpr, "LEGACY")
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.
