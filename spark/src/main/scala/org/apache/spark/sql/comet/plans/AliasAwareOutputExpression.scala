@@ -24,7 +24,6 @@ import scala.collection.mutable
 import org.apache.spark.sql.catalyst.SQLConfHelper
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Expression, NamedExpression}
 import org.apache.spark.sql.catalyst.trees.CurrentOrigin
-import org.apache.spark.sql.internal.SQLConf
 
 /**
  * A trait that provides functionality to handle aliases in the `outputExpressions`.
