@@ -1,0 +1,142 @@
+Query: q1 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q1 TPCH Snappy: ExplainInfo:
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q2 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q2 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
+xxhash64 is not supported
+
+Query: q3 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q3 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q4 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q4 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q5 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q5 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
+xxhash64 is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q6 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6 TPCH Snappy: ExplainInfo:
+
+
+Query: q7 TPCH Snappy. Comet Exec: Enabled (CometFilter)
+Query: q7 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q8 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q8 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q9 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q9 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q10 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q10 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q11 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q11 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q12 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q12 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q13 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q13 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q14 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q14 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q15 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q15 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q16 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q16 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q17 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject, CometSort)
+Query: q17 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q18 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q18 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q19 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q19 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q20 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q20 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
+xxhash64 is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q21 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q21 TPCH Snappy: ExplainInfo:
+ObjectHashAggregate is not supported
+Sort merge join with a join condition is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q22 TPCH Snappy. Comet Exec: Enabled (CometFilter)
+Query: q22 TPCH Snappy: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q1 TPCH Extended Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q1 TPCH Extended Snappy: ExplainInfo:
+
+
