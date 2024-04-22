@@ -201,7 +201,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(
               s.child)) && isCometColumnarShuffleEnabled(conf) &&
-QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
           CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
@@ -651,7 +651,7 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
         // convert it to CometColumnarShuffle,
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) && isCometColumnarShuffleEnabled(conf) &&
-QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
 
@@ -705,9 +705,9 @@ QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
         if (COMET_ANSI_MODE_ENABLED.get()) {
           logWarning("Using Comet's experimental support for ANSI mode.")
         } else {
-        logInfo("Comet extension disabled for ANSI mode")
-        return plan
-      }
+          logInfo("Comet extension disabled for ANSI mode")
+          return plan
+        }
       }
 
       // We shouldn't transform Spark query plan if Comet is disabled.

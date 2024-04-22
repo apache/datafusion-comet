@@ -537,14 +537,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-          val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
-            // Spark 3.2 & 3.3 has ansiEnabled boolean
-            if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
-          } else {
-            // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
-            evalMode.toString
-          }
-          castToProto(timeZoneId, dt, childExpr, evalModeStr)
+            val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
+              // Spark 3.2 & 3.3 has ansiEnabled boolean
+              if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+            } else {
+              // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+              evalMode.toString
+            }
+            castToProto(timeZoneId, dt, childExpr, evalModeStr)
           } else {
             withInfo(expr, child)
             None
