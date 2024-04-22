@@ -58,7 +58,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     info.filter(!_.contentEquals("\n"))
   }
 
-  // get all plan nodes, breadth first, leaf nodes first
+  // get all plan nodes, breadth first traversal, then returned the reversed list so
+  // leaf nodes are first
   private def sortup(node: TreeNode[_]): mutable.Queue[TreeNode[_]] = {
     val ordered = new mutable.Queue[TreeNode[_]]()
     val traversed = mutable.Queue[TreeNode[_]](getActualPlan(node))

@@ -175,7 +175,7 @@ class CometSparkSessionExtensions
               s"Schema $requiredSchema is not supported")
             val info2 = createMessage(
               !isSchemaSupported(partitionSchema),
-              s"Schema $partitionSchema is not supported")
+              s"Partition schema $partitionSchema is not supported")
             withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
             scanExec
         }
@@ -1014,6 +1014,24 @@ object CometSparkSessionExtensions extends Logging {
       node.setTagValue(CometExplainInfo.EXTENSION_INFO, info)
     }
     node
+  }
+
+  /**
+   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
+   * from any child nodes
+   *
+   * @param node
+   *   The node to attach the explain information to. Typically a SparkPlan
+   * @param exprs
+   *   Child nodes. Information attached in these nodes will be be included in the information
+   *   attached to @node
+   * @tparam T
+   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   * @return
+   *   The node with information (if any) attached
+   */
+  def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
+    withInfo(node, "", exprs: _*)
   }
 
   // Helper to reduce boilerplate

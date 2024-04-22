@@ -23,6 +23,8 @@ import org.apache.spark.sql.execution.SparkPlan
 
 /**
  * A trait for a session extension to implement that provides addition explain plan information.
+ * We copy this from Spark 4.0 since this trait is not available in Spark 3.x. We can remove this
+ * after dropping Spark 3.x support.
  */
 
 trait ExtendedExplainGenerator {

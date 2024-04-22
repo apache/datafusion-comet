@@ -50,6 +50,8 @@ object ShimCometSparkSessionExtensions {
     .map(_.asInstanceOf[Int])
     .headOption
 
+  // Extended info is available only since Spark 4.0.0
+  // (https://issues.apache.org/jira/browse/SPARK-47289)
   def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
     try {
       // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
