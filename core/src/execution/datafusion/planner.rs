@@ -65,7 +65,7 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::Cast,
+                cast::{Cast, EvalMode},
                 checkoverflow::CheckOverflow,
                 covariance::Covariance,
                 if_expr::IfExpr,
@@ -345,7 +345,17 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                Ok(Arc::new(Cast::new(child, datatype, timezone)))
+                let eval_mode = match expr.eval_mode.as_str() {
+                    "ANSI" => EvalMode::Ansi,
+                    "TRY" => EvalMode::Try,
+                    "LEGACY" => EvalMode::Legacy,
+                    other => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Invalid Cast EvalMode: \"{other}\""
+                        )))
+                    }
+                };
+                Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -640,13 +650,19 @@ impl PhysicalPlanner {
                 let left = Arc::new(Cast::new_without_timezone(
                     left,
                     DataType::Decimal256(p1, s1),
+                    EvalMode::Legacy,
                 ));
                 let right = Arc::new(Cast::new_without_timezone(
                     right,
                     DataType::Decimal256(p2, s2),
+                    EvalMode::Legacy,
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new_without_timezone(child, data_type)))
+                Ok(Arc::new(Cast::new_without_timezone(
+                    child,
+                    data_type,
+                    EvalMode::Legacy,
+                )))
             }
             (
                 DataFusionOperator::Divide,

@@ -60,6 +60,18 @@ pub enum CometError {
     #[error("Comet Internal Error: {0}")]
     Internal(String),
 
+    // Note that this message format is based on Spark 3.4 and is more detailed than the message
+    // returned by Spark 3.2 or 3.3
+    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+        because it is malformed. Correct the value as per the syntax, or change its target type. \
+        Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    CastInvalidValue {
+        value: String,
+        from_type: String,
+        to_type: String,
+    },
+
     #[error(transparent)]
     Arrow {
         #[from]
@@ -181,6 +193,10 @@ impl jni::errors::ToException for CometError {
             },
             CometError::NullPointer(..) => Exception {
                 class: "java/lang/NullPointerException".to_string(),
+                msg: self.to_string(),
+            },
+            CometError::CastInvalidValue { .. } => Exception {
+                class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },
             CometError::NumberIntFormat { source: s } => Exception {
