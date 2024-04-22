@@ -17,9 +17,9 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache Arrow DataFusion Comet
+# Apache DataFusion Comet
 
-Comet is an Apache Spark plugin that uses [Apache Arrow DataFusion](https://arrow.apache.org/datafusion/)
+Comet is an Apache Spark plugin that uses [Apache DataFusion](https://datafusion.apache.org/datafusion/)
 as native runtime to achieve improvement in terms of query efficiency and query runtime.
 
 Comet runs Spark SQL queries using the native DataFusion runtime, which is
@@ -72,13 +72,13 @@ Make sure the requirements above are met and software installed on your machine
 
 ### Clone repo
 ```commandline
-git clone https://github.com/apache/arrow-datafusion-comet.git
+git clone https://github.com/apache/datafusion-comet.git
 ```
 
 ### Specify the Spark version and build the Comet
 Spark 3.4 used for the example.
 ```
-cd arrow-datafusion-comet
+cd datafusion-comet
 make release PROFILES="-Pspark-3.4"
 ```
 
