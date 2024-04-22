@@ -33,10 +33,11 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expre
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning, PartitioningCollection, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, PartitioningCollection, UnknownPartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.plans.PartitioningPreservingUnaryExecNode
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, PartitioningPreservingUnaryExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -49,6 +50,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.shims.ShimCometBroadcastHashJoinExec
 
 /**
  * A Comet physical operator
@@ -705,7 +707,8 @@ case class CometBroadcastHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with ShimCometBroadcastHashJoinExec {
 
   // The following logic of `outputPartitioning` is copied from Spark `BroadcastHashJoinExec`.
   protected lazy val streamedPlan: SparkPlan = buildSide match {
@@ -717,7 +720,9 @@ case class CometBroadcastHashJoinExec(
     joinType match {
       case _: InnerLike if conf.broadcastHashJoinOutputPartitioningExpandLimit > 0 =>
         streamedPlan.outputPartitioning match {
-          case h: HashPartitioningLike => expandOutputPartitioning(h)
+          case h: HashPartitioning => expandOutputPartitioning(h)
+          case h: Expression if h.getClass.getName.contains("CoalescedHashPartitioning") =>
+            expandOutputPartitioning(h)
           case c: PartitioningCollection => expandOutputPartitioning(c)
           case other => other
         }
@@ -756,7 +761,9 @@ case class CometBroadcastHashJoinExec(
   private def expandOutputPartitioning(
       partitioning: PartitioningCollection): PartitioningCollection = {
     PartitioningCollection(partitioning.partitionings.flatMap {
-      case h: HashPartitioningLike => expandOutputPartitioning(h).partitionings
+      case h: HashPartitioning => expandOutputPartitioning(h).partitionings
+      case h: Expression if h.getClass.getName.contains("CoalescedHashPartitioning") =>
+        expandOutputPartitioning(h).partitionings
       case c: PartitioningCollection => Seq(expandOutputPartitioning(c))
       case other => Seq(other)
     })
@@ -769,7 +776,7 @@ case class CometBroadcastHashJoinExec(
   // Seq("a", "b", "c"), Seq("a", "b", "y"), Seq("a", "x", "c"), Seq("a", "x", "y").
   // The expanded expressions are returned as PartitioningCollection.
   private def expandOutputPartitioning(
-      partitioning: HashPartitioningLike): PartitioningCollection = {
+      partitioning: Partitioning with Expression): PartitioningCollection = {
     val maxNumCombinations = conf.broadcastHashJoinOutputPartitioningExpandLimit
     var currentNumCombinations = 0
 
@@ -791,8 +798,8 @@ case class CometBroadcastHashJoinExec(
     }
 
     PartitioningCollection(
-      generateExprCombinations(partitioning.expressions, Nil)
-        .map(exprs => partitioning.withNewChildren(exprs).asInstanceOf[HashPartitioningLike]))
+      generateExprCombinations(getHashPartitioningLikeExpressions(partitioning), Nil)
+        .map(exprs => partitioning.withNewChildren(exprs).asInstanceOf[Partitioning]))
   }
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
