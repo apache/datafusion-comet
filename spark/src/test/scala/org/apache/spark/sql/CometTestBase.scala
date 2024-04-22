@@ -26,6 +26,7 @@ import scala.util.Try
 
 import org.scalatest.BeforeAndAfterEach
 
+import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
 import org.apache.parquet.example.data.Group
@@ -37,7 +38,7 @@ import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometRowToColumnarExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, ExtendedMode, InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
@@ -46,6 +47,8 @@ import org.apache.spark.sql.types.StructType
 
 import org.apache.comet._
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.shims.ShimCometSparkSessionExtensions
+import org.apache.comet.shims.ShimCometSparkSessionExtensions.supportsExtendedExplainInfo
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -55,7 +58,8 @@ abstract class CometTestBase
     extends QueryTest
     with SQLTestUtils
     with BeforeAndAfterEach
-    with AdaptiveSparkPlanHelper {
+    with AdaptiveSparkPlanHelper
+    with ShimCometSparkSessionExtensions {
   import testImplicits._
 
   protected val shuffleManager: String =
@@ -225,6 +229,30 @@ abstract class CometTestBase
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     val actual = Try(dfComet.collect()).failed.get
     (expected.get.getCause, actual.getCause)
+  }
+
+  protected def checkSparkAnswerAndCompareExplainPlan(
+      df: DataFrame,
+      expectedInfo: String): Unit = {
+    var expected: Array[Row] = Array.empty
+    var dfSpark: Dataset[Row] = null
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      "spark.sql.extendedExplainProvider" -> "") {
+      dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      expected = dfSpark.collect()
+    }
+    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    checkAnswer(dfComet, expected)
+    val diff = StringUtils.difference(
+      dfSpark.queryExecution.explainString(ExtendedMode),
+      dfComet.queryExecution.explainString(ExtendedMode))
+    if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
+      assert(diff.contains(expectedInfo))
+    }
+    val extendedInfo =
+      new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
+    assert(extendedInfo.equalsIgnoreCase(expectedInfo))
   }
 
   private var _spark: SparkSession = _

@@ -24,10 +24,11 @@ import java.nio.ByteOrder
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -45,7 +46,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -75,8 +76,14 @@ class CometSparkSessionExtensions
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      if (!isCometEnabled(conf) || !isCometScanEnabled(conf)) plan
-      else {
+      if (!isCometEnabled(conf) || !isCometScanEnabled(conf)) {
+        if (!isCometEnabled(conf)) {
+          withInfo(plan, "Comet is not enabled")
+        } else if (!isCometScanEnabled(conf)) {
+          withInfo(plan, "Comet Scan is not enabled")
+        }
+        plan
+      } else {
         plan.transform {
           // data source V2
           case scanExec: BatchScanExec
@@ -91,6 +98,27 @@ class CometSparkSessionExtensions
               scanExec.copy(scan = cometScan),
               runtimeFilters = scanExec.runtimeFilters)
 
+          // unsupported parquet data source V2
+          case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
+            val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
+            val info1 = createMessage(
+              !isSchemaSupported(requiredSchema),
+              s"Schema $requiredSchema is not supported")
+            val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
+            val info2 = createMessage(
+              !isSchemaSupported(readPartitionSchema),
+              s"Schema $readPartitionSchema is not supported")
+            // Comet does not support pushedAggregate
+            val info3 = createMessage(
+              getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isDefined,
+              "Comet does not support pushed aggregate")
+            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString("\n"))
+            scanExec
+
+          case scanExec: BatchScanExec if !scanExec.scan.isInstanceOf[ParquetScan] =>
+            withInfo(scanExec, "Comet Scan only supports Parquet")
+            scanExec
+
           // iceberg scan
           case scanExec: BatchScanExec =>
             if (isSchemaSupported(scanExec.scan.readSchema())) {
@@ -103,22 +131,24 @@ class CometSparkSessionExtensions
                     scanExec.clone().asInstanceOf[BatchScanExec],
                     runtimeFilters = scanExec.runtimeFilters)
                 case _ =>
-                  logInfo(
-                    "Comet extension is not enabled for " +
-                      s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
+                  val msg = "Comet extension is not enabled for " +
+                    s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
+                  logInfo(msg)
+                  withInfo(scanExec, msg)
                   scanExec
               }
             } else {
-              logInfo(
-                "Comet extension is not enabled for " +
-                  s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
+              val msg = "Comet extension is not enabled for " +
+                s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
+              logInfo(msg)
+              withInfo(scanExec, msg)
               scanExec
             }
 
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[_],
+                _: Seq[AttributeReference],
                 requiredSchema,
                 _,
                 _,
@@ -128,6 +158,26 @@ class CometSparkSessionExtensions
                 _) if isSchemaSupported(requiredSchema) && isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
+
+          // data source v1 not supported case
+          case scanExec @ FileSourceScanExec(
+                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
+                _: Seq[AttributeReference],
+                requiredSchema,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _) =>
+            val info1 = createMessage(
+              !isSchemaSupported(requiredSchema),
+              s"Schema $requiredSchema is not supported")
+            val info2 = createMessage(
+              !isSchemaSupported(partitionSchema),
+              s"Partition schema $partitionSchema is not supported")
+            withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
+            scanExec
         }
       }
     }
@@ -138,7 +188,7 @@ class CometSparkSessionExtensions
       plan.transformUp {
         case s: ShuffleExchangeExec
             if isCometPlan(s.child) && !isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning) =>
+              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1 =>
           logInfo("Comet extension enabled for Native Shuffle")
 
           // Switch to use Decimal128 regardless of precision, since Arrow native execution
@@ -151,7 +201,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(
               s.child)) && isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output) &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
           CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
@@ -380,6 +430,14 @@ class CometSparkSessionExtensions
               op
           }
 
+        case op: ShuffledHashJoinExec if !isCometOperatorEnabled(conf, "hash_join") =>
+          withInfo(op, "ShuffleHashJoin is not enabled")
+          op
+
+        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "ShuffleHashJoin disabled because not all child plans are native")
+          op
+
         case op: BroadcastHashJoinExec
             if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -401,6 +459,10 @@ class CometSparkSessionExtensions
               op
           }
 
+        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
+          withInfo(op, "BroadcastHashJoin is not enabled")
+          op
+
         case op: SortMergeJoinExec
             if isCometOperatorEnabled(conf, "sort_merge_join") &&
               op.children.forall(isCometNative(_)) =>
@@ -420,6 +482,13 @@ class CometSparkSessionExtensions
             case None =>
               op
           }
+        case op: SortMergeJoinExec if !isCometOperatorEnabled(conf, "sort_merge_join") =>
+          withInfo(op, "SortMergeJoin is not enabled")
+          op
+
+        case op: SortMergeJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "SortMergeJoin disabled because not all child plans are native")
+          op
 
         case c @ CoalesceExec(numPartitions, child)
             if isCometOperatorEnabled(conf, "coalesce")
@@ -431,6 +500,14 @@ class CometSparkSessionExtensions
             case None =>
               c
           }
+
+        case c @ CoalesceExec(_, _) if !isCometOperatorEnabled(conf, "coalesce") =>
+          withInfo(c, "Coalesce is not enabled")
+          c
+
+        case op: CoalesceExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "Coalesce disabled because not all child plans are native")
+          op
 
         case s: TakeOrderedAndProjectExec
             if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
@@ -445,6 +522,16 @@ class CometSparkSessionExtensions
               s
           }
 
+        case s: TakeOrderedAndProjectExec =>
+          val info1 = createMessage(
+            !isCometOperatorEnabled(conf, "takeOrderedAndProjectExec"),
+            "TakeOrderedAndProject is not enabled")
+          val info2 = createMessage(
+            !isCometShuffleEnabled(conf),
+            "TakeOrderedAndProject requires shuffle to be enabled")
+          withInfo(s, Seq(info1, info2).flatten.mkString(","))
+          s
+
         case u: UnionExec
             if isCometOperatorEnabled(conf, "union") &&
               u.children.forall(isCometNative) =>
@@ -455,6 +542,14 @@ class CometSparkSessionExtensions
             case None =>
               u
           }
+
+        case u: UnionExec if !isCometOperatorEnabled(conf, "union") =>
+          withInfo(u, "Union is not enabled")
+          u
+
+        case op: UnionExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "Union disabled because not all child plans are native")
+          op
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -488,11 +583,23 @@ class CometSparkSessionExtensions
             if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
               newPlan
             } else {
+              if (!isCometOperatorEnabled(
+                  conf,
+                  "broadcastExchangeExec") && !isCometBroadCastForceEnabled(conf)) {
+                withInfo(plan, "Native Broadcast is not enabled")
+              }
               plan
             }
           } else {
             plan
           }
+
+        // this case should be checked only after the previous case checking for a
+        // child BroadcastExchange has been applied, otherwise that transform
+        // never gets applied
+        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "BroadcastHashJoin disabled because not all child plans are native")
+          op
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
@@ -523,7 +630,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) &&
               !isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning) =>
+              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1 =>
           logInfo("Comet extension enabled for Native Shuffle")
 
           val newOp = transform1(s)
@@ -544,7 +651,7 @@ class CometSparkSessionExtensions
         // convert it to CometColumnarShuffle,
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) && isCometColumnarShuffleEnabled(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output) &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
 
@@ -562,9 +669,32 @@ class CometSparkSessionExtensions
               s
           }
 
+        case s: ShuffleExchangeExec =>
+          val isShuffleEnabled = isCometShuffleEnabled(conf)
+          val msg1 = createMessage(!isShuffleEnabled, "Native shuffle is not enabled")
+          val columnarShuffleEnabled = isCometColumnarShuffleEnabled(conf)
+          val msg2 = createMessage(
+            isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
+              .supportPartitioning(s.child.output, s.outputPartitioning)
+              ._1,
+            "Shuffle: " +
+              s"${QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._2}")
+          val msg3 = createMessage(
+            isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
+              .supportPartitioningTypes(s.child.output)
+              ._1,
+            s"Columnar shuffle: ${QueryPlanSerde.supportPartitioningTypes(s.child.output)._2}")
+          withInfo(s, Seq(msg1, msg2, msg3).flatten.mkString(","))
+          s
+
         case op =>
           // An operator that is not supported by Comet
-          op
+          op match {
+            case _: CometExec | _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec => op
+            case o =>
+              withInfo(o, s"${o.nodeName} is not supported")
+              o
+          }
       }
     }
 
@@ -851,6 +981,65 @@ object CometSparkSessionExtensions extends Logging {
       ByteUnit.MiB.toBytes(cometMemoryOverhead)
     } else {
       ByteUnit.MiB.toBytes(shuffleMemorySize)
+    }
+  }
+
+  /**
+   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
+   * from any child nodes
+   *
+   * @param node
+   *   The node to attach the explain information to. Typically a SparkPlan
+   * @param info
+   *   Information text. Optional, may be null or empty. If not provided, then only information
+   *   from child nodes will be included.
+   * @param exprs
+   *   Child nodes. Information attached in these nodes will be be included in the information
+   *   attached to @node
+   * @tparam T
+   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   * @return
+   *   The node with information (if any) attached
+   */
+  def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
+    val exprInfo = exprs
+      .flatMap { e => Seq(e.getTagValue(CometExplainInfo.EXTENSION_INFO)) }
+      .flatten
+      .mkString("\n")
+    if (info != null && info.nonEmpty && exprInfo.nonEmpty) {
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, Seq(exprInfo, info).mkString("\n"))
+    } else if (exprInfo.nonEmpty) {
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, exprInfo)
+    } else if (info != null && info.nonEmpty) {
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, info)
+    }
+    node
+  }
+
+  /**
+   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
+   * from any child nodes
+   *
+   * @param node
+   *   The node to attach the explain information to. Typically a SparkPlan
+   * @param exprs
+   *   Child nodes. Information attached in these nodes will be be included in the information
+   *   attached to @node
+   * @tparam T
+   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   * @return
+   *   The node with information (if any) attached
+   */
+  def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
+    withInfo(node, "", exprs: _*)
+  }
+
+  // Helper to reduce boilerplate
+  def createMessage(condition: Boolean, message: => String): Option[String] = {
+    if (condition) {
+      Some(message)
+    } else {
+      None
     }
   }
 }

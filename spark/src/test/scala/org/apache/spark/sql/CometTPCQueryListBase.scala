@@ -31,12 +31,14 @@ import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 trait CometTPCQueryListBase
     extends CometTPCQueryBase
     with AdaptiveSparkPlanHelper
-    with SQLHelper {
+    with SQLHelper
+    with ShimCometSparkSessionExtensions {
   var output: Option[OutputStream] = None
 
   def main(args: Array[String]): Unit = {
@@ -84,11 +86,16 @@ trait CometTPCQueryListBase
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+        // Lower bloom filter thresholds to allows us to simulate the plan produced at larger scale.
+        "spark.sql.optimizer.runtime.bloomFilter.creationSideThreshold" -> "1MB",
+        "spark.sql.optimizer.runtime.bloomFilter.applicationSideScanSizeThreshold" -> "1MB") {
 
         val df = cometSpark.sql(queryString)
         val cometPlans = mutable.HashSet.empty[String]
-        stripAQEPlan(df.queryExecution.executedPlan).foreach {
+        val executedPlan = df.queryExecution.executedPlan
+        stripAQEPlan(executedPlan).foreach {
           case op: CometExec =>
             cometPlans += s"${op.nodeName}"
           case _ =>
@@ -100,6 +107,9 @@ trait CometTPCQueryListBase
         } else {
           out.println(s"Query: $name$nameSuffix. Comet Exec: Disabled")
         }
+        out.println(
+          s"Query: $name$nameSuffix: ExplainInfo:\n" +
+            s"${new ExtendedExplainInfo().generateExtendedInfo(executedPlan)}\n")
       }
     }
   }

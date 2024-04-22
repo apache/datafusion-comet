@@ -1,0 +1,838 @@
+Query: q1. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q1: ExplainInfo:
+ObjectHashAggregate is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q2. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q2: ExplainInfo:
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q3. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q3: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q4. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q4: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q5. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q5: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q6. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q8. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q8: ExplainInfo:
+ObjectHashAggregate is not supported
+getstructfield is not supported
+xxhash64 is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q9. Comet Exec: Enabled (CometFilter)
+Query: q9: ExplainInfo:
+named_struct is not supported
+getstructfield is not supported
+
+Query: q10. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q10: ExplainInfo:
+ObjectHashAggregate is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q11. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q11: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q12. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q12: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q13. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q13: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q14a. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q14a: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+Union disabled because not all child plans are native
+
+Query: q14b. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q14b: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+Union disabled because not all child plans are native
+
+Query: q15. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q15: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q16. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q16: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q17. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q17: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q18. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q18: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q19. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q19: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q20. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q20: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q21. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q21: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q22. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q23a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q23a: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q23b. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q23b: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q24a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24a: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q24b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24b: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q25. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q25: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q26. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q26: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q27. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q27: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q28. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q28: ExplainInfo:
+Unsupported aggregation mode PartialMerge
+BroadcastExchange is not supported
+
+Query: q29. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q29: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q30. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q30: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q31. Comet Exec: Enabled (CometFilter)
+Query: q31: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q32. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q32: ExplainInfo:
+ObjectHashAggregate is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q33. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q33: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q34. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q34: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q35. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q35: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q36. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q36: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q37. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q37: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q38. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q38: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q39a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q39a: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q39b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q39b: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q40. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q40: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q41. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q41: ExplainInfo:
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q42. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q42: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q43. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q43: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q44. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject, CometSort)
+Query: q44: ExplainInfo:
+Window is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q45. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q45: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q46. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q46: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q47. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q48. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q48: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q49. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q49: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+Union disabled because not all child plans are native
+
+Query: q50. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q50: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q51. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q51: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q52. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q52: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q53. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q53: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q54. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q54: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q55. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q55: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q56. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q56: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q57. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q58. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q58: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q59. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q59: ExplainInfo:
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q60. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q60: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q61. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q61: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q62. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q62: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q63. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q63: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q64. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q64: ExplainInfo:
+BroadcastExchange is not supported
+ObjectHashAggregate is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q65. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q65: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q66. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q66: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q67. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q67: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q68. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q68: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q69. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q69: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q70. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q70: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q71. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q71: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q72. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q72: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q73. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q73: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q74. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q74: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q75. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q75: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q76. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q76: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q77. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q77: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q78. Comet Exec: Enabled (CometFilter)
+Query: q78: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q79. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q79: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q80. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q80: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q81. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q81: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q82. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q82: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q83. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q83: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q84. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q84: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q85. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q85: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q86. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q86: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q87. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q87: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q88. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q88: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q89. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q89: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q90. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q90: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q91. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q91: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q92. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q92: ExplainInfo:
+ObjectHashAggregate is not supported
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q93. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q93: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q94. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q94: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q95. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q95: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q96. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q96: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q97. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q97: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q98. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q98: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q99. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q99: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q5a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q5a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q10a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q10a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q11-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q11-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q12-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q12-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q14-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q14-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+Union disabled because not all child plans are native
+
+Query: q14a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q14a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+ObjectHashAggregate is not supported
+xxhash64 is not supported
+Union disabled because not all child plans are native
+
+Query: q18a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q18a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q20-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q20-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+
+Query: q22-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Native Broadcast is not enabled
+
+Query: q22a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q24-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q27a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q27a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q34-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q34-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q35-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q35-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q35a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q35a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q36a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q36a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+Window is not supported
+
+Query: q47-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q49-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q49-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+Union disabled because not all child plans are native
+
+Query: q51a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q51a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q57-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+
+Query: q64-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q64-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+ObjectHashAggregate is not supported
+BroadcastHashJoin disabled because not all child plans are native
+xxhash64 is not supported
+SortMergeJoin disabled because not all child plans are native
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
+Query: q67a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q67a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+Window is not supported
+
+Query: q70a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometSort)
+Query: q70a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+SortMergeJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q72-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q72-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+
+Query: q74-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q74-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q75-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q75-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q77a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q77a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q78-v2.7. Comet Exec: Enabled (CometFilter)
+Query: q78-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+SortMergeJoin disabled because not all child plans are native
+
+Query: q80a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q80a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+
+Query: q86a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q86a-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Union disabled because not all child plans are native
+Window is not supported
+
+Query: q98-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q98-v2.7: ExplainInfo:
+BroadcastExchange is not supported
+BroadcastHashJoin disabled because not all child plans are native
+Window is not supported
+Shuffle: unsupported Spark partitioning: org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
+
