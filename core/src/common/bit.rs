@@ -142,18 +142,6 @@ macro_rules! read_num_be_bytes {
     }};
 }
 
-/// Converts value `val` of type `T` to a byte vector, by reading `num_bytes` from `val`.
-/// NOTE: if `val` is less than the size of `T` then it can be truncated.
-#[inline]
-pub fn convert_to_bytes<T>(val: &T, num_bytes: usize) -> Vec<u8>
-where
-    T: ?Sized + AsBytes,
-{
-    let mut bytes: Vec<u8> = vec![0; num_bytes];
-    memcpy_value(val.as_bytes(), num_bytes, &mut bytes);
-    bytes
-}
-
 #[inline]
 pub fn memcpy(source: &[u8], target: &mut [u8]) {
     debug_assert!(target.len() >= source.len(), "Copying from source to target is not possible. Source has {} bytes but target has {} bytes", source.len(), target.len());
@@ -201,10 +189,6 @@ pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
     }
     let n = 64 - num_bits;
     (v << n) >> n
-}
-
-pub fn set_bit_value(bits: &mut [u8], i: usize, val: bool) {
-    bits[i / 8] |= (val as u8) << (i % 8);
 }
 
 #[inline]
@@ -255,17 +239,6 @@ pub fn set_bits(bits: &mut [u8], offset: usize, length: usize) {
     if end_r > 0 && (byte_i == end_byte_i) {
         bits[byte_i] |= (1u8 << end_r) - 1;
     }
-}
-
-/// Returns the minimum number of bits needed to represent the value 'x'
-#[inline]
-pub fn num_required_bits(x: u64) -> usize {
-    for i in (0..64).rev() {
-        if x & (1u64 << i) != 0 {
-            return i + 1;
-        }
-    }
-    0
 }
 
 #[inline(always)]
@@ -1168,18 +1141,6 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
-    }
-
-    #[test]
-    fn test_num_required_bits() {
-        assert_eq!(num_required_bits(0), 0);
-        assert_eq!(num_required_bits(1), 1);
-        assert_eq!(num_required_bits(2), 2);
-        assert_eq!(num_required_bits(4), 3);
-        assert_eq!(num_required_bits(8), 4);
-        assert_eq!(num_required_bits(10), 4);
-        assert_eq!(num_required_bits(12), 4);
-        assert_eq!(num_required_bits(16), 5);
     }
 
     #[test]
