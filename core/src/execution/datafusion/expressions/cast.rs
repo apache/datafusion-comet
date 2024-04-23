@@ -110,13 +110,28 @@ impl Cast {
             (
                 DataType::Utf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => match to_type {
-                DataType::Int8 => Self::spark_cast_utf8_to_i8::<i32>(&array, self.eval_mode)?,
-                DataType::Int16 => Self::spark_cast_utf8_to_i16::<i32>(&array, self.eval_mode)?,
-                DataType::Int32 => Self::spark_cast_utf8_to_i32::<i32>(&array, self.eval_mode)?,
-                DataType::Int64 => Self::spark_cast_utf8_to_i64::<i32>(&array, self.eval_mode)?,
-                _ => unreachable!("invalid integral type in cast from string"),
-            },
+            ) => {
+                let string_array = array
+                    .as_any()
+                    .downcast_ref::<GenericStringArray<i32>>()
+                    .expect("spark_cast_utf8_to_i8 expected a string array");
+
+                match to_type {
+                    DataType::Int8 => {
+                        Self::spark_cast_utf8_to_i8::<i32>(string_array, self.eval_mode)?
+                    }
+                    DataType::Int16 => {
+                        Self::spark_cast_utf8_to_i16::<i32>(string_array, self.eval_mode)?
+                    }
+                    DataType::Int32 => {
+                        Self::spark_cast_utf8_to_i32::<i32>(string_array, self.eval_mode)?
+                    }
+                    DataType::Int64 => {
+                        Self::spark_cast_utf8_to_i64::<i32>(string_array, self.eval_mode)?
+                    }
+                    _ => unreachable!("invalid integral type in cast from string"),
+                }
+            }
             (
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -125,18 +140,22 @@ impl Cast {
             {
                 // TODO file follow on issue for optimizing this to avoid unpacking first
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
+                let string_array = unpacked_array
+                    .as_any()
+                    .downcast_ref::<GenericStringArray<i32>>()
+                    .expect("spark_cast_utf8_to_i8 expected a string array");
                 match to_type {
                     DataType::Int8 => {
-                        Self::spark_cast_utf8_to_i8::<i32>(&unpacked_array, self.eval_mode)?
+                        Self::spark_cast_utf8_to_i8::<i32>(&string_array, self.eval_mode)?
                     }
                     DataType::Int16 => {
-                        Self::spark_cast_utf8_to_i16::<i32>(&unpacked_array, self.eval_mode)?
+                        Self::spark_cast_utf8_to_i16::<i32>(&string_array, self.eval_mode)?
                     }
                     DataType::Int32 => {
-                        Self::spark_cast_utf8_to_i32::<i32>(&unpacked_array, self.eval_mode)?
+                        Self::spark_cast_utf8_to_i32::<i32>(&string_array, self.eval_mode)?
                     }
                     DataType::Int64 => {
-                        Self::spark_cast_utf8_to_i64::<i32>(&unpacked_array, self.eval_mode)?
+                        Self::spark_cast_utf8_to_i64::<i32>(&string_array, self.eval_mode)?
                     }
                     _ => {
                         unreachable!("invalid integral type in cast from dictionary-encoded string")
@@ -198,17 +217,12 @@ impl Cast {
     // TODO reduce code duplication
 
     fn spark_cast_utf8_to_i8<OffsetSize>(
-        from: &dyn Array,
+        string_array: &GenericStringArray<OffsetSize>,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
-        let string_array = from
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .expect("spark_cast_utf8_to_i8 expected a string array");
-
         // cast the dictionary values from string to int8
         let mut cast_array = PrimitiveArray::<Int8Type>::builder(string_array.len());
         for i in 0..string_array.len() {
@@ -226,17 +240,12 @@ impl Cast {
     }
 
     fn spark_cast_utf8_to_i16<OffsetSize>(
-        from: &dyn Array,
+        string_array: &GenericStringArray<OffsetSize>,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
-        let string_array = from
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .expect("spark_cast_utf8_to_i16 expected a string array");
-
         // cast the dictionary values from string to int8
         let mut cast_array = PrimitiveArray::<Int16Type>::builder(string_array.len());
         for i in 0..string_array.len() {
@@ -254,17 +263,12 @@ impl Cast {
     }
 
     fn spark_cast_utf8_to_i32<OffsetSize>(
-        from: &dyn Array,
+        string_array: &GenericStringArray<OffsetSize>,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
-        let string_array = from
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .expect("spark_cast_utf8_to_i32 expected a string array");
-
         // cast the dictionary values from string to int8
         let mut cast_array = PrimitiveArray::<Int32Type>::builder(string_array.len());
         for i in 0..string_array.len() {
@@ -282,17 +286,12 @@ impl Cast {
     }
 
     fn spark_cast_utf8_to_i64<OffsetSize>(
-        from: &dyn Array,
+        string_array: &GenericStringArray<OffsetSize>,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
-        let string_array = from
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .expect("spark_cast_utf8_to_i64 expected a string array");
-
         // cast the dictionary values from string to int8
         let mut cast_array = PrimitiveArray::<Int64Type>::builder(string_array.len());
         for i in 0..string_array.len() {
