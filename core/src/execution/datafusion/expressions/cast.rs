@@ -107,47 +107,48 @@ impl Cast {
             (DataType::LargeUtf8, DataType::Boolean) => {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
-            (DataType::Utf8, DataType::Int8) => {
-                Self::spark_cast_utf8_to_i8::<i32>(&array, self.eval_mode)?
-            }
-            (DataType::Dictionary(a, b), DataType::Int8)
-                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
+            (
+                DataType::Utf8,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) => match to_type {
+                DataType::Int8 => Self::spark_cast_utf8_to_i8::<i32>(&array, self.eval_mode)?,
+                DataType::Int16 => Self::spark_cast_utf8_to_i16::<i32>(&array, self.eval_mode)?,
+                DataType::Int32 => Self::spark_cast_utf8_to_i32::<i32>(&array, self.eval_mode)?,
+                DataType::Int64 => Self::spark_cast_utf8_to_i64::<i32>(&array, self.eval_mode)?,
+                _ => unreachable!("invalid integral type in cast from string"),
+            },
+            (
+                DataType::Dictionary(key_type, value_type),
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) if key_type.as_ref() == &DataType::Int32
+                && value_type.as_ref() == &DataType::Utf8 =>
             {
                 // TODO file follow on issue for optimizing this to avoid unpacking first
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::spark_cast_utf8_to_i8::<i32>(&unpacked_array, self.eval_mode)?
+                match to_type {
+                    DataType::Int8 => {
+                        Self::spark_cast_utf8_to_i8::<i32>(&unpacked_array, self.eval_mode)?
+                    }
+                    DataType::Int16 => {
+                        Self::spark_cast_utf8_to_i16::<i32>(&unpacked_array, self.eval_mode)?
+                    }
+                    DataType::Int32 => {
+                        Self::spark_cast_utf8_to_i32::<i32>(&unpacked_array, self.eval_mode)?
+                    }
+                    DataType::Int64 => {
+                        Self::spark_cast_utf8_to_i64::<i32>(&unpacked_array, self.eval_mode)?
+                    }
+                    _ => {
+                        unreachable!("invalid integral type in cast from dictionary-encoded string")
+                    }
+                }
             }
-            (DataType::Utf8, DataType::Int16) => {
-                Self::spark_cast_utf8_to_i16::<i32>(&array, self.eval_mode)?
-            }
-            (DataType::Dictionary(a, b), DataType::Int16)
-                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
-            {
-                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::spark_cast_utf8_to_i16::<i32>(&unpacked_array, self.eval_mode)?
-            }
-            (DataType::Utf8, DataType::Int32) => {
-                Self::spark_cast_utf8_to_i32::<i32>(&array, self.eval_mode)?
-            }
-            (DataType::Dictionary(a, b), DataType::Int32)
-                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
-            {
-                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::spark_cast_utf8_to_i32::<i32>(&unpacked_array, self.eval_mode)?
-            }
-            (DataType::Utf8, DataType::Int64) => {
-                Self::spark_cast_utf8_to_i64::<i32>(&array, self.eval_mode)?
-            }
-            (DataType::Dictionary(a, b), DataType::Int64)
-                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
-            {
-                let unpacked_array = Self::unpack_dict_string_array::<Int64Type>(&array)?;
-                Self::spark_cast_utf8_to_i64::<i32>(&unpacked_array, self.eval_mode)?
-            }
-            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
+            _ => {
+                // when we have no Spark-specific casting we delegate to DataFusion
+                cast_with_options(&array, to_type, &CAST_OPTIONS)?
+            },
         };
-        let result = spark_cast(cast_result, from_type, to_type);
-        Ok(result)
+        Ok(spark_cast(cast_result, from_type, to_type))
     }
 
     fn unpack_dict_string_array<T: ArrowDictionaryKeyType>(
@@ -492,11 +493,6 @@ fn do_cast_string_to_i64(
         }
     }
     Ok(Some(result))
-}
-
-fn is_java_whitespace(character: char) -> bool {
-    // TODO we need to use Java's rules here not Rust's (or maybe they are the same?)
-    character.is_whitespace()
 }
 
 fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
