@@ -617,8 +617,8 @@ mod test {
             cast_string_to_i8(".", EvalMode::Legacy).unwrap(),
             Some(0_i8)
         );
-        // note that TRY behavior is different to LEGACY in some cases
-        assert_eq!(cast_string_to_i8("0.2", EvalMode::Try).unwrap(), Some(0_i8));
+        // TRY should always return null for decimals
+        assert_eq!(cast_string_to_i8("0.2", EvalMode::Try).unwrap(), None);
         assert_eq!(cast_string_to_i8(".", EvalMode::Try).unwrap(), None);
         // ANSI mode should throw error on decimal
         assert!(cast_string_to_i8("0.2", EvalMode::Ansi).is_err());
