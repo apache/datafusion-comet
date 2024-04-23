@@ -312,8 +312,8 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
-      withParquetTable((0 until 5).map(_.toString).map(i => (i, i + 1)), "t1") {
-        withParquetTable((0 until 5).map(_.toString).map(i => (i, i + 1)), "t2") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
           val df = sql("SELECT /*+ SHUFFLE_HASH(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
           df.collect()
 
