@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import java.sql.Date
 import java.time.{Duration, Period}
 
 import scala.collection.JavaConverters._
@@ -34,7 +35,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -58,6 +59,28 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
+    }
+  }
+
+  test("Ensure that the correct outputPartitioning of CometSort") {
+    withTable("test_data") {
+      val tableDF = spark.sparkContext
+        .parallelize(
+          (1 to 10).map { i =>
+            (if (i > 4) 5 else i, i.toString, Date.valueOf(s"${2020 + i}-$i-$i"))
+          },
+          3)
+        .toDF("id", "data", "day")
+      tableDF.write.saveAsTable("test_data")
+
+      val df = sql("SELECT * FROM test_data")
+        .repartition($"data")
+        .sortWithinPartitions($"id", $"data", $"day")
+      df.collect()
+      val sort = stripAQEPlan(df.queryExecution.executedPlan).collect { case s: CometSortExec =>
+        s
+      }.head
+      assert(sort.outputPartitioning == sort.child.outputPartitioning)
     }
   }
 
@@ -271,6 +294,39 @@ class CometExecSuite extends CometTestBase {
 
         assert(metrics.contains("output_rows"))
         assert(metrics("output_rows").value == 1L)
+      }
+    }
+  }
+
+  test("Comet native metrics: SortMergeJoin") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+      "spark.sql.autoBroadcastJoinThreshold" -> "0",
+      "spark.sql.join.preferSortMergeJoin" -> "true") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl1") {
+        withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl2") {
+          val df = sql("SELECT * FROM tbl1 INNER JOIN tbl2 ON tbl1._1 = tbl2._1")
+          df.collect()
+
+          val metrics = find(df.queryExecution.executedPlan) {
+            case _: CometSortMergeJoinExec => true
+            case _ => false
+          }.map(_.metrics).get
+
+          assert(metrics.contains("input_batches"))
+          assert(metrics("input_batches").value == 2L)
+          assert(metrics.contains("input_rows"))
+          assert(metrics("input_rows").value == 10L)
+          assert(metrics.contains("output_batches"))
+          assert(metrics("output_batches").value == 1L)
+          assert(metrics.contains("output_rows"))
+          assert(metrics("output_rows").value == 5L)
+          assert(metrics.contains("peak_mem_used"))
+          assert(metrics("peak_mem_used").value > 1L)
+          assert(metrics.contains("join_time"))
+          assert(metrics("join_time").value > 1L)
+        }
       }
     }
   }
