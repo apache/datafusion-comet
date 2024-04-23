@@ -284,6 +284,10 @@ fn cast_string_to_integral_with_range_check(
     }
 }
 
+/// We support parsing strings to i32 and i64 to match Spark's logic. Support for i8 and i16 is
+/// implemented by first parsing as i32 and then downcasting. The CastStringToIntegral trait is
+/// introduced so that we can have the parsing logic delegate either to an i32 or i64 accumulator
+/// and avoid the need to use macros here.
 trait CastStringToIntegral {
     fn accumulate(
         &mut self,
@@ -422,10 +426,7 @@ fn do_cast_string_to_int(
     eval_mode: EvalMode,
     type_name: &str,
 ) -> CometResult<()> {
-
-    // TODO avoid building a vec of chars
     let chars: Vec<char> = str.chars().collect();
-
     let mut i = 0;
     let mut end = chars.len();
 
@@ -435,7 +436,7 @@ fn do_cast_string_to_int(
     }
 
     // skip trailing whitespace
-    while end > i && chars[end-1].is_whitespace() {
+    while end > i && chars[end - 1].is_whitespace() {
         end -= 1;
     }
 
