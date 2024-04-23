@@ -659,7 +659,8 @@ case class CometHashJoinExec(
   override lazy val metrics: Map[String, SQLMetric] =
     Map(
       "build_time" ->
-        SQLMetrics.createNanoTimingMetric(sparkContext,
+        SQLMetrics.createNanoTimingMetric(
+          sparkContext,
           "Total time for collecting build-side of join"),
       "build_input_batches" ->
         SQLMetrics.createMetric(sparkContext, "Number of batches consumed by build-side"),
