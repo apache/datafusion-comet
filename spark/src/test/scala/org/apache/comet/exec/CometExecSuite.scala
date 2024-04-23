@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import java.sql.Date
 import java.time.{Duration, Period}
 
 import scala.collection.JavaConverters._
@@ -34,7 +35,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -58,6 +59,28 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
+    }
+  }
+
+  test("Ensure that the correct outputPartitioning of CometSort") {
+    withTable("test_data") {
+      val tableDF = spark.sparkContext
+        .parallelize(
+          (1 to 10).map { i =>
+            (if (i > 4) 5 else i, i.toString, Date.valueOf(s"${2020 + i}-$i-$i"))
+          },
+          3)
+        .toDF("id", "data", "day")
+      tableDF.write.saveAsTable("test_data")
+
+      val df = sql("SELECT * FROM test_data")
+        .repartition($"data")
+        .sortWithinPartitions($"id", $"data", $"day")
+      df.collect()
+      val sort = stripAQEPlan(df.queryExecution.executedPlan).collect { case s: CometSortExec =>
+        s
+      }.head
+      assert(sort.outputPartitioning == sort.child.outputPartitioning)
     }
   }
 
