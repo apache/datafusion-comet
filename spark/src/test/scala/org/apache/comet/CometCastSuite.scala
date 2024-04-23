@@ -66,19 +66,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
-  ignore("cast string to byte") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ByteType)
+  test("cast string to byte") {
+    val testValues =
+      Seq("", ".", "0", "-0", "+1", "-1", ".2", "-.2", "1e1", "127", "128", "-128", "-129") ++
+        generateStrings(numericPattern, 8)
+    castTest(testValues.toDF("a"), DataTypes.ByteType)
   }
 
-  ignore("cast string to short") {
+  test("cast string to short") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ShortType)
   }
 
-  ignore("cast string to int") {
+  test("cast string to int") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
-  ignore("cast string to long") {
+  test("cast string to long") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
@@ -133,11 +136,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = data.withColumn("converted", col("a").cast(toType))
+        val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
         checkSparkAnswer(df)
 
         // try_cast() should always return null for invalid inputs
-        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
         checkSparkAnswer(df2)
       }
 
@@ -154,7 +158,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
           // removing the "Execution error: " error message prefix that is added by DataFusion
           val cometMessage = actual.getMessage
-            .substring("Execution error: ".length)
+            .replace("Execution error: ", "")
 
           assert(expected.getMessage == cometMessage)
         } else {
@@ -169,7 +173,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         // try_cast() should always return null for invalid inputs
-        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
         checkSparkAnswer(df2)
       }
     }

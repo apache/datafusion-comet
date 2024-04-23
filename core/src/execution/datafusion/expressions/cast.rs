@@ -24,11 +24,15 @@ use std::{
 
 use crate::errors::{CometError, CometResult};
 use arrow::{
-    compute::{cast_with_options, CastOptions},
+    compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
+use arrow_array::{
+    types::{Int16Type, Int32Type, Int64Type, Int8Type},
+    Array, ArrayRef, BooleanArray, DictionaryArray, GenericStringArray, OffsetSizeTrait,
+    PrimitiveArray,
+};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
@@ -103,10 +107,57 @@ impl Cast {
             (DataType::LargeUtf8, DataType::Boolean) => {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
+            (DataType::Utf8, DataType::Int8) => {
+                Self::spark_cast_utf8_to_i8::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Dictionary(a, b), DataType::Int8)
+                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
+            {
+                // TODO file follow on issue for optimizing this to avoid unpacking first
+                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
+                Self::spark_cast_utf8_to_i8::<i32>(&unpacked_array, self.eval_mode)?
+            }
+            (DataType::Utf8, DataType::Int16) => {
+                Self::spark_cast_utf8_to_i16::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Dictionary(a, b), DataType::Int16)
+                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
+            {
+                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
+                Self::spark_cast_utf8_to_i16::<i32>(&unpacked_array, self.eval_mode)?
+            }
+            (DataType::Utf8, DataType::Int32) => {
+                Self::spark_cast_utf8_to_i32::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Dictionary(a, b), DataType::Int32)
+                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
+            {
+                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
+                Self::spark_cast_utf8_to_i32::<i32>(&unpacked_array, self.eval_mode)?
+            }
+            (DataType::Utf8, DataType::Int64) => {
+                Self::spark_cast_utf8_to_i64::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Dictionary(a, b), DataType::Int64)
+                if a.as_ref() == &DataType::Int32 && b.as_ref() == &DataType::Utf8 =>
+            {
+                let unpacked_array = Self::unpack_dict_string_array::<Int64Type>(&array)?;
+                Self::spark_cast_utf8_to_i64::<i32>(&unpacked_array, self.eval_mode)?
+            }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
         let result = spark_cast(cast_result, from_type, to_type);
         Ok(result)
+    }
+
+    fn unpack_dict_string_array<OffsetSize>(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+        let dict_array = array
+            .as_any()
+            .downcast_ref::<DictionaryArray<Int32Type>>()
+            .expect("DictionaryArray<Int32Type>");
+
+        let unpacked_array = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
+        Ok(unpacked_array)
     }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
@@ -139,6 +190,327 @@ impl Cast {
             .collect::<Result<BooleanArray, _>>()?;
 
         Ok(Arc::new(output_array))
+    }
+
+    // TODO reduce code duplication
+
+    fn spark_cast_utf8_to_i8<OffsetSize>(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let string_array = from
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("spark_cast_utf8_to_i8 expected a string array");
+
+        // cast the dictionary values from string to int8
+        let mut cast_array = PrimitiveArray::<Int8Type>::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                cast_array.append_null()
+            } else {
+                if let Some(cast_value) =
+                    cast_string_to_i8(string_array.value(i).trim(), eval_mode)?
+                {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        }
+        Ok(Arc::new(cast_array.finish()))
+    }
+
+    fn spark_cast_utf8_to_i16<OffsetSize>(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let string_array = from
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("spark_cast_utf8_to_i16 expected a string array");
+
+        // cast the dictionary values from string to int8
+        let mut cast_array = PrimitiveArray::<Int16Type>::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                cast_array.append_null()
+            } else {
+                if let Some(cast_value) =
+                    cast_string_to_i16(string_array.value(i).trim(), eval_mode)?
+                {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        }
+        Ok(Arc::new(cast_array.finish()))
+    }
+
+    fn spark_cast_utf8_to_i32<OffsetSize>(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let string_array = from
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("spark_cast_utf8_to_i32 expected a string array");
+
+        // cast the dictionary values from string to int8
+        let mut cast_array = PrimitiveArray::<Int32Type>::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                cast_array.append_null()
+            } else {
+                if let Some(cast_value) =
+                    cast_string_to_i32(string_array.value(i).trim(), eval_mode)?
+                {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        }
+        Ok(Arc::new(cast_array.finish()))
+    }
+
+    fn spark_cast_utf8_to_i64<OffsetSize>(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let string_array = from
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("spark_cast_utf8_to_i64 expected a string array");
+
+        // cast the dictionary values from string to int8
+        let mut cast_array = PrimitiveArray::<Int64Type>::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                cast_array.append_null()
+            } else {
+                if let Some(cast_value) =
+                    cast_string_to_i64(string_array.value(i).trim(), eval_mode)?
+                {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        }
+        Ok(Arc::new(cast_array.finish()))
+    }
+}
+
+fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
+    Ok(
+        do_cast_string_to_integral(str, eval_mode, "TINYINT", i8::MIN as i32, i8::MAX as i32)?
+            .map(|v| v as i8),
+    )
+}
+
+fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
+    Ok(
+        do_cast_string_to_integral(str, eval_mode, "SMALLINT", i16::MIN as i32, i16::MAX as i32)?
+            .map(|v| v as i16),
+    )
+}
+
+fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+    do_cast_string_to_i32(str, eval_mode, "INT")
+}
+
+fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
+    do_cast_string_to_i64(str, eval_mode, "BIGINT")
+}
+
+fn do_cast_string_to_integral(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+    min: i32,
+    max: i32,
+) -> CometResult<Option<i32>> {
+    match do_cast_string_to_i32(str, eval_mode, type_name)? {
+        None => Ok(None),
+        Some(v) if v >= min && v <= max => Ok(Some(v)),
+        _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+        _ => Ok(None),
+    }
+}
+
+fn do_cast_string_to_i32(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+) -> CometResult<Option<i32>> {
+    //TODO avoid trim and parse and skip whitespace chars instead
+    let str = str.trim();
+    if str.is_empty() {
+        return Ok(None);
+    }
+    let chars: Vec<char> = str.chars().collect();
+    let mut i = 0;
+
+    // skip + or -
+    let negative = chars[0] == '-';
+    if negative || chars[0] == '+' {
+        i += 1;
+        if i == chars.len() {
+            return Ok(None);
+        }
+    }
+
+    let mut result = 0;
+    let radix = 10;
+    let stop_value = i32::MIN / radix;
+
+    while i < chars.len() {
+        let b = chars[i];
+        i += 1;
+
+        if b == '.' && eval_mode == EvalMode::Legacy {
+            // truncate decimal in legacy mode
+            break;
+        }
+
+        let digit;
+        if b >= '0' && b <= '9' {
+            digit = (b as u32) - ('0' as u32);
+        } else {
+            return none_or_err(eval_mode, type_name, str);
+        }
+
+        if result < stop_value {
+            return none_or_err(eval_mode, type_name, str);
+        }
+        result = result * radix - digit as i32;
+        if result > 0 {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+
+    // This is the case when we've encountered a decimal separator. The fractional
+    // part will not change the number, but we will verify that the fractional part
+    // is well-formed.
+    while i < chars.len() {
+        let b = chars[i];
+        if b < '0' || b > '9' {
+            return none_or_err(eval_mode, type_name, str);
+        }
+        i += 1;
+    }
+
+    if !negative {
+        result = -result;
+        if result < 0 {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+    Ok(Some(result))
+}
+
+fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
+    match eval_mode {
+        EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+        _ => Ok(None),
+    }
+}
+
+fn do_cast_string_to_i64(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+) -> CometResult<Option<i64>> {
+    //TODO avoid trim and parse and skip whitespace chars instead
+    let str = str.trim();
+    if str.is_empty() {
+        return Ok(None);
+    }
+    let chars: Vec<char> = str.chars().collect();
+    let mut i = 0;
+
+    // skip + or -
+    let negative = chars[0] == '-';
+    if negative || chars[0] == '+' {
+        i += 1;
+        if i == chars.len() {
+            return Ok(None);
+        }
+    }
+
+    let mut result = 0;
+    let radix = 10;
+    let stop_value = i64::MIN / radix;
+
+    while i < chars.len() {
+        let b = chars[i];
+        i += 1;
+
+        if b == '.' && eval_mode == EvalMode::Legacy {
+            // truncate decimal in legacy mode
+            break;
+        }
+
+        let digit;
+        if b >= '0' && b <= '9' {
+            digit = (b as u32) - ('0' as u32);
+        } else {
+            return none_or_err(eval_mode, type_name, str);
+        }
+
+        if result < stop_value {
+            return none_or_err(eval_mode, type_name, str);
+        }
+        result = result * radix - digit as i64;
+        if result > 0 {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+
+    // This is the case when we've encountered a decimal separator. The fractional
+    // part will not change the number, but we will verify that the fractional part
+    // is well-formed.
+    while i < chars.len() {
+        let b = chars[i];
+        if b < '0' || b > '9' {
+            return none_or_err(eval_mode, type_name, str);
+        }
+        i += 1;
+    }
+
+    if !negative {
+        result = -result;
+        if result < 0 {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+    Ok(Some(result))
+}
+
+fn is_java_whitespace(character: char) -> bool {
+    // TODO we need to use Java's rules here not Rust's (or maybe they are the same?)
+    character.is_whitespace()
+}
+
+fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
+    CometError::CastInvalidValue {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
     }
 }
 
@@ -220,5 +592,36 @@ impl PhysicalExpr for Cast {
         self.timezone.hash(&mut s);
         self.eval_mode.hash(&mut s);
         self.hash(&mut s);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{cast_string_to_i8, EvalMode};
+
+    #[test]
+    fn test_cast_string_as_i8() {
+        // basic
+        assert_eq!(
+            cast_string_to_i8("127", EvalMode::Legacy).unwrap(),
+            Some(127_i8)
+        );
+        assert_eq!(cast_string_to_i8("128", EvalMode::Legacy).unwrap(), None);
+        assert!(cast_string_to_i8("128", EvalMode::Ansi).is_err());
+        // decimals
+        assert_eq!(
+            cast_string_to_i8("0.2", EvalMode::Legacy).unwrap(),
+            Some(0_i8)
+        );
+        assert_eq!(
+            cast_string_to_i8(".", EvalMode::Legacy).unwrap(),
+            Some(0_i8)
+        );
+        // note that TRY behavior is different to LEGACY in some cases
+        assert_eq!(cast_string_to_i8("0.2", EvalMode::Try).unwrap(), Some(0_i8));
+        assert_eq!(cast_string_to_i8(".", EvalMode::Try).unwrap(), None);
+        // ANSI mode should throw error on decimal
+        assert!(cast_string_to_i8("0.2", EvalMode::Ansi).is_err());
+        assert!(cast_string_to_i8(".", EvalMode::Ansi).is_err());
     }
 }

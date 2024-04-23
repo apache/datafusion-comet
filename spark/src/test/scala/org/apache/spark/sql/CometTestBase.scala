@@ -224,6 +224,7 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     val actual = Try(dfComet.collect()).failed.get
+    println(dfComet.queryExecution.executedPlan)
     (expected.get.getCause, actual.getCause)
   }
 
