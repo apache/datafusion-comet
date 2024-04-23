@@ -655,6 +655,23 @@ case class CometHashJoinExec(
 
   override def hashCode(): Int =
     Objects.hashCode(leftKeys, rightKeys, condition, buildSide, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    Map(
+      "build_time" ->
+        SQLMetrics.createNanoTimingMetric(sparkContext,
+          "Total time for collecting build-side of join"),
+      "build_input_batches" ->
+        SQLMetrics.createMetric(sparkContext, "Number of batches consumed by build-side"),
+      "build_input_rows" ->
+        SQLMetrics.createMetric(sparkContext, "Number of rows consumed by build-side"),
+      "build_mem_used" ->
+        SQLMetrics.createSizeMetric(sparkContext, "Number of rows consumed by build-side"),
+      "input_batches" -> SQLMetrics.createMetric(sparkContext, "Number of batches consumed"),
+      "input_rows" -> SQLMetrics.createMetric(sparkContext, "Number of rows consumed"),
+      "output_batches" -> SQLMetrics.createMetric(sparkContext, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sparkContext, "Number of rows produced"),
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sparkContext, "Total time for joining"))
 }
 
 case class CometBroadcastHashJoinExec(
