@@ -68,7 +68,7 @@ pub struct Cast {
     pub timezone: String,
 }
 
-macro_rules! cast_utf8_to_integral {
+macro_rules! cast_utf8_to_int {
     ($string_array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let mut cast_array = PrimitiveArray::<$array_type>::builder($string_array.len());
         for i in 0..$string_array.len() {
@@ -129,7 +129,7 @@ impl Cast {
             (
                 DataType::Utf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_integral(to_type, &array, self.eval_mode)?,
+            ) => Self::cast_string_to_int(to_type, &array, self.eval_mode)?,
             (
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -141,7 +141,7 @@ impl Cast {
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::cast_string_to_integral(to_type, &unpacked_array, self.eval_mode)?
+                Self::cast_string_to_int(to_type, &unpacked_array, self.eval_mode)?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -151,7 +151,7 @@ impl Cast {
         Ok(spark_cast(cast_result, from_type, to_type))
     }
 
-    fn cast_string_to_integral(
+    fn cast_string_to_int(
         to_type: &DataType,
         array: &ArrayRef,
         eval_mode: EvalMode,
@@ -159,20 +159,20 @@ impl Cast {
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
-            .expect("cast_string_to_integral expected a string array");
+            .expect("cast_string_to_int expected a string array");
 
         let cast_array: ArrayRef = match to_type {
             DataType::Int8 => {
-                cast_utf8_to_integral!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
+                cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
             }
             DataType::Int16 => {
-                cast_utf8_to_integral!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
+                cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
             }
             DataType::Int32 => {
-                cast_utf8_to_integral!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
+                cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
             }
             DataType::Int64 => {
-                cast_utf8_to_integral!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
+                cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
             }
             _ => unreachable!("invalid integral type in cast from string"),
         };
@@ -225,7 +225,7 @@ impl Cast {
 }
 
 fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
-    Ok(cast_string_to_integral_with_range_check(
+    Ok(cast_string_to_int_with_range_check(
         str,
         eval_mode,
         "TINYINT",
@@ -236,7 +236,7 @@ fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> 
 }
 
 fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
-    Ok(cast_string_to_integral_with_range_check(
+    Ok(cast_string_to_int_with_range_check(
         str,
         eval_mode,
         "SMALLINT",
@@ -247,25 +247,25 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    let mut accum = CastStringToIntegral32::default();
+    let mut accum = CastStringToInt32::default();
     do_cast_string_to_int(&mut accum, str, eval_mode, "INT")?;
     Ok(accum.result)
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
-    let mut accum = CastStringToIntegral64::default();
+    let mut accum = CastStringToInt64::default();
     do_cast_string_to_int(&mut accum, str, eval_mode, "BIGINT")?;
     Ok(accum.result)
 }
 
-fn cast_string_to_integral_with_range_check(
+fn cast_string_to_int_with_range_check(
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
     min: i32,
     max: i32,
 ) -> CometResult<Option<i32>> {
-    let mut accum = CastStringToIntegral32::default();
+    let mut accum = CastStringToInt32::default();
     do_cast_string_to_int(&mut accum, str, eval_mode, type_name)?;
     match accum.result {
         None => Ok(None),
@@ -276,10 +276,10 @@ fn cast_string_to_integral_with_range_check(
 }
 
 /// We support parsing strings to i32 and i64 to match Spark's logic. Support for i8 and i16 is
-/// implemented by first parsing as i32 and then downcasting. The CastStringToIntegral trait is
+/// implemented by first parsing as i32 and then downcasting. The CastStringToInt trait is
 /// introduced so that we can have the parsing logic delegate either to an i32 or i64 accumulator
 /// and avoid the need to use macros here.
-trait CastStringToIntegral {
+trait CastStringToInt {
     fn accumulate(
         &mut self,
         eval_mode: EvalMode,
@@ -298,13 +298,13 @@ trait CastStringToIntegral {
         negative: bool,
     ) -> CometResult<()>;
 }
-struct CastStringToIntegral32 {
+struct CastStringToInt32 {
     negative: bool,
     result: Option<i32>,
     radix: i32,
 }
 
-impl Default for CastStringToIntegral32 {
+impl Default for CastStringToInt32 {
     fn default() -> Self {
         Self {
             negative: false,
@@ -314,7 +314,7 @@ impl Default for CastStringToIntegral32 {
     }
 }
 
-impl CastStringToIntegral for CastStringToIntegral32 {
+impl CastStringToInt for CastStringToInt32 {
     fn accumulate(
         &mut self,
         eval_mode: EvalMode,
@@ -354,13 +354,13 @@ impl CastStringToIntegral for CastStringToIntegral32 {
     }
 }
 
-struct CastStringToIntegral64 {
+struct CastStringToInt64 {
     negative: bool,
     result: Option<i64>,
     radix: i64,
 }
 
-impl Default for CastStringToIntegral64 {
+impl Default for CastStringToInt64 {
     fn default() -> Self {
         Self {
             negative: false,
@@ -370,7 +370,7 @@ impl Default for CastStringToIntegral64 {
     }
 }
 
-impl CastStringToIntegral for CastStringToIntegral64 {
+impl CastStringToInt for CastStringToInt64 {
     fn accumulate(
         &mut self,
         eval_mode: EvalMode,
@@ -412,7 +412,7 @@ impl CastStringToIntegral for CastStringToIntegral64 {
 }
 
 fn do_cast_string_to_int(
-    accumulator: &mut dyn CastStringToIntegral,
+    accumulator: &mut dyn CastStringToInt,
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
