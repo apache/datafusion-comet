@@ -174,7 +174,7 @@ impl Cast {
             DataType::Int64 => {
                 cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
             }
-            _ => unreachable!("invalid integral type in cast from string"),
+            dt => unreachable!(format!("invalid integral type {dt} in cast from string")),
         };
         Ok(cast_array)
     }
