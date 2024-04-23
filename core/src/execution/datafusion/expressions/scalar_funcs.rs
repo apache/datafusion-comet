@@ -657,7 +657,12 @@ fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
                 Ok(ColumnarValue::Array(Arc::new(Int32Array::from(hashes))))
             }
         }
-        _ => internal_err!("Unsupported data type for function murmur3_hash"),
+        _ => {
+            internal_err!(
+                "The seed of function murmur3_hash must be an Int32 scalar value, but got: {:?}.",
+                seed
+            )
+        }
     }
 }
 
@@ -676,18 +681,23 @@ fn wrap_digest_result_as_hex_string(
     digest: ScalarFunctionImplementation,
 ) -> Result<ColumnarValue, DataFusionError> {
     let value = digest(args)?;
-    Ok(match value {
+    match value {
         ColumnarValue::Array(array) => {
             let binary_array = as_binary_array(&array)?;
             let string_array: StringArray = binary_array
                 .iter()
                 .map(|opt| opt.map(hex_encode::<_>))
                 .collect();
-            ColumnarValue::Array(Arc::new(string_array))
+            Ok(ColumnarValue::Array(Arc::new(string_array)))
         }
-        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => {
-            ColumnarValue::Scalar(ScalarValue::Utf8(opt.map(hex_encode::<_>)))
+        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => Ok(ColumnarValue::Scalar(
+            ScalarValue::Utf8(opt.map(hex_encode::<_>)),
+        )),
+        _ => {
+            exec_err!(
+                "digest function should return binary value, but got: {:?}",
+                value.data_type()
+            )
         }
-        _ => return exec_err!("Impossibly got invalid results from digest"),
-    })
+    }
 }
