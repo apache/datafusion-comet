@@ -213,14 +213,12 @@ impl Cast {
         for i in 0..string_array.len() {
             if string_array.is_null(i) {
                 cast_array.append_null()
+            } else if let Some(cast_value) =
+                cast_string_to_i8(string_array.value(i).trim(), eval_mode)?
+            {
+                cast_array.append_value(cast_value);
             } else {
-                if let Some(cast_value) =
-                    cast_string_to_i8(string_array.value(i).trim(), eval_mode)?
-                {
-                    cast_array.append_value(cast_value);
-                } else {
-                    cast_array.append_null()
-                }
+                cast_array.append_null()
             }
         }
         Ok(Arc::new(cast_array.finish()))
@@ -243,14 +241,12 @@ impl Cast {
         for i in 0..string_array.len() {
             if string_array.is_null(i) {
                 cast_array.append_null()
+            } else if let Some(cast_value) =
+                cast_string_to_i16(string_array.value(i).trim(), eval_mode)?
+            {
+                cast_array.append_value(cast_value);
             } else {
-                if let Some(cast_value) =
-                    cast_string_to_i16(string_array.value(i).trim(), eval_mode)?
-                {
-                    cast_array.append_value(cast_value);
-                } else {
-                    cast_array.append_null()
-                }
+                cast_array.append_null()
             }
         }
         Ok(Arc::new(cast_array.finish()))
@@ -273,14 +269,12 @@ impl Cast {
         for i in 0..string_array.len() {
             if string_array.is_null(i) {
                 cast_array.append_null()
+            } else if let Some(cast_value) =
+                cast_string_to_i32(string_array.value(i).trim(), eval_mode)?
+            {
+                cast_array.append_value(cast_value);
             } else {
-                if let Some(cast_value) =
-                    cast_string_to_i32(string_array.value(i).trim(), eval_mode)?
-                {
-                    cast_array.append_value(cast_value);
-                } else {
-                    cast_array.append_null()
-                }
+                cast_array.append_null()
             }
         }
         Ok(Arc::new(cast_array.finish()))
@@ -303,14 +297,12 @@ impl Cast {
         for i in 0..string_array.len() {
             if string_array.is_null(i) {
                 cast_array.append_null()
+            } else if let Some(cast_value) =
+                cast_string_to_i64(string_array.value(i).trim(), eval_mode)?
+            {
+                cast_array.append_value(cast_value);
             } else {
-                if let Some(cast_value) =
-                    cast_string_to_i64(string_array.value(i).trim(), eval_mode)?
-                {
-                    cast_array.append_value(cast_value);
-                } else {
-                    cast_array.append_null()
-                }
+                cast_array.append_null()
             }
         }
         Ok(Arc::new(cast_array.finish()))
@@ -389,7 +381,7 @@ fn do_cast_string_to_i32(
             break;
         }
 
-        let digit = if ('0'..='9').contains(&b) {
+        let digit = if b.is_ascii_digit() {
             (b as u32) - ('0' as u32)
         } else {
             return none_or_err(eval_mode, type_name, str);
@@ -409,7 +401,7 @@ fn do_cast_string_to_i32(
     // is well-formed.
     while i < chars.len() {
         let b = chars[i];
-        if !('0'..='9').contains(&b) {
+        if !b.is_ascii_digit() {
             return none_or_err(eval_mode, type_name, str);
         }
         i += 1;
@@ -467,7 +459,7 @@ fn do_cast_string_to_i64(
             break;
         }
 
-        let digit = if ('0'..='9').contains(&b) {
+        let digit = if b.is_ascii_digit() {
             (b as u32) - ('0' as u32)
         } else {
             return none_or_err(eval_mode, type_name, str);
@@ -487,7 +479,7 @@ fn do_cast_string_to_i64(
     // is well-formed.
     while i < chars.len() {
         let b = chars[i];
-        if !('0'..='9').contains(&b) {
+        if !b.is_ascii_digit() {
             return none_or_err(eval_mode, type_name, str);
         }
         i += 1;
