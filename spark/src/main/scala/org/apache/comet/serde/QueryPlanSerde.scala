@@ -1930,7 +1930,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
-            withInfo(expr, s"non literal numBits is not supported")
+            withInfo(expr, "non literal numBits is not supported")
             return None
           }
           // it's possible for spark to dynamically compute the number of bits from input
