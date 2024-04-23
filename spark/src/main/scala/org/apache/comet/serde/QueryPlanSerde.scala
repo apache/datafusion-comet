@@ -628,7 +628,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             None
           }
 
-        case mul @ Multiply(left, right, _) =>
+        case mul @ Multiply(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
             withInfo(mul, s"Unsupported datatype ${left.dataType}")
           }
@@ -663,7 +663,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             withInfo(div, left, right)
             None
           }
-        case div @ Divide(left, right, _) =>
+        case div @ Divide(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
             withInfo(div, s"Unsupported datatype ${left.dataType}")
           }
