@@ -68,7 +68,7 @@ pub struct Cast {
     pub timezone: String,
 }
 
-macro_rules! spark_cast_utf8_to_integral {
+macro_rules! cast_utf8_to_integral {
     ($string_array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let mut cast_array = PrimitiveArray::<$array_type>::builder($string_array.len());
         for i in 0..$string_array.len() {
@@ -129,7 +129,7 @@ impl Cast {
             (
                 DataType::Utf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::spark_cast_string_to_integral(to_type, &array, self.eval_mode)?,
+            ) => Self::cast_string_to_integral(to_type, &array, self.eval_mode)?,
             (
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -141,7 +141,7 @@ impl Cast {
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::spark_cast_string_to_integral(to_type, &unpacked_array, self.eval_mode)?
+                Self::cast_string_to_integral(to_type, &unpacked_array, self.eval_mode)?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -151,7 +151,7 @@ impl Cast {
         Ok(spark_cast(cast_result, from_type, to_type))
     }
 
-    fn spark_cast_string_to_integral(
+    fn cast_string_to_integral(
         to_type: &DataType,
         array: &ArrayRef,
         eval_mode: EvalMode,
@@ -159,30 +159,21 @@ impl Cast {
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
-            .expect("spark_cast_string_to_integral expected a string array");
+            .expect("cast_string_to_integral expected a string array");
 
         let cast_array: ArrayRef = match to_type {
             DataType::Int8 => {
-                spark_cast_utf8_to_integral!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
+                cast_utf8_to_integral!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
             }
-            DataType::Int16 => spark_cast_utf8_to_integral!(
-                string_array,
-                eval_mode,
-                Int16Type,
-                cast_string_to_i16
-            )?,
-            DataType::Int32 => spark_cast_utf8_to_integral!(
-                string_array,
-                eval_mode,
-                Int32Type,
-                cast_string_to_i32
-            )?,
-            DataType::Int64 => spark_cast_utf8_to_integral!(
-                string_array,
-                eval_mode,
-                Int64Type,
-                cast_string_to_i64
-            )?,
+            DataType::Int16 => {
+                cast_utf8_to_integral!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
+            }
+            DataType::Int32 => {
+                cast_utf8_to_integral!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
+            }
+            DataType::Int64 => {
+                cast_utf8_to_integral!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
+            }
             _ => unreachable!("invalid integral type in cast from string"),
         };
         Ok(cast_array)
