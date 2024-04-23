@@ -422,26 +422,40 @@ fn do_cast_string_to_int(
     eval_mode: EvalMode,
     type_name: &str,
 ) -> CometResult<()> {
-    //TODO avoid trim and parse and skip whitespace chars instead
-    let str = str.trim();
-    if str.is_empty() {
+
+    // TODO avoid building a vec of chars
+    let chars: Vec<char> = str.chars().collect();
+
+    let mut i = 0;
+    let mut end = chars.len();
+
+    // skip leading whitespace
+    while i < end && chars[i].is_whitespace() {
+        i += 1;
+    }
+
+    // skip trailing whitespace
+    while end > i && chars[end-1].is_whitespace() {
+        end -= 1;
+    }
+
+    // check for empty string
+    if i == end {
         accumulator.reset();
         return Ok(());
     }
-    let chars: Vec<char> = str.chars().collect();
-    let mut i = 0;
 
     // skip + or -
     let negative = chars[0] == '-';
     if negative || chars[0] == '+' {
         i += 1;
-        if i == chars.len() {
+        if i == end {
             accumulator.reset();
             return Ok(());
         }
     }
 
-    while i < chars.len() {
+    while i < end {
         let b = chars[i];
         i += 1;
 
@@ -463,7 +477,7 @@ fn do_cast_string_to_int(
     // This is the case when we've encountered a decimal separator. The fractional
     // part will not change the number, but we will verify that the fractional part
     // is well-formed.
-    while i < chars.len() {
+    while i < end {
         let b = chars[i];
         if !b.is_ascii_digit() {
             accumulator.reset();
