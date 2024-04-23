@@ -667,9 +667,11 @@ case class CometHashJoinExec(
       "build_input_rows" ->
         SQLMetrics.createMetric(sparkContext, "Number of rows consumed by build-side"),
       "build_mem_used" ->
-        SQLMetrics.createSizeMetric(sparkContext, "Number of rows consumed by build-side"),
-      "input_batches" -> SQLMetrics.createMetric(sparkContext, "Number of batches consumed"),
-      "input_rows" -> SQLMetrics.createMetric(sparkContext, "Number of rows consumed"),
+        SQLMetrics.createSizeMetric(sparkContext, "Memory used by build-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sparkContext, "Number of batches consumed by probe-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sparkContext, "Number of rows consumed by probe-side"),
       "output_batches" -> SQLMetrics.createMetric(sparkContext, "Number of batches produced"),
       "output_rows" -> SQLMetrics.createMetric(sparkContext, "Number of rows produced"),
       "join_time" -> SQLMetrics.createNanoTimingMetric(sparkContext, "Total time for joining"))
