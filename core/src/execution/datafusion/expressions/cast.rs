@@ -29,7 +29,7 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::{
-    types::{Int16Type, Int32Type, Int64Type, Int8Type},
+    types::{ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type},
     Array, ArrayRef, BooleanArray, DictionaryArray, GenericStringArray, OffsetSizeTrait,
     PrimitiveArray,
 };
@@ -150,11 +150,13 @@ impl Cast {
         Ok(result)
     }
 
-    fn unpack_dict_string_array<OffsetSize>(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+    fn unpack_dict_string_array<T: ArrowDictionaryKeyType>(
+        array: &ArrayRef,
+    ) -> DataFusionResult<ArrayRef> {
         let dict_array = array
             .as_any()
-            .downcast_ref::<DictionaryArray<Int32Type>>()
-            .expect("DictionaryArray<Int32Type>");
+            .downcast_ref::<DictionaryArray<T>>()
+            .expect("DictionaryArray<T>");
 
         let unpacked_array = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
         Ok(unpacked_array)
@@ -387,12 +389,11 @@ fn do_cast_string_to_i32(
             break;
         }
 
-        let digit;
-        if b >= '0' && b <= '9' {
-            digit = (b as u32) - ('0' as u32);
+        let digit = if ('0'..='9').contains(&b) {
+            (b as u32) - ('0' as u32)
         } else {
             return none_or_err(eval_mode, type_name, str);
-        }
+        };
 
         if result < stop_value {
             return none_or_err(eval_mode, type_name, str);
@@ -408,7 +409,7 @@ fn do_cast_string_to_i32(
     // is well-formed.
     while i < chars.len() {
         let b = chars[i];
-        if b < '0' || b > '9' {
+        if !('0'..='9').contains(&b) {
             return none_or_err(eval_mode, type_name, str);
         }
         i += 1;
@@ -423,6 +424,7 @@ fn do_cast_string_to_i32(
     Ok(Some(result))
 }
 
+/// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
 fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
     match eval_mode {
         EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
@@ -465,12 +467,11 @@ fn do_cast_string_to_i64(
             break;
         }
 
-        let digit;
-        if b >= '0' && b <= '9' {
-            digit = (b as u32) - ('0' as u32);
+        let digit = if ('0'..='9').contains(&b) {
+            (b as u32) - ('0' as u32)
         } else {
             return none_or_err(eval_mode, type_name, str);
-        }
+        };
 
         if result < stop_value {
             return none_or_err(eval_mode, type_name, str);
@@ -486,7 +487,7 @@ fn do_cast_string_to_i64(
     // is well-formed.
     while i < chars.len() {
         let b = chars[i];
-        if b < '0' || b > '9' {
+        if !('0'..='9').contains(&b) {
             return none_or_err(eval_mode, type_name, str);
         }
         i += 1;
