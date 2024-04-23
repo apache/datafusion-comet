@@ -146,7 +146,7 @@ impl Cast {
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
-            },
+            }
         };
         Ok(spark_cast(cast_result, from_type, to_type))
     }
@@ -311,35 +311,49 @@ impl Cast {
 }
 
 fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
-    Ok(
-        do_cast_string_to_integral(str, eval_mode, "TINYINT", i8::MIN as i32, i8::MAX as i32)?
-            .map(|v| v as i8),
-    )
+    Ok(cast_string_to_integral_with_range_check(
+        str,
+        eval_mode,
+        "TINYINT",
+        i8::MIN as i32,
+        i8::MAX as i32,
+    )?
+    .map(|v| v as i8))
 }
 
 fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
-    Ok(
-        do_cast_string_to_integral(str, eval_mode, "SMALLINT", i16::MIN as i32, i16::MAX as i32)?
-            .map(|v| v as i16),
-    )
+    Ok(cast_string_to_integral_with_range_check(
+        str,
+        eval_mode,
+        "SMALLINT",
+        i16::MIN as i32,
+        i16::MAX as i32,
+    )?
+    .map(|v| v as i16))
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    do_cast_string_to_i32(str, eval_mode, "INT")
+    let mut accum = CastStringToIntegral32::default();
+    do_cast_string_to_int(&mut accum, str, eval_mode, "INT")?;
+    Ok(accum.result)
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
-    do_cast_string_to_i64(str, eval_mode, "BIGINT")
+    let mut accum = CastStringToIntegral64::default();
+    do_cast_string_to_int(&mut accum, str, eval_mode, "BIGINT")?;
+    Ok(accum.result)
 }
 
-fn do_cast_string_to_integral(
+fn cast_string_to_integral_with_range_check(
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
     min: i32,
     max: i32,
 ) -> CometResult<Option<i32>> {
-    match do_cast_string_to_i32(str, eval_mode, type_name)? {
+    let mut accum = CastStringToIntegral32::default();
+    do_cast_string_to_int(&mut accum, str, eval_mode, type_name)?;
+    match accum.result {
         None => Ok(None),
         Some(v) if v >= min && v <= max => Ok(Some(v)),
         _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
@@ -347,15 +361,149 @@ fn do_cast_string_to_integral(
     }
 }
 
-fn do_cast_string_to_i32(
+trait CastStringToIntegral {
+    fn accumulate(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        digit: u32,
+    ) -> CometResult<()>;
+
+    fn reset(&mut self);
+
+    fn finish(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        negative: bool,
+    ) -> CometResult<()>;
+}
+struct CastStringToIntegral32 {
+    negative: bool,
+    result: Option<i32>,
+    radix: i32,
+}
+
+impl Default for CastStringToIntegral32 {
+    fn default() -> Self {
+        Self {
+            negative: false,
+            result: Some(0),
+            radix: 10,
+        }
+    }
+}
+
+impl CastStringToIntegral for CastStringToIntegral32 {
+    fn accumulate(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        digit: u32,
+    ) -> CometResult<()> {
+        if self.result.is_some() && self.result.unwrap() < i32::MIN / self.radix {
+            self.reset();
+            return none_or_err(eval_mode, type_name, str);
+        }
+        self.result = Some(self.result.unwrap_or(0) * self.radix - digit as i32);
+        if self.result.unwrap() > 0 {
+            self.reset();
+            return none_or_err(eval_mode, type_name, str);
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {
+        self.result = None;
+    }
+
+    fn finish(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        negative: bool,
+    ) -> CometResult<()> {
+        if self.result.is_some() && !negative {
+            self.result = Some(-self.result.unwrap());
+            if self.result.unwrap() < 0 {
+                return none_or_err(eval_mode, type_name, str);
+            }
+        }
+        Ok(())
+    }
+}
+
+struct CastStringToIntegral64 {
+    negative: bool,
+    result: Option<i64>,
+    radix: i64,
+}
+
+impl Default for CastStringToIntegral64 {
+    fn default() -> Self {
+        Self {
+            negative: false,
+            result: Some(0),
+            radix: 10,
+        }
+    }
+}
+
+impl CastStringToIntegral for CastStringToIntegral64 {
+    fn accumulate(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        digit: u32,
+    ) -> CometResult<()> {
+        if self.result.unwrap_or(0) < i64::MIN / self.radix {
+            self.reset();
+            return none_or_err(eval_mode, type_name, str);
+        }
+        self.result = Some(self.result.unwrap_or(0) * self.radix - digit as i64);
+        if self.result.unwrap() > 0 {
+            self.reset();
+            return none_or_err(eval_mode, type_name, str);
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.result = None;
+    }
+
+    fn finish(
+        &mut self,
+        eval_mode: EvalMode,
+        type_name: &str,
+        str: &str,
+        negative: bool,
+    ) -> CometResult<()> {
+        if self.result.is_some() && !negative {
+            self.result = Some(-self.result.unwrap());
+            if self.result.unwrap() < 0 {
+                return none_or_err(eval_mode, type_name, str);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn do_cast_string_to_int(
+    accumulator: &mut dyn CastStringToIntegral,
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
-) -> CometResult<Option<i32>> {
+) -> CometResult<()> {
     //TODO avoid trim and parse and skip whitespace chars instead
     let str = str.trim();
     if str.is_empty() {
-        return Ok(None);
+        accumulator.reset();
+        return Ok(());
     }
     let chars: Vec<char> = str.chars().collect();
     let mut i = 0;
@@ -365,13 +513,10 @@ fn do_cast_string_to_i32(
     if negative || chars[0] == '+' {
         i += 1;
         if i == chars.len() {
-            return Ok(None);
+            accumulator.reset();
+            return Ok(());
         }
     }
-
-    let mut result = 0;
-    let radix = 10;
-    let stop_value = i32::MIN / radix;
 
     while i < chars.len() {
         let b = chars[i];
@@ -385,16 +530,11 @@ fn do_cast_string_to_i32(
         let digit = if b.is_ascii_digit() {
             (b as u32) - ('0' as u32)
         } else {
+            accumulator.reset();
             return none_or_err(eval_mode, type_name, str);
         };
 
-        if result < stop_value {
-            return none_or_err(eval_mode, type_name, str);
-        }
-        result = result * radix - digit as i32;
-        if result > 0 {
-            return none_or_err(eval_mode, type_name, str);
-        }
+        accumulator.accumulate(eval_mode, type_name, str, digit)?;
     }
 
     // This is the case when we've encountered a decimal separator. The fractional
@@ -403,96 +543,23 @@ fn do_cast_string_to_i32(
     while i < chars.len() {
         let b = chars[i];
         if !b.is_ascii_digit() {
+            accumulator.reset();
             return none_or_err(eval_mode, type_name, str);
         }
         i += 1;
     }
 
-    if !negative {
-        result = -result;
-        if result < 0 {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-    Ok(Some(result))
+    accumulator.finish(eval_mode, type_name, str, negative)?;
+
+    Ok(())
 }
 
 /// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
-fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
+fn none_or_err(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<()> {
     match eval_mode {
         EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
-        _ => Ok(None),
+        _ => Ok(()),
     }
-}
-
-fn do_cast_string_to_i64(
-    str: &str,
-    eval_mode: EvalMode,
-    type_name: &str,
-) -> CometResult<Option<i64>> {
-    //TODO avoid trim and parse and skip whitespace chars instead
-    let str = str.trim();
-    if str.is_empty() {
-        return Ok(None);
-    }
-    let chars: Vec<char> = str.chars().collect();
-    let mut i = 0;
-
-    // skip + or -
-    let negative = chars[0] == '-';
-    if negative || chars[0] == '+' {
-        i += 1;
-        if i == chars.len() {
-            return Ok(None);
-        }
-    }
-
-    let mut result = 0;
-    let radix = 10;
-    let stop_value = i64::MIN / radix;
-
-    while i < chars.len() {
-        let b = chars[i];
-        i += 1;
-
-        if b == '.' && eval_mode == EvalMode::Legacy {
-            // truncate decimal in legacy mode
-            break;
-        }
-
-        let digit = if b.is_ascii_digit() {
-            (b as u32) - ('0' as u32)
-        } else {
-            return none_or_err(eval_mode, type_name, str);
-        };
-
-        if result < stop_value {
-            return none_or_err(eval_mode, type_name, str);
-        }
-        result = result * radix - digit as i64;
-        if result > 0 {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-
-    // This is the case when we've encountered a decimal separator. The fractional
-    // part will not change the number, but we will verify that the fractional part
-    // is well-formed.
-    while i < chars.len() {
-        let b = chars[i];
-        if !b.is_ascii_digit() {
-            return none_or_err(eval_mode, type_name, str);
-        }
-        i += 1;
-    }
-
-    if !negative {
-        result = -result;
-        if result < 0 {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-    Ok(Some(result))
 }
 
 fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
