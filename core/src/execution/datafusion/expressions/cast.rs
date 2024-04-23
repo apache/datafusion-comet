@@ -69,14 +69,13 @@ pub struct Cast {
 }
 
 macro_rules! cast_utf8_to_int {
-    ($string_array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
-        let mut cast_array = PrimitiveArray::<$array_type>::builder($string_array.len());
-        for i in 0..$string_array.len() {
-            if $string_array.is_null(i) {
+    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+        let len = $array.len();
+        let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
+        for i in 0..len {
+            if $array.is_null(i) {
                 cast_array.append_null()
-            } else if let Some(cast_value) =
-                $cast_method($string_array.value(i).trim(), $eval_mode)?
-            {
+            } else if let Some(cast_value) = $cast_method($array.value(i).trim(), $eval_mode)? {
                 cast_array.append_value(cast_value);
             } else {
                 cast_array.append_null()
@@ -174,7 +173,10 @@ impl Cast {
             DataType::Int64 => {
                 cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
             }
-            dt => unreachable!(format!("invalid integral type {dt} in cast from string")),
+            dt => unreachable!(
+                "{}",
+                format!("invalid integer type {dt} in cast from string")
+            ),
         };
         Ok(cast_array)
     }
