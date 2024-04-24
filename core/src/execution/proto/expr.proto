@@ -94,9 +94,13 @@ message AggExpr {
     BitXorAgg bitXorAgg = 11;
     CovSample covSample = 12;
     CovPopulation covPopulation = 13;
-    VarianceSample varianceSample = 14;
-    VariancePopulation variancePopulation = 15;
+    Variance variance = 14;
   }
+}
+
+enum StatisticsType {
+  SAMPLE = 0;
+  POPULATION = 1;
 }
 
 message Count {
@@ -167,16 +171,11 @@ message CovPopulation {
   DataType datatype = 4;
 }
 
-message VarianceSample {
+message Variance {
   Expr child = 1;
   bool null_on_divide_by_zero = 2;
   DataType datatype = 3;
-}
-
-message VariancePopulation {
-  Expr child = 1;
-  bool null_on_divide_by_zero = 2;
-  DataType datatype = 3;
+  StatisticsType stats_type = 4;
 }
 
 message Literal {

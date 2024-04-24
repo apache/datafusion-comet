@@ -469,15 +469,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         val dataType = serializeDataType(variance.dataType)
 
         if (childExpr.isDefined && dataType.isDefined) {
-          val varBuilder = ExprOuterClass.VarianceSample.newBuilder()
+          val varBuilder = ExprOuterClass.Variance.newBuilder()
           varBuilder.setChild(childExpr.get)
           varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           varBuilder.setDatatype(dataType.get)
+          varBuilder.setStatsTypeValue(0)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setVarianceSample(varBuilder)
+              .setVariance(varBuilder)
               .build())
         } else {
           None
@@ -487,15 +488,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         val dataType = serializeDataType(variancePop.dataType)
 
         if (childExpr.isDefined && dataType.isDefined) {
-          val varBuilder = ExprOuterClass.VariancePopulation.newBuilder()
+          val varBuilder = ExprOuterClass.Variance.newBuilder()
           varBuilder.setChild(childExpr.get)
           varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           varBuilder.setDatatype(dataType.get)
+          varBuilder.setStatsTypeValue(1)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setVariancePopulation(varBuilder)
+              .setVariance(varBuilder)
               .build())
         } else {
           None

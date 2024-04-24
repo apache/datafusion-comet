@@ -1236,27 +1236,29 @@ impl PhysicalPlanner {
                     StatsType::Population,
                 )))
             }
-            AggExprStruct::VarianceSample(expr) => {
+            AggExprStruct::Variance(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Variance::new(
-                    child,
-                    "variance",
-                    datatype,
-                    StatsType::Sample,
-                    expr.null_on_divide_by_zero,
-                )))
-            }
-            AggExprStruct::VariancePopulation(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Variance::new(
-                    child,
-                    "variance_pop",
-                    datatype,
-                    StatsType::Population,
-                    expr.null_on_divide_by_zero,
-                )))
+                match expr.stats_type {
+                    0 => Ok(Arc::new(Variance::new(
+                        child,
+                        "variance",
+                        datatype,
+                        StatsType::Sample,
+                        expr.null_on_divide_by_zero,
+                    ))),
+                    1 => Ok(Arc::new(Variance::new(
+                         child,
+                         "variance_pop",
+                         datatype,
+                         StatsType::Population,
+                         expr.null_on_divide_by_zero,
+                    ))),
+                    stats_type => Err(ExecutionError::GeneralError(format!(
+                        "Unknown StatisticsType {:?} for Variance",
+                        stats_type
+                    ))),
+                }
             }
         }
     }
