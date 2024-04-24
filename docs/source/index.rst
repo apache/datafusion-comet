@@ -37,3 +37,22 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 
 This documentation site is currently being developed. The most up-to-date documentation can be found in the
 GitHub repository at https://github.com/apache/datafusion-comet.
+
+.. _toc.links:
+.. toctree::
+   :maxdepth: 1
+   :caption: Project Links
+
+   Github and Issue Tracker <https://github.com/apache/datafusion-comet>
+
+.. _toc.asf-links:
+.. toctree::
+   :maxdepth: 1
+   :caption: ASF Links
+
+   Apache Software Foundation <https://apache.org>
+   License <https://www.apache.org/licenses/>
+   Donate <https://www.apache.org/foundation/sponsorship.html>
+   Thanks <https://www.apache.org/foundation/thanks.html>
+   Security <https://www.apache.org/security/>
+   Code of conduct <https://www.apache.org/foundation/policies/conduct.html>
