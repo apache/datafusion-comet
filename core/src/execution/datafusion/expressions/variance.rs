@@ -22,7 +22,6 @@ use std::{any::Any, sync::Arc};
 use crate::execution::datafusion::expressions::{stats::StatsType, utils::down_cast_any_ref};
 use arrow::{
     array::{ArrayRef, Float64Array},
-    compute::cast,
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
