@@ -17,11 +17,10 @@
   under the License.
 -->
 
-# DataFusion Comet Documentation
+# Apache DataFusion Comet Documentation
 
-This folder contains the source content of the [User Guide](./source/user-guide)
-and [Contributor Guide](./source/contributor-guide). These are both published to
-https://datafusion.apache.org/comet/ as part of the release process.
+This folder contains the source content for the Apache DataFusion Comet documentation site. This content is published
+to https://datafusion.apache.org/comet when any changes are merged into the main branch.
 
 ## Dependencies
 
@@ -61,7 +60,7 @@ When the PR is merged to the `main` branch of the `datafusion-comet`
 repository, a [github workflow](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/docs.yaml) which:
 
 1. Builds the html content
-2. Pushes the html content to the [`asf-site`](https://github.com/apache/datafusion/tree/asf-site) branch in this repository.
+2. Pushes the html content to the [`asf-site`](https://github.com/apache/datafusion-comet/tree/asf-site) branch in this repository.
 
 The Apache Software Foundation provides https://datafusion.apache.org/,
 which serves content based on the configuration in
