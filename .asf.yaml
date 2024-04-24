@@ -27,7 +27,7 @@ notifications:
   jira_options: link label worklog
 github:
   description: "Apache DataFusion Comet Spark Accelerator"
-  homepage: https://arrow.apache.org/datafusion-comet
+  homepage: https://datafusion.apache.org/comet
   labels:
     - arrow
     - datafusion
@@ -45,7 +45,7 @@ github:
         required_approving_review_count: 1
 
 # publishes the content of the `asf-site` branch to
-# https://arrow.apache.org/datafusion/
+# https://datafusion.apache.org/comet/
 publish:
   whoami: asf-site
-  subdir: datafusion-comet
+  subdir: comet
