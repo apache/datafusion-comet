@@ -43,6 +43,7 @@ GitHub repository at https://github.com/apache/datafusion-comet.
    :maxdepth: 1
    :caption: Project Links
 
+   compatibility
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 
 .. _toc.asf-links:
