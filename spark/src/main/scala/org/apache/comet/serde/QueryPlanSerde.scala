@@ -481,6 +481,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               .setVariance(varBuilder)
               .build())
         } else {
+          withInfo(aggExpr, child)
           None
         }
       case variancePop @ VariancePop(child, nullOnDivideByZero) =>
@@ -500,6 +501,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               .setVariance(varBuilder)
               .build())
         } else {
+          withInfo(aggExpr, child)
           None
         }
       case fn =>

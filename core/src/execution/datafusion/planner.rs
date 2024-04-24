@@ -1248,11 +1248,11 @@ impl PhysicalPlanner {
                         expr.null_on_divide_by_zero,
                     ))),
                     1 => Ok(Arc::new(Variance::new(
-                         child,
-                         "variance_pop",
-                         datatype,
-                         StatsType::Population,
-                         expr.null_on_divide_by_zero,
+                        child,
+                        "variance_pop",
+                        datatype,
+                        StatsType::Population,
+                        expr.null_on_divide_by_zero,
                     ))),
                     stats_type => Err(ExecutionError::GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
