@@ -332,38 +332,34 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: HashJoin") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
-      withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
-        withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
-          val df = sql("SELECT /*+ SHUFFLE_HASH(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
-          df.collect()
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
+        val df = sql("SELECT /*+ SHUFFLE_HASH(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
+        df.collect()
 
-          val metrics = find(df.queryExecution.executedPlan) {
-            case _: CometHashJoinExec => true
-            case _ => false
-          }.map(_.metrics).get
+        val metrics = find(df.queryExecution.executedPlan) {
+          case _: CometHashJoinExec => true
+          case _ => false
+        }.map(_.metrics).get
 
-          assert(metrics.contains("build_time"))
-          assert(metrics("build_time").value > 1L)
-          assert(metrics.contains("build_input_batches"))
-          assert(metrics("build_input_batches").value == 5L)
-          assert(metrics.contains("build_mem_used"))
-          assert(metrics("build_mem_used").value > 1L)
-          assert(metrics.contains("build_input_rows"))
-          assert(metrics("build_input_rows").value == 5L)
-          assert(metrics.contains("input_batches"))
-          assert(metrics("input_batches").value == 5L)
-          assert(metrics.contains("input_rows"))
-          assert(metrics("input_rows").value == 5L)
-          assert(metrics.contains("output_batches"))
-          assert(metrics("output_batches").value == 5L)
-          assert(metrics.contains("output_rows"))
-          assert(metrics("output_rows").value == 5L)
-          assert(metrics.contains("join_time"))
-          assert(metrics("join_time").value > 1L)
-        }
+        assert(metrics.contains("build_time"))
+        assert(metrics("build_time").value > 1L)
+        assert(metrics.contains("build_input_batches"))
+        assert(metrics("build_input_batches").value == 5L)
+        assert(metrics.contains("build_mem_used"))
+        assert(metrics("build_mem_used").value > 1L)
+        assert(metrics.contains("build_input_rows"))
+        assert(metrics("build_input_rows").value == 5L)
+        assert(metrics.contains("input_batches"))
+        assert(metrics("input_batches").value == 5L)
+        assert(metrics.contains("input_rows"))
+        assert(metrics("input_rows").value == 5L)
+        assert(metrics.contains("output_batches"))
+        assert(metrics("output_batches").value == 5L)
+        assert(metrics.contains("output_rows"))
+        assert(metrics("output_rows").value == 5L)
+        assert(metrics.contains("join_time"))
+        assert(metrics("join_time").value > 1L)
       }
     }
   }
