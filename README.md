@@ -19,7 +19,7 @@ under the License.
 
 # Apache DataFusion Comet
 
-Comet is an Apache Spark plugin that uses [Apache DataFusion](https://datafusion.apache.org/datafusion/)
+Apache DataFusion Comet is an Apache Spark plugin that uses [Apache DataFusion](https://datafusion.apache.org/)
 as native runtime to achieve improvement in terms of query efficiency and query runtime.
 
 Comet runs Spark SQL queries using the native DataFusion runtime, which is
@@ -28,6 +28,7 @@ typically faster and more resource efficient than JVM based runtimes.
 <a href="doc/comet-overview.png"><img src="doc/comet-system-diagram.png" align="center" width="500" ></a>
 
 Comet aims to support:
+
 - a native Parquet implementation, including both reader and writer
 - full implementation of Spark operators, including
   Filter/Project/Aggregation/Join/Exchange etc.
@@ -71,18 +72,22 @@ Linux, Apple OSX (Intel and M1)
 Make sure the requirements above are met and software installed on your machine
 
 ### Clone repo
+
 ```commandline
 git clone https://github.com/apache/datafusion-comet.git
 ```
 
 ### Specify the Spark version and build the Comet
+
 Spark 3.4 used for the example.
+
 ```
 cd datafusion-comet
 make release PROFILES="-Pspark-3.4"
 ```
 
 ### Run Spark with Comet enabled
+
 Make sure `SPARK_HOME` points to the same Spark version as Comet has built for.
 
 ```
@@ -93,16 +98,19 @@ $SPARK_HOME/bin/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-
 --conf spark.comet.exec.all.enabled=true
 ```
 
-### Verify Comet enabled for Spark SQL query  
+### Verify Comet enabled for Spark SQL query
 
 Create a test Parquet source
+
 ```scala
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
-Query the data from the test source and check: 
+Query the data from the test source and check:
+
 - INFO message shows the native Comet library has been initialized.
 - The query plan reflects Comet operators being used for this query instead of Spark ones
+
 ```scala
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1")
 scala> spark.sql("select * from t1 where a > 5").explain
@@ -110,8 +118,8 @@ INFO src/lib.rs: Comet native library initialized
 == Physical Plan ==
         *(1) ColumnarToRow
         +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
-          +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)], 
-             Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], 
+          +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)],
+             Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [],
              PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
 
@@ -136,6 +144,7 @@ Comet doesn't have official release yet so currently the only way to test it is 
 Some cluster managers may require additional configuration, see https://spark.apache.org/docs/latest/cluster-overview.html
 
 To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
+
 ```
 --conf spark.comet.columnar.shuffle.enabled=true
 ```
