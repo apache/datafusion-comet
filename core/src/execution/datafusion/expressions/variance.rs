@@ -167,8 +167,7 @@ impl Accumulator for VarianceAccumulator {
     }
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let values = &cast(&values[0], &DataType::Float64)?;
-        let arr = downcast_value!(values, Float64Array).iter().flatten();
+        let arr = downcast_value!(&values[0], Float64Array).iter().flatten();
 
         for value in arr {
             let new_count = self.count + 1.0;
@@ -186,8 +185,7 @@ impl Accumulator for VarianceAccumulator {
     }
 
     fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let values = &cast(&values[0], &DataType::Float64)?;
-        let arr = downcast_value!(values, Float64Array).iter().flatten();
+        let arr = downcast_value!(&values[0], Float64Array).iter().flatten();
 
         for value in arr {
             let new_count = self.count - 1.0;
