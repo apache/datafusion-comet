@@ -420,7 +420,7 @@ Functions: []
 
 (70) CometExchange
 Input [1]: [(d_month_seq + 1)#49]
-Arguments: hashpartitioning((d_month_seq + 1)#49, 5), Exchange hashpartitioning((d_month_seq + 1)#49, 5), ENSURE_REQUIREMENTS, [plan_id=11], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
+Arguments: hashpartitioning((d_month_seq + 1)#49, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=11]
 
 (71) CometHashAggregate
 Input [1]: [(d_month_seq + 1)#49]
@@ -462,7 +462,7 @@ Functions: []
 
 (77) CometExchange
 Input [1]: [(d_month_seq + 3)#53]
-Arguments: hashpartitioning((d_month_seq + 3)#53, 5), Exchange hashpartitioning((d_month_seq + 3)#53, 5), ENSURE_REQUIREMENTS, [plan_id=13], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=14]
+Arguments: hashpartitioning((d_month_seq + 3)#53, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
 (78) CometHashAggregate
 Input [1]: [(d_month_seq + 3)#53]

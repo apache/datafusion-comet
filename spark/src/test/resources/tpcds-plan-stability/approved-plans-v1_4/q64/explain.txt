@@ -222,7 +222,7 @@ Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_cdemo_sk#3, ss_hdemo_sk#4, ss_add
 
 (9) CometExchange
 Input [11]: [ss_item_sk#1, ss_customer_sk#2, ss_cdemo_sk#3, ss_hdemo_sk#4, ss_addr_sk#5, ss_store_sk#6, ss_promo_sk#7, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#11, ss_sold_date_sk#12]
-Arguments: hashpartitioning(ss_item_sk#1, 5), Exchange hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (10) CometSort
 Input [11]: [ss_item_sk#1, ss_customer_sk#2, ss_cdemo_sk#3, ss_hdemo_sk#4, ss_addr_sk#5, ss_store_sk#6, ss_promo_sk#7, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#11, ss_sold_date_sk#12]
@@ -245,7 +245,7 @@ Arguments: [cs_item_sk#17, cs_order_number#18, cs_ext_list_price#19], [cs_item_s
 
 (14) CometExchange
 Input [3]: [cs_item_sk#17, cs_order_number#18, cs_ext_list_price#19]
-Arguments: hashpartitioning(cs_item_sk#17, cs_order_number#18, 5), Exchange hashpartitioning(cs_item_sk#17, cs_order_number#18, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(cs_item_sk#17, cs_order_number#18, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (15) CometSort
 Input [3]: [cs_item_sk#17, cs_order_number#18, cs_ext_list_price#19]
@@ -268,7 +268,7 @@ Arguments: [cr_item_sk#21, cr_order_number#22, cr_refunded_cash#23, cr_reversed_
 
 (19) CometExchange
 Input [5]: [cr_item_sk#21, cr_order_number#22, cr_refunded_cash#23, cr_reversed_charge#24, cr_store_credit#25]
-Arguments: hashpartitioning(cr_item_sk#21, cr_order_number#22, 5), Exchange hashpartitioning(cr_item_sk#21, cr_order_number#22, 5), ENSURE_REQUIREMENTS, [plan_id=5], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+Arguments: hashpartitioning(cr_item_sk#21, cr_order_number#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (20) CometSort
 Input [5]: [cr_item_sk#21, cr_order_number#22, cr_refunded_cash#23, cr_reversed_charge#24, cr_store_credit#25]
@@ -290,7 +290,7 @@ Functions [2]: [partial_sum(UnscaledValue(cs_ext_list_price#19)), partial_sum(((
 
 (24) CometExchange
 Input [4]: [cs_item_sk#17, sum#27, sum#28, isEmpty#29]
-Arguments: hashpartitioning(cs_item_sk#17, 5), Exchange hashpartitioning(cs_item_sk#17, 5), ENSURE_REQUIREMENTS, [plan_id=7], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: hashpartitioning(cs_item_sk#17, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (25) CometHashAggregate
 Input [4]: [cs_item_sk#17, sum#27, sum#28, isEmpty#29]
@@ -350,7 +350,7 @@ Input [3]: [s_store_sk#34, s_store_name#35, s_zip#36]
 
 (38) BroadcastExchange
 Input [3]: [s_store_sk#34, s_store_name#35, s_zip#36]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=9]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=5]
 
 (39) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_store_sk#6]
@@ -378,7 +378,7 @@ Input [6]: [c_customer_sk#37, c_current_cdemo_sk#38, c_current_hdemo_sk#39, c_cu
 
 (44) BroadcastExchange
 Input [6]: [c_customer_sk#37, c_current_cdemo_sk#38, c_current_hdemo_sk#39, c_current_addr_sk#40, c_first_shipto_date_sk#41, c_first_sales_date_sk#42]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=10]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=6]
 
 (45) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_customer_sk#2]
@@ -406,7 +406,7 @@ Input [2]: [d_date_sk#43, d_year#44]
 
 (50) BroadcastExchange
 Input [2]: [d_date_sk#43, d_year#44]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=11]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=7]
 
 (51) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [c_first_sales_date_sk#42]
@@ -447,7 +447,7 @@ Input [2]: [cd_demo_sk#47, cd_marital_status#48]
 
 (59) BroadcastExchange
 Input [2]: [cd_demo_sk#47, cd_marital_status#48]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=12]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=8]
 
 (60) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_cdemo_sk#3]
@@ -488,7 +488,7 @@ Input [1]: [p_promo_sk#51]
 
 (68) BroadcastExchange
 Input [1]: [p_promo_sk#51]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=13]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=9]
 
 (69) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_promo_sk#7]
@@ -516,7 +516,7 @@ Input [2]: [hd_demo_sk#52, hd_income_band_sk#53]
 
 (74) BroadcastExchange
 Input [2]: [hd_demo_sk#52, hd_income_band_sk#53]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=14]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=10]
 
 (75) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_hdemo_sk#4]
@@ -557,7 +557,7 @@ Input [5]: [ca_address_sk#56, ca_street_number#57, ca_street_name#58, ca_city#59
 
 (83) BroadcastExchange
 Input [5]: [ca_address_sk#56, ca_street_number#57, ca_street_name#58, ca_city#59, ca_zip#60]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=15]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=11]
 
 (84) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_addr_sk#5]
@@ -598,7 +598,7 @@ Input [1]: [ib_income_band_sk#66]
 
 (92) BroadcastExchange
 Input [1]: [ib_income_band_sk#66]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=16]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=12]
 
 (93) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [hd_income_band_sk#53]
@@ -643,7 +643,7 @@ Input [2]: [i_item_sk#68, i_product_name#71]
 
 (102) BroadcastExchange
 Input [2]: [i_item_sk#68, i_product_name#71]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=17]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=13]
 
 (103) BroadcastHashJoin [codegen id : 16]
 Left keys [1]: [ss_item_sk#1]
@@ -671,7 +671,7 @@ Results [17]: [i_product_name#71 AS product_name#84, i_item_sk#68 AS item_sk#85,
 
 (107) Exchange
 Input [17]: [product_name#84, item_sk#85, store_name#86, store_zip#87, b_street_number#88, b_streen_name#89, b_city#90, b_zip#91, c_street_number#92, c_street_name#93, c_city#94, c_zip#95, syear#96, cnt#97, s1#98, s2#99, s3#100]
-Arguments: hashpartitioning(item_sk#85, store_name#86, store_zip#87, 5), ENSURE_REQUIREMENTS, [plan_id=18]
+Arguments: hashpartitioning(item_sk#85, store_name#86, store_zip#87, 5), ENSURE_REQUIREMENTS, [plan_id=14]
 
 (108) Sort [codegen id : 17]
 Input [17]: [product_name#84, item_sk#85, store_name#86, store_zip#87, b_street_number#88, b_streen_name#89, b_city#90, b_zip#91, c_street_number#92, c_street_name#93, c_city#94, c_zip#95, syear#96, cnt#97, s1#98, s2#99, s3#100]
@@ -719,7 +719,7 @@ Arguments: [ss_item_sk#101, ss_customer_sk#102, ss_cdemo_sk#103, ss_hdemo_sk#104
 
 (117) CometExchange
 Input [11]: [ss_item_sk#101, ss_customer_sk#102, ss_cdemo_sk#103, ss_hdemo_sk#104, ss_addr_sk#105, ss_store_sk#106, ss_promo_sk#107, ss_wholesale_cost#109, ss_list_price#110, ss_coupon_amt#111, ss_sold_date_sk#112]
-Arguments: hashpartitioning(ss_item_sk#101, 5), Exchange hashpartitioning(ss_item_sk#101, 5), ENSURE_REQUIREMENTS, [plan_id=19], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=20]
+Arguments: hashpartitioning(ss_item_sk#101, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=15]
 
 (118) CometSort
 Input [11]: [ss_item_sk#101, ss_customer_sk#102, ss_cdemo_sk#103, ss_hdemo_sk#104, ss_addr_sk#105, ss_store_sk#106, ss_promo_sk#107, ss_wholesale_cost#109, ss_list_price#110, ss_coupon_amt#111, ss_sold_date_sk#112]
@@ -968,7 +968,7 @@ Results [8]: [i_item_sk#161 AS item_sk#169, s_store_name#128 AS store_name#170, 
 
 (174) Exchange
 Input [8]: [item_sk#169, store_name#170, store_zip#171, syear#172, cnt#173, s1#174, s2#175, s3#176]
-Arguments: hashpartitioning(item_sk#169, store_name#170, store_zip#171, 5), ENSURE_REQUIREMENTS, [plan_id=21]
+Arguments: hashpartitioning(item_sk#169, store_name#170, store_zip#171, 5), ENSURE_REQUIREMENTS, [plan_id=16]
 
 (175) Sort [codegen id : 34]
 Input [8]: [item_sk#169, store_name#170, store_zip#171, syear#172, cnt#173, s1#174, s2#175, s3#176]
@@ -986,7 +986,7 @@ Input [25]: [product_name#84, item_sk#85, store_name#86, store_zip#87, b_street_
 
 (178) Exchange
 Input [21]: [product_name#84, store_name#86, store_zip#87, b_street_number#88, b_streen_name#89, b_city#90, b_zip#91, c_street_number#92, c_street_name#93, c_city#94, c_zip#95, syear#96, cnt#97, s1#98, s2#99, s3#100, s1#174, s2#175, s3#176, syear#172, cnt#173]
-Arguments: rangepartitioning(product_name#84 ASC NULLS FIRST, store_name#86 ASC NULLS FIRST, cnt#173 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [plan_id=22]
+Arguments: rangepartitioning(product_name#84 ASC NULLS FIRST, store_name#86 ASC NULLS FIRST, cnt#173 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [plan_id=17]
 
 (179) Sort [codegen id : 36]
 Input [21]: [product_name#84, store_name#86, store_zip#87, b_street_number#88, b_streen_name#89, b_city#90, b_zip#91, c_street_number#92, c_street_name#93, c_city#94, c_zip#95, syear#96, cnt#97, s1#98, s2#99, s3#100, s1#174, s2#175, s3#176, syear#172, cnt#173]
@@ -1017,7 +1017,7 @@ Input [2]: [d_date_sk#32, d_year#33]
 
 (183) BroadcastExchange
 Input [2]: [d_date_sk#32, d_year#33]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=23]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=18]
 
 Subquery:2 Hosting operator id = 109 Hosting Expression = ss_sold_date_sk#112 IN dynamicpruning#113
 BroadcastExchange (187)
@@ -1042,6 +1042,6 @@ Input [2]: [d_date_sk#125, d_year#126]
 
 (187) BroadcastExchange
 Input [2]: [d_date_sk#125, d_year#126]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=24]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=19]
 
 

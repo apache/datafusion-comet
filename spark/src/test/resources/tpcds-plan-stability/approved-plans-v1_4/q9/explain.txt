@@ -58,7 +58,7 @@ Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#
 
 (9) CometExchange
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [5]: [count#21, sum#22, count#23, sum#24, count#25]
@@ -109,7 +109,7 @@ Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#
 
 (17) CometExchange
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (18) CometHashAggregate
 Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
@@ -160,7 +160,7 @@ Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#
 
 (25) CometExchange
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=5], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (26) CometHashAggregate
 Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
@@ -211,7 +211,7 @@ Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#
 
 (33) CometExchange
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=7], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (34) CometHashAggregate
 Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
@@ -262,7 +262,7 @@ Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#
 
 (41) CometExchange
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=9], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=10]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (42) CometHashAggregate
 Input [5]: [count#73, sum#74, count#75, sum#76, count#77]

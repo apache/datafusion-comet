@@ -56,7 +56,7 @@ Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#3))]
 
 (5) CometExchange
 Input [3]: [ss_item_sk#1, sum#5, count#6]
-Arguments: hashpartitioning(ss_item_sk#1, 5), Exchange hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (6) CometHashAggregate
 Input [3]: [ss_item_sk#1, sum#5, count#6]
@@ -69,7 +69,7 @@ Condition : (isnotnull(rank_col#8) AND (cast(rank_col#8 as decimal(13,7)) > (0.9
 
 (8) CometExchange
 Input [2]: [item_sk#7, rank_col#8]
-Arguments: SinglePartition, Exchange SinglePartition, ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (9) CometSort
 Input [2]: [item_sk#7, rank_col#8]
@@ -146,7 +146,7 @@ Input [2]: [i_item_sk#15, i_product_name#16]
 
 (27) BroadcastExchange
 Input [2]: [i_item_sk#15, i_product_name#16]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=3]
 
 (28) BroadcastHashJoin [codegen id : 7]
 Left keys [1]: [item_sk#7]
@@ -209,7 +209,7 @@ Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#23))]
 
 (38) CometExchange
 Input [3]: [ss_store_sk#22, sum#25, count#26]
-Arguments: hashpartitioning(ss_store_sk#22, 5), Exchange hashpartitioning(ss_store_sk#22, 5), ENSURE_REQUIREMENTS, [plan_id=6], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning(ss_store_sk#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (39) CometHashAggregate
 Input [3]: [ss_store_sk#22, sum#25, count#26]

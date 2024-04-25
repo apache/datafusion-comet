@@ -210,6 +210,9 @@ case class CometShuffleExchangeExec(
 
   override def hashCode(): Int =
     Objects.hashCode(outputPartitioning, shuffleOrigin, shuffleType, advisoryPartitionSize, child)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(outputPartitioning, shuffleOrigin, shuffleType, child) ++ Iterator(s"[plan_id=$id]")
 }
 
 object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
