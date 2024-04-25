@@ -71,7 +71,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
-  val castStringToIntegralInputs = Seq(
+  private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",
     "+",
