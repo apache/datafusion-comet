@@ -221,20 +221,7 @@ WholeStageCodegen (36)
                                                                                                     CometProject [cs_item_sk]
                                                                                                       CometFilter [sale,refund]
                                                                                                         CometHashAggregate [cs_item_sk,sum,sum,isEmpty]
-                                                                                                          CometExchange [cs_item_sk] #22
-                                                                                                            CometHashAggregate [cs_item_sk,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
-                                                                                                              CometProject [cs_item_sk,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
-                                                                                                                CometSortMergeJoin [cs_item_sk,cs_order_number,cr_item_sk,cr_order_number]
-                                                                                                                  CometSort [cs_item_sk,cs_order_number]
-                                                                                                                    CometExchange [cs_item_sk,cs_order_number] #23
-                                                                                                                      CometProject [cs_item_sk,cs_order_number,cs_ext_list_price]
-                                                                                                                        CometFilter [cs_item_sk,cs_order_number]
-                                                                                                                          CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_ext_list_price,cs_sold_date_sk]
-                                                                                                                  CometSort [cr_item_sk,cr_order_number]
-                                                                                                                    CometExchange [cr_item_sk,cr_order_number] #24
-                                                                                                                      CometProject [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
-                                                                                                                        CometFilter [cr_item_sk,cr_order_number]
-                                                                                                                          CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit,cr_returned_date_sk]
+                                                                                                          ReusedExchange [cs_item_sk,sum,sum,isEmpty] #6
                                                                                           InputAdapter
                                                                                             ReusedExchange [d_date_sk,d_year] #21
                                                                                       InputAdapter
