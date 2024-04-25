@@ -324,21 +324,25 @@ impl CastStringToInt for CastStringToInt32 {
         str: &str,
         digit: u32,
     ) -> CometResult<()> {
-        if self.result.is_some() && self.result.unwrap() < i32::MIN / self.radix {
-            self.reset();
-            return none_or_err(eval_mode, type_name, str);
-        }
-        let v = self.result.unwrap_or(0) * self.radix;
-        if let Some(x) = v.checked_sub(digit as i32) {
-            if x > 0 {
+        // We are going to process the new digit and accumulate the result. However, before doing
+        // this, if the result is already smaller than the stopValue(Integer.MIN_VALUE / radix),
+        // then result * 10 will definitely be smaller than minValue, and we can stop
+        if let Some(r) = self.result {
+            let stop_value = i32::MIN / self.radix;
+            if r < stop_value {
                 self.reset();
                 return none_or_err(eval_mode, type_name, str);
-            } else {
-                self.result = Some(x);
             }
-        } else {
-            self.reset();
-            return none_or_err(eval_mode, type_name, str);
+        }
+        // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE / radix),
+        // we can just use `result > 0` to check overflow. If result overflows, we should stop
+        let v = self.result.unwrap_or(0) * self.radix;
+        match v.checked_sub(digit as i32) {
+            Some(x) if x <= 0 => self.result = Some(x),
+            _ => {
+                self.reset();
+                return none_or_err(eval_mode, type_name, str);
+            }
         }
         Ok(())
     }
@@ -357,6 +361,7 @@ impl CastStringToInt for CastStringToInt32 {
             if let Some(r) = self.result {
                 let negated = r.checked_neg().unwrap_or(-1);
                 if negated < 0 {
+                    self.reset();
                     return none_or_err(eval_mode, type_name, str);
                 }
                 self.result = Some(negated);
@@ -390,21 +395,25 @@ impl CastStringToInt for CastStringToInt64 {
         str: &str,
         digit: u32,
     ) -> CometResult<()> {
-        if self.result.unwrap_or(0) < i64::MIN / self.radix {
-            self.reset();
-            return none_or_err(eval_mode, type_name, str);
-        }
-        let v = self.result.unwrap_or(0) * self.radix;
-        if let Some(x) = v.checked_sub(digit as i64) {
-            if x > 0 {
+        // We are going to process the new digit and accumulate the result. However, before doing
+        // this, if the result is already smaller than the stopValue(Integer.MIN_VALUE / radix),
+        // then result * 10 will definitely be smaller than minValue, and we can stop
+        if let Some(r) = self.result {
+            let stop_value = i64::MIN / self.radix;
+            if r < stop_value {
                 self.reset();
                 return none_or_err(eval_mode, type_name, str);
-            } else {
-                self.result = Some(x);
             }
-        } else {
-            self.reset();
-            return none_or_err(eval_mode, type_name, str);
+        }
+        // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE / radix),
+        // we can just use `result > 0` to check overflow. If result overflows, we should stop
+        let v = self.result.unwrap_or(0) * self.radix;
+        match v.checked_sub(digit as i64) {
+            Some(x) if x <= 0 => self.result = Some(x),
+            _ => {
+                self.reset();
+                return none_or_err(eval_mode, type_name, str);
+            }
         }
         Ok(())
     }
@@ -424,6 +433,7 @@ impl CastStringToInt for CastStringToInt64 {
             if let Some(r) = self.result {
                 let negated = r.checked_neg().unwrap_or(-1);
                 if negated < 0 {
+                    self.reset();
                     return none_or_err(eval_mode, type_name, str);
                 }
                 self.result = Some(negated);
