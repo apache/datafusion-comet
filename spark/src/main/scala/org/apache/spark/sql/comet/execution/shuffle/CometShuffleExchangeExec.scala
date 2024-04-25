@@ -50,6 +50,8 @@ import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
 import org.apache.spark.util.random.XORShiftRandom
 
+import com.google.common.base.Objects
+
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
@@ -193,6 +195,21 @@ case class CometShuffleExchangeExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometShuffleExchangeExec =
     copy(child = newChild)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometShuffleExchangeExec =>
+        this.outputPartitioning == other.outputPartitioning &&
+        this.shuffleOrigin == other.shuffleOrigin && this.child == other.child &&
+        this.shuffleType == other.shuffleType &&
+        this.advisoryPartitionSize == other.advisoryPartitionSize
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(outputPartitioning, shuffleOrigin, shuffleType, advisoryPartitionSize, child)
 }
 
 object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
