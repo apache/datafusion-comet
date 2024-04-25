@@ -199,24 +199,33 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // cast() should throw exception on invalid inputs when ansi mode is enabled
         val df = data.withColumn("converted", col("a").cast(toType))
-        val (expected, actual) = checkSparkThrows(df)
-
-        if (CometSparkSessionExtensions.isSpark34Plus) {
-          // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
-          // removing the "Execution error: " error message prefix that is added by DataFusion
-          val cometMessage = actual.getMessage
-            .replace("Execution error: ", "")
-
-          assert(cometMessage == expected.getMessage)
-        } else {
-          // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
-          // comparison between Spark and Comet.
-          // Spark message is in format `invalid input syntax for type TYPE: VALUE`
-          // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
-          // We just check that the comet message contains the same invalid value as the Spark message
-          val sparkInvalidValue =
-            expected.getMessage.substring(expected.getMessage.indexOf(':') + 2)
-          assert(actual.getMessage.contains(sparkInvalidValue))
+        checkSparkMaybeThrows(df) match {
+          case (None, None) =>
+          // neither system threw an exception
+          case (None, Some(e)) =>
+            // Spark succeeded but Comet failed
+            throw e
+          case (Some(e), None) =>
+            // Spark failed but Comet succeeded
+            fail(s"Comet should have failed with ${e.getCause.getMessage}")
+          case (Some(sparkException), Some(cometException)) =>
+            // both systems threw an exception so we make sure they are the same
+            val sparkMessage = sparkException.getCause.getMessage
+            // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
+            // removing the "Execution error: " error message prefix that is added by DataFusion
+            val cometMessage = cometException.getCause.getMessage
+              .replace("Execution error: ", "")
+            if (CometSparkSessionExtensions.isSpark34Plus) {
+              assert(cometMessage == sparkMessage)
+            } else {
+              // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
+              // comparison between Spark and Comet.
+              // Spark message is in format `invalid input syntax for type TYPE: VALUE`
+              // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
+              // We just check that the comet message contains the same invalid value as the Spark message
+              val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
+              assert(cometMessage.contains(sparkInvalidValue))
+            }
         }
 
         // try_cast() should always return null for invalid inputs

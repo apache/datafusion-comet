@@ -216,15 +216,16 @@ abstract class CometTestBase
     checkAnswerWithTol(dfComet, expected, absTol: Double)
   }
 
-  protected def checkSparkThrows(df: => DataFrame): (Throwable, Throwable) = {
+  protected def checkSparkMaybeThrows(
+      df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Option[Throwable] = None
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = Try(dfSpark.collect()).failed.toOption
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
-    val actual = Try(dfComet.collect()).failed.get
-    (expected.get.getCause, actual.getCause)
+    val actual = Try(dfComet.collect()).failed.toOption
+    (expected, actual)
   }
 
   private var _spark: SparkSession = _
