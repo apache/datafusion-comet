@@ -103,4 +103,7 @@ The following Spark expressions are currently available:
     + BitXor
     + BoolAnd
     + BoolOr
-    + Covariance
+    + CovPopulation
+    + CovSample
+    + VariancePop
+    + VarianceSamp
