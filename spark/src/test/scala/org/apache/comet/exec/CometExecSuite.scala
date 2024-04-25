@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -69,26 +69,18 @@ class CometExecSuite extends CometTestBase {
         .toDF("c1", "c2")
         .createOrReplaceTempView("v")
 
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
-        val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
-        val shuffle = find(df.queryExecution.executedPlan) {
-          case _: CometShuffleExchangeExec => true
-          case _ => false
-        }.get.asInstanceOf[CometShuffleExchangeExec]
-        assert(shuffle.logicalLink.isEmpty)
-      }
-
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
-        val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
-        val shuffle = find(df.queryExecution.executedPlan) {
-          case _: ShuffleExchangeExec => true
-          case _ => false
-        }.get.asInstanceOf[ShuffleExchangeExec]
-        assert(shuffle.logicalLink.isEmpty)
+      Seq(true, false).foreach { columnarShuffle =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
+          val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
+          val shuffle = find(df.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec if columnarShuffle => true
+            case _: ShuffleExchangeExec if !columnarShuffle => true
+            case _ => false
+          }.get
+          assert(shuffle.logicalLink.isEmpty)
+        }
       }
     }
   }
