@@ -36,7 +36,7 @@ Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, s
 
 (3) CometExchange
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
-Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#3, 5), Exchange hashpartitioning(ss_item_sk#1, ss_ticket_number#3, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (4) CometSort
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
@@ -59,7 +59,7 @@ Arguments: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity
 
 (8) CometExchange
 Input [4]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
-Arguments: hashpartitioning(sr_item_sk#7, sr_ticket_number#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(sr_item_sk#7, sr_ticket_number#9, 5), Exchange hashpartitioning(sr_item_sk#7, sr_ticket_number#9, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (9) CometSort
 Input [4]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
@@ -97,7 +97,7 @@ Input [1]: [r_reason_sk#12]
 
 (17) BroadcastExchange
 Input [1]: [r_reason_sk#12]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
 
 (18) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [sr_reason_sk#8]
@@ -118,7 +118,7 @@ Results [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
 
 (21) Exchange
 Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
-Arguments: hashpartitioning(ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, [plan_id=4]
+Arguments: hashpartitioning(ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, [plan_id=6]
 
 (22) HashAggregate [codegen id : 3]
 Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]

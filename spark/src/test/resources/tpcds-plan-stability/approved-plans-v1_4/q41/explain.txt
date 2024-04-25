@@ -61,7 +61,7 @@ Functions [1]: [partial_count(1)]
 
 (9) CometExchange
 Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_manufact#5, 5), Exchange hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (10) CometHashAggregate
 Input [2]: [i_manufact#5, count#9]
@@ -81,7 +81,7 @@ Input [1]: [i_manufact#5]
 
 (14) BroadcastExchange
 Input [1]: [i_manufact#5]
-Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=3]
 
 (15) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [i_manufact#2]
@@ -102,7 +102,7 @@ Results [1]: [i_product_name#3]
 
 (18) Exchange
 Input [1]: [i_product_name#3]
-Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, [plan_id=3]
+Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, [plan_id=4]
 
 (19) HashAggregate [codegen id : 3]
 Input [1]: [i_product_name#3]

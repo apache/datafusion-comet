@@ -82,7 +82,7 @@ Condition : (isnotnull(ss_item_sk#1) AND isnotnull(ss_customer_sk#2))
 
 (3) CometExchange
 Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7]
-Arguments: hashpartitioning(ss_ticket_number#3, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_ticket_number#3, ss_item_sk#1, 5), Exchange hashpartitioning(ss_ticket_number#3, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (4) CometSort
 Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7]
@@ -105,7 +105,7 @@ Arguments: [sr_item_sk#9, sr_ticket_number#10], [sr_item_sk#9, sr_ticket_number#
 
 (8) CometExchange
 Input [2]: [sr_item_sk#9, sr_ticket_number#10]
-Arguments: hashpartitioning(sr_ticket_number#10, sr_item_sk#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(sr_ticket_number#10, sr_item_sk#9, 5), Exchange hashpartitioning(sr_ticket_number#10, sr_item_sk#9, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (9) CometSort
 Input [2]: [sr_item_sk#9, sr_ticket_number#10]
@@ -149,7 +149,7 @@ Results [6]: [d_year#13, ss_item_sk#1, ss_customer_sk#2, sum#17, sum#18, sum#19]
 
 (18) Exchange
 Input [6]: [d_year#13, ss_item_sk#1, ss_customer_sk#2, sum#17, sum#18, sum#19]
-Arguments: hashpartitioning(d_year#13, ss_item_sk#1, ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, [plan_id=3]
+Arguments: hashpartitioning(d_year#13, ss_item_sk#1, ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, [plan_id=5]
 
 (19) HashAggregate [codegen id : 3]
 Input [6]: [d_year#13, ss_item_sk#1, ss_customer_sk#2, sum#17, sum#18, sum#19]
@@ -176,7 +176,7 @@ Condition : (isnotnull(ws_item_sk#27) AND isnotnull(ws_bill_customer_sk#28))
 
 (23) CometExchange
 Input [7]: [ws_item_sk#27, ws_bill_customer_sk#28, ws_order_number#29, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, ws_sold_date_sk#33]
-Arguments: hashpartitioning(ws_order_number#29, ws_item_sk#27, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(ws_order_number#29, ws_item_sk#27, 5), Exchange hashpartitioning(ws_order_number#29, ws_item_sk#27, 5), ENSURE_REQUIREMENTS, [plan_id=6], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
 
 (24) CometSort
 Input [7]: [ws_item_sk#27, ws_bill_customer_sk#28, ws_order_number#29, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, ws_sold_date_sk#33]
@@ -199,7 +199,7 @@ Arguments: [wr_item_sk#35, wr_order_number#36], [wr_item_sk#35, wr_order_number#
 
 (28) CometExchange
 Input [2]: [wr_item_sk#35, wr_order_number#36]
-Arguments: hashpartitioning(wr_order_number#36, wr_item_sk#35, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+Arguments: hashpartitioning(wr_order_number#36, wr_item_sk#35, 5), Exchange hashpartitioning(wr_order_number#36, wr_item_sk#35, 5), ENSURE_REQUIREMENTS, [plan_id=8], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=9]
 
 (29) CometSort
 Input [2]: [wr_item_sk#35, wr_order_number#36]
@@ -243,7 +243,7 @@ Results [6]: [d_year#39, ws_item_sk#27, ws_bill_customer_sk#28, sum#43, sum#44, 
 
 (38) Exchange
 Input [6]: [d_year#39, ws_item_sk#27, ws_bill_customer_sk#28, sum#43, sum#44, sum#45]
-Arguments: hashpartitioning(d_year#39, ws_item_sk#27, ws_bill_customer_sk#28, 5), ENSURE_REQUIREMENTS, [plan_id=6]
+Arguments: hashpartitioning(d_year#39, ws_item_sk#27, ws_bill_customer_sk#28, 5), ENSURE_REQUIREMENTS, [plan_id=10]
 
 (39) HashAggregate [codegen id : 6]
 Input [6]: [d_year#39, ws_item_sk#27, ws_bill_customer_sk#28, sum#43, sum#44, sum#45]
@@ -284,7 +284,7 @@ Condition : (isnotnull(cs_item_sk#55) AND isnotnull(cs_bill_customer_sk#54))
 
 (46) CometExchange
 Input [7]: [cs_bill_customer_sk#54, cs_item_sk#55, cs_order_number#56, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, cs_sold_date_sk#60]
-Arguments: hashpartitioning(cs_order_number#56, cs_item_sk#55, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning(cs_order_number#56, cs_item_sk#55, 5), Exchange hashpartitioning(cs_order_number#56, cs_item_sk#55, 5), ENSURE_REQUIREMENTS, [plan_id=11], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
 (47) CometSort
 Input [7]: [cs_bill_customer_sk#54, cs_item_sk#55, cs_order_number#56, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, cs_sold_date_sk#60]
@@ -307,7 +307,7 @@ Arguments: [cr_item_sk#62, cr_order_number#63], [cr_item_sk#62, cr_order_number#
 
 (51) CometExchange
 Input [2]: [cr_item_sk#62, cr_order_number#63]
-Arguments: hashpartitioning(cr_order_number#63, cr_item_sk#62, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: hashpartitioning(cr_order_number#63, cr_item_sk#62, 5), Exchange hashpartitioning(cr_order_number#63, cr_item_sk#62, 5), ENSURE_REQUIREMENTS, [plan_id=13], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=14]
 
 (52) CometSort
 Input [2]: [cr_item_sk#62, cr_order_number#63]
@@ -351,7 +351,7 @@ Results [6]: [d_year#66, cs_item_sk#55, cs_bill_customer_sk#54, sum#70, sum#71, 
 
 (61) Exchange
 Input [6]: [d_year#66, cs_item_sk#55, cs_bill_customer_sk#54, sum#70, sum#71, sum#72]
-Arguments: hashpartitioning(d_year#66, cs_item_sk#55, cs_bill_customer_sk#54, 5), ENSURE_REQUIREMENTS, [plan_id=9]
+Arguments: hashpartitioning(d_year#66, cs_item_sk#55, cs_bill_customer_sk#54, 5), ENSURE_REQUIREMENTS, [plan_id=15]
 
 (62) HashAggregate [codegen id : 10]
 Input [6]: [d_year#66, cs_item_sk#55, cs_bill_customer_sk#54, sum#70, sum#71, sum#72]
@@ -407,7 +407,7 @@ Input [2]: [d_date_sk#12, d_year#13]
 
 (71) BroadcastExchange
 Input [2]: [d_date_sk#12, d_year#13]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=10]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=16]
 
 Subquery:2 Hosting operator id = 21 Hosting Expression = ws_sold_date_sk#33 IN dynamicpruning#8
 

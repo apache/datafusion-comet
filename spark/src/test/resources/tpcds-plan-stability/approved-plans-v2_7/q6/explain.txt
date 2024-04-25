@@ -156,7 +156,7 @@ Functions [1]: [partial_avg(UnscaledValue(i_current_price#13))]
 
 (25) CometExchange
 Input [3]: [i_category#14, sum#15, count#16]
-Arguments: hashpartitioning(i_category#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(i_category#14, 5), Exchange hashpartitioning(i_category#14, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (26) CometHashAggregate
 Input [3]: [i_category#14, sum#15, count#16]
@@ -172,7 +172,7 @@ Input [2]: [avg(i_current_price)#17, i_category#14]
 
 (29) BroadcastExchange
 Input [2]: [avg(i_current_price)#17, i_category#14]
-Arguments: HashedRelationBroadcastMode(List(input[1, string, true]),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(input[1, string, true]),false), [plan_id=5]
 
 (30) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [i_category#12]
@@ -186,7 +186,7 @@ Input [5]: [i_item_sk#10, i_current_price#11, i_category#12, avg(i_current_price
 
 (32) BroadcastExchange
 Input [1]: [i_item_sk#10]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=6]
 
 (33) BroadcastHashJoin [codegen id : 6]
 Left keys [1]: [ss_item_sk#5]
@@ -207,7 +207,7 @@ Results [2]: [ca_state#2, count#19]
 
 (36) Exchange
 Input [2]: [ca_state#2, count#19]
-Arguments: hashpartitioning(ca_state#2, 5), ENSURE_REQUIREMENTS, [plan_id=6]
+Arguments: hashpartitioning(ca_state#2, 5), ENSURE_REQUIREMENTS, [plan_id=7]
 
 (37) HashAggregate [codegen id : 7]
 Input [2]: [ca_state#2, count#19]
@@ -254,7 +254,7 @@ Input [1]: [d_date_sk#9]
 
 (44) BroadcastExchange
 Input [1]: [d_date_sk#9]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=7]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=8]
 
 Subquery:2 Hosting operator id = 41 Hosting Expression = Subquery scalar-subquery#24, [id=#25]
 * ColumnarToRow (51)
@@ -288,7 +288,7 @@ Functions: []
 
 (49) CometExchange
 Input [1]: [d_month_seq#26]
-Arguments: hashpartitioning(d_month_seq#26, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: hashpartitioning(d_month_seq#26, 5), Exchange hashpartitioning(d_month_seq#26, 5), ENSURE_REQUIREMENTS, [plan_id=9], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=10]
 
 (50) CometHashAggregate
 Input [1]: [d_month_seq#26]

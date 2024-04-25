@@ -61,6 +61,7 @@ import org.apache.comet.shims.ShimCometShuffleExchangeExec
 case class CometShuffleExchangeExec(
     override val outputPartitioning: Partitioning,
     child: SparkPlan,
+    originalPlan: ShuffleExchangeLike,
     shuffleOrigin: ShuffleOrigin = ENSURE_REQUIREMENTS,
     shuffleType: ShuffleType = CometNativeShuffle,
     advisoryPartitionSize: Option[Long] = None)

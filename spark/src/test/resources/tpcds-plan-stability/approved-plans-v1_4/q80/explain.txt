@@ -119,7 +119,7 @@ Condition : ((isnotnull(ss_store_sk#2) AND isnotnull(ss_item_sk#1)) AND isnotnul
 
 (3) CometExchange
 Input [7]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
-Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#4, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#4, 5), Exchange hashpartitioning(ss_item_sk#1, ss_ticket_number#4, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (4) CometSort
 Input [7]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
@@ -142,7 +142,7 @@ Arguments: [sr_item_sk#9, sr_ticket_number#10, sr_return_amt#11, sr_net_loss#12]
 
 (8) CometExchange
 Input [4]: [sr_item_sk#9, sr_ticket_number#10, sr_return_amt#11, sr_net_loss#12]
-Arguments: hashpartitioning(sr_item_sk#9, sr_ticket_number#10, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(sr_item_sk#9, sr_ticket_number#10, 5), Exchange hashpartitioning(sr_item_sk#9, sr_ticket_number#10, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (9) CometSort
 Input [4]: [sr_item_sk#9, sr_ticket_number#10, sr_return_amt#11, sr_net_loss#12]
@@ -189,7 +189,7 @@ Input [2]: [s_store_sk#15, s_store_id#16]
 
 (19) BroadcastExchange
 Input [2]: [s_store_sk#15, s_store_id#16]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=3]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=5]
 
 (20) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ss_store_sk#2]
@@ -221,7 +221,7 @@ Input [1]: [i_item_sk#17]
 
 (26) BroadcastExchange
 Input [1]: [i_item_sk#17]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=6]
 
 (27) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ss_item_sk#1]
@@ -253,7 +253,7 @@ Input [1]: [p_promo_sk#19]
 
 (33) BroadcastExchange
 Input [1]: [p_promo_sk#19]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=7]
 
 (34) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ss_promo_sk#3]
@@ -274,7 +274,7 @@ Results [6]: [s_store_id#16, sum#26, sum#27, isEmpty#28, sum#29, isEmpty#30]
 
 (37) Exchange
 Input [6]: [s_store_id#16, sum#26, sum#27, isEmpty#28, sum#29, isEmpty#30]
-Arguments: hashpartitioning(s_store_id#16, 5), ENSURE_REQUIREMENTS, [plan_id=6]
+Arguments: hashpartitioning(s_store_id#16, 5), ENSURE_REQUIREMENTS, [plan_id=8]
 
 (38) HashAggregate [codegen id : 6]
 Input [6]: [s_store_id#16, sum#26, sum#27, isEmpty#28, sum#29, isEmpty#30]
@@ -297,7 +297,7 @@ Condition : ((isnotnull(cs_catalog_page_sk#39) AND isnotnull(cs_item_sk#40)) AND
 
 (41) CometExchange
 Input [7]: [cs_catalog_page_sk#39, cs_item_sk#40, cs_promo_sk#41, cs_order_number#42, cs_ext_sales_price#43, cs_net_profit#44, cs_sold_date_sk#45]
-Arguments: hashpartitioning(cs_item_sk#40, cs_order_number#42, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning(cs_item_sk#40, cs_order_number#42, 5), Exchange hashpartitioning(cs_item_sk#40, cs_order_number#42, 5), ENSURE_REQUIREMENTS, [plan_id=9], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=10]
 
 (42) CometSort
 Input [7]: [cs_catalog_page_sk#39, cs_item_sk#40, cs_promo_sk#41, cs_order_number#42, cs_ext_sales_price#43, cs_net_profit#44, cs_sold_date_sk#45]
@@ -320,7 +320,7 @@ Arguments: [cr_item_sk#47, cr_order_number#48, cr_return_amount#49, cr_net_loss#
 
 (46) CometExchange
 Input [4]: [cr_item_sk#47, cr_order_number#48, cr_return_amount#49, cr_net_loss#50]
-Arguments: hashpartitioning(cr_item_sk#47, cr_order_number#48, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: hashpartitioning(cr_item_sk#47, cr_order_number#48, 5), Exchange hashpartitioning(cr_item_sk#47, cr_order_number#48, 5), ENSURE_REQUIREMENTS, [plan_id=11], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
 (47) CometSort
 Input [4]: [cr_item_sk#47, cr_order_number#48, cr_return_amount#49, cr_net_loss#50]
@@ -367,7 +367,7 @@ Input [2]: [cp_catalog_page_sk#53, cp_catalog_page_id#54]
 
 (57) BroadcastExchange
 Input [2]: [cp_catalog_page_sk#53, cp_catalog_page_id#54]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=9]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=13]
 
 (58) BroadcastHashJoin [codegen id : 11]
 Left keys [1]: [cs_catalog_page_sk#39]
@@ -414,7 +414,7 @@ Results [6]: [cp_catalog_page_id#54, sum#62, sum#63, isEmpty#64, sum#65, isEmpty
 
 (67) Exchange
 Input [6]: [cp_catalog_page_id#54, sum#62, sum#63, isEmpty#64, sum#65, isEmpty#66]
-Arguments: hashpartitioning(cp_catalog_page_id#54, 5), ENSURE_REQUIREMENTS, [plan_id=10]
+Arguments: hashpartitioning(cp_catalog_page_id#54, 5), ENSURE_REQUIREMENTS, [plan_id=14]
 
 (68) HashAggregate [codegen id : 12]
 Input [6]: [cp_catalog_page_id#54, sum#62, sum#63, isEmpty#64, sum#65, isEmpty#66]
@@ -437,7 +437,7 @@ Condition : ((isnotnull(ws_web_site_sk#76) AND isnotnull(ws_item_sk#75)) AND isn
 
 (71) CometExchange
 Input [7]: [ws_item_sk#75, ws_web_site_sk#76, ws_promo_sk#77, ws_order_number#78, ws_ext_sales_price#79, ws_net_profit#80, ws_sold_date_sk#81]
-Arguments: hashpartitioning(ws_item_sk#75, ws_order_number#78, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=11]
+Arguments: hashpartitioning(ws_item_sk#75, ws_order_number#78, 5), Exchange hashpartitioning(ws_item_sk#75, ws_order_number#78, 5), ENSURE_REQUIREMENTS, [plan_id=15], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=16]
 
 (72) CometSort
 Input [7]: [ws_item_sk#75, ws_web_site_sk#76, ws_promo_sk#77, ws_order_number#78, ws_ext_sales_price#79, ws_net_profit#80, ws_sold_date_sk#81]
@@ -460,7 +460,7 @@ Arguments: [wr_item_sk#83, wr_order_number#84, wr_return_amt#85, wr_net_loss#86]
 
 (76) CometExchange
 Input [4]: [wr_item_sk#83, wr_order_number#84, wr_return_amt#85, wr_net_loss#86]
-Arguments: hashpartitioning(wr_item_sk#83, wr_order_number#84, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
+Arguments: hashpartitioning(wr_item_sk#83, wr_order_number#84, 5), Exchange hashpartitioning(wr_item_sk#83, wr_order_number#84, 5), ENSURE_REQUIREMENTS, [plan_id=17], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=18]
 
 (77) CometSort
 Input [4]: [wr_item_sk#83, wr_order_number#84, wr_return_amt#85, wr_net_loss#86]
@@ -507,7 +507,7 @@ Input [2]: [web_site_sk#89, web_site_id#90]
 
 (87) BroadcastExchange
 Input [2]: [web_site_sk#89, web_site_id#90]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=13]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=19]
 
 (88) BroadcastHashJoin [codegen id : 17]
 Left keys [1]: [ws_web_site_sk#76]
@@ -554,7 +554,7 @@ Results [6]: [web_site_id#90, sum#98, sum#99, isEmpty#100, sum#101, isEmpty#102]
 
 (97) Exchange
 Input [6]: [web_site_id#90, sum#98, sum#99, isEmpty#100, sum#101, isEmpty#102]
-Arguments: hashpartitioning(web_site_id#90, 5), ENSURE_REQUIREMENTS, [plan_id=14]
+Arguments: hashpartitioning(web_site_id#90, 5), ENSURE_REQUIREMENTS, [plan_id=20]
 
 (98) HashAggregate [codegen id : 18]
 Input [6]: [web_site_id#90, sum#98, sum#99, isEmpty#100, sum#101, isEmpty#102]
@@ -578,7 +578,7 @@ Results [9]: [channel#111, id#112, spark_grouping_id#113, sum#120, isEmpty#121, 
 
 (102) Exchange
 Input [9]: [channel#111, id#112, spark_grouping_id#113, sum#120, isEmpty#121, sum#122, isEmpty#123, sum#124, isEmpty#125]
-Arguments: hashpartitioning(channel#111, id#112, spark_grouping_id#113, 5), ENSURE_REQUIREMENTS, [plan_id=15]
+Arguments: hashpartitioning(channel#111, id#112, spark_grouping_id#113, 5), ENSURE_REQUIREMENTS, [plan_id=21]
 
 (103) HashAggregate [codegen id : 20]
 Input [9]: [channel#111, id#112, spark_grouping_id#113, sum#120, isEmpty#121, sum#122, isEmpty#123, sum#124, isEmpty#125]
@@ -621,7 +621,7 @@ Input [1]: [d_date_sk#14]
 
 (109) BroadcastExchange
 Input [1]: [d_date_sk#14]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=16]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=22]
 
 Subquery:2 Hosting operator id = 39 Hosting Expression = cs_sold_date_sk#45 IN dynamicpruning#8
 

@@ -47,7 +47,7 @@ Condition : (isnotnull(cs_warehouse_sk#1) AND isnotnull(cs_item_sk#2))
 
 (3) CometExchange
 Input [5]: [cs_warehouse_sk#1, cs_item_sk#2, cs_order_number#3, cs_sales_price#4, cs_sold_date_sk#5]
-Arguments: hashpartitioning(cs_order_number#3, cs_item_sk#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(cs_order_number#3, cs_item_sk#2, 5), Exchange hashpartitioning(cs_order_number#3, cs_item_sk#2, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (4) CometSort
 Input [5]: [cs_warehouse_sk#1, cs_item_sk#2, cs_order_number#3, cs_sales_price#4, cs_sold_date_sk#5]
@@ -70,7 +70,7 @@ Arguments: [cr_item_sk#7, cr_order_number#8, cr_refunded_cash#9], [cr_item_sk#7,
 
 (8) CometExchange
 Input [3]: [cr_item_sk#7, cr_order_number#8, cr_refunded_cash#9]
-Arguments: hashpartitioning(cr_order_number#8, cr_item_sk#7, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(cr_order_number#8, cr_item_sk#7, 5), Exchange hashpartitioning(cr_order_number#8, cr_item_sk#7, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (9) CometSort
 Input [3]: [cr_item_sk#7, cr_order_number#8, cr_refunded_cash#9]
@@ -104,7 +104,7 @@ Input [2]: [w_warehouse_sk#11, w_state#12]
 
 (16) BroadcastExchange
 Input [2]: [w_warehouse_sk#11, w_state#12]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=3]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=5]
 
 (17) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [cs_warehouse_sk#1]
@@ -136,7 +136,7 @@ Input [2]: [i_item_sk#13, i_item_id#14]
 
 (23) BroadcastExchange
 Input [2]: [i_item_sk#13, i_item_id#14]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=6]
 
 (24) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [cs_item_sk#2]
@@ -170,7 +170,7 @@ Results [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
 
 (30) Exchange
 Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
-Arguments: hashpartitioning(w_state#12, i_item_id#14, 5), ENSURE_REQUIREMENTS, [plan_id=5]
+Arguments: hashpartitioning(w_state#12, i_item_id#14, 5), ENSURE_REQUIREMENTS, [plan_id=7]
 
 (31) HashAggregate [codegen id : 5]
 Input [6]: [w_state#12, i_item_id#14, sum#22, isEmpty#23, sum#24, isEmpty#25]
@@ -208,6 +208,6 @@ Input [2]: [d_date_sk#16, d_date#17]
 
 (36) BroadcastExchange
 Input [2]: [d_date_sk#16, d_date#17]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=6]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=8]
 
 

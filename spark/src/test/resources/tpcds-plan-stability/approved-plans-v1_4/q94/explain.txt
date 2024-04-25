@@ -63,7 +63,7 @@ Arguments: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse
 
 (4) CometExchange
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse_sk#4, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
-Arguments: hashpartitioning(ws_order_number#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ws_order_number#5, 5), Exchange hashpartitioning(ws_order_number#5, 5), ENSURE_REQUIREMENTS, [plan_id=1], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (5) CometSort
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse_sk#4, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
@@ -84,7 +84,7 @@ Arguments: [ws_warehouse_sk#9, ws_order_number#10], [ws_warehouse_sk#9, ws_order
 
 (9) CometExchange
 Input [2]: [ws_warehouse_sk#9, ws_order_number#10]
-Arguments: hashpartitioning(ws_order_number#10, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(ws_order_number#10, 5), Exchange hashpartitioning(ws_order_number#10, 5), ENSURE_REQUIREMENTS, [plan_id=3], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (10) CometSort
 Input [2]: [ws_warehouse_sk#9, ws_order_number#10]
@@ -115,7 +115,7 @@ Arguments: [wr_order_number#12], [wr_order_number#12]
 
 (16) CometExchange
 Input [1]: [wr_order_number#12]
-Arguments: hashpartitioning(wr_order_number#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(wr_order_number#12, 5), Exchange hashpartitioning(wr_order_number#12, 5), ENSURE_REQUIREMENTS, [plan_id=5], ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
 (17) CometSort
 Input [1]: [wr_order_number#12]
@@ -150,7 +150,7 @@ Input [1]: [d_date_sk#14]
 
 (24) BroadcastExchange
 Input [1]: [d_date_sk#14]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=7]
 
 (25) BroadcastHashJoin [codegen id : 8]
 Left keys [1]: [ws_ship_date_sk#1]
@@ -182,7 +182,7 @@ Input [1]: [ca_address_sk#16]
 
 (31) BroadcastExchange
 Input [1]: [ca_address_sk#16]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=8]
 
 (32) BroadcastHashJoin [codegen id : 8]
 Left keys [1]: [ws_ship_addr_sk#2]
@@ -214,7 +214,7 @@ Input [1]: [web_site_sk#18]
 
 (38) BroadcastExchange
 Input [1]: [web_site_sk#18]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=6]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=9]
 
 (39) BroadcastHashJoin [codegen id : 8]
 Left keys [1]: [ws_web_site_sk#3]
@@ -249,7 +249,7 @@ Results [3]: [sum#22, sum#23, count#25]
 
 (44) Exchange
 Input [3]: [sum#22, sum#23, count#25]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=7]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=10]
 
 (45) HashAggregate [codegen id : 9]
 Input [3]: [sum#22, sum#23, count#25]
