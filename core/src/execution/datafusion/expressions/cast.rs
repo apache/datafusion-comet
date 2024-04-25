@@ -339,7 +339,6 @@ impl CastStringToInt for CastStringToInt32 {
         } else {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
-
         }
         Ok(())
     }
@@ -406,7 +405,6 @@ impl CastStringToInt for CastStringToInt64 {
         } else {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
-
         }
         Ok(())
     }
@@ -458,7 +456,7 @@ fn do_cast_string_to_int(
     // check for empty string
     if i == end {
         accumulator.reset();
-        return Ok(());
+        return none_or_err(eval_mode, type_name, str);
     }
 
     // skip + or -
@@ -467,7 +465,7 @@ fn do_cast_string_to_int(
         i += 1;
         if i == end {
             accumulator.reset();
-            return Ok(());
+            return none_or_err(eval_mode, type_name, str);
         }
     }
 

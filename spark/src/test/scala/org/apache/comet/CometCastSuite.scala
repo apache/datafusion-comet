@@ -43,7 +43,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
    * We use these characters to construct strings that potentially represent valid numbers such as
    * `-12.34d` or `4e7`. Invalid numeric strings will also be generated, such as `+e.-d`.
    */
-  private val numericPattern = "0123456789def+-." + whitespaceChars
+  private val numericPattern = "0123456789deEf+-." + whitespaceChars
 
   private val datePattern = "0123456789/" + whitespaceChars
   private val timestampPattern = "0123456789/:T" + whitespaceChars
