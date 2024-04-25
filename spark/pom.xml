@@ -250,6 +250,18 @@ under the License.
               </sources>
             </configuration>
           </execution>
+          <execution>
+            <id>add-shim-source</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>src/main/${shims.source}</source>
+              </sources>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
     </plugins>
