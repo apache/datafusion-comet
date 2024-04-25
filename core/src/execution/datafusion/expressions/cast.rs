@@ -135,7 +135,7 @@ impl Cast {
             ) if key_type.as_ref() == &DataType::Int32
                 && value_type.as_ref() == &DataType::Utf8 =>
             {
-                // Note that we are unpacking a dictionary-encoded array and then performing
+                // TODO: we are unpacking a dictionary-encoded array and then performing
                 // the cast. We could potentially improve performance here by casting the
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
@@ -328,10 +328,18 @@ impl CastStringToInt for CastStringToInt32 {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
         }
-        self.result = Some(self.result.unwrap_or(0) * self.radix - digit as i32);
-        if self.result.unwrap() > 0 {
+        let v = self.result.unwrap_or(0) * self.radix;
+        if let Some(x) = v.checked_sub(digit as i32) {
+            if x > 0 {
+                self.reset();
+                return none_or_err(eval_mode, type_name, str);
+            } else {
+                self.result = Some(x);
+            }
+        } else {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
+
         }
         Ok(())
     }
@@ -346,10 +354,13 @@ impl CastStringToInt for CastStringToInt32 {
         str: &str,
         negative: bool,
     ) -> CometResult<()> {
-        if self.result.is_some() && !negative {
-            self.result = Some(-self.result.unwrap());
-            if self.result.unwrap() < 0 {
-                return none_or_err(eval_mode, type_name, str);
+        if !negative {
+            if let Some(r) = self.result {
+                let negated = r.checked_neg().unwrap_or(-1);
+                if negated < 0 {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+                self.result = Some(negated);
             }
         }
         Ok(())
@@ -384,10 +395,18 @@ impl CastStringToInt for CastStringToInt64 {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
         }
-        self.result = Some(self.result.unwrap_or(0) * self.radix - digit as i64);
-        if self.result.unwrap() > 0 {
+        let v = self.result.unwrap_or(0) * self.radix;
+        if let Some(x) = v.checked_sub(digit as i64) {
+            if x > 0 {
+                self.reset();
+                return none_or_err(eval_mode, type_name, str);
+            } else {
+                self.result = Some(x);
+            }
+        } else {
             self.reset();
             return none_or_err(eval_mode, type_name, str);
+
         }
         Ok(())
     }
@@ -403,10 +422,13 @@ impl CastStringToInt for CastStringToInt64 {
         str: &str,
         negative: bool,
     ) -> CometResult<()> {
-        if self.result.is_some() && !negative {
-            self.result = Some(-self.result.unwrap());
-            if self.result.unwrap() < 0 {
-                return none_or_err(eval_mode, type_name, str);
+        if !negative {
+            if let Some(r) = self.result {
+                let negated = r.checked_neg().unwrap_or(-1);
+                if negated < 0 {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+                self.result = Some(negated);
             }
         }
         Ok(())

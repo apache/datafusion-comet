@@ -40,9 +40,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val whitespaceChars = " \t\r\n"
 
   /**
-   * We use these characters to construct strings that potentially represent valid numbers
-   * such as `-12.34d` or `4e7`. Invalid numeric strings will also be generated, such as
-   * `+e.-d`.
+   * We use these characters to construct strings that potentially represent valid numbers such as
+   * `-12.34d` or `4e7`. Invalid numeric strings will also be generated, such as `+e.-d`.
    */
   private val numericPattern = "0123456789def+-." + whitespaceChars
 
@@ -73,9 +72,20 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   val castStringToIntegralInputs = Seq(
-    "", ".", "+", "-", "+.", "=.",
-    "-0", "+1", "-1", ".2", "-.2",
-    "1e1", "1.1d", "1.1f",
+    "",
+    ".",
+    "+",
+    "-",
+    "+.",
+    "-.",
+    "-0",
+    "+1",
+    "-1",
+    ".2",
+    "-.2",
+    "1e1",
+    "1.1d",
+    "1.1f",
     Byte.MinValue.toString,
     (Byte.MinValue.toShort - 1).toString,
     Byte.MaxValue.toString,
@@ -197,7 +207,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val cometMessage = actual.getMessage
             .replace("Execution error: ", "")
 
-          assert(expected.getMessage == cometMessage)
+          assert(cometMessage == expected.getMessage)
         } else {
           // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
           // comparison between Spark and Comet.
