@@ -1290,6 +1290,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal random number tests") {
+    assume(isSpark34Plus) // Only Spark 3.4+ has the fix for SPARK-45786
     val rand = scala.util.Random
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
@@ -1316,11 +1317,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
             val a = makeNum(p1, s1)
             val b = makeNum(p2, s2)
-            var ops = Seq("+", "-")
-            if (isSpark34Plus) {
-              // These operations are only supported in Spark 3.4+
-              ops = ops ++ Seq("*", "/", "%")
-            }
+            var ops = Seq("+", "-", "*", "/", "%")
             for (op <- ops) {
               checkSparkAnswerAndOperator(s"select a, b, a $op b from $table")
               checkSparkAnswerAndOperator(s"select $a, b, $a $op b from $table")
