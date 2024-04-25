@@ -440,8 +440,8 @@ fn do_cast_string_to_int(
     }
 
     // skip + or -
-    let negative = chars[0] == '-';
-    if negative || chars[0] == '+' {
+    let negative = chars[i] == '-';
+    if negative || chars[i] == '+' {
         i += 1;
         if i == end {
             accumulator.reset();
