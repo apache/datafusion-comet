@@ -30,8 +30,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 /**
  * A reader that consumes Arrow data from an input channel, and produces Comet batches.
  */
-case class StreamReader(channel: ReadableByteChannel) extends AutoCloseable {
+case class StreamReader(channel: ReadableByteChannel, source: String) extends AutoCloseable {
   private var allocator = new RootAllocator(Long.MaxValue)
+    .newChildAllocator(s"${this.getClass.getSimpleName}/$source", 0, Long.MaxValue)
   private val channelReader = new MessageChannelReader(new ReadChannel(channel), allocator)
   private var arrowReader = new ArrowStreamReader(channelReader, allocator)
   private var root = arrowReader.getVectorSchemaRoot
