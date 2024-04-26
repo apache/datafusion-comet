@@ -78,7 +78,8 @@ abstract class CometExec extends CometPlan {
     val countsAndBytes = CometExec.getByteArrayRdd(this).collect()
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator
-      .flatMap(countAndBytes => CometExec.decodeBatches(countAndBytes._2, "collect"))
+      .flatMap(countAndBytes =>
+        CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
     (total, rows)
   }
 }
