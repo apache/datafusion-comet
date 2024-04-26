@@ -42,6 +42,9 @@ ENV PATH="$JAVA_HOME/bin:${PATH}"
 RUN cd /tmp && curl https://sh.rustup.rs -sSf | bash -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# Install cargo2junit
+RUN rustup install nightly && cargo +nightly install cargo2junit
+
 # Use Rust toolchain, and seed Rust
 COPY rust-toolchain  /rust-toolchain
 RUN cargo search

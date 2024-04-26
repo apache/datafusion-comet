@@ -24,7 +24,7 @@ builds:
     branchName: main-apple
     version: platform
     machine: &rio3-machine
-      baseImage: docker.apple.com/pie/boson-builder:latest
+      baseImage: docker.apple.com/pie/comet-builder:latest
       targetPlatforms:
         - linux/amd64
         - linux/arm64
@@ -64,7 +64,6 @@ builds:
         # Running tests results in multiple testsuites if you use "--format junit" which results in
         # an invalid XML file.  These can be aggregated by Formatting the results as JSON and using
         # cargo2junit to reformat the results as JUnit XML.
-        - cargo install cargo2junit
         # TODO: enable all-features
         - cargo test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
     reports: &reports
@@ -185,7 +184,7 @@ builds:
     disabled: true
     timeout: 180
     machine: &rio2-machine
-      baseImage: docker.apple.com/pie/boson-builder:latest
+      baseImage: docker.apple.com/pie/comet-builder:latest
       targetPlatforms:
         - linux/amd64
         # FIXME Disabld due to leveldbjni
@@ -324,7 +323,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -338,7 +337,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -352,7 +351,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4"
@@ -372,7 +371,7 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/boson-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
