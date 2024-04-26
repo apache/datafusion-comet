@@ -1,0 +1,447 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Comet Development Guide &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Comet Debugging Guide" href="debugging.html" />
+    <link rel="prev" title="Contributing to Apache DataFusion Comet" href="contributing.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/expressions.html">
+   Supported Expressions
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/compatibility.html">
+   Compatibility Guide
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Comet Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="debugging.html">
+   Comet Debugging Guide
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../index.html">
+    <img src="../_static/images/2x_bgwhite_original.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#project-layout">
+   Project Layout
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#development-setup">
+   Development Setup
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#build-test">
+   Build &amp; Test
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#development-environment">
+   Development Environment
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#intellij-idea">
+     IntelliJ IDEA
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#clion">
+     CLion
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#running-tests-in-idea">
+     Running Tests in IDEA
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#benchmark">
+   Benchmark
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#debugging">
+   Debugging
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#submitting-a-pull-request">
+   Submitting a Pull Request
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/development.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="comet-development-guide">
+<h1>Comet Development Guide<a class="headerlink" href="#comet-development-guide" title="Link to this heading">¶</a></h1>
+<section id="project-layout">
+<h2>Project Layout<a class="headerlink" href="#project-layout" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>├── common     &lt;- common Java/Scala code
+├── conf       &lt;- configuration files
+├── core       &lt;- core native code, in Rust
+├── spark      &lt;- Spark integration
+</pre></div>
+</div>
+</section>
+<section id="development-setup">
+<h2>Development Setup<a class="headerlink" href="#development-setup" title="Link to this heading">¶</a></h2>
+<ol class="arabic simple">
+<li><p>Make sure <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> is set and point to JDK 8/11/17 installation.</p></li>
+<li><p>Install Rust toolchain. The easiest way is to use
+<a class="reference external" href="https://rustup.rs">rustup</a>.</p></li>
+</ol>
+</section>
+<section id="build-test">
+<h2>Build &amp; Test<a class="headerlink" href="#build-test" title="Link to this heading">¶</a></h2>
+<p>A few common commands are specified in project’s <code class="docutils literal notranslate"><span class="pre">Makefile</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span></code>: compile the entire project, but don’t run tests</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-rust</span></code>: compile the project and run tests in Rust side</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-java</span></code>: compile the project and run tests in Java side</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test</span></code>: compile the project and run tests in both Rust and Java
+side.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code>: compile the project and creates a release build. This
+is useful when you want to test Comet local installation in another project
+such as Spark.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">clean</span></code>: clean up the workspace</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bin/comet-spark-shell</span> <span class="pre">-d</span> <span class="pre">.</span> <span class="pre">-o</span> <span class="pre">spark/target/</span></code> run Comet spark shell for V1 datasources</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bin/comet-spark-shell</span> <span class="pre">-d</span> <span class="pre">.</span> <span class="pre">-o</span> <span class="pre">spark/target/</span> <span class="pre">--conf</span> <span class="pre">spark.sql.sources.useV1SourceList=&quot;&quot;</span></code> run Comet spark shell for V2 datasources</p></li>
+</ul>
+</section>
+<section id="development-environment">
+<h2>Development Environment<a class="headerlink" href="#development-environment" title="Link to this heading">¶</a></h2>
+<p>Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
+For Rust code, the CLion IDE is recommended. For JVM code, IntelliJ IDEA is recommended.</p>
+<p>Before opening the project in an IDE, make sure to run <code class="docutils literal notranslate"><span class="pre">make</span></code> first to generate the necessary files for the IDEs. Currently, it’s mostly about
+generating protobuf message classes for the JVM side. It’s only required to run <code class="docutils literal notranslate"><span class="pre">make</span></code> once after cloning the repo.</p>
+<section id="intellij-idea">
+<h3>IntelliJ IDEA<a class="headerlink" href="#intellij-idea" title="Link to this heading">¶</a></h3>
+<p>First make sure to install the Scala plugin in IntelliJ IDEA.
+After that, you can open the project in IntelliJ IDEA. The IDE should automatically detect the project structure and import as a Maven project.</p>
+</section>
+<section id="clion">
+<h3>CLion<a class="headerlink" href="#clion" title="Link to this heading">¶</a></h3>
+<p>First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
+After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.</p>
+</section>
+<section id="running-tests-in-idea">
+<h3>Running Tests in IDEA<a class="headerlink" href="#running-tests-in-idea" title="Link to this heading">¶</a></h3>
+<p>Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting “Run” or “Debug”.
+However if the tests is related to the native side. Please make sure to run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> or <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">core</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">build</span></code> before running the tests in IDEA.</p>
+</section>
+</section>
+<section id="benchmark">
+<h2>Benchmark<a class="headerlink" href="#benchmark" title="Link to this heading">¶</a></h2>
+<p>There’s a <code class="docutils literal notranslate"><span class="pre">make</span></code> command to run micro benchmarks in the repo. For
+instance:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">make</span> <span class="n">benchmark</span><span class="o">-</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">benchmark</span><span class="o">.</span><span class="n">CometReadBenchmark</span>
+</pre></div>
+</div>
+<p>To run TPC-H or TPC-DS micro benchmarks, please follow the instructions
+in the respective source code, e.g., <code class="docutils literal notranslate"><span class="pre">CometTPCHQueryBenchmark</span></code>.</p>
+</section>
+<section id="debugging">
+<h2>Debugging<a class="headerlink" href="#debugging" title="Link to this heading">¶</a></h2>
+<p>Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
+It is possible to debug both native and JVM code concurrently as described in the <a class="reference internal" href="debugging.html"><span class="doc std std-doc">DEBUGGING guide</span></a></p>
+</section>
+<section id="submitting-a-pull-request">
+<h2>Submitting a Pull Request<a class="headerlink" href="#submitting-a-pull-request" title="Link to this heading">¶</a></h2>
+<p>Comet uses <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">fmt</span></code>, <a class="reference external" href="https://github.com/scalacenter/scalafix">Scalafix</a> and <a class="reference external" href="https://github.com/diffplug/spotless/tree/main/plugin-maven">Spotless</a> to
+automatically format the code. Before submitting a pull request, you can simply run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code> to format the code.</p>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="contributing.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="debugging.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Debugging Guide</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
