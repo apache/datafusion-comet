@@ -49,25 +49,29 @@ A few common commands are specified in project's `Makefile`:
 - `make clean`: clean up the workspace
 - `bin/comet-spark-shell -d . -o spark/target/` run Comet spark shell for V1 datasources
 - `bin/comet-spark-shell -d . -o spark/target/ --conf spark.sql.sources.useV1SourceList=""` run Comet spark shell for V2 datasources
-	
+
 ## Development Environment
+
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
-For Rust code, the CLion IDE is recommended. For JVM code, IntelliJ IDEA is recommended. 
+For Rust code, the CLion IDE is recommended. For JVM code, IntelliJ IDEA is recommended.
 
 Before opening the project in an IDE, make sure to run `make` first to generate the necessary files for the IDEs. Currently, it's mostly about
 generating protobuf message classes for the JVM side. It's only required to run `make` once after cloning the repo.
 
 ### IntelliJ IDEA
-First make sure to install the Scala plugin in IntelliJ IDEA. 
+
+First make sure to install the Scala plugin in IntelliJ IDEA.
 After that, you can open the project in IntelliJ IDEA. The IDE should automatically detect the project structure and import as a Maven project.
 
 ### CLion
+
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
 
 ### Running Tests in IDEA
+
 Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting "Run" or "Debug".
-However if the tests is related to the native side. Please make sure to run `make core`  or `cd core && cargo build` before running the tests in IDEA.
+However if the tests is related to the native side. Please make sure to run `make core` or `cd core && cargo build` before running the tests in IDEA.
 
 ## Benchmark
 
@@ -82,9 +86,11 @@ To run TPC-H or TPC-DS micro benchmarks, please follow the instructions
 in the respective source code, e.g., `CometTPCHQueryBenchmark`.
 
 ## Debugging
+
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
-It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](DEBUGGING.md)
+It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](debugging)
 
 ## Submitting a Pull Request
-Comet uses `cargo fmt`, [Scalafix](https://github.com/scalacenter/scalafix) and [Spotless](https://github.com/diffplug/spotless/tree/main/plugin-maven) to 
+
+Comet uses `cargo fmt`, [Scalafix](https://github.com/scalacenter/scalafix) and [Spotless](https://github.com/diffplug/spotless/tree/main/plugin-maven) to
 automatically format the code. Before submitting a pull request, you can simply run `make format` to format the code.

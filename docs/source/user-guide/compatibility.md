@@ -34,7 +34,7 @@ There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where 
 
 ## Cast
 
-Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not 
+Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
 guaranteed to be consistent with Spark.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/286) where we are tracking the work to implement Spark-compatible cast expressions.
