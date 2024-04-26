@@ -23,10 +23,12 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
 import scala.collection.mutable
+import scala.sys.process._
 
 import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
 
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
@@ -43,12 +45,14 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
   private val rawCoverageFilePath = "doc/spark_builtin_expr_coverage.txt"
   private val aggCoverageFilePath = "doc/spark_builtin_expr_coverage_agg.txt"
+  private val rawCoverageFileDatafusionPath = "doc/spark_builtin_expr_df_coverage.txt"
 
-  test("Test Spark builtin expressions coverage") {
-    val queryPattern = """(?i)SELECT (.+?);""".r
-    val valuesPattern = """(?i)FROM VALUES(.+?);""".r
-    val selectPattern = """(i?)SELECT(.+?)FROM""".r
-    val builtinExamplesMap = spark.sessionState.functionRegistry
+  private val queryPattern = """(?i)SELECT (.+?);""".r
+  private val valuesPattern = """(?i)FROM VALUES(.+?);""".r
+  private val selectPattern = """(i?)SELECT(.+?)FROM""".r
+
+  def getExamples(): Map[String, List[String]] =
+    spark.sessionState.functionRegistry
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
       .filter(_.getSource.toLowerCase == "built-in")
@@ -60,6 +64,15 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
         (f.getName, selectRows.filter(_.nonEmpty))
       })
       .toMap
+
+  /**
+   * Manual test to calculate Spark builtin expressions coverage support by the Comet
+   *
+   * The test will update files doc/spark_builtin_expr_coverage.txt,
+   * doc/spark_builtin_expr_coverage_agg.txt
+   */
+  test("Test Spark builtin expressions coverage") {
+    val builtinExamplesMap = getExamples()
 
     // key - function name
     // value - list of result shows if function supported by Comet
@@ -81,9 +94,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                   testSingleLineQuery(s"select * $v", s"$s tbl")
 
                 case _ =>
-                  resultsMap.put(
-                    funcName,
-                    CoverageResult("FAILED", Seq((q, "Cannot parse properly"))))
+                  sys.error("Cannot parse properly")
               }
             } else {
               // Process the simple example like `SELECT cos(0);`
@@ -123,7 +134,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
             Seq(("", "No examples found in spark.sessionState.functionRegistry"))))
     }
 
-    // TODO: convert results into HTML
+    // TODO: convert results into HTML or .md file
     resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
     val str_agg = showString(
       spark.sql(
@@ -134,6 +145,97 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
     val str = showString(spark.sql("select * from t order by 1"), 1000, 0)
     Files.write(Paths.get(rawCoverageFilePath), str.getBytes(StandardCharsets.UTF_8))
+  }
+
+  /**
+   * Manual test to calculate Spark builtin expressions coverage support by the Datafusion
+   * directly
+   *
+   * The test will update files doc/spark_builtin_expr_df_coverage.txt,
+   *
+   * Requires to set DATAFUSIONCLI_PATH env variable to valid path to datafusion-cli
+   */
+  test("Test Spark builtin expressions coverage by Datafusion directly") {
+    val builtinExamplesMap = getExamples()
+
+    // key - function name
+    // value - list of result shows if function supported by Datafusion
+    val resultsMap = new mutable.HashMap[String, CoverageResult]()
+
+    builtinExamplesMap.foreach {
+      case (funcName, q :: _) =>
+        val queryResult =
+          try {
+            // Example with predefined values
+            // e.g. SELECT bit_xor(col) FROM VALUES (3), (5) AS tab(col)
+            if (q.toLowerCase.contains(" from values")) {
+              val select = selectPattern.findFirstMatchIn(q).map(_.group(0))
+              val values = valuesPattern.findFirstMatchIn(q).map(_.group(0))
+              (select, values) match {
+                case (Some(s), Some(v)) =>
+                  withTempDir { dir =>
+                    val path = new Path(dir.toURI.toString).toUri.getPath
+                    spark.sql(s"select * $v").repartition(1).write.mode("overwrite").parquet(path)
+                    runDatafusionCli(s"""$s '$path/*.parquet'""")
+                  }
+
+                case _ =>
+                  sys.error("Cannot parse properly")
+              }
+            } else {
+              // Process the simple example like `SELECT cos(0);`
+              runDatafusionCli(q)
+            }
+            CoverageResult(CoverageResultStatus.Passed.toString, Seq((q, "OK")))
+          } catch {
+            case e: Throwable =>
+              CoverageResult(CoverageResultStatus.Failed.toString, Seq((q, e.getMessage)))
+          }
+        resultsMap.put(funcName, queryResult)
+
+      case (funcName, List()) =>
+        resultsMap.put(
+          funcName,
+          CoverageResult(
+            CoverageResultStatus.Skipped.toString,
+            Seq(("", "No examples found in spark.sessionState.functionRegistry"))))
+    }
+
+    resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
+    val str = showString(spark.sql("select * from t order by 1"), 1000, 0)
+    Files.write(Paths.get(rawCoverageFileDatafusionPath), str.getBytes(StandardCharsets.UTF_8))
+  }
+
+  private def runDatafusionCli(sql: String) = {
+
+    val datafusionCliPath = sys.env.getOrElse(
+      "DATAFUSIONCLI_PATH",
+      sys.error("DATAFUSIONCLI_PATH env variable not set"))
+
+    val tempFilePath = Files.createTempFile("temp-", ".sql")
+    Files.write(tempFilePath, sql.getBytes)
+
+    val command = s"""$datafusionCliPath/datafusion-cli -f $tempFilePath"""
+
+    val stdout = new StringBuilder
+    val stderr = new StringBuilder
+
+    command.!(
+      ProcessLogger(
+        out => stdout.append(out).append("\n"), // stdout
+        err => stderr.append(err).append("\n") // stderr
+      ))
+
+    Files.delete(tempFilePath)
+
+    val err = stderr.toString()
+    val out = stdout.toString()
+
+    if (err.nonEmpty)
+      sys.error(s"std_err: $err")
+
+    if (out.toLowerCase.contains("error"))
+      sys.error(s"std_out: $out")
   }
 }
 
