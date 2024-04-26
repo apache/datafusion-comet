@@ -23,7 +23,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -228,6 +228,34 @@ class CometJoinSuite extends CometTestBase {
 
           val df11 = right.join(left, left("_2") === right("_1"), "leftanti")
           checkSparkAnswerAndOperator(df11)
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin without filter") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 1000).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 1000).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Inner join: build right
+          val df1 =
+            sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a JOIN tbl_b")
+          checkSparkAnswerAndOperator(
+            df1,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+
+          // Right join: build left
+          val df2 =
+            sql("SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b")
+          checkSparkAnswerAndOperator(
+            df2,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
         }
       }
     }

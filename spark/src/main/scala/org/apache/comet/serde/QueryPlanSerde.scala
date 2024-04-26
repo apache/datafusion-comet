@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -2353,6 +2353,47 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         } else {
           val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
           withInfo(join, allExprs: _*)
+          None
+        }
+
+      case join: BroadcastNestedLoopJoinExec
+          if isCometOperatorEnabled(op.conf, "broadcast_nested_loop_join") =>
+        if (join.buildSide == BuildRight) {
+          if (join.joinType != Inner && join.joinType != LeftOuter
+            && join.joinType != LeftSemi && join.joinType != LeftAnti) {
+            return None
+          }
+        } else {
+          if (join.joinType != RightOuter && join.joinType != FullOuter) {
+            return None
+          }
+        }
+
+        val joinType = join.joinType match {
+          case Inner => JoinType.Inner
+          case LeftOuter => JoinType.LeftOuter
+          case RightOuter => JoinType.RightOuter
+          case FullOuter => JoinType.FullOuter
+          case LeftSemi => JoinType.LeftSemi
+          case LeftAnti => JoinType.LeftAnti
+          case _ => return None // Spark doesn't support other join types
+        }
+
+        val condition = join.condition.map { cond =>
+          val condProto = exprToProto(cond, join.left.output ++ join.right.output)
+          if (condProto.isEmpty) {
+            return None
+          }
+          condProto.get
+        }
+
+        if (childOp.nonEmpty) {
+          val joinBuilder = OperatorOuterClass.BroadcastNestedLoopJoin
+            .newBuilder()
+            .setJoinType(joinType)
+          condition.map(joinBuilder.setCondition(_))
+          Some(result.setBroadcastNestedLoopJoin(joinBuilder).build())
+        } else {
           None
         }
 

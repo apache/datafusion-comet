@@ -42,6 +42,7 @@ message Operator {
     Expand expand = 107;
     SortMergeJoin sort_merge_join = 108;
     HashJoin hash_join = 109;
+    BroadcastNestedLoopJoin broadcast_nested_loop_join = 110;
   }
 }
 
@@ -102,6 +103,12 @@ message SortMergeJoin {
   repeated spark.spark_expression.Expr right_join_keys = 2;
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
+}
+
+message BroadcastNestedLoopJoin {
+  // join keys will always be null.
+  JoinType join_type = 1;
+  optional spark.spark_expression.Expr condition = 2;
 }
 
 enum JoinType {
