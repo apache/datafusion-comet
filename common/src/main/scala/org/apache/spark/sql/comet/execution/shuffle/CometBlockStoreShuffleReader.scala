@@ -108,7 +108,7 @@ class CometBlockStoreShuffleReader[K, C](
               // Closes previous read iterator.
               currentReadIterator.close()
             }
-            currentReadIterator = new ArrowReaderIterator(channel)
+            currentReadIterator = new ArrowReaderIterator(channel, this.getClass.getSimpleName)
             currentReadIterator.map((0, _)) // use 0 as key since it's not used
           }
       }
