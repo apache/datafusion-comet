@@ -25,9 +25,10 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.vector._
 
-class ArrowReaderIterator(channel: ReadableByteChannel) extends Iterator[ColumnarBatch] {
+class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
+    extends Iterator[ColumnarBatch] {
 
-  private val reader = StreamReader(channel)
+  private val reader = StreamReader(channel, source)
   private var batch = nextBatch()
   private var currentBatch: ColumnarBatch = null
 
