@@ -575,7 +575,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case cast @ Cast(child, dt, timeZoneId, evalMode) =>
+        case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
             val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
@@ -589,7 +589,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               case (DataTypes.StringType, DataTypes.TimestampType)
                   if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
                 // https://github.com/apache/datafusion-comet/issues/328
-                withInfo(cast, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
+                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
                 false
               case _ => true
             }
