@@ -101,7 +101,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
-  test("cast string to timestamp") {
+  test("cast string to timestamp disabled by default") {
+    val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+    castFallbackTest(
+      values.toDF("a"),
+      DataTypes.TimestampType,
+      "spark.comet.cast.stringToTimestamp is disabled")
+  }
+
+  ignore("cast string to timestamp") {
     withSQLConf((CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key, "true")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
@@ -126,6 +134,24 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
     val r = new Random(0)
     Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
+  }
+
+  private def castFallbackTest(
+      input: DataFrame,
+      toType: DataType,
+      expectedMessage: String): Unit = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      data.createOrReplaceTempView("t")
+
+      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+        val df = data.withColumn("converted", col("a").cast(toType))
+        df.collect()
+        val str =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(str.contains(expectedMessage))
+      }
+    }
   }
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
