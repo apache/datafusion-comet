@@ -24,14 +24,13 @@ use std::{
 
 use crate::errors::{CometError, CometResult};
 use arrow::{
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
 use arrow_array::{
-    types::{ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, DictionaryArray, GenericStringArray, OffsetSizeTrait,
-    PrimitiveArray,
+    types::{Int16Type, Int32Type, Int64Type, Int8Type},
+    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
@@ -145,7 +144,7 @@ impl Cast {
                 // the cast. We could potentially improve performance here by casting the
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
-                let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
+                let unpacked_array = cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
                 match value_type.as_ref() {
                     DataType::Utf8 => {
                         Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
@@ -193,18 +192,6 @@ impl Cast {
             ),
         };
         Ok(cast_array)
-    }
-
-    fn unpack_dict_string_array<T: ArrowDictionaryKeyType>(
-        array: &ArrayRef,
-    ) -> DataFusionResult<ArrayRef> {
-        let dict_array = array
-            .as_any()
-            .downcast_ref::<DictionaryArray<T>>()
-            .expect("DictionaryArray<T>");
-
-        let unpacked_array = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
-        Ok(unpacked_array)
     }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
