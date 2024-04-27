@@ -138,14 +138,23 @@ impl Cast {
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
             ) if key_type.as_ref() == &DataType::Int32
-                && value_type.as_ref() == &DataType::Utf8 =>
+                && (value_type.as_ref() == &DataType::Utf8
+                    || value_type.as_ref() == &DataType::LargeUtf8) =>
             {
                 // TODO: we are unpacking a dictionary-encoded array and then performing
                 // the cast. We could potentially improve performance here by casting the
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
+                match value_type.as_ref() {
+                    DataType::Utf8 => {
+                        Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
+                    }
+                    DataType::LargeUtf8 => {
+                        Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)?
+                    }
+                    _ => unreachable!("invalid value type for dictionary-encoded string array"),
+                }
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
