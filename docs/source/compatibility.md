@@ -34,7 +34,13 @@ There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where 
 
 ## Cast
 
-Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not 
+Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
 guaranteed to be consistent with Spark.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/286) where we are tracking the work to implement Spark-compatible cast expressions.
+
+### Cast from String to Timestamp
+
+Casting from String to Timestamp is disabled by default due to incompatibilities with Spark, including timezone
+issues, and can be enabled by setting `spark.comet.castStringToTimestamp=true`. See the
+[tracking issue](https://github.com/apache/datafusion-comet/issues/328) for more information.

@@ -41,6 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
@@ -574,19 +575,32 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case Cast(child, dt, timeZoneId, evalMode) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          if (childExpr.isDefined) {
-            val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
-              // Spark 3.2 & 3.3 has ansiEnabled boolean
-              if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+        case cast @ Cast(child, dt, timeZoneId, evalMode) =>
+          val supportedCast = (child.dataType, dt) match {
+            case (DataTypes.StringType, DataTypes.TimestampType)
+                if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
+              // https://github.com/apache/datafusion-comet/issues/328
+              withInfo(cast, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
+              false
+            case _ => true
+          }
+
+          if (supportedCast) {
+            val childExpr = exprToProtoInternal(child, inputs)
+            if (childExpr.isDefined) {
+              val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
+                // Spark 3.2 & 3.3 has ansiEnabled boolean
+                if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+              } else {
+                // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+                evalMode.toString
+              }
+              castToProto(timeZoneId, dt, childExpr, evalModeStr)
             } else {
-              // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
-              evalMode.toString
+              withInfo(expr, child)
+              None
             }
-            castToProto(timeZoneId, dt, childExpr, evalModeStr)
           } else {
-            withInfo(expr, child)
             None
           }
 
