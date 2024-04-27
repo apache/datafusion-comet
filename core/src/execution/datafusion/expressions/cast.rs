@@ -250,7 +250,7 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    Ok(do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)?.map(|n| n as i32))
+    Ok(do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)?)
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
@@ -266,7 +266,7 @@ fn cast_string_to_int_with_range_check(
 ) -> CometResult<Option<i32>> {
     match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
         None => Ok(None),
-        Some(v) if v >= min && v <= max => Ok(Some(v as i32)),
+        Some(v) if v >= min && v <= max => Ok(Some(v)),
         _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
         _ => Ok(None),
     }
