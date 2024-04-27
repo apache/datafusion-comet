@@ -144,12 +144,15 @@ impl Cast {
                 // the cast. We could potentially improve performance here by casting the
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
-                let unpacked_array = cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
                 match value_type.as_ref() {
                     DataType::Utf8 => {
+                        let unpacked_array =
+                            cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
                         Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
                     }
                     DataType::LargeUtf8 => {
+                        let unpacked_array =
+                            cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
                         Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)?
                     }
                     _ => unreachable!("invalid value type for dictionary-encoded string array"),
