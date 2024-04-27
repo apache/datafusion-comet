@@ -129,7 +129,11 @@ impl Cast {
             (
                 DataType::Utf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_int(to_type, &array, self.eval_mode)?,
+            ) => Self::cast_string_to_int::<i32>(to_type, &array, self.eval_mode)?,
+            (
+                DataType::LargeUtf8,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode)?,
             (
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -141,7 +145,7 @@ impl Cast {
                 // dictionary values directly without unpacking the array first, although this
                 // would add more complexity to the code
                 let unpacked_array = Self::unpack_dict_string_array::<Int32Type>(&array)?;
-                Self::cast_string_to_int(to_type, &unpacked_array, self.eval_mode)?
+                Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -151,14 +155,14 @@ impl Cast {
         Ok(spark_cast(cast_result, from_type, to_type))
     }
 
-    fn cast_string_to_int(
+    fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
         to_type: &DataType,
         array: &ArrayRef,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef> {
         let string_array = array
             .as_any()
-            .downcast_ref::<GenericStringArray<i32>>()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
             .expect("cast_string_to_int expected a string array");
 
         let cast_array: ArrayRef = match to_type {
@@ -250,7 +254,12 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    Ok(do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)?)
+    Ok(do_cast_string_to_int::<i32>(
+        str,
+        eval_mode,
+        "INT",
+        i32::MIN,
+    )?)
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
