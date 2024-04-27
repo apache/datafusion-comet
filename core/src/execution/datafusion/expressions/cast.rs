@@ -37,6 +37,7 @@ use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
+use num::{traits::CheckedNeg, CheckedSub, Integer, Num};
 
 use crate::execution::datafusion::expressions::utils::{
     array_with_timezone, down_cast_any_ref, spark_cast,
@@ -249,11 +250,11 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    Ok(do_cast_string_to_i32(str, eval_mode, "INT", i32::MIN)?.map(|n| n as i32))
+    Ok(do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)?.map(|n| n as i32))
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
-    do_cast_string_to_i64(str, eval_mode, "BIGINT", i64::MIN)
+    do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
 }
 
 fn cast_string_to_int_with_range_check(
@@ -263,7 +264,7 @@ fn cast_string_to_int_with_range_check(
     min: i32,
     max: i32,
 ) -> CometResult<Option<i32>> {
-    match do_cast_string_to_i32(str, eval_mode, type_name, i32::MIN)? {
+    match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
         None => Ok(None),
         Some(v) if v >= min && v <= max => Ok(Some(v as i32)),
         _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
@@ -271,12 +272,14 @@ fn cast_string_to_int_with_range_check(
     }
 }
 
-fn do_cast_string_to_i32(
+fn do_cast_string_to_int<
+    T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
+>(
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
-    min_value: i32,
-) -> CometResult<Option<i32>> {
+    min_value: T,
+) -> CometResult<Option<T>> {
     let chars: Vec<char> = str.chars().collect();
     let mut i = 0;
     let mut end = chars.len();
@@ -305,8 +308,8 @@ fn do_cast_string_to_i32(
         }
     }
 
-    let mut result = 0;
-    let radix = 10;
+    let mut result: T = T::zero();
+    let radix = T::from(10);
     let stop_value = min_value / radix;
     while i < end {
         let b = chars[i];
@@ -333,8 +336,9 @@ fn do_cast_string_to_i32(
         // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE / radix),
         // we can just use `result > 0` to check overflow. If result overflows, we should stop
         let v = result * radix;
-        match v.checked_sub(digit as i32) {
-            Some(x) if x <= 0 => result = x,
+        let digit = (digit as i32).into();
+        match v.checked_sub(&digit) {
+            Some(x) if x <= T::zero() => result = x,
             _ => {
                 return none_or_err(eval_mode, type_name, str);
             }
@@ -354,103 +358,7 @@ fn do_cast_string_to_i32(
 
     if !negative {
         if let Some(x) = result.checked_neg() {
-            if x < 0 {
-                return none_or_err(eval_mode, type_name, str);
-            }
-            result = x;
-        } else {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-
-    Ok(Some(result))
-}
-
-/// This is a copy of do_cast_string_to_i32 but with the type changed to i64
-fn do_cast_string_to_i64(
-    str: &str,
-    eval_mode: EvalMode,
-    type_name: &str,
-    min_value: i64,
-) -> CometResult<Option<i64>> {
-    let chars: Vec<char> = str.chars().collect();
-    let mut i = 0;
-    let mut end = chars.len();
-
-    // skip leading whitespace
-    while i < end && chars[i].is_whitespace() {
-        i += 1;
-    }
-
-    // skip trailing whitespace
-    while end > i && chars[end - 1].is_whitespace() {
-        end -= 1;
-    }
-
-    // check for empty string
-    if i == end {
-        return none_or_err(eval_mode, type_name, str);
-    }
-
-    // skip + or -
-    let negative = chars[i] == '-';
-    if negative || chars[i] == '+' {
-        i += 1;
-        if i == end {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-
-    let mut result = 0;
-    let radix = 10;
-    let stop_value = min_value / radix;
-    while i < end {
-        let b = chars[i];
-        i += 1;
-
-        if b == '.' && eval_mode == EvalMode::Legacy {
-            // truncate decimal in legacy mode
-            break;
-        }
-
-        let digit = if b.is_ascii_digit() {
-            (b as u32) - ('0' as u32)
-        } else {
-            return none_or_err(eval_mode, type_name, str);
-        };
-
-        // We are going to process the new digit and accumulate the result. However, before doing
-        // this, if the result is already smaller than the stopValue(Integer.MIN_VALUE / radix),
-        // then result * 10 will definitely be smaller than minValue, and we can stop
-        if result < stop_value {
-            return none_or_err(eval_mode, type_name, str);
-        }
-
-        // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE / radix),
-        // we can just use `result > 0` to check overflow. If result overflows, we should stop
-        let v = result * radix;
-        match v.checked_sub(digit as i64) {
-            Some(x) if x <= 0 => result = x,
-            _ => {
-                return none_or_err(eval_mode, type_name, str);
-            }
-        }
-    }
-
-    // This is the case when we've encountered a decimal separator. The fractional
-    // part will not change the number, but we will verify that the fractional part
-    // is well-formed.
-    while i < end {
-        let b = chars[i];
-        if !b.is_ascii_digit() {
-            return none_or_err(eval_mode, type_name, str);
-        }
-        i += 1;
-    }
-
-    if !negative {
-        if let Some(x) = result.checked_neg() {
-            if x < 0 {
+            if x < T::zero() {
                 return none_or_err(eval_mode, type_name, str);
             }
             result = x;
