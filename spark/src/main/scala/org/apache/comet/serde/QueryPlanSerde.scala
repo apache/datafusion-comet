@@ -576,31 +576,31 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           exprToProtoInternal(Literal(value, dataType), inputs)
 
         case cast @ Cast(child, dt, timeZoneId, evalMode) =>
-          val supportedCast = (child.dataType, dt) match {
-            case (DataTypes.StringType, DataTypes.TimestampType)
-                if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
-              // https://github.com/apache/datafusion-comet/issues/328
-              withInfo(cast, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
-              false
-            case _ => true
-          }
-
-          if (supportedCast) {
-            val childExpr = exprToProtoInternal(child, inputs)
-            if (childExpr.isDefined) {
-              val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
-                // Spark 3.2 & 3.3 has ansiEnabled boolean
-                if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
-              } else {
-                // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
-                evalMode.toString
-              }
+          val childExpr = exprToProtoInternal(child, inputs)
+          if (childExpr.isDefined) {
+            val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
+              // Spark 3.2 & 3.3 has ansiEnabled boolean
+              if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+            } else {
+              // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+              evalMode.toString
+            }
+            val supportedCast = (child.dataType, dt) match {
+              case (DataTypes.StringType, DataTypes.TimestampType)
+                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
+                // https://github.com/apache/datafusion-comet/issues/328
+                withInfo(cast, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
+                false
+              case _ => true
+            }
+            if (supportedCast) {
               castToProto(timeZoneId, dt, childExpr, evalModeStr)
             } else {
-              withInfo(expr, child)
+              // no need to call withInfo here since it was called when determining the value for `supportedCast`
               None
             }
           } else {
+            withInfo(expr, child)
             None
           }
 
