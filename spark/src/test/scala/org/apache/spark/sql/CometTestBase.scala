@@ -252,9 +252,7 @@ abstract class CometTestBase
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
-    if (!extendedInfo.equalsIgnoreCase(expectedInfo)) {
-      fail(s"$extendedInfo != $expectedInfo (case-insensitive comparison)")
-    }
+    assert(extendedInfo.equalsIgnoreCase(expectedInfo))
   }
 
   private var _spark: SparkSession = _
