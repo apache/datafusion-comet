@@ -98,12 +98,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast string to date") {
-    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DoubleType)
+    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
-  ignore("cast string to timestamp") {
-    val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
-    castTest(values.toDF("a"), DataTypes.DoubleType)
+  test("cast string to timestamp") {
+    withSQLConf((CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key, "true")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
+      castTest(values.toDF("a"), DataTypes.TimestampType)
+    }
   }
 
   private def generateFloats(): DataFrame = {
@@ -154,7 +156,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
           // removing the "Execution error: " error message prefix that is added by DataFusion
           val cometMessage = actual.getMessage
-            .replace("Execution error: ", "")
+            .substring("Execution error: ".length)
 
           assert(expected.getMessage == cometMessage)
         } else {
