@@ -43,10 +43,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val datePattern = "0123456789/" + whitespaceChars
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
-  ignore("cast long to short") {
-    castTest(generateLongs, DataTypes.ShortType)
-  }
-
+//  ignore("cast long to short") {
+//    castTest(generateLongs, DataTypes.ShortType)
+//  }
+//
   ignore("cast float to bool") {
     castTest(generateFloats, DataTypes.BooleanType)
   }
@@ -106,6 +106,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(values.toDF("a"), DataTypes.DoubleType)
   }
 
+  // spotless:off
+  test("cast short to int"){
+
+  }
+  test("cast short to long"){
+
+  }
+  test("cast int to short"){
+
+  }
+  test("cast int to long"){
+
+  }
+  test("cast long to short"){
+    castTest(generateLongs, DataTypes.ShortType)
+  }
+  test("cast long to int"){
+
+  }
+  // spotless:on
+
   private def generateFloats(): DataFrame = {
     val r = new Random(0)
     Range(0, dataSize).map(_ => r.nextFloat()).toDF("a")
@@ -113,7 +134,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateLongs(): DataFrame = {
     val r = new Random(0)
-    Range(0, dataSize).map(_ => r.nextLong()).toDF("a")
+    (Range(0, dataSize).map(_ => r.nextLong()) ++ Seq(Long.MaxValue, Long.MinValue)).toDF("a")
   }
 
   private def generateString(r: Random, chars: String, maxLen: Int): String = {

@@ -28,7 +28,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait};
+use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, Int16Array, Int64Array, OffsetSizeTrait};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
@@ -103,10 +103,56 @@ impl Cast {
             (DataType::LargeUtf8, DataType::Boolean) => {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
+            (DataType::Int64, DataType::Int16) if self.eval_mode != EvalMode::Try => {
+            // (DataType::Int64, DataType::Int16) => {
+                Self::spark_cast_int64_to_int16(&array, self.eval_mode)?
+            }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
         let result = spark_cast(cast_result, from_type, to_type);
         Ok(result)
+    }
+    fn spark_cast_int64_to_int16(
+        from: &dyn Array,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    {
+        let array = from
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+
+        let output_array = match eval_mode {
+            EvalMode::Legacy => {
+                array.iter()
+                    .map(|value| match value{
+                        Some(value) => Ok::<Option<i16>, CometError>(Some(value as i16)),
+                        _ => Ok(None)
+                    })
+                    .collect::<Result<Int16Array, _>>()?
+            },
+            _ => {
+                array.iter()
+                    .map(|value| match value{
+                        Some(value) => {
+                            let res = i16::try_from(value);
+                            if res.is_err() {
+                                Err(CometError::CastOverFlow{
+                                    value: value.to_string() + "L",
+                                    from_type: "BIGINT".to_string(),
+                                    to_type: "SMALLINT".to_string(),
+                                })
+                            }else{
+                                Ok::<Option<i16>, CometError>(Some(i16::try_from(value).unwrap()))
+                            }
+
+                        },
+                        _ => Ok(None)
+                    })
+                    .collect::<Result<Int16Array, _>>()?
+            }
+        };
+        Ok(Arc::new(output_array))
     }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
