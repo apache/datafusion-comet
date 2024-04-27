@@ -22,15 +22,17 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    paths-ignore:
-      - "doc/**"
-      - "**.md"
-  pull_request:
-    paths-ignore:
-      - "doc/**"
-      - "**.md"
-  # manual trigger
+  # enable the following once Ansi support is completed
+  #  push:
+  #    paths-ignore:
+  #      - "doc/**"
+  #      - "**.md"
+  #  pull_request:
+  #    paths-ignore:
+  #      - "doc/**"
+  #      - "**.md"
+
+  # manual trigger ONLY
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
