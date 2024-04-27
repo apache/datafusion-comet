@@ -86,7 +86,8 @@ abstract class CometExec extends CometPlan {
     val countsAndBytes = CometExec.getByteArrayRdd(this).collect()
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator
-      .flatMap(countAndBytes => CometExec.decodeBatches(countAndBytes._2))
+      .flatMap(countAndBytes =>
+        CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
     (total, rows)
   }
 }
@@ -126,7 +127,7 @@ object CometExec {
   /**
    * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
    */
-  def decodeBatches(bytes: ChunkedByteBuffer): Iterator[ColumnarBatch] = {
+  def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
     if (bytes.size == 0) {
       return Iterator.empty
     }
@@ -135,7 +136,7 @@ object CometExec {
     val cbbis = bytes.toInputStream()
     val ins = new DataInputStream(codec.compressedInputStream(cbbis))
 
-    new ArrowReaderIterator(Channels.newChannel(ins))
+    new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
 }
 
