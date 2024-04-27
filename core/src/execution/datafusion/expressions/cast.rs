@@ -16,14 +16,22 @@
 // under the License.
 
 use std::{
-    any::Any, fmt::{Display, Formatter}, hash::{Hash, Hasher}, sync::Arc
+    any::Any,
+    fmt::{Display, Formatter},
+    hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 use crate::errors::{CometError, CometResult};
 use arrow::{
-    compute::{cast_with_options, CastOptions}, datatypes::TimestampMillisecondType, record_batch::RecordBatch, util::display::FormatOptions
+    compute::{cast_with_options, CastOptions},
+    datatypes::TimestampMillisecondType,
+    record_batch::RecordBatch,
+    util::display::FormatOptions,
 };
-use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
+};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
@@ -137,18 +145,20 @@ impl Cast {
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
-    
+
         let cast_array: ArrayRef = match to_type {
             DataType::Timestamp(_, _) => {
-                cast_utf8_to_timestamp!(string_array, eval_mode, TimestampMillisecondType, parse_timestamp)
+                cast_utf8_to_timestamp!(
+                    string_array,
+                    eval_mode,
+                    TimestampMillisecondType,
+                    parse_timestamp
+                )
             }
-            _ => unreachable!(
-                "Invalid data type {:?} in cast from string",
-                to_type
-            ),
+            _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
         };
         Ok(cast_array)
-    }        
+    }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
         from: &dyn Array,
@@ -269,17 +279,41 @@ fn parse_timestamp(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>>
     if value.is_empty() {
         return Ok(None);
     }
-    
+
     // Define regex patterns and corresponding parsing functions
     let patterns = &[
-        (Regex::new(r"^\d{4}$").unwrap(), parse_str_to_year_timestamp as fn(&str) -> CometResult<Option<i64>>),
-        (Regex::new(r"^\d{4}-\d{2}$").unwrap(), parse_str_to_month_timestamp),
-        (Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap(), parse_str_to_day_timestamp),
-        (Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{1,2}$").unwrap(), parse_str_to_hour_timestamp),
-        (Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(), parse_str_to_minute_timestamp),
-        (Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(), parse_str_to_second_timestamp),
-        (Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(), parse_str_to_nanosecond_timestamp),
-        (Regex::new(r"^T\d{1,2}$").unwrap(), parse_str_to_time_only_timestamp),
+        (
+            Regex::new(r"^\d{4}$").unwrap(),
+            parse_str_to_year_timestamp as fn(&str) -> CometResult<Option<i64>>,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}$").unwrap(),
+            parse_str_to_month_timestamp,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap(),
+            parse_str_to_day_timestamp,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{1,2}$").unwrap(),
+            parse_str_to_hour_timestamp,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(),
+            parse_str_to_minute_timestamp,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(),
+            parse_str_to_second_timestamp,
+        ),
+        (
+            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
+            parse_str_to_nanosecond_timestamp,
+        ),
+        (
+            Regex::new(r"^T\d{1,2}$").unwrap(),
+            parse_str_to_time_only_timestamp,
+        ),
     ];
 
     let mut timestamp = None;
@@ -309,14 +343,26 @@ fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i6
     Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
 }
 
-fn parse_hms_timestamp(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32, millisecond: u32) -> CometResult<Option<i64>> {
+fn parse_hms_timestamp(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    millisecond: u32,
+) -> CometResult<Option<i64>> {
     let datetime = chrono::NaiveDate::from_ymd_opt(year, month, day);
-    let timestamp = datetime.unwrap().and_hms_nano_opt(hour, minute, second, millisecond);
+    let timestamp = datetime
+        .unwrap()
+        .and_hms_nano_opt(hour, minute, second, millisecond);
     Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
 }
 
 fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option<i64>> {
-    let values: Vec<_> = value.split(|c| c == 'T' || c == '-' || c == ':' || c == '.' ).collect();
+    let values: Vec<_> = value
+        .split(|c| c == 'T' || c == '-' || c == ':' || c == '.')
+        .collect();
     let year = values[0].parse::<i32>().unwrap_or_default();
     let month = values.get(1).map_or(1, |m| m.parse::<u32>().unwrap_or(1));
     let day = values.get(2).map_or(1, |d| d.parse::<u32>().unwrap_or(1));
@@ -373,9 +419,15 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
     let values: Vec<_> = value.split("T").collect();
     let time_values: Vec<_> = values[1].split(":").collect();
     let hour = time_values[0].parse::<u32>().unwrap();
-    let minute = time_values.get(1).map_or(0, |m| m.parse::<u32>().unwrap_or(0));
-    let second = time_values.get(2).map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let millisecond = time_values.get(3).map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
+    let minute = time_values
+        .get(1)
+        .map_or(0, |m| m.parse::<u32>().unwrap_or(0));
+    let second = time_values
+        .get(2)
+        .map_or(0, |s| s.parse::<u32>().unwrap_or(0));
+    let millisecond = time_values
+        .get(3)
+        .map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
     let datetime = chrono::Local::now().to_utc().date_naive();
     let timestamp = datetime.and_hms_milli_opt(hour, minute, second, millisecond);
     Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
@@ -387,15 +439,38 @@ mod tests {
 
     #[test]
     fn parse_timestamp_test() {
-
         // write for all formats
-        assert_eq!(parse_timestamp("2020", EvalMode::Legacy).unwrap(), Some(1577836800000));
-        assert_eq!(parse_timestamp("2020-01", EvalMode::Legacy).unwrap(), Some(1577836800000));
-        assert_eq!(parse_timestamp("2020-01-01", EvalMode::Legacy).unwrap(), Some(1577836800000));
-        assert_eq!(parse_timestamp("2020-01-01T12", EvalMode::Legacy).unwrap(), Some(1577880000000));
-        assert_eq!(parse_timestamp("2020-01-01T12:34", EvalMode::Legacy).unwrap(), Some(1577882040000));
-        assert_eq!(parse_timestamp("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(), Some(1577882096000));
-        assert_eq!(parse_timestamp("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(), Some(1577882096000));
-        assert_eq!(parse_timestamp("T2", EvalMode::Legacy).unwrap(), Some(1714183200000));        
+        assert_eq!(
+            parse_timestamp("2020", EvalMode::Legacy).unwrap(),
+            Some(1577836800000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01", EvalMode::Legacy).unwrap(),
+            Some(1577836800000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01-01", EvalMode::Legacy).unwrap(),
+            Some(1577836800000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01-01T12", EvalMode::Legacy).unwrap(),
+            Some(1577880000000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
+            Some(1577882040000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
+            Some(1577882096000)
+        );
+        assert_eq!(
+            parse_timestamp("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
+            Some(1577882096000)
+        );
+        assert_eq!(
+            parse_timestamp("T2", EvalMode::Legacy).unwrap(),
+            Some(1714183200000)
+        );
     }
 }
