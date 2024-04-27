@@ -122,7 +122,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 5).toDF("a"), DataTypes.ByteType)
+    castTest(generateStrings(numericPattern, 5).toDF("a"), DataTypes.IntegerType)
   }
 
   test("cast string to long") {
