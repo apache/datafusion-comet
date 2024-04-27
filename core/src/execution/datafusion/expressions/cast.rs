@@ -263,12 +263,7 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    Ok(do_cast_string_to_int::<i32>(
-        str,
-        eval_mode,
-        "INT",
-        i32::MIN,
-    )?)
+    do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
 }
 
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
