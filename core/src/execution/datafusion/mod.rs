@@ -17,7 +17,7 @@
 
 //! Native execution through DataFusion
 
-mod expressions;
+pub mod expressions;
 mod operators;
 pub mod planner;
 pub(crate) mod shuffle_writer;
