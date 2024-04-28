@@ -339,7 +339,9 @@ fn timstamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>>
 }
 
 fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
-    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap();
+    let datetime = chrono::Utc
+        .with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .unwrap();
     Ok(Some(datetime.timestamp_micros()))
 }
 
@@ -352,7 +354,10 @@ fn parse_hms_timestamp(
     second: u32,
     microsecond: u32,
 ) -> CometResult<Option<i64>> {
-    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second).unwrap().with_nanosecond(microsecond * 1000);
+    let datetime = chrono::Utc
+        .with_ymd_and_hms(year, month, day, hour, minute, second)
+        .unwrap()
+        .with_nanosecond(microsecond * 1000);
     Ok(Some(datetime.unwrap().timestamp_micros()))
 }
 
@@ -494,8 +499,6 @@ mod tests {
             TimestampMicrosecondType,
             timstamp_parser
         );
-
-        println!("{:?}", result);
 
         assert_eq!(
             result.data_type(),
