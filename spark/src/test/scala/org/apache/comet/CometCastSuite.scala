@@ -103,7 +103,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast string to timestamp") {
     val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
-    castTest(values.toDF("a"), DataTypes.DoubleType)
+    castTest(values.toDF("a"), DataTypes.TimestampType)
   }
 
   private def generateFloats(): DataFrame = {

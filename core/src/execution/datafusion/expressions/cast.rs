@@ -128,6 +128,7 @@ impl Cast {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
             (DataType::UInt8, DataType::Timestamp(_, _)) => {
+                println!("Casting UInt8 to Timestamp");
                 Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
@@ -416,8 +417,8 @@ fn parse_str_to_nanosecond_timestamp(value: &str) -> CometResult<Option<i64>> {
 }
 
 fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
-    let values: Vec<_> = value.split("T").collect();
-    let time_values: Vec<_> = values[1].split(":").collect();
+    let values: Vec<_> = value.split('T').collect();
+    let time_values: Vec<_> = values[1].split(':').collect();
     let hour = time_values[0].parse::<u32>().unwrap();
     let minute = time_values
         .get(1)
