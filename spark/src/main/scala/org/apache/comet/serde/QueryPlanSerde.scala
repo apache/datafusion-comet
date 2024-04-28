@@ -596,7 +596,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             if (supportedCast) {
               castToProto(timeZoneId, dt, childExpr, evalModeStr)
             } else {
-              // no need to call withInfo here since it was called when determining the value for `supportedCast`
+              // no need to call withInfo here since it was called when determining
+              // the value for `supportedCast`
               None
             }
           } else {
