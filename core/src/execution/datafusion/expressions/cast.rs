@@ -25,7 +25,7 @@ use std::{
 use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
-    datatypes::TimestampMillisecondType,
+    datatypes::TimestampMicrosecondType,
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -33,6 +33,7 @@ use arrow_array::{
     Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
+use chrono::{TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
@@ -73,7 +74,7 @@ pub struct Cast {
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
+        let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone("UTC");
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
@@ -127,8 +128,7 @@ impl Cast {
             (DataType::LargeUtf8, DataType::Boolean) => {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
-            (DataType::UInt8, DataType::Timestamp(_, _)) => {
-                println!("Casting UInt8 to Timestamp");
+            (DataType::Utf8, DataType::Timestamp(_, _)) => {
                 Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
@@ -152,8 +152,8 @@ impl Cast {
                 cast_utf8_to_timestamp!(
                     string_array,
                     eval_mode,
-                    TimestampMillisecondType,
-                    parse_timestamp
+                    TimestampMicrosecondType,
+                    timstamp_parser
                 )
             }
             _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
@@ -275,7 +275,7 @@ impl PhysicalExpr for Cast {
     }
 }
 
-fn parse_timestamp(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
+fn timstamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -339,9 +339,8 @@ fn parse_timestamp(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>>
 }
 
 fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
-    let datetime = chrono::NaiveDate::from_ymd_opt(year, month, day);
-    let timestamp = datetime.unwrap().and_hms_micro_opt(0, 0, 0, 0);
-    Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
+    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap();
+    Ok(Some(datetime.timestamp_micros()))
 }
 
 fn parse_hms_timestamp(
@@ -353,11 +352,8 @@ fn parse_hms_timestamp(
     second: u32,
     microsecond: u32,
 ) -> CometResult<Option<i64>> {
-    let datetime = chrono::NaiveDate::from_ymd_opt(year, month, day);
-    let timestamp = datetime
-        .unwrap()
-        .and_hms_micro_opt(hour, minute, second, microsecond);
-    Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
+    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second).unwrap().with_nanosecond(microsecond * 1000);
+    Ok(Some(datetime.unwrap().timestamp_micros()))
 }
 
 fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option<i64>> {
@@ -429,49 +425,82 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
     let microsecond = time_values
         .get(3)
         .map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
-    let datetime = chrono::Local::now().to_utc().date_naive();
+    let datetime = chrono::Utc::now().date_naive();
     let timestamp = datetime.and_hms_micro_opt(hour, minute, second, microsecond);
+
     Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::TimestampMicrosecondType;
+    use arrow_array::StringArray;
+    use arrow_schema::TimeUnit;
 
     #[test]
-    fn parse_timestamp_test() {
+    fn timstamp_parser_test() {
         // write for all formats
         assert_eq!(
-            parse_timestamp("2020", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01-01", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01-01", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01-01T12", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01-01T12", EvalMode::Legacy).unwrap(),
             Some(1577880000000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
             Some(1577882040000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
             Some(1577882096000000)
         );
         assert_eq!(
-            parse_timestamp("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
+            timstamp_parser("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
             Some(1577882096123456)
         );
         assert_eq!(
-            parse_timestamp("T2", EvalMode::Legacy).unwrap(),
+            timstamp_parser("T2", EvalMode::Legacy).unwrap(),
             Some(1714269600000000)
         );
+    }
+
+    #[test]
+    fn test_cast_string_to_timestamp() {
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56.123456"),
+            Some("T2"),
+        ]));
+
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("Expected a string array");
+
+        let eval_mode = EvalMode::Legacy;
+        let result = cast_utf8_to_timestamp!(
+            &string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timstamp_parser
+        );
+
+        println!("{:?}", result);
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        assert_eq!(result.len(), 2);
     }
 }
