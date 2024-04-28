@@ -320,18 +320,23 @@ fn do_cast_string_to_int<
                 let positive = ch == '+';
                 parsed_sign = true;
                 if negative || positive {
+                    if i + 1 == len {
+                        // input string is just "+" or "-"
+                        return none_or_err(eval_mode, type_name, str);
+                    }
                     // consume this char
                     continue;
-                } else if i + 1 == len {
-                    return none_or_err(eval_mode, type_name, str);
                 }
             }
 
-            if ch == '.' && eval_mode == EvalMode::Legacy {
-                // truncate decimal in legacy mode
-                state = State::ParseFractionalDigits;
-                // consume this char
-                continue;
+            if ch == '.' {
+                if eval_mode == EvalMode::Legacy {
+                    // truncate decimal in legacy mode
+                    state = State::ParseFractionalDigits;
+                    continue;
+                } else {
+                    return none_or_err(eval_mode, type_name, str);
+                }
             }
 
             let digit = if ch.is_ascii_digit() {
