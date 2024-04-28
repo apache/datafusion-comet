@@ -43,10 +43,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val datePattern = "0123456789/" + whitespaceChars
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
-//  ignore("cast long to short") {
-//    castTest(generateLongs, DataTypes.ShortType)
-//  }
-//
   ignore("cast float to bool") {
     castTest(generateFloats, DataTypes.BooleanType)
   }
@@ -106,26 +102,29 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(values.toDF("a"), DataTypes.DoubleType)
   }
 
-  // spotless:off
-  test("cast short to int"){
-
+  test("cast short to byte") {
+    castTest(generateShorts, DataTypes.ByteType)
   }
-  test("cast short to long"){
 
+  test("cast int to byte") {
+    castTest(generateInts, DataTypes.ByteType)
   }
-  test("cast int to short"){
 
+  test("cast int to short") {
+    castTest(generateInts, DataTypes.ShortType)
   }
-  test("cast int to long"){
 
+  test("cast long to byte") {
+    castTest(generateLongs, DataTypes.ByteType)
   }
-  test("cast long to short"){
+
+  test("cast long to short") {
     castTest(generateLongs, DataTypes.ShortType)
   }
-  test("cast long to int"){
 
+  test("cast long to int") {
+    castTest(generateLongs, DataTypes.IntegerType)
   }
-  // spotless:on
 
   private def generateFloats(): DataFrame = {
     val r = new Random(0)
@@ -135,6 +134,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def generateLongs(): DataFrame = {
     val r = new Random(0)
     (Range(0, dataSize).map(_ => r.nextLong()) ++ Seq(Long.MaxValue, Long.MinValue)).toDF("a")
+  }
+
+  private def generateInts(): DataFrame = {
+    val r = new Random(0)
+    (Range(0, dataSize).map(_ => r.nextInt()) ++ Seq(Int.MaxValue, Int.MinValue)).toDF("a")
+  }
+
+  private def generateShorts(): DataFrame = {
+    val r = new Random(0)
+    (Range(0, dataSize).map(_ => r.nextInt(Short.MaxValue).toShort) ++ Seq(
+      Short.MaxValue,
+      Short.MinValue)).toDF("a")
   }
 
   private def generateString(r: Random, chars: String, maxLen: Int): String = {

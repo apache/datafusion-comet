@@ -71,8 +71,7 @@ pub enum CometError {
         from_type: String,
         to_type: String,
     },
-    // Note that this message format is based on Spark 3.4 and is more detailed than the message
-    // returned by Spark 3.2 or 3.3
+
     #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
         set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
