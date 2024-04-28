@@ -275,6 +275,14 @@ fn cast_string_to_int_with_range_check(
     }
 }
 
+#[derive(PartialEq)]
+enum State {
+    SkipLeadingWhiteSpace,
+    SkipTrailingWhiteSpace,
+    ParseSignAndDigits,
+    ParseFractionalDigits,
+}
+
 fn do_cast_string_to_int<
     T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
 >(
@@ -283,88 +291,103 @@ fn do_cast_string_to_int<
     type_name: &str,
     min_value: T,
 ) -> CometResult<Option<T>> {
-    let chars: Vec<char> = str.chars().collect();
-    let mut i = 0;
-    let mut end = chars.len();
-
-    // skip leading whitespace
-    while i < end && chars[i].is_whitespace() {
-        i += 1;
-    }
-
-    // skip trailing whitespace
-    while end > i && chars[end - 1].is_whitespace() {
-        end -= 1;
-    }
-
-    // check for empty string
-    if i == end {
+    let len = str.len();
+    if len == 0 {
         return none_or_err(eval_mode, type_name, str);
     }
 
-    // skip + or -
-    let negative = chars[i] == '-';
-    if negative || chars[i] == '+' {
-        i += 1;
-        if i == end {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-
     let mut result: T = T::zero();
+    let mut negative = false;
     let radix = T::from(10);
     let stop_value = min_value / radix;
-    while i < end {
-        let b = chars[i];
-        i += 1;
+    let mut state = State::SkipLeadingWhiteSpace;
+    let mut parsed_sign = false;
 
-        if b == '.' && eval_mode == EvalMode::Legacy {
-            // truncate decimal in legacy mode
-            break;
+    for (i, ch) in str.char_indices() {
+        // skip leading whitespace
+        if state == State::SkipLeadingWhiteSpace {
+            if ch.is_whitespace() {
+                // consume this char
+                continue;
+            }
+            // change state and fall through to next section
+            state = State::ParseSignAndDigits;
         }
 
-        let digit = if b.is_ascii_digit() {
-            (b as u32) - ('0' as u32)
-        } else {
-            return none_or_err(eval_mode, type_name, str);
-        };
+        if state == State::ParseSignAndDigits {
+            if !parsed_sign {
+                negative = ch == '-';
+                let positive = ch == '+';
+                parsed_sign = true;
+                if negative || positive {
+                    // consume this char
+                    continue;
+                } else if i + 1 == len {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+            }
 
-        // We are going to process the new digit and accumulate the result. However, before doing
-        // this, if the result is already smaller than the stopValue(Integer.MIN_VALUE / radix),
-        // then result * 10 will definitely be smaller than minValue, and we can stop
-        if result < stop_value {
-            return none_or_err(eval_mode, type_name, str);
+            if ch == '.' && eval_mode == EvalMode::Legacy {
+                // truncate decimal in legacy mode
+                state = State::ParseFractionalDigits;
+                // consume this char
+                continue;
+            }
+
+            let digit = if ch.is_ascii_digit() {
+                (ch as u32) - ('0' as u32)
+            } else {
+                return none_or_err(eval_mode, type_name, str);
+            };
+
+            // We are going to process the new digit and accumulate the result. However, before
+            // doing this, if the result is already smaller than the
+            // stopValue(Integer.MIN_VALUE / radix), then result * 10 will definitely be
+            // smaller than minValue, and we can stop
+            if result < stop_value {
+                return none_or_err(eval_mode, type_name, str);
+            }
+
+            // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE /
+            // radix), we can just use `result > 0` to check overflow. If result
+            // overflows, we should stop
+            let v = result * radix;
+            let digit = (digit as i32).into();
+            match v.checked_sub(&digit) {
+                Some(x) if x <= T::zero() => result = x,
+                _ => {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+            }
         }
 
-        // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE / radix),
-        // we can just use `result > 0` to check overflow. If result overflows, we should stop
-        let v = result * radix;
-        let digit = (digit as i32).into();
-        match v.checked_sub(&digit) {
-            Some(x) if x <= T::zero() => result = x,
-            _ => {
+        if state == State::ParseFractionalDigits {
+            // This is the case when we've encountered a decimal separator. The fractional
+            // part will not change the number, but we will verify that the fractional part
+            // is well-formed.
+            if ch.is_whitespace() {
+                // finished parsing fractional digits, now need to skip trailing whitespace
+                state = State::SkipTrailingWhiteSpace;
+                // consume this char
+                continue;
+            }
+            if !ch.is_ascii_digit() {
                 return none_or_err(eval_mode, type_name, str);
             }
         }
-    }
 
-    // This is the case when we've encountered a decimal separator. The fractional
-    // part will not change the number, but we will verify that the fractional part
-    // is well-formed.
-    while i < end {
-        let b = chars[i];
-        if !b.is_ascii_digit() {
+        // skip trailing whitespace
+        if state == State::SkipTrailingWhiteSpace && !ch.is_whitespace() {
             return none_or_err(eval_mode, type_name, str);
         }
-        i += 1;
     }
 
     if !negative {
-        if let Some(x) = result.checked_neg() {
-            if x < T::zero() {
+        if let Some(neg) = result.checked_neg() {
+            if neg < T::zero() {
                 return none_or_err(eval_mode, type_name, str);
             }
-            result = x;
+            result = neg;
         } else {
             return none_or_err(eval_mode, type_name, str);
         }
