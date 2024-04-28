@@ -85,9 +85,7 @@ object CometMetricNode {
   def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       "build_time" ->
-        SQLMetrics.createNanoTimingMetric(
-          sc,
-          "Total time for collecting build-side of join"),
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
       "build_input_batches" ->
         SQLMetrics.createMetric(sc, "Number of batches consumed by build-side"),
       "build_input_rows" ->
