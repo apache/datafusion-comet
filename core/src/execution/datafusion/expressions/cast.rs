@@ -77,7 +77,7 @@ macro_rules! cast_utf8_to_timestamp {
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
-            } else if let Some(cast_value) = $cast_method($array.value(i).trim(), $eval_mode)? {
+            } else if let Ok(Some(cast_value)) = $cast_method($array.value(i).trim(), $eval_mode) {
                 cast_array.append_value(cast_value);
             } else {
                 cast_array.append_null()
@@ -309,7 +309,7 @@ fn parse_timestamp(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>>
         ),
         (
             Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
-            parse_str_to_nanosecond_timestamp,
+            parse_str_to_microsecond_timestamp,
         ),
         (
             Regex::new(r"^T\d{1,2}$").unwrap(),
@@ -340,8 +340,8 @@ fn parse_timestamp(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>>
 
 fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
     let datetime = chrono::NaiveDate::from_ymd_opt(year, month, day);
-    let timestamp = datetime.unwrap().and_hms_milli_opt(0, 0, 0, 0);
-    Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
+    let timestamp = datetime.unwrap().and_hms_micro_opt(0, 0, 0, 0);
+    Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
 }
 
 fn parse_hms_timestamp(
@@ -351,13 +351,13 @@ fn parse_hms_timestamp(
     hour: u32,
     minute: u32,
     second: u32,
-    millisecond: u32,
+    microsecond: u32,
 ) -> CometResult<Option<i64>> {
     let datetime = chrono::NaiveDate::from_ymd_opt(year, month, day);
     let timestamp = datetime
         .unwrap()
-        .and_hms_nano_opt(hour, minute, second, millisecond);
-    Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
+        .and_hms_micro_opt(hour, minute, second, microsecond);
+    Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
 }
 
 fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option<i64>> {
@@ -370,7 +370,7 @@ fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option
     let hour = values.get(3).map_or(0, |h| h.parse::<u32>().unwrap_or(0));
     let minute = values.get(4).map_or(0, |m| m.parse::<u32>().unwrap_or(0));
     let second = values.get(5).map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let millisecond = values.get(6).map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
+    let microsecond = values.get(6).map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
 
     match timestamp_type {
         "year" => parse_ymd_timestamp(year, 1, 1),
@@ -379,7 +379,7 @@ fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option
         "hour" => parse_hms_timestamp(year, month, day, hour, 0, 0, 0),
         "minute" => parse_hms_timestamp(year, month, day, hour, minute, 0, 0),
         "second" => parse_hms_timestamp(year, month, day, hour, minute, second, 0),
-        "millisecond" => parse_hms_timestamp(year, month, day, hour, minute, second, millisecond),
+        "microsecond" => parse_hms_timestamp(year, month, day, hour, minute, second, microsecond),
         _ => Err(CometError::CastInvalidValue {
             value: value.to_string(),
             from_type: "STRING".to_string(),
@@ -412,8 +412,8 @@ fn parse_str_to_second_timestamp(value: &str) -> CometResult<Option<i64>> {
     get_timestamp_values(value, "second")
 }
 
-fn parse_str_to_nanosecond_timestamp(value: &str) -> CometResult<Option<i64>> {
-    get_timestamp_values(value, "millisecond")
+fn parse_str_to_microsecond_timestamp(value: &str) -> CometResult<Option<i64>> {
+    get_timestamp_values(value, "microsecond")
 }
 
 fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
@@ -426,12 +426,12 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
     let second = time_values
         .get(2)
         .map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let millisecond = time_values
+    let microsecond = time_values
         .get(3)
         .map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
     let datetime = chrono::Local::now().to_utc().date_naive();
-    let timestamp = datetime.and_hms_milli_opt(hour, minute, second, millisecond);
-    Ok(Some(timestamp.unwrap().and_utc().timestamp_millis()))
+    let timestamp = datetime.and_hms_micro_opt(hour, minute, second, microsecond);
+    Ok(Some(timestamp.unwrap().and_utc().timestamp_micros()))
 }
 
 #[cfg(test)]
@@ -443,35 +443,35 @@ mod tests {
         // write for all formats
         assert_eq!(
             parse_timestamp("2020", EvalMode::Legacy).unwrap(),
-            Some(1577836800000)
+            Some(1577836800000000)
         );
         assert_eq!(
             parse_timestamp("2020-01", EvalMode::Legacy).unwrap(),
-            Some(1577836800000)
+            Some(1577836800000000)
         );
         assert_eq!(
             parse_timestamp("2020-01-01", EvalMode::Legacy).unwrap(),
-            Some(1577836800000)
+            Some(1577836800000000)
         );
         assert_eq!(
             parse_timestamp("2020-01-01T12", EvalMode::Legacy).unwrap(),
-            Some(1577880000000)
+            Some(1577880000000000)
         );
         assert_eq!(
             parse_timestamp("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
-            Some(1577882040000)
+            Some(1577882040000000)
         );
         assert_eq!(
             parse_timestamp("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
-            Some(1577882096000)
+            Some(1577882096000000)
         );
         assert_eq!(
             parse_timestamp("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
-            Some(1577882096000)
+            Some(1577882096123456)
         );
         assert_eq!(
             parse_timestamp("T2", EvalMode::Legacy).unwrap(),
-            Some(1714183200000)
+            Some(1714269600000000)
         );
     }
 }
