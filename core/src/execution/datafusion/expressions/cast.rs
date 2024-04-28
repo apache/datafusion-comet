@@ -28,8 +28,10 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray};
-use arrow_array::types::{Int16Type, Int32Type, Int64Type, Int8Type};
+use arrow_array::{
+    types::{Int16Type, Int32Type, Int64Type, Int8Type},
+    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
+};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
@@ -65,7 +67,7 @@ pub struct Cast {
     pub timezone: String,
 }
 
-macro_rules! cast_int_to_int_macro{
+macro_rules! cast_int_to_int_macro {
     (
         $array: expr,
         $eval_mode:expr,
@@ -78,43 +80,43 @@ macro_rules! cast_int_to_int_macro{
     ) => {{
         let cast_array = $array
             .as_any()
-            .downcast_ref::<PrimitiveArray::<$from_arrow_primitive_type>>()
+            .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
         let spark_int_literal_suffix = match $from_data_type {
             &DataType::Int64 => "L",
             &DataType::Int16 => "S",
             &DataType::Int8 => "T",
-            _ => ""
+            _ => "",
         };
 
         let output_array = match $eval_mode {
-            EvalMode::Legacy =>
-                cast_array.iter()
-                    .map(|value| match value {
-                        Some(value) => Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type)),
-                        _ => Ok(None)
-                    })
-                    .collect::<Result<PrimitiveArray::<$to_arrow_primitive_type>, _>>(),
-            _ => {
-                cast_array.iter()
-                    .map(|value| match value{
-                        Some(value) => {
-                            let res = <$to_native_type>::try_from(value);
-                            if res.is_err() {
-                                Err(CometError::CastOverFlow{
-                                    value: value.to_string() + spark_int_literal_suffix,
-                                    from_type: $spark_from_data_type_name.to_string(),
-                                    to_type: $spark_to_data_type_name.to_string(),
-                                })
-                            }else{
-                                Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
-                            }
-
-                        },
-                        _ => Ok(None)
-                    })
-                    .collect::<Result<PrimitiveArray::<$to_arrow_primitive_type>, _>>()
-            }
+            EvalMode::Legacy => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
+                    }
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let res = <$to_native_type>::try_from(value);
+                        if res.is_err() {
+                            Err(CometError::CastOverFlow {
+                                value: value.to_string() + spark_int_literal_suffix,
+                                from_type: $spark_from_data_type_name.to_string(),
+                                to_type: $spark_to_data_type_name.to_string(),
+                            })
+                        } else {
+                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                        }
+                    }
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
         }?;
         let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
         result
@@ -166,7 +168,8 @@ impl Cast {
             | (DataType::Int32, DataType::Int16)
             | (DataType::Int32, DataType::Int8)
             | (DataType::Int16, DataType::Int8)
-            if self.eval_mode != EvalMode::Try => {
+                if self.eval_mode != EvalMode::Try =>
+            {
                 Self::spark_cast_int_to_int(&array, self.eval_mode, from_type, to_type)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
@@ -180,21 +183,26 @@ impl Cast {
         eval_mode: EvalMode,
         from_type: &DataType,
         to_type: &DataType,
-    ) -> CometResult<ArrayRef>
-    {
+    ) -> CometResult<ArrayRef> {
         match (from_type, to_type) {
-            (DataType::Int64, DataType::Int32) =>
-                cast_int_to_int_macro!(array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"),
-            (DataType::Int64, DataType::Int16) =>
-                cast_int_to_int_macro!(array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"),
-            (DataType::Int64, DataType::Int8) =>
-                cast_int_to_int_macro!(array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"),
-            (DataType::Int32, DataType::Int16) =>
-                cast_int_to_int_macro!(array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"),
-            (DataType::Int32, DataType::Int8) =>
-                cast_int_to_int_macro!(array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"),
-            (DataType::Int16, DataType::Int8) =>
-                cast_int_to_int_macro!(array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"),
+            (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
+                array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
+            ),
+            (DataType::Int64, DataType::Int16) => cast_int_to_int_macro!(
+                array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"
+            ),
+            (DataType::Int64, DataType::Int8) => cast_int_to_int_macro!(
+                array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"
+            ),
+            (DataType::Int32, DataType::Int16) => cast_int_to_int_macro!(
+                array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"
+            ),
+            (DataType::Int32, DataType::Int8) => cast_int_to_int_macro!(
+                array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"
+            ),
+            (DataType::Int16, DataType::Int8) => cast_int_to_int_macro!(
+                array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"
+            ),
             _ => unreachable!(
                 "{}",
                 format!("invalid integer type {to_type} in cast from {from_type}")
