@@ -49,9 +49,10 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :caption: Contributor Guide
 
    Getting Started <contributor-guide/contributing>
+   Comet Plugin Overview <contributor-guide/plugin_overview>
+   Development Guide <contributor-guide/development>
+   Debugging Guide <contributor-guide/debugging>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
-   contributor-guide/development
-   contributor-guide/debugging
 
 .. _toc.asf-links:
 .. toctree::
