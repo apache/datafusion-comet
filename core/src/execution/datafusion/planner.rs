@@ -1301,6 +1301,7 @@ impl PhysicalPlanner {
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
+
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
             None => {
@@ -1308,17 +1309,18 @@ impl PhysicalPlanner {
                 // scalar function
                 // Note this assumes the `fun_name` is a defined function in DF. Otherwise, it'll
                 // throw error.
-                let fun = BuiltinScalarFunction::from_str(fun_name);
-                if fun.is_err() {
+
+                if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
+                    fun.return_type(&input_expr_types)?
+                } else {
                     self.session_ctx
                         .udf(fun_name)?
                         .inner()
                         .return_type(&input_expr_types)?
-                } else {
-                    fun?.return_type(&input_expr_types)?
                 }
             }
         };
+
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
 

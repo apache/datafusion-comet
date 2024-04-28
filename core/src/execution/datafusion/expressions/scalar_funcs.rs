@@ -43,7 +43,7 @@ use datafusion::{
 };
 use datafusion_common::{
     cast::{as_binary_array, as_generic_string_array},
-    exec_err, internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
+    exec_err, internal_err, not_impl_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_physical_expr::{math_expressions, udf::ScalarUDF};
 use num::{
@@ -105,6 +105,9 @@ pub fn create_comet_physical_fun(
         "make_decimal" => {
             make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
         }
+        "unhex" => {
+            make_comet_scalar_udf!("unhex", spark_unhex, data_type)
+        }
         "decimal_div" => {
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
         }
@@ -123,11 +126,10 @@ pub fn create_comet_physical_fun(
             make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
         }
         _ => {
-            let fun = BuiltinScalarFunction::from_str(fun_name);
-            if fun.is_err() {
-                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
+            if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
+                Ok(ScalarFunctionDefinition::BuiltIn(fun))
             } else {
-                Ok(ScalarFunctionDefinition::BuiltIn(fun?))
+                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
             }
         }
     }
@@ -573,6 +575,111 @@ fn spark_rpad_internal<T: OffsetSizeTrait>(
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
 
+fn unhex(string: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
+    // https://docs.databricks.com/en/sql/language-manual/functions/unhex.html
+    // If the length of expr is odd, the first character is discarded and the result is padded with
+    // a null byte. If expr contains non hex characters the result is NULL.
+    let string = if string.len() % 2 == 1 {
+        &string[1..]
+    } else {
+        string
+    };
+
+    let mut iter = string.chars().peekable();
+    while let Some(c) = iter.next() {
+        let high = if let Some(high) = c.to_digit(16) {
+            high
+        } else {
+            return Ok(());
+        };
+
+        let low = iter
+            .next()
+            .ok_or_else(|| DataFusionError::Internal("Odd number of hex characters".to_string()))?
+            .to_digit(16);
+
+        let low = if let Some(low) = low {
+            low
+        } else {
+            return Ok(());
+        };
+
+        result.push((high << 4 | low) as u8);
+    }
+
+    if string.len() % 2 == 1 {
+        result.push(0);
+    }
+
+    Ok(())
+}
+
+fn spark_unhex_inner<T: OffsetSizeTrait>(
+    array: &ColumnarValue,
+    fail_on_error: bool,
+) -> Result<ColumnarValue, DataFusionError> {
+    // let string_array = as_generic_string_array::<T>(array)?;
+
+    let string_array = match array {
+        ColumnarValue::Array(array) => as_generic_string_array::<T>(array)?,
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(_string))) => {
+            return not_impl_err!("unhex with scalar string is not implemented yet");
+        }
+        _ => {
+            return internal_err!(
+                "The first argument must be a string scalar or array, but got: {:?}",
+                array.data_type()
+            );
+        }
+    };
+
+    let mut builder = arrow::array::BinaryBuilder::new();
+    let mut encoded = Vec::new();
+
+    for i in 0..string_array.len() {
+        let string = string_array.value(i);
+
+        match unhex(string, &mut encoded) {
+            Ok(_) => {
+                builder.append_value(encoded.as_slice());
+                encoded.clear();
+            }
+            Err(_) if fail_on_error => {
+                return internal_err!("Invalid hex string: {:?}", string);
+            }
+            _ => {
+                builder.append_null();
+            }
+        }
+    }
+    Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+}
+
+fn spark_unhex(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+) -> Result<ColumnarValue, DataFusionError> {
+    if args.len() != 2 {
+        return internal_err!("unhex takes exactly two argument");
+    }
+
+    let val_to_unhex = &args[0];
+    let fail_on_error = if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = &args[1] {
+        *b
+    } else {
+        return internal_err!("The second argument must be a boolean scalar");
+    };
+
+    match data_type {
+        DataType::Utf8 => spark_unhex_inner::<i32>(val_to_unhex, fail_on_error),
+        DataType::LargeUtf8 => spark_unhex_inner::<i64>(val_to_unhex, fail_on_error),
+        _ => internal_err!(
+            "The first argument must be an array, but got: {:?}",
+            data_type
+        ),
+    }
+}
+
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
 // Conversely, Decimal(p1, s1) = Decimal(p2, s2) * Decimal(p3, s3). This means that, in order to
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
@@ -699,5 +806,20 @@ fn wrap_digest_result_as_hex_string(
                 value.data_type()
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::unhex;
+
+    #[test]
+    fn test_unhex() {
+        let mut result = Vec::new();
+
+        unhex("537061726B2053514C", &mut result).unwrap();
+        let result_str = std::str::from_utf8(&result).unwrap();
+        assert_eq!(result_str, "Spark SQL");
+        result.clear();
     }
 }

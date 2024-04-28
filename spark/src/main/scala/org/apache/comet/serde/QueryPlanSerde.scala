@@ -1396,6 +1396,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val optExpr = scalarExprToProto("atan2", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
 
+        case e @ Unhex(child, failOnError) =>
+          val childCast = Cast(child, StringType)
+          val failOnErrorCast = Cast(Literal(failOnError), BooleanType)
+
+          val childExpr = exprToProtoInternal(childCast, inputs)
+          val failOnErrorExpr = exprToProtoInternal(failOnErrorCast, inputs)
+
+          val optExpr =
+            scalarExprToProtoWithReturnType("unhex", e.dataType, childExpr, failOnErrorExpr)
+          optExprWithInfo(optExpr, expr, child, failOnErrorCast)
+
         case e @ Ceil(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
           child.dataType match {

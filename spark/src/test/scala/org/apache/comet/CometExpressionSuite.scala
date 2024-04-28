@@ -1025,6 +1025,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("unhex") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string) using parquet")
+          sql(s"insert into $table values('4A4D'), ('4A4D'), ('4A4D'), ('4A4D')")
+          checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+        }
+      }
+    }
+  }
+
   test("length, reverse, instr, replace, translate") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
