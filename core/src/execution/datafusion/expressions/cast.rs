@@ -292,7 +292,7 @@ fn do_cast_string_to_int<
     min_value: T,
 ) -> CometResult<Option<T>> {
     let len = str.len();
-    if str.isEmpty() {
+    if str.is_empty() {
         return none_or_err(eval_mode, type_name, str);
     }
 
