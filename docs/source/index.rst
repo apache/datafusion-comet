@@ -40,8 +40,12 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :maxdepth: 1
    :caption: User Guide
 
+   Comet Overview <user-guide/overview>
+   Installing Comet <user-guide/installation>
    Supported Expressions <user-guide/expressions>
-   user-guide/compatibility
+   Supported Operators <user-guide/operators>
+   Supported Data Types <user-guide/datatypes>
+   Compatibility Guide <user-guide/compatibility>
 
 .. _toc.links:
 .. toctree::
