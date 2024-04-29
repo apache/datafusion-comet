@@ -1,25 +1,26 @@
 <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
 
-# Comet Configuration Guide
+# Comet Configuration Settings
 
-<!--START_CONFIG_TABLE-->
+Comet provides the following configuration settings.
+
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | spark.comet.ansi.enabled | Comet does not respect ANSI mode in most cases and by default will not accelerate queries when ansi mode is enabled. Enable this setting to test Comet's experimental support for ANSI mode. This should not be used in production. | false |
@@ -46,7 +47,7 @@
 | spark.comet.memory.overhead.min | Minimum amount of additional memory to be allocated per executor process for Comet, in MiB. | 402653184b |
 | spark.comet.nativeLoadRequired | Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted. | false |
 | spark.comet.parquet.enable.directBuffer | Whether to use Java direct byte buffer when reading Parquet. By default, this is false | false |
-| spark.comet.rowToColumnar.enabled |  Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into columnar based before processing. | false |
+| spark.comet.rowToColumnar.enabled | Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into columnar based before processing. | false |
 | spark.comet.rowToColumnar.supportedOperatorList | A comma-separated list of row-based operators that will be converted to columnar format when 'spark.comet.rowToColumnar.enabled' is true | Range,InMemoryTableScan |
 | spark.comet.scan.enabled | Whether to enable Comet scan. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and 'spark.comet.exec.enabled' need to be enabled. By default, this config is true. | true |
 | spark.comet.scan.preFetch.enabled | Whether to enable pre-fetching feature of CometScan. By default is disabled. | false |
@@ -55,4 +56,3 @@
 | spark.comet.shuffle.preferDictionary.ratio | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. By default, this config is 10.0. Note that this config is only used when 'spark.comet.columnar.shuffle.enabled' is true. | 10.0 |
 | spark.comet.use.decimal128 | If true, Comet will always use 128 bits to represent a decimal value, regardless of its precision. If false, Comet will use 32, 64 and 128 bits respectively depending on the precision. N.B. this is NOT a user-facing config but should be inferred and set by Comet itself. | false |
 | spark.comet.use.lazyMaterialization | Whether to enable lazy materialization for Comet. When this is turned on, Comet will read Parquet data source lazily for string and binary columns. For filter operations, lazy materialization will improve read performance by skipping unused pages. | true |
-<!--END_CONFIG_TABLE-->

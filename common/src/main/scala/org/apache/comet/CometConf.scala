@@ -19,7 +19,11 @@
 
 package org.apache.comet
 
+import java.io.{BufferedOutputStream, FileOutputStream}
 import java.util.concurrent.TimeUnit
+
+import scala.collection.mutable.ListBuffer
+import scala.io.Source
 
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.network.util.JavaUtils
@@ -39,6 +43,14 @@ import org.apache.spark.sql.internal.SQLConf
  * can also explicitly pass a [[SQLConf]] object to the `get` method.
  */
 object CometConf {
+
+  /** List of all configs that is used for generating documentation */
+  val allConfs = new ListBuffer[ConfigEntry[_]]
+
+  def register(conf: ConfigEntryWithDefault[_]): Unit = {
+    allConfs.append(conf)
+  }
+
   def conf(key: String): ConfigBuilder = ConfigBuilder(key)
 
   val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
@@ -341,10 +353,9 @@ object CometConf {
   val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.rowToColumnar.enabled")
       .internal()
-      .doc("""
-         |Whether to enable row to columnar conversion in Comet. When this is turned on, Comet will
-         |convert row-based operators in `spark.comet.rowToColumnar.supportedOperatorList` into
-         |columnar based before processing.""".stripMargin)
+      .doc("Whether to enable row to columnar conversion in Comet. When this is turned on, " +
+        "Comet will convert row-based operators in " +
+        "`spark.comet.rowToColumnar.supportedOperatorList` into columnar based before processing.")
       .booleanConf
       .createWithDefault(false)
 
@@ -475,7 +486,7 @@ private class TypedConfigBuilder[T](
   /** Creates a [[ConfigEntry]] that has a default value. */
   def createWithDefault(default: T): ConfigEntry[T] = {
     val transformedDefault = converter(stringConverter(default))
-    new ConfigEntryWithDefault[T](
+    val conf = new ConfigEntryWithDefault[T](
       parent.key,
       transformedDefault,
       converter,
@@ -483,6 +494,8 @@ private class TypedConfigBuilder[T](
       parent._doc,
       parent._public,
       parent._version)
+    CometConf.register(conf)
+    conf
   }
 }
 
@@ -611,4 +624,34 @@ private[comet] case class ConfigBuilder(key: String) {
 
 private object ConfigEntry {
   val UNDEFINED = "<undefined>"
+}
+
+/**
+ * Utility for generating markdown documentation from the configs.
+ */
+object CometConfGenerateDocs {
+  def main(args: Array[String]): Unit = {
+    if (args.length != 2) {
+      // scalastyle:off println
+      println("Missing arguments for template file and output file")
+      // scalastyle:on println
+      sys.exit(-1)
+    }
+    val templateFilename = args.head
+    val outputFilename = args(1)
+    val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
+    for (line <- Source.fromFile(templateFilename).getLines()) {
+      if (line.trim == "<!--CONFIG_TABLE-->") {
+        val confs = CometConf.allConfs.sortBy(_.key)
+        w.write(s"| Config | Description | Default Value |\n".getBytes)
+        w.write(s"|--------|-------------|---------------|\n".getBytes)
+        for (conf <- confs) {
+          w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+        }
+      } else {
+        w.write(s"${line.trim}\n".getBytes)
+      }
+    }
+    w.close()
+  }
 }
