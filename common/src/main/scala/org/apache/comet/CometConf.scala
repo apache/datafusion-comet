@@ -628,6 +628,8 @@ private object ConfigEntry {
 
 /**
  * Utility for generating markdown documentation from the configs.
+ *
+ * This is invoked when running `mvn clean package -DskipTests`.
  */
 object CometConfGenerateDocs {
   def main(args: Array[String]): Unit = {
