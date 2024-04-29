@@ -155,7 +155,10 @@ impl Cast {
                             cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
                         Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)?
                     }
-                    _ => unreachable!("invalid value type for dictionary-encoded string array"),
+            dt => unreachable!(
+                 "{}",
+                 format!("invalid value type {dt} for dictionary-encoded string array")
+             ),
                 }
             }
             _ => {
