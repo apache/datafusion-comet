@@ -129,11 +129,7 @@ impl Cast {
                 Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
             }
             (DataType::Utf8, DataType::Timestamp(_, _)) => {
-                if self.timezone == "UTC" {
-                    Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
-                } else {
-                    cast_with_options(&array, to_type, &CAST_OPTIONS)?
-                }
+                Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
             }
             _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
@@ -338,9 +334,6 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
             to_type: "TIMESTAMP".to_string(),
         });
     }
-
-    println!("value: {:?}", value);
-    println!("timestamp: {:?}", timestamp);
 
     Ok(Some(timestamp.unwrap()))
 }
