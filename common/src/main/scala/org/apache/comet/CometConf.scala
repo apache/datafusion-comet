@@ -48,7 +48,9 @@ object CometConf {
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
   def register(conf: ConfigEntryWithDefault[_]): Unit = {
-    allConfs.append(conf)
+    if (conf.isPublic) {
+      allConfs.append(conf)
+    }
   }
 
   def conf(key: String): ConfigBuilder = ConfigBuilder(key)
