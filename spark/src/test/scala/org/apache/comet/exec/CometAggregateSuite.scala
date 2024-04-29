@@ -1157,6 +1157,49 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("stddev_pop and stddev_samp") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { cometColumnShuffleEnabled =>
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              Seq(true, false).foreach { nullOnDivideByZero =>
+                withSQLConf(
+                  "spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
+                  val table = "test"
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int, col4 float, " +
+                      "col5 double, col6 int) using parquet")
+                    sql(s"insert into $table values(1, null, null, 1.1, 2.2, 1), " +
+                      "(2, null, null, 3.4, 5.6, 1), (3, null, 4, 7.9, 2.4, 2)")
+                    val expectedNumOfCometAggregates = 2
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      "SELECT stddev_samp(col1), stddev_samp(col2), stddev_samp(col3), " +
+                        "stddev_samp(col4), stddev_samp(col5) FROM test",
+                      expectedNumOfCometAggregates)
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      "SELECT stddev_pop(col1), stddev_pop(col2), stddev_pop(col3), " +
+                        "stddev_pop(col4), stddev_pop(col5) FROM test",
+                      expectedNumOfCometAggregates)
+                    checkSparkAnswerAndNumOfAggregates(
+                      "SELECT stddev_samp(col1), stddev_samp(col2), stddev_samp(col3), " +
+                        "stddev_samp(col4), stddev_samp(col5) FROM test GROUP BY col6",
+                      expectedNumOfCometAggregates)
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      "SELECT stddev_pop(col1), stddev_pop(col2), stddev_pop(col3), " +
+                        "stddev_pop(col4), stddev_pop(col5) FROM test GROUP BY col6",
+                      expectedNumOfCometAggregates)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)
