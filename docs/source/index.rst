@@ -41,6 +41,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :caption: User Guide
 
    Supported Expressions <user-guide/expressions>
+   user-guide/configs
    user-guide/compatibility
 
 .. _toc.links:
