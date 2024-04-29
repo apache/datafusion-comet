@@ -220,6 +220,13 @@ under the License.
   <a class="reference internal nav-link" href="#cast">
    Cast
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#cast-from-string-to-timestamp">
+     Cast from String to Timestamp
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -284,6 +291,12 @@ be used in production.</p>
 <p>Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
 guaranteed to be consistent with Spark.</p>
 <p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">epic</a> where we are tracking the work to implement Spark-compatible cast expressions.</p>
+<section id="cast-from-string-to-timestamp">
+<h3>Cast from String to Timestamp<a class="headerlink" href="#cast-from-string-to-timestamp" title="Link to this heading">¶</a></h3>
+<p>Casting from String to Timestamp is disabled by default due to incompatibilities with Spark, including timezone
+issues, and can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.castStringToTimestamp=true</span></code>. See the
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/328">tracking issue</a> for more information.</p>
+</section>
 </section>
 </section>
 
