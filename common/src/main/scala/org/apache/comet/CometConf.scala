@@ -365,6 +365,13 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_CAST_STRING_TO_TIMESTAMP: ConfigEntry[Boolean] = conf(
+    "spark.comet.cast.stringToTimestamp")
+    .doc(
+      "Comet is not currently fully compatible with Spark when casting from String to Timestamp.")
+    .booleanConf
+    .createWithDefault(false)
+
 }
 
 object ConfigHelpers {
