@@ -643,8 +643,8 @@ object CometConfGenerateDocs {
     for (line <- Source.fromFile(templateFilename).getLines()) {
       if (line.trim == "<!--CONFIG_TABLE-->") {
         val confs = CometConf.allConfs.sortBy(_.key)
-        w.write(s"| Config | Description | Default Value |\n".getBytes)
-        w.write(s"|--------|-------------|---------------|\n".getBytes)
+        w.write("| Config | Description | Default Value |\n".getBytes)
+        w.write("|--------|-------------|---------------|\n".getBytes)
         for (conf <- confs) {
           w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
         }
