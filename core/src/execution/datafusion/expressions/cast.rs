@@ -16,7 +16,10 @@
 // under the License.
 
 use std::{
-    any::Any, fmt::{Display, Formatter}, hash::{Hash, Hasher}, sync::Arc
+    any::Any,
+    fmt::{Display, Formatter},
+    hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 use crate::errors::{CometError, CometResult};
@@ -127,14 +130,12 @@ impl Cast {
             }
             (DataType::Utf8, DataType::Timestamp(_, _)) => {
                 if self.timezone == "UTC" {
-                    Self::cast_string_to_timestamp(&array, to_type,self.eval_mode)?
+                    Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
                 } else {
                     cast_with_options(&array, to_type, &CAST_OPTIONS)?
                 }
             }
-            _ => {
-                cast_with_options(&array, to_type, &CAST_OPTIONS)?
-            },
+            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
         };
         let result = spark_cast(cast_result, from_type, to_type);
         Ok(result)
@@ -460,31 +461,31 @@ mod tests {
     fn timestamp_parser_test() {
         // write for all formats
         assert_eq!(
-            timestamp_parser("2020",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01", EvalMode::Legacy).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12", EvalMode::Legacy).unwrap(),
             Some(1577880000000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
             Some(1577882040000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34:56",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
             Some(1577882096000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34:56.123456",  EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
             Some(1577882096123456)
         );
         // assert_eq!(
