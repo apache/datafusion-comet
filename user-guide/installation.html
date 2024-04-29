@@ -1,0 +1,469 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Installing DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Supported Spark Expressions" href="expressions.html" />
+    <link rel="prev" title="Comet Overview" href="overview.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Installing Comet
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="expressions.html">
+   Supported Expressions
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="operators.html">
+   Supported Operators
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="datatypes.html">
+   Supported Data Types
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="compatibility.html">
+   Compatibility Guide
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/development.html">
+   Comet Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/debugging.html">
+   Comet Debugging Guide
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../index.html">
+    <img src="../_static/images/2x_bgwhite_original.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#supported-platforms">
+   Supported Platforms
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#requirements">
+   Requirements
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#using-a-published-release">
+   Using a Published Release
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#building-from-source">
+   Building From Source
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-spark-with-comet-enabled">
+   Run Spark with Comet enabled
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#verify-comet-enabled-for-spark-sql-query">
+     Verify Comet enabled for Spark SQL query
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#enable-comet-shuffle">
+     Enable Comet shuffle
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/installation.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="installing-datafusion-comet">
+<h1>Installing DataFusion Comet<a class="headerlink" href="#installing-datafusion-comet" title="Link to this heading">¶</a></h1>
+<p>Make sure the following requirements are met and software installed on your machine.</p>
+<section id="supported-platforms">
+<h2>Supported Platforms<a class="headerlink" href="#supported-platforms" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p>Linux</p></li>
+<li><p>Apple OSX (Intel and Apple Silicon)</p></li>
+</ul>
+</section>
+<section id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p>Apache Spark 3.2, 3.3, or 3.4</p></li>
+<li><p>JDK 8 and up</p></li>
+<li><p>GLIBC 2.17 (Centos 7) and up</p></li>
+</ul>
+</section>
+<section id="using-a-published-release">
+<h2>Using a Published Release<a class="headerlink" href="#using-a-published-release" title="Link to this heading">¶</a></h2>
+<p>There are no public releases available yet, so it is necessary to build from source as described in the next section.</p>
+</section>
+<section id="building-from-source">
+<h2>Building From Source<a class="headerlink" href="#building-from-source" title="Link to this heading">¶</a></h2>
+<p>Clone the repository:</p>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>git clone https://github.com/apache/datafusion-comet.git
+</pre></div>
+</div>
+<p>Build Comet for a specific Spark version:</p>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>cd datafusion-comet
+make release PROFILES=&quot;-Pspark-3.4&quot;
+</pre></div>
+</div>
+<p>Note that the project builds for Scala 2.12 by default but can be built for Scala 2.13 using an additional profile:</p>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>make release PROFILES=&quot;-Pspark-3.4 -Pscala-2.13&quot;
+</pre></div>
+</div>
+</section>
+<section id="run-spark-with-comet-enabled">
+<h2>Run Spark with Comet enabled<a class="headerlink" href="#run-spark-with-comet-enabled" title="Link to this heading">¶</a></h2>
+<p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>$SPARK_HOME/bin/spark-shell \
+    --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
+    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+    --conf spark.comet.enabled=true \
+    --conf spark.comet.exec.enabled=true \
+    --conf spark.comet.exec.all.enabled=true
+</pre></div>
+</div>
+<section id="verify-comet-enabled-for-spark-sql-query">
+<h3>Verify Comet enabled for Spark SQL query<a class="headerlink" href="#verify-comet-enabled-for-spark-sql-query" title="Link to this heading">¶</a></h3>
+<p>Create a test Parquet source</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="mi">10</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">&quot;a&quot;</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">mode</span><span class="p">(</span><span class="s">&quot;overwrite&quot;</span><span class="p">).</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Query the data from the test source and check:</p>
+<ul class="simple">
+<li><p>INFO message shows the native Comet library has been initialized.</p></li>
+<li><p>The query plan reflects Comet operators being used for this query instead of Spark ones</p></li>
+</ul>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">).</span><span class="n">createOrReplaceTempView</span><span class="p">(</span><span class="s">&quot;t1&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select * from t1 where a &gt; 5&quot;</span><span class="p">).</span><span class="n">explain</span>
+<span class="nc">INFO</span><span class="w"> </span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="p">.</span><span class="n">rs</span><span class="p">:</span><span class="w"> </span><span class="nc">Comet</span><span class="w"> </span><span class="n">native</span><span class="w"> </span><span class="n">library</span><span class="w"> </span><span class="n">initialized</span>
+<span class="o">==</span><span class="w"> </span><span class="nc">Physical</span><span class="w"> </span><span class="nc">Plan</span><span class="w"> </span><span class="o">==</span>
+<span class="w">        </span><span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="nc">ColumnarToRow</span>
+<span class="w">        </span><span class="o">+-</span><span class="w"> </span><span class="nc">CometFilter</span><span class="w"> </span><span class="p">[</span><span class="n">a#</span><span class="mi">14</span><span class="p">],</span><span class="w"> </span><span class="p">(</span><span class="n">isnotnull</span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="p">)</span><span class="w"> </span><span class="nc">AND</span><span class="w"> </span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">))</span>
+<span class="w">          </span><span class="o">+-</span><span class="w"> </span><span class="nc">CometScan</span><span class="w"> </span><span class="n">parquet</span><span class="w"> </span><span class="p">[</span><span class="n">a#</span><span class="mi">14</span><span class="p">]</span><span class="w"> </span><span class="nc">Batched</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nc">DataFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="n">isnotnull</span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">)],</span>
+<span class="w">             </span><span class="nc">Format</span><span class="p">:</span><span class="w"> </span><span class="nc">CometParquet</span><span class="p">,</span><span class="w"> </span><span class="nc">Location</span><span class="p">:</span><span class="w"> </span><span class="nc">InMemoryFileIndex</span><span class="p">(</span><span class="mi">1</span><span class="w"> </span><span class="n">paths</span><span class="p">)[</span><span class="n">file</span><span class="p">:</span><span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">test</span><span class="p">],</span><span class="w"> </span><span class="nc">PartitionFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">             </span><span class="nc">PushedFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="nc">IsNotNull</span><span class="p">(</span><span class="n">a</span><span class="p">),</span><span class="w"> </span><span class="nc">GreaterThan</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="mi">5</span><span class="p">)],</span><span class="w"> </span><span class="nc">ReadSchema</span><span class="p">:</span><span class="w"> </span><span class="n">struct</span><span class="o">&lt;</span><span class="n">a</span><span class="p">:</span><span class="n">int</span><span class="o">&gt;</span>
+</pre></div>
+</div>
+</section>
+<section id="enable-comet-shuffle">
+<h3>Enable Comet shuffle<a class="headerlink" href="#enable-comet-shuffle" title="Link to this heading">¶</a></h3>
+<p>Comet shuffle feature is disabled by default. To enable it, please add related configs:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
+<span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+</pre></div>
+</div>
+<p>Above configs enable Comet native shuffle which only supports hash partition and single partition.
+Comet native shuffle doesn’t support complex types yet.</p>
+<p>Comet doesn’t have official release yet so currently the only way to test it is to build jar and include it in your
+Spark application. Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
+explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
+components which will then fail at runtime. For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">driver</span><span class="o">-</span><span class="n">class</span><span class="o">-</span><span class="n">path</span> <span class="n">spark</span><span class="o">/</span><span class="n">target</span><span class="o">/</span><span class="n">comet</span><span class="o">-</span><span class="n">spark</span><span class="o">-</span><span class="n">spark3</span><span class="mf">.4_2.12</span><span class="o">-</span><span class="mf">0.1.0</span><span class="o">-</span><span class="n">SNAPSHOT</span><span class="o">.</span><span class="n">jar</span>
+</pre></div>
+</div>
+<p>Some cluster managers may require additional configuration, see https://spark.apache.org/docs/latest/cluster-overview.html</p>
+<p>To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">columnar</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="overview.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Comet Overview</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="expressions.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Supported Spark Expressions</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
