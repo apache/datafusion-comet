@@ -109,9 +109,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.comet.cast.stringToTimestamp is disabled")
   }
 
-  ignore("cast string to timestamp") {
-    val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
-    castTest(values.toDF("a"), DataTypes.TimestampType)
+  test("cast string to timestamp") {
+    withSQLConf(
+      (SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC"),
+      (CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+      castTest(values, DataTypes.TimestampType)
+    }
   }
 
   private def generateFloats(): DataFrame = {
