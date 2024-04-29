@@ -48,9 +48,7 @@ object CometConf {
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
   def register(conf: ConfigEntryWithDefault[_]): Unit = {
-    if (conf.isPublic) {
-      allConfs.append(conf)
-    }
+    allConfs.append(conf)
   }
 
   def conf(key: String): ConfigBuilder = ConfigBuilder(key)
@@ -646,7 +644,8 @@ object CometConfGenerateDocs {
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
     for (line <- Source.fromFile(templateFilename).getLines()) {
       if (line.trim == "<!--CONFIG_TABLE-->") {
-        val confs = CometConf.allConfs.sortBy(_.key)
+        val publicConfigs = CometConf.allConfs.filter(_.isPublic)
+        val confs = publicConfigs.sortBy(_.key)
         w.write("| Config | Description | Default Value |\n".getBytes)
         w.write("|--------|-------------|---------------|\n".getBytes)
         for (conf <- confs) {
