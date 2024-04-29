@@ -353,7 +353,7 @@ fn do_cast_string_to_int<
                 return none_or_err(eval_mode, type_name, str);
             }
 
-            // Since the previous result is less than or equal to stopValue(Integer.MIN_VALUE /
+            // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
             // radix), we can just use `result > 0` to check overflow. If result
             // overflows, we should stop
             let v = result * radix;
@@ -402,6 +402,7 @@ fn do_cast_string_to_int<
 }
 
 /// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
+#[inline]
 fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
     match eval_mode {
         EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
@@ -409,6 +410,7 @@ fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResul
     }
 }
 
+#[inline]
 fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
     CometError::CastInvalidValue {
         value: value.to_string(),
