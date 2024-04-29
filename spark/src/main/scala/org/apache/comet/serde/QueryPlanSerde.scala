@@ -41,6 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
@@ -584,7 +585,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
               evalMode.toString
             }
-            castToProto(timeZoneId, dt, childExpr, evalModeStr)
+            val supportedCast = (child.dataType, dt) match {
+              case (DataTypes.StringType, DataTypes.TimestampType)
+                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
+                // https://github.com/apache/datafusion-comet/issues/328
+                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
+                false
+              case _ => true
+            }
+            if (supportedCast) {
+              castToProto(timeZoneId, dt, childExpr, evalModeStr)
+            } else {
+              // no need to call withInfo here since it was called when determining
+              // the value for `supportedCast`
+              None
+            }
           } else {
             withInfo(expr, child)
             None
@@ -1613,10 +1628,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           optExprWithInfo(optExpr, expr, castExpr)
 
         case Md5(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
+          val childExpr = exprToProtoInternal(child, inputs)
           val optExpr = scalarExprToProto("md5", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
+          optExprWithInfo(optExpr, expr, child)
 
         case OctetLength(child) =>
           val castExpr = Cast(child, StringType)
@@ -1952,6 +1966,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           } else {
             withInfo(expr, bloomFilter, value)
             None
+          }
+
+        case Murmur3Hash(children, seed) =>
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
+          }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(IntegerType).get)
+            .setIntVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+
+        case Sha2(left, numBits) =>
+          if (!numBits.foldable) {
+            withInfo(expr, "non literal numBits is not supported")
+            return None
+          }
+          // it's possible for spark to dynamically compute the number of bits from input
+          // expression, however DataFusion does not support that yet.
+          val childExpr = exprToProtoInternal(left, inputs)
+          val bits = numBits.eval().asInstanceOf[Int]
+          val algorithm = bits match {
+            case 224 => "sha224"
+            case 256 | 0 => "sha256"
+            case 384 => "sha384"
+            case 512 => "sha512"
+            case _ =>
+              null
+          }
+          if (algorithm == null) {
+            exprToProtoInternal(Literal(null, StringType), inputs)
+          } else {
+            scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
           }
 
         case _ =>
