@@ -429,7 +429,7 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
 
     let datetime = chrono::Utc::now();
     let timestamp = datetime
-        .with_hour(time_values.get(0).copied().unwrap_or_default())
+        .with_hour(time_values.first().copied().unwrap_or_default())
         .unwrap()
         .with_minute(*time_values.get(1).unwrap_or(&0))
         .unwrap()
