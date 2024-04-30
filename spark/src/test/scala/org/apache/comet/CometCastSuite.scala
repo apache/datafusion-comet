@@ -612,7 +612,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val r = new Random(0)
     val values = Seq(Byte.MinValue, Byte.MaxValue) ++
       Range(0, dataSize).map(_ => r.nextInt().toByte)
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateShorts(): DataFrame = {
@@ -647,7 +647,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
   }
 
-  // TODO return DataFrame for consistency with other generators
+  // TODO return DataFrame for consistency with other generators and include null values
   private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
     val r = new Random(0)
     Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
