@@ -20,7 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.internal.LegacyBehaviorPolicy
 
 trait ShimSQLConf {
 
@@ -32,14 +32,7 @@ trait ShimSQLConf {
    * parquetFilterPushDownStringPredicate
    */
   protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
+    sqlConf.parquetFilterPushDownStringPredicate
 
   protected val LEGACY = LegacyBehaviorPolicy.LEGACY
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED

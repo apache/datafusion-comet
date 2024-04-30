@@ -38,11 +38,11 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName._
 import org.apache.parquet.schema.Type.Repetition
 import org.apache.spark.sql.catalyst.util.{quoteIfNeeded, CaseInsensitiveMap, DateTimeUtils, IntervalUtils}
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.{rebaseGregorianToJulianDays, rebaseGregorianToJulianMicros, RebaseSpec}
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.sources
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.shims.ShimSQLConf
 
 /**
  * Copied from Spark 3.2 & 3.4, in order to fix Parquet shading issue. TODO: find a way to remove
@@ -58,7 +58,7 @@ class ParquetFilters(
     pushDownStringPredicate: Boolean,
     pushDownInFilterThreshold: Int,
     caseSensitive: Boolean,
-    datetimeRebaseSpec: RebaseSpec) {
+    datetimeRebaseSpec: RebaseSpec) extends ShimSQLConf {
   // A map which contains parquet field name and data type, if predicate push down applies.
   //
   // Each key in `nameToParquetField` represents a column; `dots` are used as separators for
@@ -153,7 +153,7 @@ class ParquetFilters(
       case ld: LocalDate => DateTimeUtils.localDateToDays(ld)
     }
     datetimeRebaseSpec.mode match {
-      case LegacyBehaviorPolicy.LEGACY => rebaseGregorianToJulianDays(gregorianDays)
+      case LEGACY => rebaseGregorianToJulianDays(gregorianDays)
       case _ => gregorianDays
     }
   }
@@ -164,7 +164,7 @@ class ParquetFilters(
       case t: Timestamp => DateTimeUtils.fromJavaTimestamp(t)
     }
     datetimeRebaseSpec.mode match {
-      case LegacyBehaviorPolicy.LEGACY =>
+      case LEGACY =>
         rebaseGregorianToJulianMicros(datetimeRebaseSpec.timeZone, gregorianMicros)
       case _ => gregorianMicros
     }

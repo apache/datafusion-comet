@@ -19,28 +19,17 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.execution.TakeOrderedAndProjectExec
 
-trait ShimSQLConf {
+trait ShimCometTakeOrderedAndProjectExec {
 
   /**
-   * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
-   * parquetFilterPushDownStringPredicate
-   *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
-   * parquetFilterPushDownStringPredicate
+   * TODO: delete after dropping Spark 3.2 and 3.3 support
    */
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
-
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+  protected def getOffset(plan: TakeOrderedAndProjectExec): Option[Int] = {
+    plan.getClass.getDeclaredFields
+      .filter(_.getName == "offset")
+      .map { a => a.setAccessible(true); a.get(plan).asInstanceOf[Int] }
+      .headOption
+  }
 }

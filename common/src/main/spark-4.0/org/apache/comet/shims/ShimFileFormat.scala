@@ -19,28 +19,17 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+object ShimFileFormat {
 
-trait ShimSQLConf {
+  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use FileFormat.ROW_INDEX
+  val ROW_INDEX = "row_index"
 
-  /**
-   * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
-   * parquetFilterPushDownStringPredicate
-   *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
-   * parquetFilterPushDownStringPredicate
-   */
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
+  // A name for a temporary column that holds row indexes computed by the file format reader
+  // until they can be placed in the _metadata struct.
+  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use
+  //       FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = s"_tmp_metadata_$ROW_INDEX"
 
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+  // TODO: remove after dropping Spark 3.2 support and use FileFormat.OPTION_RETURNING_BATCH
+  val OPTION_RETURNING_BATCH = "returning_batch"
 }

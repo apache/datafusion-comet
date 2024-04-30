@@ -19,28 +19,21 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, ShuffleType}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
-trait ShimSQLConf {
-
-  /**
-   * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
-   * parquetFilterPushDownStringPredicate
-   *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
-   * parquetFilterPushDownStringPredicate
-   */
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
-
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+trait ShimCometShuffleExchangeExec {
+  // TODO: remove after dropping Spark 3.2 and 3.3 support
+  def apply(s: ShuffleExchangeExec, shuffleType: ShuffleType): CometShuffleExchangeExec = {
+    val advisoryPartitionSize = s.getClass.getDeclaredMethods
+      .filter(_.getName == "advisoryPartitionSize")
+      .flatMap(_.invoke(s).asInstanceOf[Option[Long]])
+      .headOption
+    CometShuffleExchangeExec(
+      s.outputPartitioning,
+      s.child,
+      s.shuffleOrigin,
+      shuffleType,
+      advisoryPartitionSize)
+  }
 }

@@ -19,28 +19,21 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 
-trait ShimSQLConf {
+trait ShimCometBroadcastHashJoinExec {
 
   /**
-   * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
-   * parquetFilterPushDownStringPredicate
+   * Returns the expressions that are used for hash partitioning including `HashPartitioning` and
+   * `CoalescedHashPartitioning`. They shares same trait `HashPartitioningLike` since Spark 3.4,
+   * but Spark 3.2/3.3 doesn't have `HashPartitioningLike` and `CoalescedHashPartitioning`.
    *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
-   * parquetFilterPushDownStringPredicate
+   * TODO: remove after dropping Spark 3.2 and 3.3 support.
    */
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
-
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] = {
+    partitioning.getClass.getDeclaredMethods
+      .filter(_.getName == "expressions")
+      .flatMap(_.invoke(partitioning).asInstanceOf[Seq[Expression]])
+  }
 }

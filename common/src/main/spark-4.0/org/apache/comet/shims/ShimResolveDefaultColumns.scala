@@ -19,28 +19,20 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import scala.util.Try
 
-trait ShimSQLConf {
+import org.apache.spark.sql.types.{StructField, StructType}
 
-  /**
-   * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
-   * parquetFilterPushDownStringPredicate
-   *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
-   * parquetFilterPushDownStringPredicate
-   */
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.getClass.getMethods
-      .flatMap(m =>
-        m.getName match {
-          case "parquetFilterPushDownStringStartWith" | "parquetFilterPushDownStringPredicate" =>
-            Some(m.invoke(sqlConf).asInstanceOf[Boolean])
-          case _ => None
-        })
-      .head
-
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+object ShimResolveDefaultColumns {
+  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use ResolveDefaultColumns
+  def getExistenceDefaultValue(field: StructField): Any =
+    Try {
+      // scalastyle:off classforname
+      Class.forName("org.apache.spark.sql.catalyst.util.ResolveDefaultColumns$")
+      // scalastyle:on classforname
+    }.map { objClass =>
+      val objInstance = objClass.getField("MODULE$").get(null)
+      val method = objClass.getMethod("getExistenceDefaultValues", classOf[StructType])
+      method.invoke(objInstance, StructType(Seq(field))).asInstanceOf[Array[Any]].head
+    }.getOrElse(null)
 }

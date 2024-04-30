@@ -527,6 +527,23 @@ under the License.
     </profile>
 
     <profile>
+      <id>spark-4.0</id>
+      <properties>
+        <!-- Use Scala 2.13 by default -->
+        <scala.version>2.13.13</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.0.0-SNAPSHOT</spark.version>
+        <spark.version.short>4.0</spark.version.short>
+        <parquet.version>1.13.1</parquet.version>
+        <shims.source>spark-4.0</shims.source>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+      </properties>
+    </profile>
+
+    <profile>
       <id>scala-2.13</id>
       <properties>
         <scala.version>2.13.8</scala.version>
@@ -601,7 +618,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.7.5</version>
+                    <version>4.8.8</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>
