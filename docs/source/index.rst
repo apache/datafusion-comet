@@ -45,6 +45,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Supported Expressions <user-guide/expressions>
    Supported Operators <user-guide/operators>
    Supported Data Types <user-guide/datatypes>
+   Configuration Settings <user-guide/configs>
    Compatibility Guide <user-guide/compatibility>
 
 .. _toc.links:
