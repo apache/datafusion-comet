@@ -233,6 +233,7 @@ impl Cast {
     }
 }
 
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
 fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
     Ok(cast_string_to_int_with_range_check(
         str,
@@ -244,6 +245,7 @@ fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> 
     .map(|v| v as i8))
 }
 
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
 fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
     Ok(cast_string_to_int_with_range_check(
         str,
@@ -255,10 +257,12 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
     .map(|v| v as i16))
 }
 
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
     do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
 }
 
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper intWrapper)
 fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
     do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
 }
@@ -286,6 +290,9 @@ enum State {
     ParseFractionalDigits,
 }
 
+/// Equivalent to
+/// - org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper, boolean allowDecimal)
+/// - org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper longWrapper, boolean allowDecimal)
 fn do_cast_string_to_int<
     T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
 >(
