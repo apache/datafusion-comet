@@ -24,6 +24,7 @@ import java.io.File
 import scala.util.Random
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
+import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -46,418 +47,469 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("all valid cast combinations covered") {
     val names = testNames
 
-    def assertTestsExist(fromTypes: Seq[String], toTypes: Seq[String]): Unit = {
+    def assertTestsExist(fromTypes: Seq[DataType], toTypes: Seq[DataType]): Unit = {
       for (fromType <- fromTypes) {
         for (toType <- toTypes) {
           if (fromType != toType) {
             val expectedTestName = s"cast $fromType to $toType"
-            if (!names.contains(expectedTestName)) {
-              fail(s"Missing test: $expectedTestName")
+            if (Cast.canCast(fromType, toType)) {
+              if (!names.contains(expectedTestName)) {
+                fail(s"Missing test: $expectedTestName")
+              }
+            } else if (names.contains(expectedTestName)) {
+              fail(s"Found test for cast that Spark does not support: $expectedTestName")
             }
           }
         }
       }
     }
 
-    // make sure we have tests for all combinations of these basic types
-    val basicTypes =
-      Seq("bool", "byte", "short", "int", "long", "float", "double", "decimal", "string")
-    assertTestsExist(basicTypes, basicTypes)
-
-    // TODO need to add all valid date and timestamp cast combinations
-    assertTestsExist(Seq("string"), Seq("date", "timestamp"))
+    // make sure we have tests for all combinations of our supported types
+    val supportedTypes =
+      Seq(
+        DataTypes.BooleanType,
+        DataTypes.ByteType,
+        DataTypes.ShortType,
+        DataTypes.IntegerType,
+        DataTypes.LongType,
+        DataTypes.FloatType,
+        DataTypes.DoubleType,
+        DataTypes.createDecimalType(10, 2),
+        DataTypes.StringType,
+        DataTypes.DateType,
+        DataTypes.TimestampType,
+        DataTypes.TimestampNTZType)
+    assertTestsExist(supportedTypes, supportedTypes)
   }
 
-  // CAST from bool
+  // CAST from BooleanType
 
-  test("cast bool to bool") {
+  test("cast BooleanType to BooleanType") {
     castTest(generateBools(), DataTypes.BooleanType)
   }
 
-  ignore("cast bool to byte") {
+  ignore("cast BooleanType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBools(), DataTypes.ByteType)
   }
 
-  ignore("cast bool to short") {
+  ignore("cast BooleanType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBools(), DataTypes.ShortType)
   }
 
-  test("cast bool to int") {
+  test("cast BooleanType to IntegerType") {
     castTest(generateBools(), DataTypes.IntegerType)
   }
 
-  test("cast bool to long") {
+  test("cast BooleanType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBools(), DataTypes.LongType)
   }
 
-  test("cast bool to float") {
+  test("cast BooleanType to FloatType") {
     castTest(generateBools(), DataTypes.FloatType)
   }
 
-  test("cast bool to double") {
+  test("cast BooleanType to DoubleType") {
     castTest(generateBools(), DataTypes.DoubleType)
   }
 
-  ignore("cast bool to decimal") {
+  ignore("cast BooleanType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
     castTest(generateBools(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast bool to string") {
+  test("cast BooleanType to StringType") {
     castTest(generateBools(), DataTypes.StringType)
   }
 
-  // CAST from byte
+  ignore("cast BooleanType to TimestampType") {
+    // Arrow error: Cast error: Casting from Boolean to Timestamp(Microsecond, Some("UTC")) not supported
+    castTest(generateBools(), DataTypes.TimestampType)
+  }
 
-  test("cast byte to bool") {
+  // CAST from ByteType
+
+  test("cast ByteType to BooleanType") {
     castTest(generateBytes(), DataTypes.BooleanType)
   }
 
-  ignore("cast byte to byte") {
+  ignore("cast ByteType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBytes(), DataTypes.ByteType)
   }
 
-  ignore("cast byte to short") {
+  ignore("cast ByteType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBytes(), DataTypes.ShortType)
   }
 
-  test("cast byte to int") {
+  test("cast ByteType to IntegerType") {
     castTest(generateBytes(), DataTypes.IntegerType)
   }
 
-  test("cast byte to long") {
+  test("cast ByteType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateBytes(), DataTypes.LongType)
   }
 
-  test("cast byte to float") {
+  test("cast ByteType to FloatType") {
     castTest(generateBytes(), DataTypes.FloatType)
   }
 
-  test("cast byte to double") {
+  test("cast ByteType to DoubleType") {
     castTest(generateBytes(), DataTypes.DoubleType)
   }
 
-  ignore("cast byte to decimal") {
+  ignore("cast ByteType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
     castTest(generateBytes(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast byte to string") {
+  test("cast ByteType to StringType") {
     castTest(generateBytes(), DataTypes.StringType)
   }
 
-  // CAST from short
+  ignore("cast ByteType to TimestampType") {
+    // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
+    castTest(generateBytes(), DataTypes.TimestampType)
+  }
 
-  test("cast short to bool") {
+  // CAST from ShortType
+
+  test("cast ShortType to BooleanType") {
     castTest(generateShorts(), DataTypes.BooleanType)
   }
 
-  ignore("cast short to byte") {
+  ignore("cast ShortType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateShorts(), DataTypes.ByteType)
   }
 
-  ignore("cast short to short") {
+  ignore("cast ShortType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateShorts(), DataTypes.ShortType)
   }
 
-  test("cast short to int") {
+  test("cast ShortType to IntegerType") {
     castTest(generateShorts(), DataTypes.IntegerType)
   }
 
-  test("cast short to long") {
+  test("cast ShortType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateShorts(), DataTypes.LongType)
   }
 
-  test("cast short to float") {
+  test("cast ShortType to FloatType") {
     castTest(generateShorts(), DataTypes.FloatType)
   }
 
-  test("cast short to double") {
+  test("cast ShortType to DoubleType") {
     castTest(generateShorts(), DataTypes.DoubleType)
   }
 
-  ignore("cast short to decimal") {
+  ignore("cast ShortType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
     castTest(generateShorts(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast short to string") {
+  test("cast ShortType to StringType") {
     castTest(generateShorts(), DataTypes.StringType)
+  }
+
+  ignore("cast ShortType to TimestampType") {
+    // input: -1003, expected: 1969-12-31 15:43:17.0, actual: 1969-12-31 15:59:59.998997
+    castTest(generateShorts(), DataTypes.TimestampType)
   }
 
   // CAST from integer
 
-  test("cast int to bool") {
+  test("cast IntegerType to BooleanType") {
     castTest(generateInts(), DataTypes.BooleanType)
   }
 
-  ignore("cast int to byte") {
+  ignore("cast IntegerType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.ByteType)
   }
 
-  ignore("cast int to short") {
+  ignore("cast IntegerType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.ShortType)
   }
 
-  test("cast int to int") {
+  test("cast IntegerType to IntegerType") {
     castTest(generateInts(), DataTypes.IntegerType)
   }
 
-  test("cast int to long") {
+  test("cast IntegerType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.LongType)
   }
 
-  test("cast int to float") {
+  test("cast IntegerType to FloatType") {
     castTest(generateInts(), DataTypes.FloatType)
   }
 
-  test("cast int to double") {
+  test("cast IntegerType to DoubleType") {
     castTest(generateInts(), DataTypes.DoubleType)
   }
 
-  ignore("cast int to decimal") {
+  ignore("cast IntegerType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
     castTest(generateInts(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast int to string") {
+  test("cast IntegerType to StringType") {
     castTest(generateInts(), DataTypes.StringType)
   }
 
-  // CAST from long
+  ignore("cast IntegerType to TimestampType") {
+    // inputL -1000479329, expected: 1938-04-19 01:04:31.0, actual: 1969-12-31 15:43:19.520671
+    castTest(generateInts(), DataTypes.TimestampType)
+  }
 
-  test("cast long to bool") {
+  // CAST from LongType
+
+  test("cast LongType to BooleanType") {
     castTest(generateLongs(), DataTypes.BooleanType)
   }
 
-  ignore("cast long to byte") {
+  ignore("cast LongType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.ByteType)
   }
 
-  ignore("cast long to short") {
+  ignore("cast LongType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.ShortType)
   }
 
-  ignore("cast long to int") {
+  ignore("cast LongType to IntegerType") {
     castTest(generateLongs(), DataTypes.IntegerType)
   }
 
-  test("cast long to long") {
+  test("cast LongType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.LongType)
   }
 
-  test("cast long to float") {
+  test("cast LongType to FloatType") {
     castTest(generateLongs(), DataTypes.FloatType)
   }
 
-  test("cast long to double") {
+  test("cast LongType to DoubleType") {
     castTest(generateLongs(), DataTypes.DoubleType)
   }
 
-  ignore("cast long to decimal") {
+  ignore("cast LongType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
     castTest(generateLongs(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast long to string") {
+  test("cast LongType to StringType") {
     castTest(generateLongs(), DataTypes.StringType)
   }
 
-  // CAST from float
+  ignore("cast LongType to TimestampType") {
+    // java.lang.ArithmeticException: long overflow
+    castTest(generateLongs(), DataTypes.TimestampType)
+  }
 
-  ignore("cast float to bool") {
+  // CAST from FloatType
+
+  ignore("cast FloatType to BooleanType") {
     castTest(generateFloats(), DataTypes.BooleanType)
   }
 
-  ignore("cast float to byte") {
+  ignore("cast FloatType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ByteType)
   }
 
-  ignore("cast float to short") {
+  ignore("cast FloatType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ShortType)
   }
 
-  ignore("cast float to int") {
+  ignore("cast FloatType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.IntegerType)
   }
 
-  ignore("cast float to long") {
+  ignore("cast FloatType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.LongType)
   }
 
-  ignore("cast float to float") {
+  ignore("cast FloatType to FloatType") {
     // fails due to incompatible sort order for 0.0 and -0.0
     castTest(generateFloats(), DataTypes.FloatType)
   }
 
-  ignore("cast float to double") {
+  ignore("cast FloatType to DoubleType") {
     // fails due to incompatible sort order for 0.0 and -0.0
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  ignore("cast float to decimal") {
+  ignore("cast FloatType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE]
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast float to string") {
+  ignore("cast FloatType to StringType") {
     // https://github.com/apache/datafusion-comet/issues/312
     castTest(generateFloats(), DataTypes.StringType)
   }
 
-  // CAST from double
+  ignore("cast FloatType to TimestampType") {
+    // https://github.com/apache/datafusion-comet/issues/312
+    castTest(generateFloats(), DataTypes.TimestampType)
+  }
 
-  ignore("cast double to bool") {
+  // CAST from DoubleType
+
+  ignore("cast DoubleType to BooleanType") {
     // fails due to incompatible sort order for 0.0 and -0.0
     castTest(generateDoubles(), DataTypes.BooleanType)
   }
 
-  ignore("cast double to byte") {
+  ignore("cast DoubleType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ByteType)
   }
 
-  ignore("cast double to short") {
+  ignore("cast DoubleType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ShortType)
   }
 
-  ignore("cast double to int") {
+  ignore("cast DoubleType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.IntegerType)
   }
 
-  ignore("cast double to long") {
+  ignore("cast DoubleType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.LongType)
   }
 
-  ignore("cast double to float") {
+  ignore("cast DoubleType to FloatType") {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast double to double") {
+  ignore("cast DoubleType to DoubleType") {
     // fails due to incompatible sort order for 0.0 and -0.0
     castTest(generateDoubles(), DataTypes.DoubleType)
   }
 
-  ignore("cast double to decimal") {
+  ignore("cast DoubleType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE]
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast double to string") {
+  ignore("cast DoubleType to StringType") {
     // https://github.com/apache/datafusion-comet/issues/312
     castTest(generateDoubles(), DataTypes.StringType)
   }
 
-  // CAST from decimal
+  ignore("cast DoubleType to TimestampType") {
+    castTest(generateDoubles(), DataTypes.TimestampType)
+  }
 
-  ignore("cast decimal to bool") {
+  // CAST from DecimalType(10,2)
+
+  ignore("cast DecimalType(10,2) to BooleanType") {
     // Arrow error: Cast error: Casting from Decimal128(38, 18) to Boolean not supported
     castTest(generateDecimals(), DataTypes.BooleanType)
   }
 
-  ignore("cast decimal to byte") {
+  ignore("cast DecimalType(10,2) to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.ByteType)
   }
 
-  ignore("cast decimal to short") {
+  ignore("cast DecimalType(10,2) to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.ShortType)
   }
 
-  ignore("cast decimal to int") {
+  ignore("cast DecimalType(10,2) to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.IntegerType)
   }
 
-  ignore("cast decimal to long") {
+  ignore("cast DecimalType(10,2) to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.LongType)
   }
 
-  test("cast decimal to float") {
+  test("cast DecimalType(10,2) to FloatType") {
     castTest(generateDecimals(), DataTypes.FloatType)
   }
 
-  test("cast decimal to double") {
+  test("cast DecimalType(10,2) to DoubleType") {
     castTest(generateDecimals(), DataTypes.DoubleType)
   }
 
-  test("cast decimal to decimal") {
+  test("cast DecimalType(10,2) to DecimalType(10,2)") {
     castTest(generateDecimals(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast decimal to string") {
+  ignore("cast DecimalType(10,2) to StringType") {
     castTest(generateDecimals(), DataTypes.StringType)
   }
 
-  // CAST from string
+  ignore("cast DecimalType(10,2) to TimestampType") {
+    castTest(generateDecimals(), DataTypes.TimestampType)
+  }
 
-  test("cast string to bool") {
+  // CAST from StringType
+
+  test("cast StringType to BooleanType") {
     val testValues =
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
         generateStrings("truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
     castTest(testValues, DataTypes.BooleanType)
   }
 
-  ignore("cast string to byte") {
+  ignore("cast StringType to ByteType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ByteType)
   }
 
-  ignore("cast string to short") {
+  ignore("cast StringType to ShortType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ShortType)
   }
 
-  ignore("cast string to int") {
+  ignore("cast StringType to IntegerType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
-  ignore("cast string to long") {
+  ignore("cast StringType to LongType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
-  ignore("cast string to float") {
+  ignore("cast StringType to FloatType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.FloatType)
   }
 
-  ignore("cast string to double") {
+  ignore("cast StringType to DoubleType") {
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
-  ignore("cast string to decimal") {
+  ignore("cast StringType to DecimalType(10,2)") {
     val values = generateStrings(numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
     castTest(values, DataTypes.createDecimalType(10, 0))
     castTest(values, DataTypes.createDecimalType(10, -2))
   }
 
-  ignore("cast string to date") {
+  ignore("cast StringType to DateType") {
     castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
-  test("cast string to timestamp disabled by default") {
+  test("cast StringType to TimestampType disabled by default") {
     val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
     castFallbackTest(
       values.toDF("a"),
@@ -465,11 +517,121 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.comet.cast.stringToTimestamp is disabled")
   }
 
-  ignore("cast string to timestamp") {
+  ignore("cast StringType to TimestampType") {
     withSQLConf((CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key, "true")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
+  }
+
+  ignore("cast StringType to TimestampNTZType") {
+    // TODO: implement
+  }
+
+  // CAST from date
+
+  ignore("cast DateType to BooleanType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to ByteType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to ShortType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to IntegerType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to LongType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to FloatType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to DoubleType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to DecimalType(10,2)") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to StringType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to TimestampType") {
+    // TODO: implement
+  }
+
+  ignore("cast DateType to TimestampNTZType") {
+    // TODO: implement
+  }
+
+  // CAST from TimestampType
+
+  ignore("cast TimestampType to BooleanType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to ByteType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to ShortType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to IntegerType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to LongType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to FloatType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to DoubleType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to DecimalType(10,2)") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to StringType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to DateType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampType to TimestampNTZType") {
+    // TODO: implement
+  }
+
+  // CAST from TimestampNTZType
+
+  ignore("cast TimestampNTZType to StringType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampNTZType to DateType") {
+    // TODO: implement
+  }
+
+  ignore("cast TimestampNTZType to TimestampType") {
+    // TODO: implement
   }
 
   private def generateFloats(): DataFrame = {
