@@ -111,9 +111,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast string to timestamp") {
     withSQLConf(
-      (SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC"),
-      (CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2", "-9?")
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
+      val values = Seq(
+        "2020",
+        "2020-01",
+        "2020-01-01",
+        "2020-01-01T12",
+        "2020-01-01T12:34",
+        "2020-01-01T12:34:56",
+        "2020-01-01T12:34:56.123456",
+        "T2",
+        "-9?")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
