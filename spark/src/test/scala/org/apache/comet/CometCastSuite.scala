@@ -490,88 +490,105 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // CAST from date
+  // CAST from DateType
 
   ignore("cast DateType to BooleanType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Boolean not supported
+    castTest(generateDates(), DataTypes.BooleanType)
   }
 
   ignore("cast DateType to ByteType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Int8 not supported
+    castTest(generateDates(), DataTypes.ByteType)
   }
 
   ignore("cast DateType to ShortType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Int16 not supported
+    castTest(generateDates(), DataTypes.ShortType)
   }
 
   ignore("cast DateType to IntegerType") {
-    // TODO: implement
+    // different results
+    // input: 2345-01-01, expected: null, actual: 3789391
+    castTest(generateDates(), DataTypes.IntegerType)
   }
 
   ignore("cast DateType to LongType") {
-    // TODO: implement
+    // input: 2024-01-01, expected: null, actual: 19723
+    castTest(generateDates(), DataTypes.LongType)
   }
 
   ignore("cast DateType to FloatType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Float32 not supported
+    castTest(generateDates(), DataTypes.FloatType)
   }
 
   ignore("cast DateType to DoubleType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Float64 not supported
+    castTest(generateDates(), DataTypes.DoubleType)
   }
 
   ignore("cast DateType to DecimalType(10,2)") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
+    castTest(generateDates(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast DateType to StringType") {
-    // TODO: implement
+  test("cast DateType to StringType") {
+    castTest(generateDates(), DataTypes.StringType)
   }
 
   ignore("cast DateType to TimestampType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
+    castTest(generateDates(), DataTypes.TimestampType)
   }
 
   // CAST from TimestampType
 
   ignore("cast TimestampType to BooleanType") {
-    // TODO: implement
+    // Arrow error: Cast error: Casting from Timestamp(Microsecond, Some("America/Los_Angeles")) to Boolean not supported
+    castTest(generateTimestamps(), DataTypes.BooleanType)
   }
 
   ignore("cast TimestampType to ByteType") {
-    // TODO: implement
+    // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
+    castTest(generateTimestamps(), DataTypes.ByteType)
   }
 
   ignore("cast TimestampType to ShortType") {
-    // TODO: implement
+    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
+    castTest(generateTimestamps(), DataTypes.ShortType)
   }
 
   ignore("cast TimestampType to IntegerType") {
-    // TODO: implement
+    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
+    castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
   ignore("cast TimestampType to LongType") {
-    // TODO: implement
+    // input: 2023-12-31 17:00:00.0, expected: 1.70407078E9, actual: 1.70407082E15]
+    castTest(generateTimestamps(), DataTypes.LongType)
   }
 
   ignore("cast TimestampType to FloatType") {
-    // TODO: implement
+    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
+    castTest(generateTimestamps(), DataTypes.FloatType)
   }
 
   ignore("cast TimestampType to DoubleType") {
-    // TODO: implement
+    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
+    castTest(generateTimestamps(), DataTypes.DoubleType)
   }
 
-  ignore("cast TimestampType to DecimalType(10,2)") {
-    // TODO: implement
+  test("cast TimestampType to DecimalType(10,2)") {
+    castTest(generateTimestamps(), DataTypes.TimestampType)
   }
 
-  ignore("cast TimestampType to StringType") {
-    // TODO: implement
+  test("cast TimestampType to StringType") {
+    castTest(generateTimestamps(), DataTypes.StringType)
   }
 
-  ignore("cast TimestampType to DateType") {
-    // TODO: implement
+  test("cast TimestampType to DateType") {
+    castTest(generateTimestamps(), DataTypes.DateType)
   }
 
   private def generateFloats(): DataFrame = {
@@ -640,6 +657,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO improve this
     val values = Seq(BigDecimal("123456.789"), BigDecimal("-123456.789"), BigDecimal("0.0"))
     withNulls(values).toDF("a")
+  }
+
+  private def generateDates(): DataFrame = {
+    // TODO improve this
+    val values = Seq("2024-01-01", "999-01-01", "12345-01-01")
+    withNulls(values).toDF("str").withColumn("a", col("str").cast(DataTypes.DateType)).drop("str")
+  }
+
+  private def generateTimestamps(): DataFrame = {
+    // TODO improve this
+    val values =
+      Seq("2024-01-01T12:34:56.123456", "2024-01-01T01:00:00Z", "2024-01-01T01:00:00+07:00")
+    withNulls(values)
+      .toDF("str")
+      .withColumn("a", col("str").cast(DataTypes.TimestampType))
+      .drop("str")
   }
 
   private def generateString(r: Random, chars: String, maxLen: Int): String = {
