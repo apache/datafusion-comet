@@ -396,7 +396,7 @@ index f33432ddb6f..060f874ea72 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index a6b295578d6..a5cb616945a 100644
+index a6b295578d6..91acca4306f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -463,7 +463,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -409,6 +409,17 @@ index a6b295578d6..a5cb616945a 100644
      withTempDir { dir =>
        Seq("parquet", "orc", "csv", "json").foreach { fmt =>
          val basePath = dir.getCanonicalPath + "/" + fmt
+@@ -541,7 +542,9 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+   }
+ }
+ 
+-class ExplainSuiteAE extends ExplainSuiteHelper with EnableAdaptiveExecutionSuite {
++// Ignored when Comet is enabled. Comet changes expected query plans.
++class ExplainSuiteAE extends ExplainSuiteHelper with EnableAdaptiveExecutionSuite
++    with IgnoreCometSuite {
+   import testImplicits._
+ 
+   test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 index 2796b1cf154..be7078b38f4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
@@ -741,6 +752,58 @@ index 3cfda19134a..278bb1060c4 100644
        }
        assert(exchanges.size === 1)
      }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
+index 02990a7a40d..2f89e7eb391 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
+@@ -24,6 +24,8 @@ import test.org.apache.spark.sql.connector._
+ 
+ import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.InternalRow
++import org.apache.spark.sql.comet.CometSortExec
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.connector.catalog.{PartitionInternalRow, SupportsRead, Table, TableCapability, TableProvider}
+ import org.apache.spark.sql.connector.catalog.TableCapability._
+ import org.apache.spark.sql.connector.expressions.{Expression, FieldReference, Literal, NamedReference, NullOrdering, SortDirection, SortOrder, Transform}
+@@ -269,12 +271,14 @@ class DataSourceV2Suite extends QueryTest with SharedSparkSession with AdaptiveS
+           checkAnswer(groupByColJ, Seq(Row(2, 8), Row(4, 2), Row(6, 5)))
+           assert(collectFirst(groupByColJ.queryExecution.executedPlan) {
+             case e: ShuffleExchangeExec => e
++            case c: CometShuffleExchangeExec => c
+           }.isDefined)
+ 
+           val groupByIPlusJ = df.groupBy($"i" + $"j").agg(count("*"))
+           checkAnswer(groupByIPlusJ, Seq(Row(5, 2), Row(6, 2), Row(8, 1), Row(9, 1)))
+           assert(collectFirst(groupByIPlusJ.queryExecution.executedPlan) {
+             case e: ShuffleExchangeExec => e
++            case c: CometShuffleExchangeExec => c
+           }.isDefined)
+         }
+       }
+@@ -335,9 +339,11 @@ class DataSourceV2Suite extends QueryTest with SharedSparkSession with AdaptiveS
+                 val (shuffleExpected, sortExpected) = groupByExpects
+                 assert(collectFirst(groupBy.queryExecution.executedPlan) {
+                   case e: ShuffleExchangeExec => e
++                  case c: CometShuffleExchangeExec => c
+                 }.isDefined === shuffleExpected)
+                 assert(collectFirst(groupBy.queryExecution.executedPlan) {
+                   case e: SortExec => e
++                  case c: CometSortExec => c
+                 }.isDefined === sortExpected)
+               }
+ 
+@@ -353,9 +359,11 @@ class DataSourceV2Suite extends QueryTest with SharedSparkSession with AdaptiveS
+                 val (shuffleExpected, sortExpected) = windowFuncExpects
+                 assert(collectFirst(windowPartByColIOrderByColJ.queryExecution.executedPlan) {
+                   case e: ShuffleExchangeExec => e
++                  case c: CometShuffleExchangeExec => c
+                 }.isDefined === shuffleExpected)
+                 assert(collectFirst(windowPartByColIOrderByColJ.queryExecution.executedPlan) {
+                   case e: SortExec => e
++                  case c: CometSortExec => c
+                 }.isDefined === sortExpected)
+               }
+             }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 index cfc8b2cc845..c6fcfd7bd08 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
@@ -865,6 +928,30 @@ index 743ec41dbe7..9f30d6c8e04 100644
      case _: LeafExecNode => true
      case _ => false
    }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
+index 4b3d3a4b805..56e1e0e6f16 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
+@@ -18,7 +18,7 @@
+ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.rdd.RDD
+-import org.apache.spark.sql.{execution, DataFrame, Row}
++import org.apache.spark.sql.{execution, DataFrame, IgnoreCometSuite, Row}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions._
+ import org.apache.spark.sql.catalyst.plans._
+@@ -35,7 +35,9 @@ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+ import org.apache.spark.sql.types._
+ 
+-class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
++// Ignore this suite when Comet is enabled. This suite tests the Spark planner and Comet planner
++// comes out with too many difference. Simply ignoring this suite for now.
++class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper with IgnoreCometSuite {
+   import testImplicits._
+ 
+   setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 index 9e9d717db3b..91a4f9a38d5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
@@ -2056,6 +2143,19 @@ index ed2e309fa07..f51a2395a53 100644
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
        conf.get(StaticSQLConf.WAREHOUSE_PATH) + "/" + getClass.getCanonicalName)
+diff --git a/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
+index 1510e8957f9..7618419d8ff 100644
+--- a/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
+@@ -43,7 +43,7 @@ class SqlResourceWithActualMetricsSuite
+   import testImplicits._
+ 
+   // Exclude nodes which may not have the metrics
+-  val excludedNodes = List("WholeStageCodegen", "Project", "SerializeFromObject")
++  val excludedNodes = List("WholeStageCodegen", "Project", "SerializeFromObject", "RowToColumnar")
+ 
+   implicit val formats = new DefaultFormats {
+     override def dateFormatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 index 52abd248f3a..7a199931a08 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
