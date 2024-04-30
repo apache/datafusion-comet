@@ -646,7 +646,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       0.0f,
       -0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateDoubles(): DataFrame = {
@@ -661,11 +661,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       0.0d,
       -0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateBools(): DataFrame = {
-    Seq(true, false).toDF("a")
+    withNulls(Seq(true, false)).toDF("a")
   }
 
   private def generateBytes(): DataFrame = {
@@ -679,25 +679,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val r = new Random(0)
     val values = Seq(Short.MinValue, Short.MaxValue) ++
       Range(0, dataSize).map(_ => r.nextInt().toShort)
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateInts(): DataFrame = {
     val r = new Random(0)
     val values = Seq(Int.MinValue, Int.MaxValue) ++
       Range(0, dataSize).map(_ => r.nextInt())
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateLongs(): DataFrame = {
     val r = new Random(0)
     val values = Seq(Long.MinValue, Long.MaxValue) ++
       Range(0, dataSize).map(_ => r.nextLong())
-    values.toDF("a")
+    withNulls(values).toDF("a")
   }
 
   private def generateDecimals(): DataFrame = {
-    Seq(BigDecimal("123456.789"), BigDecimal("-123456.789"), BigDecimal("0.0")).toDF("a")
+    // TODO improve this
+    val values = Seq(BigDecimal("123456.789"), BigDecimal("-123456.789"), BigDecimal("0.0"))
+    withNulls(values).toDF("a")
   }
 
   private def generateString(r: Random, chars: String, maxLen: Int): String = {
@@ -705,9 +707,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
   }
 
+  // TODO return DataFrame for consistency with other generators
   private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
     val r = new Random(0)
     Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
+  }
+
+  private def withNulls[T](values: Seq[T]): Seq[Option[T]] = {
+    values.map(v => Some(v)) ++ Seq(None)
   }
 
   private def castFallbackTest(
