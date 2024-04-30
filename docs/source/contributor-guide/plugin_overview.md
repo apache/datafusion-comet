@@ -37,14 +37,23 @@ When the V2 data source API is being used, `BatchScanExec` is replaced with `Com
 
 ## CometExecRule
 
-`CometExecRule` attempts to transform a Spark physical plan into a Comet plan.
+`CometExecRule` attempts to transform a Spark physical plan into a Comet plan. This rule is executed against
+individual query stages when they are being prepared for execution.
 
-This rule traverses bottom-up from the original Spark plan and attempts to replace each node with a Comet equivalent. For example, a `ProjectExec` will be replaced by `CometProjectExec`.
+This rule traverses bottom-up from the original Spark plan and attempts to replace each node with a Comet equivalent.
+For example, a `ProjectExec` will be replaced by `CometProjectExec`.
 
-When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions. If an operator or expression is not supported by Comet then the reason will be stored in a tag on the underlying Spark node. Running `explain` on a query will show any reasons that prevented the plan from being executed natively in Comet. If any part of the plan is not supported in Comet then the original Spark plan will be returned.
+When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
+If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
+underlying Spark node and the plan will not be converted.
 
-Comet does not support partially replacing subsets of the plan because this would involve adding transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead of this could outweigh the benefits of running parts of the plan natively in Comet.
+Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
+transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
+of this could outweigh the benefits of running parts of the query stage natively in Comet.
 
-Once the plan has been transformed, it is serialized into Comet protocol buffer format by the `QueryPlanSerde` class and this serialized plan is passed into the native code by `CometExecIterator`.
+Once the plan has been transformed, it is serialized into Comet protocol buffer format by the `QueryPlanSerde` class
+and this serialized plan is passed into the native code by `CometExecIterator`.
 
-In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to override the DataFusion versions to ensure compatibility with Apache Spark.
+In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an
+Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
+override the DataFusion versions to ensure compatibility with Apache Spark.
