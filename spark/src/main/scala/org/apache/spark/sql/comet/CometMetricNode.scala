@@ -80,6 +80,28 @@ object CometMetricNode {
   }
 
   /**
+   * SQL Metrics for DataFusion HashJoin
+   */
+  def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "build_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
+      "build_input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by build-side"),
+      "build_input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by build-side"),
+      "build_mem_used" ->
+        SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
+      "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
+  }
+
+  /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {

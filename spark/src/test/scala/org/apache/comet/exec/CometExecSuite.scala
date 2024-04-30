@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -350,6 +350,40 @@ class CometExecSuite extends CometTestBase {
         assert(metrics("build_mem_used").value > 1L)
         assert(metrics.contains("build_input_rows"))
         assert(metrics("build_input_rows").value == 5L)
+        assert(metrics.contains("input_batches"))
+        assert(metrics("input_batches").value == 5L)
+        assert(metrics.contains("input_rows"))
+        assert(metrics("input_rows").value == 5L)
+        assert(metrics.contains("output_batches"))
+        assert(metrics("output_batches").value == 5L)
+        assert(metrics.contains("output_rows"))
+        assert(metrics("output_rows").value == 5L)
+        assert(metrics.contains("join_time"))
+        assert(metrics("join_time").value > 1L)
+      }
+    }
+  }
+
+  test("Comet native metrics: BroadcastHashJoin") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
+        val df = sql("SELECT /*+ BROADCAST(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
+        df.collect()
+
+        val metrics = find(df.queryExecution.executedPlan) {
+          case _: CometBroadcastHashJoinExec => true
+          case _ => false
+        }.map(_.metrics).get
+
+        assert(metrics.contains("build_time"))
+        assert(metrics("build_time").value > 1L)
+        assert(metrics.contains("build_input_batches"))
+        assert(metrics("build_input_batches").value == 25L)
+        assert(metrics.contains("build_mem_used"))
+        assert(metrics("build_mem_used").value > 1L)
+        assert(metrics.contains("build_input_rows"))
+        assert(metrics("build_input_rows").value == 25L)
         assert(metrics.contains("input_batches"))
         assert(metrics("input_batches").value == 5L)
         assert(metrics.contains("input_rows"))
