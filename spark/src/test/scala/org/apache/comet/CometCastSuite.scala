@@ -80,8 +80,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         DataTypes.createDecimalType(10, 2),
         DataTypes.StringType,
         DataTypes.DateType,
-        DataTypes.TimestampType,
-        DataTypes.TimestampNTZType)
+        DataTypes.TimestampType)
+    // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
     assertTestsExist(supportedTypes, supportedTypes)
   }
 
@@ -490,10 +490,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("cast StringType to TimestampNTZType") {
-    // TODO: implement
-  }
-
   // CAST from date
 
   ignore("cast DateType to BooleanType") {
@@ -536,10 +532,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO: implement
   }
 
-  ignore("cast DateType to TimestampNTZType") {
-    // TODO: implement
-  }
-
   // CAST from TimestampType
 
   ignore("cast TimestampType to BooleanType") {
@@ -579,24 +571,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast TimestampType to DateType") {
-    // TODO: implement
-  }
-
-  ignore("cast TimestampType to TimestampNTZType") {
-    // TODO: implement
-  }
-
-  // CAST from TimestampNTZType
-
-  ignore("cast TimestampNTZType to StringType") {
-    // TODO: implement
-  }
-
-  ignore("cast TimestampNTZType to DateType") {
-    // TODO: implement
-  }
-
-  ignore("cast TimestampNTZType to TimestampType") {
     // TODO: implement
   }
 
