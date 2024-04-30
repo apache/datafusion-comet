@@ -2017,9 +2017,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
    */
   def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: TimestampNTZType | _: DecimalType |
-        _: BooleanType =>
+        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
+    // `TimestampNTZType` is private in Spark 3.2/3.3.
+    case dt if dt.typeName == "timestamp_ntz" => true
     case _ => false
   }
 
