@@ -2332,7 +2332,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
         for (key <- join.leftKeys) {
           if (!supportedSortMergeJoinEqualType(key.dataType)) {
-            withInfo(op, s"Unsupported join key type ${key.dataType}")
+            withInfo(op, s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
             return None
           }
         }
