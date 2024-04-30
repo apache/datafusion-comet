@@ -113,8 +113,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       (SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC"),
       (CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castTest(values, DataTypes.TimestampType)
+      val values = Seq("2020-01-01T12:34:56.123456", "T2", "-9?")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
 
@@ -152,6 +152,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val str =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
         assert(str.contains(expectedMessage))
+      }
+    }
+  }
+
+  private def castTimestampTest(input: DataFrame, toType: DataType) = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      data.createOrReplaceTempView("t")
+
+      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+        // cast() should return null for invalid inputs when ansi mode is disabled
+        val df = data.withColumn("converted", col("a").cast(toType))
+        checkSparkAnswer(df)
+
+        // try_cast() should always return null for invalid inputs
+        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        checkSparkAnswer(df2)
       }
     }
   }
