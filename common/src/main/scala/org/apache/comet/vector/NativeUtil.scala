@@ -33,6 +33,7 @@ class NativeUtil {
   import Utils._
 
   private val allocator = new RootAllocator(Long.MaxValue)
+    .newChildAllocator(this.getClass.getSimpleName, 0, Long.MaxValue)
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
   private val importer = new ArrowImporter(allocator)
 

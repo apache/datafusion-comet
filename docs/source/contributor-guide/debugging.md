@@ -20,12 +20,13 @@ under the License.
 # Comet Debugging Guide
 
 This HOWTO describes how to debug JVM code and Native code concurrently. The guide assumes you have:
+
 1. Intellij as the Java IDE
 2. CLion as the Native IDE. For Rust code, the CLion Rust language plugin is required. Note that the
-Intellij Rust plugin is not sufficient.
+   Intellij Rust plugin is not sufficient.
 3. CLion/LLDB as the native debugger. CLion ships with a bundled LLDB and the Rust community has
-its own packaging of LLDB (`lldb-rust`). Both provide a better display of Rust symbols than plain
-LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with CLion for this guide.
+   its own packaging of LLDB (`lldb-rust`). Both provide a better display of Rust symbols than plain
+   LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with CLion for this guide.
 4. We will use a Comet _unit_ test as the canonical use case.
 
 _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
@@ -42,21 +43,24 @@ use advanced `lldb` debugging.
 1. Add a Debug Configuration for the unit test
 
 1. In the Debug Configuration for that unit test add `-Xint` as a JVM parameter. This option is
-undocumented *magic*. Without this, the LLDB debugger hits a EXC_BAD_ACCESS (or EXC_BAD_INSTRUCTION) from
-which one cannot recover.
+   undocumented _magic_. Without this, the LLDB debugger hits a EXC_BAD_ACCESS (or EXC_BAD_INSTRUCTION) from
+   which one cannot recover.
 
-1. Add  a println to the unit test to print the PID of the JVM process. (jps can also be used but this is less error prone if you have multiple jvm processes running)
-     ``` JDK8
-          println("Waiting for Debugger: PID - ", ManagementFactory.getRuntimeMXBean().getName())
-     ```
-      This will print something like : `PID@your_machine_name`.
+1. Add a println to the unit test to print the PID of the JVM process. (jps can also be used but this is less error prone if you have multiple jvm processes running)
 
-     For JDK9 and newer
-     ```JDK9
-          println("Waiting for Debugger: PID - ", ProcessHandle.current.pid)
-     ```
+   ```JDK8
+        println("Waiting for Debugger: PID - ", ManagementFactory.getRuntimeMXBean().getName())
+   ```
 
-     ==> Note the PID
+   This will print something like : `PID@your_machine_name`.
+
+   For JDK9 and newer
+
+   ```JDK9
+        println("Waiting for Debugger: PID - ", ProcessHandle.current.pid)
+   ```
+
+   ==> Note the PID
 
 1. Debug-run the test in Intellij and wait for the breakpoint to be hit
 
@@ -96,7 +100,8 @@ Detecting the debugger
 https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).
 
 # Verbose debug
-By default, Comet outputs the exception details specific for Comet. 
+
+By default, Comet outputs the exception details specific for Comet.
 
 ```scala
 scala> spark.sql("my_failing_query").show(false)
@@ -112,7 +117,7 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 ```
 
 There is a verbose exception option by leveraging DataFusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-This option allows to append native DataFusion stacktrace to the original error message. 
+This option allows to append native DataFusion stacktrace to the original error message.
 To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for DataFusion dependencies
 
 ```
@@ -129,15 +134,16 @@ RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.
 ```
 
 Get the expanded exception details
+
 ```scala
 scala> spark.sql("my_failing_query").show(false)
 24/03/05 17:00:49 ERROR Executor: Exception in task 0.0 in stage 0.0 (TID 0)
 org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected to receive scalars of incompatible types (Date32("NULL"), Int32(15901))
 
-backtrace:    
+backtrace:
   0: std::backtrace::Backtrace::create
   1: datafusion_physical_expr::aggregate::min_max::min
-  2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch 
+  2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
   3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
   4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
   5: _Java_org_apache_comet_Native_executePlan
@@ -151,6 +157,8 @@ at org.apache.comet.CometExecIterator.hasNext(CometExecIterator.scala:126)
 (reduced)
 
 ```
+
 Note:
+
 - The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
 - The backtrace evaluation comes with performance cost and intended mostly for debugging purposes

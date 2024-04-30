@@ -40,6 +40,25 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("SortMergeJoin with unsupported key type should fall back to Spark") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+        sql("INSERT OVERWRITE t1 VALUES('a', timestamp'2019-01-01 11:11:11')")
+
+        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+        sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
+
+        val df = sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time")
+        val (sparkPlan, cometPlan) = checkSparkAnswer(df)
+        assert(sparkPlan.canonicalized === cometPlan.canonicalized)
+      }
+    }
+  }
+
   test("Broadcast HashJoin without join filter") {
     assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
