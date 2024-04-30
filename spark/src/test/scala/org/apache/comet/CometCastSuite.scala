@@ -50,15 +50,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def assertTestsExist(fromTypes: Seq[DataType], toTypes: Seq[DataType]): Unit = {
       for (fromType <- fromTypes) {
         for (toType <- toTypes) {
-          if (fromType != toType) {
-            val expectedTestName = s"cast $fromType to $toType"
-            if (Cast.canCast(fromType, toType)) {
-              if (!names.contains(expectedTestName)) {
-                fail(s"Missing test: $expectedTestName")
+          val expectedTestName = s"cast $fromType to $toType"
+          val testExists = names.contains(expectedTestName)
+          if (Cast.canCast(fromType, toType)) {
+            if (fromType == toType) {
+              if (testExists) {
+                fail(s"Found redundant test for no-op cast: $expectedTestName")
               }
-            } else if (names.contains(expectedTestName)) {
-              fail(s"Found test for cast that Spark does not support: $expectedTestName")
+            } else if (!testExists) {
+              fail(s"Missing test: $expectedTestName")
             }
+          } else if (testExists) {
+            fail(s"Found test for cast that Spark does not support: $expectedTestName")
           }
         }
       }
@@ -83,10 +86,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // CAST from BooleanType
-
-  test("cast BooleanType to BooleanType") {
-    castTest(generateBools(), DataTypes.BooleanType)
-  }
 
   ignore("cast BooleanType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
@@ -133,11 +132,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast ByteType to BooleanType") {
     castTest(generateBytes(), DataTypes.BooleanType)
-  }
-
-  ignore("cast ByteType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/311
-    castTest(generateBytes(), DataTypes.ByteType)
   }
 
   ignore("cast ByteType to ShortType") {
@@ -187,11 +181,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateShorts(), DataTypes.ByteType)
   }
 
-  ignore("cast ShortType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/311
-    castTest(generateShorts(), DataTypes.ShortType)
-  }
-
   test("cast ShortType to IntegerType") {
     castTest(generateShorts(), DataTypes.IntegerType)
   }
@@ -237,10 +226,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   ignore("cast IntegerType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.ShortType)
-  }
-
-  test("cast IntegerType to IntegerType") {
-    castTest(generateInts(), DataTypes.IntegerType)
   }
 
   test("cast IntegerType to LongType") {
@@ -290,11 +275,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.IntegerType)
   }
 
-  test("cast LongType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/311
-    castTest(generateLongs(), DataTypes.LongType)
-  }
-
   test("cast LongType to FloatType") {
     castTest(generateLongs(), DataTypes.FloatType)
   }
@@ -341,11 +321,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   ignore("cast FloatType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.LongType)
-  }
-
-  ignore("cast FloatType to FloatType") {
-    // fails due to incompatible sort order for 0.0 and -0.0
-    castTest(generateFloats(), DataTypes.FloatType)
   }
 
   ignore("cast FloatType to DoubleType") {
@@ -399,11 +374,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast DoubleType to DoubleType") {
-    // fails due to incompatible sort order for 0.0 and -0.0
-    castTest(generateDoubles(), DataTypes.DoubleType)
-  }
-
   ignore("cast DoubleType to DecimalType(10,2)") {
     // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE]
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
@@ -451,10 +421,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(10,2) to DoubleType") {
     castTest(generateDecimals(), DataTypes.DoubleType)
-  }
-
-  test("cast DecimalType(10,2) to DecimalType(10,2)") {
-    castTest(generateDecimals(), DataTypes.createDecimalType(10, 2))
   }
 
   ignore("cast DecimalType(10,2) to StringType") {
