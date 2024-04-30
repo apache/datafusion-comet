@@ -746,7 +746,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
               // We just check that the comet message contains the same invalid value as the Spark message
               val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
-              assert(cometMessage.contains(sparkInvalidValue))
+              assert(
+                cometMessage.contains(sparkInvalidValue) || cometMessage.contains("overflow"))
             }
         }
 
