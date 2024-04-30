@@ -981,8 +981,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO: enable this when we add md5 function to Comet
-  ignore("md5") {
+  test("md5") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
@@ -1290,6 +1289,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal random number tests") {
+    assume(isSpark34Plus) // Only Spark 3.4+ has the fix for SPARK-45786
     val rand = scala.util.Random
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
@@ -1316,11 +1316,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
             val a = makeNum(p1, s1)
             val b = makeNum(p2, s2)
-            var ops = Seq("+", "-")
-            if (isSpark34Plus) {
-              // These operations are only supported in Spark 3.4+
-              ops = ops ++ Seq("*", "/", "%")
-            }
+            var ops = Seq("+", "-", "*", "/", "%")
             for (op <- ops) {
               checkSparkAnswerAndOperator(s"select a, b, a $op b from $table")
               checkSparkAnswerAndOperator(s"select $a, b, $a $op b from $table")
@@ -1355,6 +1351,80 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off"))
     // Invalid boolean casting values for Arrow and Spark
     testCastedColumn(inputValues = Seq("car", "Truck"))
+  }
+
+  test("explain comet") {
+    assume(isSpark34Plus)
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+      "spark.sql.extendedExplainProvider" -> "org.apache.comet.ExtendedExplainInfo") {
+      val table = "test"
+      withTable(table) {
+        sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
+        sql(s"insert into $table values(0, 1, 100.000001)")
+
+        Seq(
+          (
+            s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
+            "make_interval is not supported"),
+          (
+            "SELECT "
+              + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
+              + " + "
+              + "date_part('MONTH', make_interval(c0, c1, c0, c1, c0, c0, c2))"
+              + s" as yrs_and_mths from $table",
+            "extractintervalyears is not supported\n" +
+              "extractintervalmonths is not supported"),
+          (
+            s"SELECT sum(c0), sum(c2) from $table group by c1",
+            "Native shuffle is not enabled\n" +
+              "AQEShuffleRead is not supported"),
+          (
+            "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
+              + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
+              + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
+              + "where A.c1 = B.c1 ",
+            "Native shuffle is not enabled\n" +
+              "AQEShuffleRead is not supported\n" +
+              "make_interval is not supported\n" +
+              "BroadcastExchange is not supported\n" +
+              "BroadcastHashJoin disabled because not all child plans are native"))
+          .foreach(test => {
+            val qry = test._1
+            val expected = test._2
+            val df = sql(qry)
+            df.collect() // force an execution
+            checkSparkAnswerAndCompareExplainPlan(df, expected)
+          })
+      }
+    }
+  }
+
+  test("hash functions") {
+    Seq(true, false).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string, a int, b float) using parquet")
+          sql(s"""
+             |insert into $table values
+             |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+             |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+             |""".stripMargin)
+          checkSparkAnswerAndOperator("""
+               |select
+               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
+               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+               |from test
+               |""".stripMargin)
+        }
+      }
+    }
   }
 
 }

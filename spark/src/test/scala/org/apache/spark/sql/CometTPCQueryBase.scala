@@ -46,6 +46,9 @@ trait CometTPCQueryBase extends Logging {
       .set("spark.sql.autoBroadcastJoinThreshold", (20 * 1024 * 1024).toString)
       .set("spark.sql.crossJoin.enabled", "true")
       .setIfMissing("parquet.enable.dictionary", "true")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
     val sparkSession = SparkSession.builder
       .config(conf)

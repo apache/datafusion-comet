@@ -17,23 +17,18 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql
 
-import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, ShuffleType}
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.SparkPlan
 
-trait ShimCometShuffleExchangeExec {
-  // TODO: remove after dropping Spark 3.2 and 3.3 support
-  def apply(s: ShuffleExchangeExec, shuffleType: ShuffleType): CometShuffleExchangeExec = {
-    val advisoryPartitionSize = s.getClass.getDeclaredMethods
-      .filter(_.getName == "advisoryPartitionSize")
-      .flatMap(_.invoke(s).asInstanceOf[Option[Long]])
-      .headOption
-    CometShuffleExchangeExec(
-      s.outputPartitioning,
-      s.child,
-      s.shuffleOrigin,
-      shuffleType,
-      advisoryPartitionSize)
-  }
+/**
+ * A trait for a session extension to implement that provides addition explain plan information.
+ * We copy this from Spark 4.0 since this trait is not available in Spark 3.x. We can remove this
+ * after dropping Spark 3.x support.
+ */
+
+trait ExtendedExplainGenerator {
+  def title: String
+
+  def generateExtendedInfo(plan: SparkPlan): String
 }

@@ -250,6 +250,40 @@ under the License.
               </sources>
             </configuration>
           </execution>
+          <execution>
+            <id>add-shim-source</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>src/main/${shims.source}</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <executions>
+          <execution>
+            <id>generate-config-docs</id>
+            <phase>package</phase>
+            <goals>
+              <goal>java</goal>
+            </goals>
+            <configuration>
+              <mainClass>org.apache.comet.CometConfGenerateDocs</mainClass>
+              <arguments>
+                <argument>docs/source/user-guide/configs-template.md</argument>
+                <argument>docs/source/user-guide/configs.md</argument>
+              </arguments>
+              <classpathScope>compile</classpathScope>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
     </plugins>

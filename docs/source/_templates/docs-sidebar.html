@@ -1,0 +1,38 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="{{ pathto('search') }}" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="{{ theme_search_bar_text }}" aria-label="{{ theme_search_bar_text }}" autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    {% if "python/api" in pagename or "python/generated" in pagename %}
+    {{ generate_nav_html("sidebar", startdepth=0, maxdepth=3, collapse=False, includehidden=True, titles_only=True) }}
+    {% else %}
+    {{ generate_nav_html("sidebar", startdepth=0, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
+    {% endif %}
+  </div>
+
+  <a class="navbar-brand" href="{{ pathto(master_doc) }}">
+    <img src="{{ pathto('_static/images/2x_bgwhite_original.png', 1) }}" class="logo" alt="logo">
+  </a>
+</nav>
+
