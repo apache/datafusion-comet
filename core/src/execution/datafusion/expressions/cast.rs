@@ -327,14 +327,17 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
         }
     }
 
-    if eval_mode == EvalMode::Ansi && timestamp.is_none() {
-        return Err(CometError::CastInvalidValue {
-            value: value.to_string(),
-            from_type: "STRING".to_string(),
-            to_type: "TIMESTAMP".to_string(),
-        });
+    if timestamp.is_none() {
+        if eval_mode == EvalMode::Ansi {
+            return Err(CometError::CastInvalidValue {
+                value: value.to_string(),
+                from_type: "STRING".to_string(),
+                to_type: "TIMESTAMP".to_string(),
+            });
+        } else {
+            return Ok(None);
+        }
     }
-
     Ok(Some(timestamp.unwrap()))
 }
 
@@ -342,9 +345,8 @@ fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i6
     let datetime = chrono::Utc
         .with_ymd_and_hms(year, month, day, 0, 0, 0)
         .unwrap()
-        .with_timezone(&chrono::Utc)
-        .with_nanosecond(0);
-    Ok(Some(datetime.unwrap().timestamp_micros()))
+        .with_timezone(&chrono::Utc);
+    Ok(Some(datetime.timestamp_micros()))
 }
 
 fn parse_hms_timestamp(
@@ -455,7 +457,7 @@ mod tests {
         // write for all formats
         assert_eq!(
             timestamp_parser("2020", EvalMode::Legacy).unwrap(),
-            Some(1577836800000000)
+            Some(1577836800000000) // this is in milliseconds
         );
         assert_eq!(
             timestamp_parser("2020-01", EvalMode::Legacy).unwrap(),
