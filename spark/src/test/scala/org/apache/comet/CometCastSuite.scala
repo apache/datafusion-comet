@@ -316,7 +316,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to DoubleType") {
-    // fails due to incompatible sort order for 0.0 and -0.0
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
@@ -610,7 +609,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
-      // TODO -0.0f
       0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
     withNulls(values).toDF("a")
@@ -625,7 +623,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
-      // TODO: -0.0d
       0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
     withNulls(values).toDF("a")
