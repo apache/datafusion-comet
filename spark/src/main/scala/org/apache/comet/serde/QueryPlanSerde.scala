@@ -2330,11 +2330,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             return None
         }
 
-        for (key <- join.leftKeys) {
+        // Checks if the join keys are supported by DataFusion SortMergeJoin.
+        val errorMsgs = join.leftKeys.flatMap { key =>
           if (!supportedSortMergeJoinEqualType(key.dataType)) {
-            withInfo(op, s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
-            return None
+            Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
+          } else {
+            None
           }
+        }
+
+        if (errorMsgs.nonEmpty) {
+          withInfo(op, errorMsgs.flatten.mkString("\n"))
+          return None
         }
 
         val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))

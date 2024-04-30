@@ -53,7 +53,8 @@ class CometJoinSuite extends CometTestBase {
         sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
 
         val df = sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time")
-        checkSparkAnswer(df)
+        val (sparkPlan, cometPlan) = checkSparkAnswer(df)
+        assert(sparkPlan.canonicalized === cometPlan.canonicalized)
       }
     }
   }
