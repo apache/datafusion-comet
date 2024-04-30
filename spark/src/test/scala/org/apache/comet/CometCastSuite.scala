@@ -508,7 +508,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast DateType to IntegerType") {
-    // different results
     // input: 2345-01-01, expected: null, actual: 3789391
     castTest(generateDates(), DataTypes.IntegerType)
   }
@@ -550,31 +549,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast TimestampType to ByteType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
     castTest(generateTimestamps(), DataTypes.ByteType)
   }
 
   ignore("cast TimestampType to ShortType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
     castTest(generateTimestamps(), DataTypes.ShortType)
   }
 
   ignore("cast TimestampType to IntegerType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
     castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
   ignore("cast TimestampType to LongType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 17:00:00.0, expected: 1.70407078E9, actual: 1.70407082E15]
     castTest(generateTimestamps(), DataTypes.LongType)
   }
 
   ignore("cast TimestampType to FloatType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
     castTest(generateTimestamps(), DataTypes.FloatType)
   }
 
   ignore("cast TimestampType to DoubleType") {
+    // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
     castTest(generateTimestamps(), DataTypes.DoubleType)
   }
