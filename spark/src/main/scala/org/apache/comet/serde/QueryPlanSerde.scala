@@ -2105,6 +2105,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
   }
 
   /**
+   * Returns true if given datatype is supported as a key in DataFusion sort merge join.
+   */
+  def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
+    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+      true
+    // `TimestampNTZType` is private in Spark 3.2/3.3.
+    case dt if dt.typeName == "timestamp_ntz" => true
+    case _ => false
+  }
+
+  /**
    * Convert a Spark plan operator to a protobuf Comet operator.
    *
    * @param op
@@ -2408,6 +2420,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
             return None
+        }
+
+        // Checks if the join keys are supported by DataFusion SortMergeJoin.
+        val errorMsgs = join.leftKeys.flatMap { key =>
+          if (!supportedSortMergeJoinEqualType(key.dataType)) {
+            Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
+          } else {
+            None
+          }
+        }
+
+        if (errorMsgs.nonEmpty) {
+          withInfo(op, errorMsgs.flatten.mkString("\n"))
+          return None
         }
 
         val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
