@@ -127,18 +127,28 @@ abstract class CometTestBase
     }
   }
 
-  protected def checkSparkAnswer(query: String): Unit = {
+  protected def checkSparkAnswer(query: String): (SparkPlan, SparkPlan) = {
     checkSparkAnswer(sql(query))
   }
 
-  protected def checkSparkAnswer(df: => DataFrame): Unit = {
+  /**
+   * Check the answer of a Comet SQL query with Spark result.
+   * @param df
+   *   The DataFrame of the query.
+   * @return
+   *   A tuple of the SparkPlan of the query and the SparkPlan of the Comet query.
+   */
+  protected def checkSparkAnswer(df: => DataFrame): (SparkPlan, SparkPlan) = {
     var expected: Array[Row] = Array.empty
+    var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
+      sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
+    (sparkPlan, dfComet.queryExecution.executedPlan)
   }
 
   protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
