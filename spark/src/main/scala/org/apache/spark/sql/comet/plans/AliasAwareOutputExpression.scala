@@ -31,7 +31,8 @@ import org.apache.spark.sql.catalyst.trees.CurrentOrigin
 trait AliasAwareOutputExpression extends SQLConfHelper {
   // `SQLConf.EXPRESSION_PROJECTION_CANDIDATE_LIMIT` is Spark 3.4+ only.
   // Use a default value for now.
-  protected val aliasCandidateLimit = 100
+  protected val aliasCandidateLimit =
+    conf.getConfString("spark.sql.optimizer.expressionProjectionCandidateLimit", "100").toInt
   protected def outputExpressions: Seq[NamedExpression]
 
   /**
