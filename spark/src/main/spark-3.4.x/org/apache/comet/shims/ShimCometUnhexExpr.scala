@@ -19,8 +19,10 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{StringType, BooleanType}
 
+/**
+ * `ShimCometUnhexExpr` parses the `Unhex` expression assuming that the catalyst version is 3.4.x.
+ */
 trait ShimCometUnhexExpr {
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(unhex.failOnError))
