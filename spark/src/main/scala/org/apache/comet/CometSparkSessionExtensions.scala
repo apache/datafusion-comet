@@ -340,7 +340,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec =>
+        case op: LocalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -349,7 +349,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec =>
+        case op: GlobalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
