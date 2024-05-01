@@ -33,6 +33,11 @@ object CometCast {
       toType: DataType,
       timeZoneId: Option[String],
       evalMode: String): Boolean = {
+
+    if (fromType == toType) {
+      return true
+    }
+
     (fromType, toType) match {
       case (DataTypes.StringType, _) =>
         canCastFromString(cast, toType)
