@@ -99,7 +99,7 @@ https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html
 Detecting the debugger
 https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).
 
-# Verbose debug
+## Verbose debug
 
 By default, Comet outputs the exception details specific for Comet.
 
