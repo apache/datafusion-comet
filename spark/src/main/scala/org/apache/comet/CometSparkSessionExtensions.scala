@@ -1042,10 +1042,10 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
-    val exprInfo = exprs
-      .flatMap { e => Seq(e.getTagValue(CometExplainInfo.EXTENSION_INFO)) }
-      .flatten
-      .mkString("\n")
+    val exprInfo =
+      (Seq(node.getTagValue(CometExplainInfo.EXTENSION_INFO)) ++ exprs
+        .flatMap(e => Seq(e.getTagValue(CometExplainInfo.EXTENSION_INFO)))).flatten
+        .mkString("\n")
     if (info != null && info.nonEmpty && exprInfo.nonEmpty) {
       node.setTagValue(CometExplainInfo.EXTENSION_INFO, Seq(exprInfo, info).mkString("\n"))
     } else if (exprInfo.nonEmpty) {

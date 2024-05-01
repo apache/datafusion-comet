@@ -771,12 +771,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df)
+        checkSparkAnswerAndOperator(df)
 
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df2)
+        checkSparkAnswerAndOperator(df2)
       }
 
       // with ANSI enabled, we should produce the same exception as Spark
@@ -818,7 +818,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df2)
+        checkSparkAnswerAndOperator(df2)
       }
     }
   }

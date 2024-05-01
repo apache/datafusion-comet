@@ -43,6 +43,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
+import org.apache.comet.expressions.CometCast
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
@@ -575,7 +576,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case Cast(child, dt, timeZoneId, evalMode) =>
+        case cast @ Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
             val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
@@ -585,19 +586,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
               evalMode.toString
             }
-            val supportedCast = (child.dataType, dt) match {
-              case (DataTypes.StringType, DataTypes.TimestampType)
-                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
-                // https://github.com/apache/datafusion-comet/issues/328
-                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
-                false
-              case _ => true
-            }
-            if (supportedCast) {
+            if (CometCast.isSupported(cast, child.dataType, dt, timeZoneId, evalModeStr)) {
               castToProto(timeZoneId, dt, childExpr, evalModeStr)
             } else {
-              // no need to call withInfo here since it was called when determining
-              // the value for `supportedCast`
+              withInfo(
+                expr,
+                s"Unsupported cast from ${child.dataType} to $dt with timezone $timeZoneId and evalMode $evalModeStr")
               None
             }
           } else {
