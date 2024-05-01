@@ -19,10 +19,10 @@
 
 package org.apache.comet
 
+import org.apache.comet.Constants.EMPTY_STRING
+
 import java.io.File
-
 import scala.util.Random
-
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -831,10 +831,20 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else {
               // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
               // comparison between Spark and Comet.
+              // In the case of CAST_INVALID_INPUT
               // Spark message is in format `invalid input syntax for type TYPE: VALUE`
               // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
               // We just check that the comet message contains the same invalid value as the Spark message
-              val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
+              // In the case of CAST_OVERFLOW
+              // Spark message is in format `Casting VALUE to TO_TYPE causes overflow`
+              // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE
+              // due to an overflow`
+              // We check if the comet message contains 'overflow'.
+              val sparkInvalidValue = if(sparkMessage.indexOf(':') == 0){
+                EMPTY_STRING
+              } else{
+                sparkMessage.substring(sparkMessage.indexOf(':') + 2)
+              }
               assert(
                 cometMessage.contains(sparkInvalidValue) || cometMessage.contains("overflow"))
             }
