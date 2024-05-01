@@ -32,7 +32,8 @@ public class Utils {
       DataType type, ColumnDescriptor descriptor, int batchSize, SQLConf conf) {
     boolean useDecimal128 = (Boolean) CometConf.COMET_USE_DECIMAL_128().get(conf);
     boolean useLazyMaterialization = (Boolean) CometConf.COMET_USE_LAZY_MATERIALIZATION().get(conf);
-    boolean useLegacyDateTimestamp = (Boolean) CometConf.COMET_USE_DECIMAL_128().get(conf);
+    boolean useLegacyDateTimestamp =
+        (Boolean) CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP().get(conf);
     return getColumnReader(
         type, descriptor, batchSize, useDecimal128, useLazyMaterialization, useLegacyDateTimestamp);
   }
