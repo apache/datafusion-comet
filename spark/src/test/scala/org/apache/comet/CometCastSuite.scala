@@ -40,7 +40,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // but this is likely a reasonable starting point for now
   private val whitespaceChars = " \t\r\n"
 
-  private val numericPattern = "0123456789e+-." + whitespaceChars
+  /**
+   * We use these characters to construct strings that potentially represent valid numbers such as
+   * `-12.34d` or `4e7`. Invalid numeric strings will also be generated, such as `+e.-d`.
+   */
+  private val numericPattern = "0123456789deEf+-." + whitespaceChars
+
   private val datePattern = "0123456789/" + whitespaceChars
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
@@ -433,23 +438,64 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
-  ignore("cast StringType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/15
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ByteType)
+  private val castStringToIntegralInputs: Seq[String] = Seq(
+    "",
+    ".",
+    "+",
+    "-",
+    "+.",
+    "-.",
+    "-0",
+    "+1",
+    "-1",
+    ".2",
+    "-.2",
+    "1e1",
+    "1.1d",
+    "1.1f",
+    Byte.MinValue.toString,
+    (Byte.MinValue.toShort - 1).toString,
+    Byte.MaxValue.toString,
+    (Byte.MaxValue.toShort + 1).toString,
+    Short.MinValue.toString,
+    (Short.MinValue.toInt - 1).toString,
+    Short.MaxValue.toString,
+    (Short.MaxValue.toInt + 1).toString,
+    Int.MinValue.toString,
+    (Int.MinValue.toLong - 1).toString,
+    Int.MaxValue.toString,
+    (Int.MaxValue.toLong + 1).toString,
+    Long.MinValue.toString,
+    Long.MaxValue.toString,
+    "-9223372036854775809", // Long.MinValue -1
+    "9223372036854775808" // Long.MaxValue + 1
+  )
+
+  test("cast StringType to ByteType") {
+    // test with hand-picked values
+    castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
+    // fuzz test
+    castTest(generateStrings(numericPattern, 4).toDF("a"), DataTypes.ByteType)
   }
 
-  ignore("cast StringType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/15
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.ShortType)
+  test("cast StringType to ShortType") {
+    // test with hand-picked values
+    castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
+    // fuzz test
+    castTest(generateStrings(numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
-  ignore("cast StringType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/15
+  test("cast StringType to IntegerType") {
+    // test with hand-picked values
+    castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
+    // fuzz test
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
-  ignore("cast StringType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/15
+  test("cast StringType to LongType") {
+    // test with hand-picked values
+    castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
+    // fuzz test
     castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
@@ -724,11 +770,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = data.withColumn("converted", col("a").cast(toType))
+        val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
         checkSparkAnswer(df)
 
         // try_cast() should always return null for invalid inputs
-        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
         checkSparkAnswer(df2)
       }
 
