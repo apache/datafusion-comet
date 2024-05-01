@@ -1031,7 +1031,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string) using parquet")
-          sql(s"insert into $table values('4A4D'), ('4A4D'), ('4A4D'), ('4A4D')")
+          sql(s"insert into $table values('537061726B2053514C')")
           checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
         }
       }

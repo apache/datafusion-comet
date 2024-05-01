@@ -258,7 +258,8 @@ under the License.
             </goals>
             <configuration>
               <sources>
-                <source>src/main/${shims.source}</source>
+                <source>src/main/${shims.majorSource}</source>
+                <source>src/main/${shims.minorSource}</source>
               </sources>
             </configuration>
           </execution>
