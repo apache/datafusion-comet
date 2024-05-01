@@ -547,12 +547,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to TimestampType with invalid timezone") {
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
-      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2")
-      castFallbackTest(values.toDF("a"), DataTypes.TimestampType, "Unsupported timezone")
-    }
+    val values = Seq("2020-01-01T12:34:56.123456", "T2")
+    castFallbackTestTimezone(values.toDF("a"), DataTypes.TimestampType, "Unsupported timezone")
   }
 
   // CAST from DateType
@@ -773,6 +769,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+        val df = data.withColumn("converted", col("a").cast(toType))
+        df.collect()
+        val str =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(str.contains(expectedMessage))
+      }
+    }
+  }
+
+  private def castFallbackTestTimezone(
+      input: DataFrame,
+      toType: DataType,
+      expectedMessage: String): Unit = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      data.createOrReplaceTempView("t")
+
+      withSQLConf(
+        (SQLConf.ANSI_ENABLED.key, "false"),
+        (CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key, "true"),
+        (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
         val df = data.withColumn("converted", col("a").cast(toType))
         df.collect()
         val str =
