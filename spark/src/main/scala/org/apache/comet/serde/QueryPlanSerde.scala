@@ -590,7 +590,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             } else {
               withInfo(
                 expr,
-                s"Unsupported cast from ${child.dataType} to $dt with timezone $timeZoneId and evalMode $evalModeStr")
+                s"Unsupported cast from ${child.dataType} to $dt " +
+                  s"with timezone $timeZoneId and evalMode $evalModeStr")
               None
             }
           } else {
