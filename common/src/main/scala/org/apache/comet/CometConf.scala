@@ -385,8 +385,8 @@ object CometConf {
 
   val COMET_SORTMERGEJOIN_CHECK_KEY_TYPES: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.sortmergejoin.check.key.types")
-      .doc("Allows SortMergeJoin to be executed natively regardless of the key type" +
-        "By default, this config is false. This config is only used for unit test.")
+      .doc("Enable key type checking in SortMergeJoin" +
+        "By default, this config is true. This config is only used for unit test.")
       .booleanConf
       .createWithDefault(true)
 
