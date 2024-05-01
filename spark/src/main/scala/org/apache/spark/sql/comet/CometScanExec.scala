@@ -268,7 +268,7 @@ case class CometScanExec(
       selectedPartitions
         .flatMap { p =>
           p.files.map { f =>
-            PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+            getPartitionedFile(f, p)
           }
         }
         .groupBy { f =>
@@ -355,7 +355,7 @@ case class CometScanExec(
               // SPARK-39634: Allow file splitting in combination with row index generation once
               // the fix for PARQUET-2161 is available.
               !isNeededForSchema(requiredSchema)
-            PartitionedFileUtil.splitFiles(
+            super.splitFiles(
               sparkSession = relation.sparkSession,
               file = file,
               filePath = filePath,

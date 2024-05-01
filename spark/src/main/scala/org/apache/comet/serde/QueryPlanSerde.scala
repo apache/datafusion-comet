@@ -1884,18 +1884,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.
         // See https://github.com/apache/spark/pull/38151
-        case StaticInvoke(
-              _: Class[CharVarcharCodegenUtils],
-              _: StringType,
-              "readSidePadding",
-              arguments,
-              _,
-              true,
-              false,
-              true) if arguments.size == 2 =>
+        case s: StaticInvoke if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
+          s.dataType.isInstanceOf[StringType] &&
+          s.functionName == "readSidePadding" &&
+          s.arguments.size == 2 &&
+          s.propagateNull &&
+          !s.returnNullable &&
+          s.isDeterministic =>
           val argsExpr = Seq(
-            exprToProtoInternal(Cast(arguments(0), StringType), inputs),
-            exprToProtoInternal(arguments(1), inputs))
+            exprToProtoInternal(Cast(s.arguments(0), StringType), inputs),
+            exprToProtoInternal(s.arguments(1), inputs))
 
           if (argsExpr.forall(_.isDefined)) {
             val builder = ExprOuterClass.ScalarFunc.newBuilder()
@@ -1904,7 +1902,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
             Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
           } else {
-            withInfo(expr, arguments: _*)
+            withInfo(expr, s.arguments: _*)
             None
           }
 

@@ -527,6 +527,7 @@ under the License.
     </profile>
 
     <profile>
+      <!-- FIXME: this is WIP. Tests may fail -->
       <id>spark-4.0</id>
       <properties>
         <!-- Use Scala 2.13 by default -->

@@ -59,7 +59,7 @@ object DecimalPrecision {
         }
         CheckOverflow(add, resultType, nullOnOverflow)
 
-      case sub @ Subtract(DecimalType.Expression(p1, s1), DecimalType.Expression(p2, s2), _) =>
+      case sub @ Subtract(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
         val resultScale = max(s1, s2)
         val resultType = if (allowPrecisionLoss) {
           DecimalType.adjustPrecisionScale(max(p1 - s1, p2 - s2) + resultScale + 1, resultScale)
@@ -68,7 +68,7 @@ object DecimalPrecision {
         }
         CheckOverflow(sub, resultType, nullOnOverflow)
 
-      case mul @ Multiply(DecimalType.Expression(p1, s1), DecimalType.Expression(p2, s2), _) =>
+      case mul @ Multiply(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
         val resultType = if (allowPrecisionLoss) {
           DecimalType.adjustPrecisionScale(p1 + p2 + 1, s1 + s2)
         } else {
@@ -76,7 +76,7 @@ object DecimalPrecision {
         }
         CheckOverflow(mul, resultType, nullOnOverflow)
 
-      case div @ Divide(DecimalType.Expression(p1, s1), DecimalType.Expression(p2, s2), _) =>
+      case div @ Divide(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
         val resultType = if (allowPrecisionLoss) {
           // Precision: p1 - s1 + s2 + max(6, s1 + p2 + 1)
           // Scale: max(6, s1 + p2 + 1)
@@ -96,7 +96,7 @@ object DecimalPrecision {
         }
         CheckOverflow(div, resultType, nullOnOverflow)
 
-      case rem @ Remainder(DecimalType.Expression(p1, s1), DecimalType.Expression(p2, s2), _) =>
+      case rem @ Remainder(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
         val resultType = if (allowPrecisionLoss) {
           DecimalType.adjustPrecisionScale(min(p1 - s1, p2 - s2) + max(s1, s2), max(s1, s2))
         } else {
@@ -108,6 +108,7 @@ object DecimalPrecision {
     }
   }
 
+  // `org.apache.spark.sql.types.DecimalExpression` is added in Spark 3.5
   object DecimalExpression {
     def unapply(e: Expression): Option[(Int, Int)] = e.dataType match {
       case t: DecimalType => Some((t.precision, t.scale))

@@ -19,8 +19,10 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, ShuffleType}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.types.StructType
 
 trait ShimCometShuffleExchangeExec {
   // TODO: remove after dropping Spark 3.2 and 3.3 support
@@ -36,4 +38,8 @@ trait ShimCometShuffleExchangeExec {
       shuffleType,
       advisoryPartitionSize)
   }
+
+  // TODO: remove after dropping Spark 3.x support
+  protected def fromAttributes(attributes: Seq[Attribute]): StructType =
+    StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 }

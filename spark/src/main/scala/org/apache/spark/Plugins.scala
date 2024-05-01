@@ -25,7 +25,6 @@ import java.util.Collections
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
-import org.apache.spark.resource.ResourceProfile
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -56,10 +55,12 @@ class CometDriverPlugin extends DriverPlugin with Logging {
           sc.getConf.getDouble(
             EXECUTOR_MEMORY_OVERHEAD_FACTOR,
             EXECUTOR_MEMORY_OVERHEAD_FACTOR_DEFAULT)
+        val memoryOverheadMinMib =
+          sc.getConf.getLong(
+            EXECUTOR_MIN_MEMORY_OVERHEAD,
+            EXECUTOR_MIN_MEMORY_OVERHEAD_DEFAULT)
 
-        Math.max(
-          (executorMemory * memoryOverheadFactor).toInt,
-          ResourceProfile.MEMORY_OVERHEAD_MIN_MIB)
+        Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
       val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
@@ -104,6 +105,9 @@ object CometDriverPlugin {
   // `org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD_FACTOR` was added since Spark 3.3.0
   val EXECUTOR_MEMORY_OVERHEAD_FACTOR = "spark.executor.memoryOverheadFactor"
   val EXECUTOR_MEMORY_OVERHEAD_FACTOR_DEFAULT = 0.1
+  // `org.apache.spark.internal.config.EXECUTOR_MIN_MEMORY_OVERHEAD` was added since Spark 4.0.0
+  val EXECUTOR_MIN_MEMORY_OVERHEAD = "spark.executor.minMemoryOverhead"
+  val EXECUTOR_MIN_MEMORY_OVERHEAD_DEFAULT = 384L
 }
 
 /**
