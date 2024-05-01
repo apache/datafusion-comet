@@ -42,17 +42,6 @@ public class Utils {
       ColumnDescriptor descriptor,
       int batchSize,
       boolean useDecimal128,
-      boolean useLazyMaterialization) {
-    // TODO: support `useLegacyDateTimestamp` for Iceberg
-    return getColumnReader(
-        type, descriptor, batchSize, useDecimal128, useLazyMaterialization, true);
-  }
-
-  public static ColumnReader getColumnReader(
-      DataType type,
-      ColumnDescriptor descriptor,
-      int batchSize,
-      boolean useDecimal128,
       boolean useLazyMaterialization,
       boolean useLegacyDateTimestamp) {
     if (useLazyMaterialization && supportLazyMaterialization(type)) {
