@@ -595,6 +595,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             }
 
             if (supportedCast) {
+              // if Timezone is not UTC, we fallback to Spark
               if (!timeZoneId.contains("UTC")) {
                 withInfo(expr, s"Unsupported timezone ${timeZoneId} for timestamp cast")
                 None
