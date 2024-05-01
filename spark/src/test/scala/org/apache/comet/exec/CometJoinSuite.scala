@@ -22,12 +22,15 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{BinaryType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.serde.QueryPlanSerde
 
 class CometJoinSuite extends CometTestBase {
 
@@ -248,6 +251,56 @@ class CometJoinSuite extends CometTestBase {
           val df11 = right.join(left, left("_2") === right("_1"), "leftanti")
           checkSparkAnswerAndOperator(df11)
         }
+      }
+    }
+  }
+
+  test("SortMergeJoin native execution with TimestampType should fail") {
+    // This test will be deleted when this type is supported
+    assert(!QueryPlanSerde.supportedSortMergeJoinEqualType(TimestampType))
+    withSQLConf(
+      CometConf.COMET_SORTMERGEJOIN_ALLOW_ALL_KEY_TYPES.key -> "true",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+        sql("INSERT OVERWRITE t1 VALUES('a', timestamp'2019-01-01 11:11:11')")
+
+        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+        sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
+
+        val e = intercept[SparkException] {
+          sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time").collect()
+        }.getMessage
+        assert(
+          e.contains("This feature is not implemented: " +
+            "Unsupported data type in sort merge join comparator"))
+      }
+    }
+  }
+
+  test("SortMergeJoin native execution with Binary should fail") {
+    // This test will be deleted when this type is supported
+    assert(!QueryPlanSerde.supportedSortMergeJoinEqualType(BinaryType))
+    withSQLConf(
+      CometConf.COMET_SORTMERGEJOIN_ALLOW_ALL_KEY_TYPES.key -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, bin BINARY) USING PARQUET")
+        sql("INSERT OVERWRITE t1 VALUES('a', X'1')")
+
+        sql("CREATE TABLE t2(name STRING, bin BINARY) USING PARQUET")
+        sql("INSERT OVERWRITE t2 VALUES('b', X'1')")
+
+        val e = intercept[SparkException] {
+          sql("SELECT * FROM t1 JOIN t2 ON t1.bin = t2.bin").collect()
+        }.getMessage
+        assert(
+          e.contains("This feature is not implemented: " +
+            "Unsupported data type in sort merge join comparator"))
       }
     }
   }
