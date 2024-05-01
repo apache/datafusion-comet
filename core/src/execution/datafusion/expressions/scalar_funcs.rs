@@ -636,7 +636,7 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
     for i in 0..string_array.len() {
         let string = string_array.value(i);
 
-        if let Ok(_) = unhex(string, &mut encoded) {
+        if unhex(string, &mut encoded).is_ok() {
             builder.append_value(encoded.as_slice());
             encoded.clear();
         } else {
