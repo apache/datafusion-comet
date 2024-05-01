@@ -155,18 +155,23 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/datafusion-comet">
-   Github and Issue Tracker
+  <a class="reference internal" href="plugin_overview.html">
+   Comet Plugin Overview
   </a>
  </li>
  <li class="toctree-l1">
   <a class="reference internal" href="development.html">
-   Comet Development Guide
+   Development Guide
   </a>
  </li>
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
-   Comet Debugging Guide
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
   </a>
  </li>
 </ul>
@@ -235,41 +240,34 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h1 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#">
-   Comet Debugging Guide
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#debugging-for-advanced-developers">
+   Debugging for Advanced Developers
   </a>
-  <ul class="visible nav section-nav flex-column">
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#debugging-for-advanced-developers">
-     Debugging for Advanced Developers
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#in-intellij">
+     In Intellij
     </a>
-    <ul class="nav section-nav flex-column">
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#in-intellij">
-       In Intellij
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#in-clion">
-       In CLion
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#after-your-debugging-is-done">
-       After your debugging is done,
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#additional-info">
-       Additional Info
-      </a>
-     </li>
-    </ul>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#in-clion">
+     In CLion
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#after-your-debugging-is-done">
+     After your debugging is done,
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#additional-info">
+     Additional Info
+    </a>
    </li>
   </ul>
  </li>
- <li class="toc-h1 nav-item toc-entry">
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#verbose-debug">
    Verbose debug
   </a>
@@ -394,9 +392,8 @@ https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html</p>
 https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&amp;text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).</p>
 </section>
 </section>
-</section>
 <section id="verbose-debug">
-<h1>Verbose debug<a class="headerlink" href="#verbose-debug" title="Link to this heading">¶</a></h1>
+<h2>Verbose debug<a class="headerlink" href="#verbose-debug" title="Link to this heading">¶</a></h2>
 <p>By default, Comet outputs the exception details specific for Comet.</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;my_failing_query&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
 
@@ -448,6 +445,7 @@ To enable this option with Comet it is needed to include <code class="docutils l
 <li><p>The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a <a class="reference external" href="https://github.com/apache/arrow-datafusion/issues">ticket</a></p></li>
 <li><p>The backtrace evaluation comes with performance cost and intended mostly for debugging purposes</p></li>
 </ul>
+</section>
 </section>
 
 

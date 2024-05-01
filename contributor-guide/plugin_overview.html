@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Compatibility Guide &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comet Plugin Overview &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,8 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Contributing to Apache DataFusion Comet" href="../contributor-guide/contributing.html" />
-    <link rel="prev" title="Comet Configuration Settings" href="configs.html" />
+    <link rel="next" title="Comet Development Guide" href="development.html" />
+    <link rel="prev" title="Contributing to Apache DataFusion Comet" href="contributing.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -107,39 +107,39 @@ under the License.
   User Guide
  </span>
 </p>
-<ul class="current nav bd-sidenav">
+<ul class="nav bd-sidenav">
  <li class="toctree-l1">
-  <a class="reference internal" href="overview.html">
+  <a class="reference internal" href="../user-guide/overview.html">
    Comet Overview
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="installation.html">
+  <a class="reference internal" href="../user-guide/installation.html">
    Installing Comet
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="expressions.html">
+  <a class="reference internal" href="../user-guide/expressions.html">
    Supported Expressions
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="operators.html">
+  <a class="reference internal" href="../user-guide/operators.html">
    Supported Operators
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="datatypes.html">
+  <a class="reference internal" href="../user-guide/datatypes.html">
    Supported Data Types
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="configs.html">
+  <a class="reference internal" href="../user-guide/configs.html">
    Configuration Settings
   </a>
  </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/compatibility.html">
    Compatibility Guide
   </a>
  </li>
@@ -149,24 +149,24 @@ under the License.
   Contributor Guide
  </span>
 </p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/contributing.html">
+  <a class="reference internal" href="contributing.html">
    Getting Started
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/plugin_overview.html">
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
    Comet Plugin Overview
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/development.html">
+  <a class="reference internal" href="development.html">
    Development Guide
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/debugging.html">
+  <a class="reference internal" href="debugging.html">
    Debugging Guide
   </a>
  </li>
@@ -242,21 +242,14 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#ansi-mode">
-   ANSI mode
+  <a class="reference internal nav-link" href="#cometscanrule">
+   CometScanRule
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#cast">
-   Cast
+  <a class="reference internal nav-link" href="#cometexecrule">
+   CometExecRule
   </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#cast-from-string-to-timestamp">
-     Cast from String to Timestamp
-    </a>
-   </li>
-  </ul>
  </li>
 </ul>
 
@@ -267,7 +260,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/compatibility.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/plugin_overview.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -286,47 +279,54 @@ under the License.
               
               <div>
                 
-  <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+  http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
-<section id="compatibility-guide">
-<h1>Compatibility Guide<a class="headerlink" href="#compatibility-guide" title="Link to this heading">¶</a></h1>
-<p>Comet aims to provide consistent results with the version of Apache Spark that is being used.</p>
-<p>This guide offers information about areas of functionality where there are known differences.</p>
-<section id="ansi-mode">
-<h2>ANSI mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">¶</a></h2>
-<p>Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
-Comet will fall back to Spark if ANSI mode is enabled. To enable Comet to accelerate queries when ANSI mode is enabled,
-specify <code class="docutils literal notranslate"><span class="pre">spark.comet.ansi.enabled=true</span></code> in the Spark configuration. Comet’s ANSI support is experimental and should not
-be used in production.</p>
-<p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
+<section id="comet-plugin-overview">
+<h1>Comet Plugin Overview<a class="headerlink" href="#comet-plugin-overview" title="Link to this heading">¶</a></h1>
+<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometSparkSessionExtensions</span></code> class, which can be registered with Spark by adding the following setting to the Spark configuration when launching <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">extensions</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">CometSparkSessionExtensions</span>
+</pre></div>
+</div>
+<p>On initialization, this class registers two physical plan optimization rules with Spark: <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> and <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>. These rules run whenever a query stage is being planned.</p>
+<section id="cometscanrule">
+<h2>CometScanRule<a class="headerlink" href="#cometscanrule" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet Parquet scan classes.</p>
+<p>When the V1 data source API is being used, <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>.</p>
+<p>When the V2 data source API is being used, <code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometBatchScanExec</span></code>.</p>
 </section>
-<section id="cast">
-<h2>Cast<a class="headerlink" href="#cast" title="Link to this heading">¶</a></h2>
-<p>Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
-guaranteed to be consistent with Spark.</p>
-<p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">epic</a> where we are tracking the work to implement Spark-compatible cast expressions.</p>
-<section id="cast-from-string-to-timestamp">
-<h3>Cast from String to Timestamp<a class="headerlink" href="#cast-from-string-to-timestamp" title="Link to this heading">¶</a></h3>
-<p>Casting from String to Timestamp is disabled by default due to incompatibilities with Spark, including timezone
-issues, and can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.castStringToTimestamp=true</span></code>. See the
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/328">tracking issue</a> for more information.</p>
-</section>
+<section id="cometexecrule">
+<h2>CometExecRule<a class="headerlink" href="#cometexecrule" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> attempts to transform a Spark physical plan into a Comet plan. This rule is executed against
+individual query stages when they are being prepared for execution.</p>
+<p>This rule traverses bottom-up from the original Spark plan and attempts to replace each node with a Comet equivalent.
+For example, a <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code> will be replaced by <code class="docutils literal notranslate"><span class="pre">CometProjectExec</span></code>.</p>
+<p>When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
+If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
+underlying Spark node and the plan will not be converted.</p>
+<p>Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
+transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
+of this could outweigh the benefits of running parts of the query stage natively in Comet.</p>
+<p>Once the plan has been transformed, it is serialized into Comet protocol buffer format by the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> class
+and this serialized plan is passed into the native code by <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>.</p>
+<p>In the native code there is a <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner</span></code> struct (in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>) which converts the serialized plan into an
+Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
+override the DataFusion versions to ensure compatibility with Apache Spark.</p>
 </section>
 </section>
 
@@ -336,17 +336,17 @@ issues, and can be enabled by setting <code class="docutils literal notranslate"
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="configs.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="contributing.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Comet Configuration Settings</p>
+            <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
         </div>
     </a>
-    <a class='right-next' id="next-link" href="../contributor-guide/contributing.html" title="next page">
+    <a class='right-next' id="next-link" href="development.html" title="next page">
     <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
+        <p class="prev-next-title">Comet Development Guide</p>
     </div>
     <i class="fas fa-angle-right"></i>
     </a>
