@@ -42,7 +42,7 @@ use datafusion::{
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
-    cast::{as_binary_array, as_generic_string_array, as_string_array},
+    cast::{as_binary_array, as_generic_string_array},
     exec_err, internal_err, not_impl_err, plan_err, DataFusionError, Result as DataFusionResult,
     ScalarValue,
 };
@@ -652,7 +652,7 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
 
 fn spark_unhex(
     args: &[ColumnarValue],
-    data_type: &DataType,
+    _data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
     if args.len() > 2 {
         return plan_err!("unhex takes at most 2 arguments, but got: {}", args.len());
@@ -677,10 +677,10 @@ fn spark_unhex(
         DataType::Utf8 => spark_unhex_inner::<i32>(val_to_unhex, fail_on_error),
         DataType::LargeUtf8 => spark_unhex_inner::<i64>(val_to_unhex, fail_on_error),
         other => {
-            return internal_err!(
+            internal_err!(
                 "The first argument must be a string scalar or array, but got: {:?}",
                 other
-            );
+            )
         }
     }
 }
