@@ -42,8 +42,9 @@ use datafusion::{
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
-    cast::{as_binary_array, as_generic_string_array},
-    exec_err, internal_err, not_impl_err, DataFusionError, Result as DataFusionResult, ScalarValue,
+    cast::{as_binary_array, as_generic_string_array, as_string_array},
+    exec_err, internal_err, not_impl_err, plan_err, DataFusionError, Result as DataFusionResult,
+    ScalarValue,
 };
 use datafusion_physical_expr::{math_expressions, udf::ScalarUDF};
 use num::{
@@ -616,6 +617,7 @@ fn unhex(string: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
 
 fn spark_unhex_inner<T: OffsetSizeTrait>(
     array: &ColumnarValue,
+    fail_on_error: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = match array {
         ColumnarValue::Array(array) => as_generic_string_array::<T>(array)?,
@@ -639,6 +641,8 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
         if unhex(string, &mut encoded).is_ok() {
             builder.append_value(encoded.as_slice());
             encoded.clear();
+        } else if fail_on_error {
+            return plan_err!("Input to unhex is not a valid hex string: {:?}", string);
         } else {
             builder.append_null();
         }
@@ -650,19 +654,34 @@ fn spark_unhex(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
-    if args.len() != 1 {
-        return internal_err!("unhex takes exactly one argument");
+    if args.len() > 2 {
+        return plan_err!("unhex takes at most 2 arguments, but got: {}", args.len());
     }
 
     let val_to_unhex = &args[0];
+    let fail_on_error = if args.len() == 2 {
+        match &args[1] {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error))) => *fail_on_error,
+            _ => {
+                return plan_err!(
+                    "The second argument must be boolean scalar, but got: {:?}",
+                    args[1]
+                );
+            }
+        }
+    } else {
+        false
+    };
 
-    match data_type {
-        DataType::Utf8 => spark_unhex_inner::<i32>(val_to_unhex),
-        DataType::LargeUtf8 => spark_unhex_inner::<i64>(val_to_unhex),
-        _ => internal_err!(
-            "The first argument must be string array, but got: {:?}",
-            data_type
-        ),
+    match val_to_unhex.data_type() {
+        DataType::Utf8 => spark_unhex_inner::<i32>(val_to_unhex, fail_on_error),
+        DataType::LargeUtf8 => spark_unhex_inner::<i64>(val_to_unhex, fail_on_error),
+        other => {
+            return internal_err!(
+                "The first argument must be a string scalar or array, but got: {:?}",
+                other
+            );
+        }
     }
 }
 
