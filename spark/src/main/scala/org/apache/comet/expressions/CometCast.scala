@@ -35,38 +35,28 @@ object CometCast {
       evalMode: String): Boolean = {
     (fromType, toType) match {
       case (DataTypes.StringType, _) =>
-        castFromStringSupported(cast, toType, timeZoneId, evalMode)
+        canCastFromString(cast, toType)
       case (_, DataTypes.StringType) =>
-        castToStringSupported(cast, fromType, timeZoneId, evalMode)
+        canCastToString(fromType)
       case (DataTypes.TimestampType, _) =>
-        castFromTimestampSupported(cast, toType, timeZoneId, evalMode)
-      case (_: DecimalType, DataTypes.FloatType | DataTypes.DoubleType) => true
-      case (
-            DataTypes.BooleanType,
-            DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-            DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType) =>
-        true
+        canCastFromTimestamp(toType)
+      case (_: DecimalType, _) =>
+        canCastFromDecimal(toType)
+      case (DataTypes.BooleanType, _) =>
+        canCastFromBoolean(toType)
       case (
             DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType,
-            DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-            DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-            DataTypes.DoubleType) =>
-        true
-      case (
-            DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType,
-            _: DecimalType) =>
-        true
-      case (DataTypes.FloatType, DataTypes.BooleanType | DataTypes.DoubleType) => true
-      case (DataTypes.DoubleType, DataTypes.BooleanType | DataTypes.FloatType) => true
+            _) =>
+        canCastFromInt(toType)
+      case (DataTypes.FloatType, _) =>
+        canCastFromFloat(toType)
+      case (DataTypes.DoubleType, _) =>
+        canCastFromDouble(toType)
       case _ => false
     }
   }
 
-  private def castFromStringSupported(
-      cast: Cast,
-      toType: DataType,
-      timeZoneId: Option[String],
-      evalMode: String): Boolean = {
+  private def canCastFromString(cast: Cast, toType: DataType): Boolean = {
     toType match {
       case DataTypes.BooleanType =>
         true
@@ -94,11 +84,7 @@ object CometCast {
     }
   }
 
-  private def castToStringSupported(
-      cast: Cast,
-      fromType: DataType,
-      timeZoneId: Option[String],
-      evalMode: String): Boolean = {
+  private def canCastToString(fromType: DataType): Boolean = {
     fromType match {
       case DataTypes.BooleanType => true
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
@@ -113,11 +99,7 @@ object CometCast {
     }
   }
 
-  private def castFromTimestampSupported(
-      cast: Cast,
-      toType: DataType,
-      timeZoneId: Option[String],
-      evalMode: String): Boolean = {
+  private def canCastFromTimestamp(toType: DataType): Boolean = {
     toType match {
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
           DataTypes.IntegerType =>
@@ -131,6 +113,36 @@ object CometCast {
       case DataTypes.DateType => true
       case _ => false
     }
+  }
+
+  private def canCastFromBoolean(toType: DataType) = toType match {
+    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
+        DataTypes.FloatType | DataTypes.DoubleType =>
+      true
+    case _ => false
+  }
+
+  private def canCastFromInt(toType: DataType) = toType match {
+    case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+        DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
+        _: DecimalType =>
+      true
+    case _ => false
+  }
+
+  private def canCastFromFloat(toType: DataType) = toType match {
+    case DataTypes.BooleanType | DataTypes.DoubleType => true
+    case _ => false
+  }
+
+  private def canCastFromDouble(toType: DataType) = toType match {
+    case DataTypes.BooleanType | DataTypes.FloatType => true
+    case _ => false
+  }
+
+  private def canCastFromDecimal(toType: DataType) = toType match {
+    case DataTypes.FloatType | DataTypes.DoubleType => true
+    case _ => false
   }
 
 }
