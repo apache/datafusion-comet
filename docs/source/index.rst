@@ -40,8 +40,13 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :maxdepth: 1
    :caption: User Guide
 
+   Comet Overview <user-guide/overview>
+   Installing Comet <user-guide/installation>
    Supported Expressions <user-guide/expressions>
-   user-guide/compatibility
+   Supported Operators <user-guide/operators>
+   Supported Data Types <user-guide/datatypes>
+   Configuration Settings <user-guide/configs>
+   Compatibility Guide <user-guide/compatibility>
 
 .. _toc.links:
 .. toctree::
@@ -49,9 +54,10 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :caption: Contributor Guide
 
    Getting Started <contributor-guide/contributing>
+   Comet Plugin Overview <contributor-guide/plugin_overview>
+   Development Guide <contributor-guide/development>
+   Debugging Guide <contributor-guide/debugging>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
-   contributor-guide/development
-   contributor-guide/debugging
 
 .. _toc.asf-links:
 .. toctree::

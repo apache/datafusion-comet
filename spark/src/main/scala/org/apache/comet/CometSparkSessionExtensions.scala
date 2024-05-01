@@ -340,7 +340,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec =>
+        case op: LocalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -349,7 +349,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec =>
+        case op: GlobalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -741,9 +741,37 @@ class CometSparkSessionExtensions
         }
 
         // Set up logical links
-        newPlan = newPlan.transform { case op: CometExec =>
-          op.originalPlan.logicalLink.foreach(op.setLogicalLink)
-          op
+        newPlan = newPlan.transform {
+          case op: CometExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+          case op: CometShuffleExchangeExec =>
+            // Original Spark shuffle exchange operator might have empty logical link.
+            // But the `setLogicalLink` call above on downstream operator of
+            // `CometShuffleExchangeExec` will set its logical link to the downstream
+            // operators which cause AQE behavior to be incorrect. So we need to unset
+            // the logical link here.
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+
+          case op: CometBroadcastExchangeExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
         }
 
         // Convert native execution block by linking consecutive native operators.

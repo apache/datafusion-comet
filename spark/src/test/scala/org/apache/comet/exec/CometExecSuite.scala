@@ -35,10 +35,10 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.Hex
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
@@ -58,6 +58,29 @@ class CometExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  test("CometShuffleExchangeExec logical link should be correct") {
+    withTempView("v") {
+      spark.sparkContext
+        .parallelize((1 to 4).map(i => TestData(i, i.toString)), 2)
+        .toDF("c1", "c2")
+        .createOrReplaceTempView("v")
+
+      Seq(true, false).foreach { columnarShuffle =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
+          val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
+          val shuffle = find(df.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec if columnarShuffle => true
+            case _: ShuffleExchangeExec if !columnarShuffle => true
+            case _ => false
+          }.get
+          assert(shuffle.logicalLink.isEmpty)
+        }
       }
     }
   }
@@ -302,7 +325,8 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-      "spark.sql.autoBroadcastJoinThreshold" -> "0",
+      "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "-1",
+      "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.join.preferSortMergeJoin" -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl1") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl2") {
@@ -364,6 +388,40 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Comet native metrics: BroadcastHashJoin") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
+        val df = sql("SELECT /*+ BROADCAST(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
+        df.collect()
+
+        val metrics = find(df.queryExecution.executedPlan) {
+          case _: CometBroadcastHashJoinExec => true
+          case _ => false
+        }.map(_.metrics).get
+
+        assert(metrics.contains("build_time"))
+        assert(metrics("build_time").value > 1L)
+        assert(metrics.contains("build_input_batches"))
+        assert(metrics("build_input_batches").value == 25L)
+        assert(metrics.contains("build_mem_used"))
+        assert(metrics("build_mem_used").value > 1L)
+        assert(metrics.contains("build_input_rows"))
+        assert(metrics("build_input_rows").value == 25L)
+        assert(metrics.contains("input_batches"))
+        assert(metrics("input_batches").value == 5L)
+        assert(metrics.contains("input_rows"))
+        assert(metrics("input_rows").value == 5L)
+        assert(metrics.contains("output_batches"))
+        assert(metrics("output_batches").value == 5L)
+        assert(metrics.contains("output_rows"))
+        assert(metrics("output_rows").value == 5L)
+        assert(metrics.contains("join_time"))
+        assert(metrics("join_time").value > 1L)
+      }
+    }
+  }
+
   test(
     "fix: ReusedExchangeExec + CometShuffleExchangeExec under QueryStageExec " +
       "should be CometRoot") {
@@ -373,6 +431,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
       withTable(tableName, dim) {
@@ -1306,3 +1365,5 @@ case class BucketedTableTestSpec(
     expectedShuffle: Boolean = true,
     expectedSort: Boolean = true,
     expectedNumOutputPartitions: Option[Int] = None)
+
+case class TestData(key: Int, value: String)
