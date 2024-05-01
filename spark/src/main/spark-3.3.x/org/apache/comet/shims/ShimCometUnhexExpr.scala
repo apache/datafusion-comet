@@ -20,7 +20,6 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.{StringType, BooleanType}
-import org.apache.comet.serde.ExprOuterClass.Expr
 
 trait ShimCometUnhexExpr {
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
