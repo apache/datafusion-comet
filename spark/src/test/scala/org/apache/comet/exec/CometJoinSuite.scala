@@ -259,7 +259,7 @@ class CometJoinSuite extends CometTestBase {
     // This test will be deleted when this type is supported
     assert(!QueryPlanSerde.supportedSortMergeJoinEqualType(TimestampType))
     withSQLConf(
-      CometConf.COMET_SORTMERGEJOIN_ALLOW_ALL_KEY_TYPES.key -> "true",
+      CometConf.COMET_SORTMERGEJOIN_CHECK_KEY_TYPES.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -284,7 +284,7 @@ class CometJoinSuite extends CometTestBase {
     // This test will be deleted when this type is supported
     assert(!QueryPlanSerde.supportedSortMergeJoinEqualType(BinaryType))
     withSQLConf(
-      CometConf.COMET_SORTMERGEJOIN_ALLOW_ALL_KEY_TYPES.key -> "true",
+      CometConf.COMET_SORTMERGEJOIN_CHECK_KEY_TYPES.key -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
 
