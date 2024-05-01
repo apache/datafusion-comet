@@ -38,8 +38,8 @@ use chrono::{TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use regex::Regex;
 use num::{traits::CheckedNeg, CheckedSub, Integer, Num};
+use regex::Regex;
 
 use crate::execution::datafusion::expressions::utils::{
     array_with_timezone, down_cast_any_ref, spark_cast,

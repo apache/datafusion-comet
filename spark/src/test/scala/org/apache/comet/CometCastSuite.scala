@@ -528,7 +528,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.comet.cast.stringToTimestamp is disabled")
   }
 
-  test("cast string to timestamp") {
+  test("cast StringType to TimestampType") {
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
       CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
@@ -543,6 +543,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "T2",
         "-9?")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+    }
+  }
+
+  test("cast StringType to TimestampType with invalid timezone") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2")
+      castFallbackTest(values.toDF("a"), DataTypes.TimestampType, "Unsupported timezone")
     }
   }
 
@@ -768,6 +777,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.collect()
         val str =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        println(str)
         assert(str.contains(expectedMessage))
       }
     }
