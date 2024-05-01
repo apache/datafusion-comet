@@ -30,6 +30,7 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::{
+    types::{Int16Type, Int32Type, Int64Type, Int8Type},
     Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
@@ -38,6 +39,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use regex::Regex;
+use num::{traits::CheckedNeg, CheckedSub, Integer, Num};
 
 use crate::execution::datafusion::expressions::utils::{
     array_with_timezone, down_cast_any_ref, spark_cast,
@@ -69,8 +71,24 @@ pub struct Cast {
     pub timezone: String,
 }
 
-// It will be useful if we want to extend support to various timestamp formats
-// right now it is millisecond timestamp
+macro_rules! cast_utf8_to_int {
+    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+        let len = $array.len();
+        let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
+        for i in 0..len {
+            if $array.is_null(i) {
+                cast_array.append_null()
+            } else if let Some(cast_value) = $cast_method($array.value(i).trim(), $eval_mode)? {
+                cast_array.append_value(cast_value);
+            } else {
+                cast_array.append_null()
+            }
+        }
+        let result: CometResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
+        result
+    }};
+}
+
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let len = $array.len();
@@ -131,10 +149,79 @@ impl Cast {
             (DataType::Utf8, DataType::Timestamp(_, _)) => {
                 Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
             }
-            _ => cast_with_options(&array, to_type, &CAST_OPTIONS)?,
+            (
+                DataType::Utf8,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) => Self::cast_string_to_int::<i32>(to_type, &array, self.eval_mode)?,
+            (
+                DataType::LargeUtf8,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode)?,
+            (
+                DataType::Dictionary(key_type, value_type),
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            ) if key_type.as_ref() == &DataType::Int32
+                && (value_type.as_ref() == &DataType::Utf8
+                    || value_type.as_ref() == &DataType::LargeUtf8) =>
+            {
+                // TODO: we are unpacking a dictionary-encoded array and then performing
+                // the cast. We could potentially improve performance here by casting the
+                // dictionary values directly without unpacking the array first, although this
+                // would add more complexity to the code
+                match value_type.as_ref() {
+                    DataType::Utf8 => {
+                        let unpacked_array =
+                            cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
+                        Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
+                    }
+                    DataType::LargeUtf8 => {
+                        let unpacked_array =
+                            cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
+                        Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)?
+                    }
+                    dt => unreachable!(
+                        "{}",
+                        format!("invalid value type {dt} for dictionary-encoded string array")
+                    ),
+                }
+            }
+            _ => {
+                // when we have no Spark-specific casting we delegate to DataFusion
+                cast_with_options(&array, to_type, &CAST_OPTIONS)?
+            }
         };
-        let result = spark_cast(cast_result, from_type, to_type);
-        Ok(result)
+        Ok(spark_cast(cast_result, from_type, to_type))
+    }
+
+    fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
+        to_type: &DataType,
+        array: &ArrayRef,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef> {
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("cast_string_to_int expected a string array");
+
+        let cast_array: ArrayRef = match to_type {
+            DataType::Int8 => {
+                cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
+            }
+            DataType::Int16 => {
+                cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
+            }
+            DataType::Int32 => {
+                cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
+            }
+            DataType::Int64 => {
+                cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
+            }
+            dt => unreachable!(
+                "{}",
+                format!("invalid integer type {dt} in cast from string")
+            ),
+        };
+        Ok(cast_array)
     }
 
     fn cast_string_to_timestamp(
@@ -191,6 +278,202 @@ impl Cast {
             .collect::<Result<BooleanArray, _>>()?;
 
         Ok(Arc::new(output_array))
+    }
+}
+
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
+fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
+    Ok(cast_string_to_int_with_range_check(
+        str,
+        eval_mode,
+        "TINYINT",
+        i8::MIN as i32,
+        i8::MAX as i32,
+    )?
+    .map(|v| v as i8))
+}
+
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
+fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
+    Ok(cast_string_to_int_with_range_check(
+        str,
+        eval_mode,
+        "SMALLINT",
+        i16::MIN as i32,
+        i16::MAX as i32,
+    )?
+    .map(|v| v as i16))
+}
+
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
+fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+    do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
+}
+
+/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper intWrapper)
+fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
+    do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
+}
+
+fn cast_string_to_int_with_range_check(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+    min: i32,
+    max: i32,
+) -> CometResult<Option<i32>> {
+    match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= min && v <= max => Ok(Some(v)),
+        _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+        _ => Ok(None),
+    }
+}
+
+#[derive(PartialEq)]
+enum State {
+    SkipLeadingWhiteSpace,
+    SkipTrailingWhiteSpace,
+    ParseSignAndDigits,
+    ParseFractionalDigits,
+}
+
+/// Equivalent to
+/// - org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper, boolean allowDecimal)
+/// - org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper longWrapper, boolean allowDecimal)
+fn do_cast_string_to_int<
+    T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
+>(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+    min_value: T,
+) -> CometResult<Option<T>> {
+    let len = str.len();
+    if str.is_empty() {
+        return none_or_err(eval_mode, type_name, str);
+    }
+
+    let mut result: T = T::zero();
+    let mut negative = false;
+    let radix = T::from(10);
+    let stop_value = min_value / radix;
+    let mut state = State::SkipLeadingWhiteSpace;
+    let mut parsed_sign = false;
+
+    for (i, ch) in str.char_indices() {
+        // skip leading whitespace
+        if state == State::SkipLeadingWhiteSpace {
+            if ch.is_whitespace() {
+                // consume this char
+                continue;
+            }
+            // change state and fall through to next section
+            state = State::ParseSignAndDigits;
+        }
+
+        if state == State::ParseSignAndDigits {
+            if !parsed_sign {
+                negative = ch == '-';
+                let positive = ch == '+';
+                parsed_sign = true;
+                if negative || positive {
+                    if i + 1 == len {
+                        // input string is just "+" or "-"
+                        return none_or_err(eval_mode, type_name, str);
+                    }
+                    // consume this char
+                    continue;
+                }
+            }
+
+            if ch == '.' {
+                if eval_mode == EvalMode::Legacy {
+                    // truncate decimal in legacy mode
+                    state = State::ParseFractionalDigits;
+                    continue;
+                } else {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+            }
+
+            let digit = if ch.is_ascii_digit() {
+                (ch as u32) - ('0' as u32)
+            } else {
+                return none_or_err(eval_mode, type_name, str);
+            };
+
+            // We are going to process the new digit and accumulate the result. However, before
+            // doing this, if the result is already smaller than the
+            // stopValue(Integer.MIN_VALUE / radix), then result * 10 will definitely be
+            // smaller than minValue, and we can stop
+            if result < stop_value {
+                return none_or_err(eval_mode, type_name, str);
+            }
+
+            // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
+            // radix), we can just use `result > 0` to check overflow. If result
+            // overflows, we should stop
+            let v = result * radix;
+            let digit = (digit as i32).into();
+            match v.checked_sub(&digit) {
+                Some(x) if x <= T::zero() => result = x,
+                _ => {
+                    return none_or_err(eval_mode, type_name, str);
+                }
+            }
+        }
+
+        if state == State::ParseFractionalDigits {
+            // This is the case when we've encountered a decimal separator. The fractional
+            // part will not change the number, but we will verify that the fractional part
+            // is well-formed.
+            if ch.is_whitespace() {
+                // finished parsing fractional digits, now need to skip trailing whitespace
+                state = State::SkipTrailingWhiteSpace;
+                // consume this char
+                continue;
+            }
+            if !ch.is_ascii_digit() {
+                return none_or_err(eval_mode, type_name, str);
+            }
+        }
+
+        // skip trailing whitespace
+        if state == State::SkipTrailingWhiteSpace && !ch.is_whitespace() {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+
+    if !negative {
+        if let Some(neg) = result.checked_neg() {
+            if neg < T::zero() {
+                return none_or_err(eval_mode, type_name, str);
+            }
+            result = neg;
+        } else {
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+
+    Ok(Some(result))
+}
+
+/// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
+#[inline]
+fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
+    match eval_mode {
+        EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+        _ => Ok(None),
+    }
+}
+
+#[inline]
+fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
+    CometError::CastInvalidValue {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
     }
 }
 
@@ -514,5 +797,31 @@ mod tests {
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_cast_string_as_i8() {
+        // basic
+        assert_eq!(
+            cast_string_to_i8("127", EvalMode::Legacy).unwrap(),
+            Some(127_i8)
+        );
+        assert_eq!(cast_string_to_i8("128", EvalMode::Legacy).unwrap(), None);
+        assert!(cast_string_to_i8("128", EvalMode::Ansi).is_err());
+        // decimals
+        assert_eq!(
+            cast_string_to_i8("0.2", EvalMode::Legacy).unwrap(),
+            Some(0_i8)
+        );
+        assert_eq!(
+            cast_string_to_i8(".", EvalMode::Legacy).unwrap(),
+            Some(0_i8)
+        );
+        // TRY should always return null for decimals
+        assert_eq!(cast_string_to_i8("0.2", EvalMode::Try).unwrap(), None);
+        assert_eq!(cast_string_to_i8(".", EvalMode::Try).unwrap(), None);
+        // ANSI mode should throw error on decimal
+        assert!(cast_string_to_i8("0.2", EvalMode::Ansi).is_err());
+        assert!(cast_string_to_i8(".", EvalMode::Ansi).is_err());
     }
 }
