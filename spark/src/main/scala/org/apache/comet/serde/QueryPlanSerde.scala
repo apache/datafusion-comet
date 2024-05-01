@@ -595,7 +595,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             }
 
             if (supportedCast) {
-              if (timeZoneId.contains("UTC")) {
+              if (!timeZoneId.contains("UTC")) {
                 withInfo(expr, s"Unsupported timezone ${timeZoneId} for timestamp cast")
                 None
               }
