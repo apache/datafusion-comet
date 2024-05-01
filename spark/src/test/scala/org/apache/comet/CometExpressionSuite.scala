@@ -21,6 +21,7 @@ package org.apache.comet
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
@@ -1425,6 +1426,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  test("tag nodes with multiple info") {
+    withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+      val project = spark
+        .sql("SELECT CAST(1 as string)")
+        .queryExecution
+        .executedPlan
+        .asInstanceOf[ProjectExec]
+      assert(project.getTagValue(CometExplainInfo.EXTENSION_INFO).isEmpty)
+      CometSparkSessionExtensions.withInfo(project.expressions.head, "expr info 1")
+      CometSparkSessionExtensions.withInfo(project, "node info 1", project.expressions: _*)
+      assert(
+        project.getTagValue(CometExplainInfo.EXTENSION_INFO).get == "expr info 1\nnode info 1")
+      CometSparkSessionExtensions.withInfo(project, "node info 2", project.expressions: _*)
+      assert(
+        project
+          .getTagValue(CometExplainInfo.EXTENSION_INFO)
+          .get == "expr info 1\nnode info 1\nnode info 2")
+    }
+
   }
 
 }

@@ -1042,14 +1042,21 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
-    val exprInfo =
-      (Seq(node.getTagValue(CometExplainInfo.EXTENSION_INFO)) ++ exprs
-        .flatMap(e => Seq(e.getTagValue(CometExplainInfo.EXTENSION_INFO)))).flatten
-        .mkString("\n")
-    if (info != null && info.nonEmpty && exprInfo.nonEmpty) {
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, Seq(exprInfo, info).mkString("\n"))
-    } else if (exprInfo.nonEmpty) {
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, exprInfo)
+    // TODO maybe we could store the tags as `Set[String]` rather than newline-delimited strings
+    // and avoid having to split and mkString
+    val nodeInfo: Set[String] = node
+      .getTagValue(CometExplainInfo.EXTENSION_INFO)
+      .map(_.split('\n').toSet)
+      .getOrElse(Set.empty[String])
+    val exprInfo: Set[String] = exprs
+      .flatMap(e => e.getTagValue(CometExplainInfo.EXTENSION_INFO).map(_.split('\n')))
+      .flatten
+      .toSet
+    val currentInfo = nodeInfo ++ exprInfo
+    if (info != null && info.nonEmpty && currentInfo.nonEmpty) {
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, (currentInfo + info).mkString("\n"))
+    } else if (currentInfo.nonEmpty) {
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, currentInfo.mkString("\n"))
     } else if (info != null && info.nonEmpty) {
       node.setTagValue(CometExplainInfo.EXTENSION_INFO, info)
     }
