@@ -22,9 +22,21 @@ package org.apache.comet.parquet;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
+import org.apache.comet.CometConf;
+
 public class Utils {
+  public static ColumnReader getColumnReader(
+      DataType type, ColumnDescriptor descriptor, int batchSize, SQLConf conf) {
+    boolean useDecimal128 = (Boolean) CometConf.COMET_USE_DECIMAL_128().get(conf);
+    boolean useLazyMaterialization = (Boolean) CometConf.COMET_USE_LAZY_MATERIALIZATION().get(conf);
+    boolean useLegacyDateTimestamp = (Boolean) CometConf.COMET_USE_DECIMAL_128().get(conf);
+    return getColumnReader(
+        type, descriptor, batchSize, useDecimal128, useLazyMaterialization, useLegacyDateTimestamp);
+  }
+
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
