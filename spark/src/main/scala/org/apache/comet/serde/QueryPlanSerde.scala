@@ -591,10 +591,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             castSupport match {
               case Compatible =>
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
-              case Incompatible(reason) if CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get() =>
-                logWarning(s"Calling incompatible CAST expression: $cast" +
-                  reason.map(str => s" ($str)").getOrElse(""))
-                castToProto(timeZoneId, dt, childExpr, evalModeStr)
+              case Incompatible(reason) =>
+                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()){
+                  logWarning(s"Calling incompatible CAST expression: $cast" +
+                    reason.map(str => s" ($str)").getOrElse(""))
+                  castToProto(timeZoneId, dt, childExpr, evalModeStr)
+                } else {
+                  withInfo(
+                    expr,
+                    s"Comet does not guarantee correct results for cast " +
+                      s"from ${child.dataType} to $dt " +
+                      s"with timezone $timeZoneId and evalMode $evalModeStr" +
+                      reason.map(str => s" ($str)").getOrElse("") + "." +
+                    s"To enable all incompatible casts, set " +
+                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true"
+                  )
+                }
               case Unsupported(reason) =>
                 withInfo(
                   expr,
