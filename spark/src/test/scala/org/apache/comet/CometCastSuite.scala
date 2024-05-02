@@ -528,7 +528,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast StringType to TimestampType disabled by default") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(values.toDF("a"), DataTypes.TimestampType,
+      castFallbackTest(
+        values.toDF("a"),
+        DataTypes.TimestampType,
         "Not all valid formats are supported")
     }
   }
@@ -536,7 +538,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast StringType to TimestampType disabled for non-UTC timezone") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(values.toDF("a"), DataTypes.TimestampType,
+      castFallbackTest(
+        values.toDF("a"),
+        DataTypes.TimestampType,
         "Cast will use UTC instead of Some(America/Denver)")
     }
   }
