@@ -102,8 +102,8 @@ macro_rules! cast_utf8_to_timestamp {
                 cast_array.append_null()
             }
         }
-        let result: CometResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
-        result.unwrap()
+        let result: ArrayRef = Arc::new(cast_array.finish()) as ArrayRef;
+        result
     }};
 }
 
