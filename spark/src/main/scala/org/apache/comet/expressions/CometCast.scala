@@ -25,6 +25,17 @@ import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 
+sealed trait SupportLevel
+
+/** We support this feature with full compatibility with Spark */
+object Compatible extends SupportLevel
+
+/** We support this feature but results can be different from Spark */
+object Incompatible extends SupportLevel
+
+/** We do not support this feature */
+object Unsupported extends SupportLevel
+
 object CometCast {
 
   def isSupported(
@@ -32,41 +43,34 @@ object CometCast {
       fromType: DataType,
       toType: DataType,
       timeZoneId: Option[String],
-      evalMode: String): Boolean = {
+      evalMode: String): SupportLevel = {
 
     if (fromType == toType) {
-      return true
+      return Compatible
     }
 
     (fromType, toType) match {
-
-      // TODO this is a temporary hack to allow casts that we either know are
-      // incompatible with Spark, or are just not well tested yet, just to avoid
-      // regressions in existing tests with this PR
-
-      // BEGIN HACK
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         toType match {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
-            true
-          case _ => false
+            Incompatible
+          case _ =>
+            Unsupported
         }
       case (DataTypes.DoubleType, _: DecimalType) =>
-        true
+        Incompatible
       case (DataTypes.TimestampType, DataTypes.LongType) =>
-        true
+        Incompatible
       case (DataTypes.BinaryType | DataTypes.FloatType, DataTypes.StringType) =>
-        true
-      case (_, DataTypes.BinaryType) =>
-        true
-      // END HACK
-
+        Incompatible
+      case (DataTypes.StringType, DataTypes.BinaryType) =>
+        Incompatible
       case (_: DecimalType, _: DecimalType) =>
         // TODO we need to file an issue for adding specific tests for casting
         // between decimal types with different precision and scale
-        true
+        Compatible
       case (DataTypes.StringType, _) =>
-        canCastFromString(cast, toType)
+        canCastFromString(toType)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType)
       case (DataTypes.TimestampType, _) =>
@@ -83,99 +87,95 @@ object CometCast {
         canCastFromFloat(toType)
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
-      case _ => false
+      case _ => Unsupported
     }
   }
 
-  private def canCastFromString(cast: Cast, toType: DataType): Boolean = {
+  private def canCastFromString(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
-        true
+        Compatible
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        true
+        Compatible
       case DataTypes.BinaryType =>
-        true
+        Compatible
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
-        false
+        Unsupported
       case _: DecimalType =>
         // https://github.com/apache/datafusion-comet/issues/325
-        false
+        Unsupported
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
-        false
+        Unsupported
       case DataTypes.TimestampType =>
-        val enabled = CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get()
-        if (!enabled) {
-          // https://github.com/apache/datafusion-comet/issues/328
-          withInfo(cast, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
-        }
-        enabled
+        // https://github.com/apache/datafusion-comet/issues/328
+        Incompatible
       case _ =>
-        false
+        Unsupported
     }
   }
 
-  private def canCastToString(fromType: DataType): Boolean = {
+  private def canCastToString(fromType: DataType): SupportLevel = {
     fromType match {
-      case DataTypes.BooleanType => true
+      case DataTypes.BooleanType => Compatible
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        true
-      case DataTypes.DateType => true
-      case DataTypes.TimestampType => true
+        Compatible
+      case DataTypes.DateType => Compatible
+      case DataTypes.TimestampType => Compatible
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
-        false
-      case _ => false
+        Unsupported
+      case _ => Unsupported
     }
   }
 
-  private def canCastFromTimestamp(toType: DataType): Boolean = {
+  private def canCastFromTimestamp(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
           DataTypes.IntegerType =>
         // https://github.com/apache/datafusion-comet/issues/352
         // this seems like an edge case that isn't important for us to support
-        false
+        Unsupported
       case DataTypes.LongType =>
         // https://github.com/apache/datafusion-comet/issues/352
-        false
-      case DataTypes.StringType => true
-      case DataTypes.DateType => true
-      case _ => false
+        Unsupported
+      case DataTypes.StringType => Compatible
+      case DataTypes.DateType => Compatible
+      case _ => Unsupported
     }
   }
 
-  private def canCastFromBoolean(toType: DataType) = toType match {
+  private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
         DataTypes.FloatType | DataTypes.DoubleType =>
-      true
-    case _ => false
+      Compatible
+    case _ => Unsupported
   }
 
-  private def canCastFromInt(toType: DataType) = toType match {
+  private def canCastFromInt(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
         _: DecimalType =>
-      true
-    case _ => false
+      Compatible
+    case _ => Unsupported
   }
 
-  private def canCastFromFloat(toType: DataType) = toType match {
-    case DataTypes.BooleanType | DataTypes.DoubleType => true
-    case _ => false
+  private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType | DataTypes.DoubleType => Compatible
+    case _ => Unsupported
   }
 
-  private def canCastFromDouble(toType: DataType) = toType match {
-    case DataTypes.BooleanType | DataTypes.FloatType => true
-    case _ => false
+  private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType | DataTypes.FloatType => Compatible
+    case _ => Unsupported
   }
 
-  private def canCastFromDecimal(toType: DataType) = toType match {
-    case DataTypes.FloatType | DataTypes.DoubleType => true
-    case _ => false
+  private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
+    case DataTypes.FloatType | DataTypes.DoubleType => Compatible
+    case _ => Unsupported
   }
 
 }

@@ -376,12 +376,12 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_CAST_STRING_TO_TIMESTAMP: ConfigEntry[Boolean] = conf(
-    "spark.comet.cast.stringToTimestamp")
-    .doc(
-      "Comet is not currently fully compatible with Spark when casting from String to Timestamp.")
-    .booleanConf
-    .createWithDefault(false)
+  val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.cast.allowIncompatible")
+      .doc("Comet is not currently fully compatible with Spark for all cast operations.")
+      .booleanConf
+      // TODO change this to false and set this config explicitly in tests where needed
+      .createWithDefault(true)
 
 }
 

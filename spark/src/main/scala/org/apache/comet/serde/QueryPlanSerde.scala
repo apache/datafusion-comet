@@ -41,8 +41,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.CometCast
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
@@ -585,14 +586,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
               evalMode.toString
             }
-            if (CometCast.isSupported(cast, child.dataType, dt, timeZoneId, evalModeStr)) {
-              castToProto(timeZoneId, dt, childExpr, evalModeStr)
-            } else {
-              withInfo(
-                expr,
-                s"Unsupported cast from ${child.dataType} to $dt " +
-                  s"with timezone $timeZoneId and evalMode $evalModeStr")
-              None
+            val castSupport =
+              CometCast.isSupported(cast, child.dataType, dt, timeZoneId, evalModeStr)
+            castSupport match {
+              case Compatible =>
+                castToProto(timeZoneId, dt, childExpr, evalModeStr)
+              case Incompatible if CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get() =>
+                logWarning(s"Calling incompatible CAST expression: $cast")
+                castToProto(timeZoneId, dt, childExpr, evalModeStr)
+              case Unsupported =>
+                withInfo(
+                  expr,
+                  s"Unsupported cast from ${child.dataType} to $dt " +
+                    s"with timezone $timeZoneId and evalMode $evalModeStr")
+                None
             }
           } else {
             withInfo(expr, child)
