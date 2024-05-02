@@ -22,9 +22,6 @@ package org.apache.comet.expressions
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-
 sealed trait SupportLevel
 
 /** We support this feature with full compatibility with Spark */
