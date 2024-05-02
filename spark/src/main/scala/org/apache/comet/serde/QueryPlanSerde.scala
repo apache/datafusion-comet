@@ -588,23 +588,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             }
             val castSupport =
               CometCast.isSupported(cast, child.dataType, dt, timeZoneId, evalModeStr)
+
+            def getIncompatMessage(reason: Option[String]) =
+              s"Comet does not guarantee correct results for cast " +
+              s"from ${child.dataType} to $dt " +
+              s"with timezone $timeZoneId and evalMode $evalModeStr" +
+              reason.map(str => s" ($str)").getOrElse("")
+
             castSupport match {
               case Compatible =>
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
               case Incompatible(reason) =>
-                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()){
-                  logWarning(s"Calling incompatible CAST expression: $cast" +
-                    reason.map(str => s" ($str)").getOrElse(""))
+                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+                  logWarning(getIncompatMessage(reason))
                   castToProto(timeZoneId, dt, childExpr, evalModeStr)
                 } else {
                   withInfo(
                     expr,
-                    s"Comet does not guarantee correct results for cast " +
-                      s"from ${child.dataType} to $dt " +
-                      s"with timezone $timeZoneId and evalMode $evalModeStr" +
-                      reason.map(str => s" ($str)").getOrElse("") + "." +
-                    s"To enable all incompatible casts, set " +
-                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true"
+                    s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
+                    s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true"
                   )
                   None
                 }

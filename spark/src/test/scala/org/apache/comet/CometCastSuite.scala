@@ -19,8 +19,6 @@
 
 package org.apache.comet
 
-import org.apache.comet.expressions.{CometCast, Compatible}
-
 import java.io.File
 import scala.util.Random
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
