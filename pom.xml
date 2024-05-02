@@ -89,7 +89,7 @@ under the License.
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4</additional.3_4.test.source>
     <shims.majorSource>spark-3.x</shims.majorSource>
-    <shims.minorSource>spark-3.4.x</shims.minorSource>
+    <shims.minorSource>spark-3.4</shims.minorSource>
   </properties>
 
   <dependencyManagement>
@@ -501,7 +501,7 @@ under the License.
         <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
         <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorSource>spark-3.3.x</shims.minorSource>
+        <shims.minorSource>spark-3.2</shims.minorSource>
       </properties>
     </profile>
 
@@ -514,7 +514,7 @@ under the License.
         <parquet.version>1.12.0</parquet.version>
         <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorSource>spark-3.3.x</shims.minorSource>
+        <shims.minorSource>spark-3.3</shims.minorSource>
       </properties>
     </profile>
 
@@ -526,7 +526,7 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
         <additional.3_4.test.source>spark-3.4</additional.3_4.test.source>
-        <shims.minorSource>spark-3.4.x</shims.minorSource>
+        <shims.minorSource>spark-3.4</shims.minorSource>
       </properties>
     </profile>
 
