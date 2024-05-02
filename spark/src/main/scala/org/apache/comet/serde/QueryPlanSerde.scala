@@ -585,19 +585,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
               evalMode.toString
             }
-            val supportedCast = (child.dataType, dt) match {
-              case (DataTypes.StringType, DataTypes.TimestampType)
-                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
-                // https://github.com/apache/datafusion-comet/issues/328
-                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
-                false
-              case _ => true
-            }
 
             val supportedTimezone = (child.dataType, dt) match {
               case (DataTypes.StringType, DataTypes.TimestampType)
                   if !timeZoneId.contains("UTC") =>
                 withInfo(expr, s"Unsupported timezone ${timeZoneId} for timestamp cast")
+                false
+              case _ => true
+            }
+
+            val supportedCast = (child.dataType, dt) match {
+              case (DataTypes.StringType, DataTypes.TimestampType)
+                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
+                // https://github.com/apache/datafusion-comet/issues/328
+                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
                 false
               case _ => true
             }
