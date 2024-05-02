@@ -1042,6 +1042,9 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
+    // scalastyle:off println
+    println("withInfo: " + info)
+    // scalastyle:on println
     // TODO maybe we could store the tags as `Set[String]` rather than newline-delimited strings
     // and avoid having to split and mkString
     val nodeInfo: Set[String] = node

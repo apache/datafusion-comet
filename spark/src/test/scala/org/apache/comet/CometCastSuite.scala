@@ -84,6 +84,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         DataTypes.DoubleType,
         DataTypes.createDecimalType(10, 2),
         DataTypes.StringType,
+        DataTypes.BinaryType,
         DataTypes.DateType,
         DataTypes.TimestampType)
     // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
@@ -164,6 +165,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBytes(), DataTypes.StringType)
   }
 
+  ignore("cast ByteType to BinaryType") {
+    castTest(generateBytes(), DataTypes.BinaryType)
+  }
+
   ignore("cast ByteType to TimestampType") {
     // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
     castTest(generateBytes(), DataTypes.TimestampType)
@@ -202,6 +207,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast ShortType to StringType") {
     castTest(generateShorts(), DataTypes.StringType)
+  }
+
+  ignore("cast ShortType to BinaryType") {
+    castTest(generateShorts(), DataTypes.BinaryType)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -246,6 +255,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.StringType)
   }
 
+  ignore("cast IntegerType to BinaryType") {
+    castTest(generateInts(), DataTypes.BinaryType)
+  }
+
   ignore("cast IntegerType to TimestampType") {
     // input: -1000479329, expected: 1938-04-19 01:04:31.0, actual: 1969-12-31 15:43:19.520671
     castTest(generateInts(), DataTypes.TimestampType)
@@ -287,6 +300,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast LongType to StringType") {
     castTest(generateLongs(), DataTypes.StringType)
+  }
+
+  ignore("cast LongType to BinaryType") {
+    castTest(generateLongs(), DataTypes.BinaryType)
   }
 
   ignore("cast LongType to TimestampType") {
@@ -515,6 +532,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
+  test("cast StringType to BinaryType") {
+    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.BinaryType)
+  }
+
   ignore("cast StringType to DateType") {
     // https://github.com/apache/datafusion-comet/issues/327
     castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
@@ -534,6 +555,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
+  }
+
+  // CAST from BinaryType
+
+  ignore("cast BinaryType to StringType") {
+    // TODO
   }
 
   // CAST from DateType

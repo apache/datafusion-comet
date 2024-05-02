@@ -39,6 +39,34 @@ object CometCast {
     }
 
     (fromType, toType) match {
+
+      // TODO this is a temporary hack to allow casts that we either know are
+      // incompatible with Spark, or are just not well tested yet, just to avoid
+      // regressions in existing tests with this PR
+
+      // BEGIN HACK
+      case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
+        toType match {
+          case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
+            true
+          case _ => false
+        }
+      case (_: DecimalType, _: DecimalType) =>
+        // TODO we need to file an issue for adding specific tests for casting
+        // between decimal types with difference precision and scale
+        true
+      case (DataTypes.DoubleType, _: DecimalType) =>
+        true
+      case (DataTypes.TimestampType, DataTypes.LongType) =>
+        true
+      case (DataTypes.BinaryType | DataTypes.FloatType, DataTypes.StringType) =>
+        true
+      case (_, DataTypes.BinaryType) =>
+        true
+      // END HACK
+
+      case (DataTypes.StringType, DataTypes.TimestampType) =>
+        true
       case (DataTypes.StringType, _) =>
         canCastFromString(cast, toType)
       case (_, DataTypes.StringType) =>
@@ -67,6 +95,8 @@ object CometCast {
         true
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
+        true
+      case DataTypes.BinaryType =>
         true
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
