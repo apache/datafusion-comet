@@ -30,7 +30,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
+import org.apache.comet.expressions.CometCast
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._

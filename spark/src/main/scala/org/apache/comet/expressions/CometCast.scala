@@ -19,8 +19,6 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
 sealed trait SupportLevel
@@ -122,7 +120,7 @@ object CometCast {
       case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
         Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
       case DataTypes.TimestampType if evalMode == "ANSI" =>
-        Incompatible(Some(s"ANSI mode not supported"))
+        Incompatible(Some("ANSI mode not supported"))
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328
         Incompatible(Some("Not all valid formats are supported"))
