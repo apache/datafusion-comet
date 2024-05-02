@@ -1,10 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package org.apache.comet
 
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
+import java.io.{BufferedOutputStream, FileOutputStream}
+
+import scala.io.Source
+
 import org.apache.spark.sql.catalyst.expressions.Cast
 
-import java.io.{BufferedOutputStream, FileOutputStream}
-import scala.io.Source
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -15,10 +36,10 @@ object GenerateDocs {
 
   def main(args: Array[String]): Unit = {
     generateConfigReference()
-    generateCompatReference()
+    generateCompatibilityGuide()
   }
 
-  def generateConfigReference(): Unit = {
+  private def generateConfigReference(): Unit = {
     val templateFilename = "docs/source/user-guide/configs-template.md"
     val outputFilename = "docs/source/user-guide/configs.md"
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
@@ -38,7 +59,7 @@ object GenerateDocs {
     w.close()
   }
 
-  def generateCompatReference(): Unit = {
+  private def generateCompatibilityGuide(): Unit = {
     val templateFilename = "docs/source/user-guide/compatibility-template.md"
     val outputFilename = "docs/source/user-guide/compatibility.md"
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
@@ -53,13 +74,13 @@ object GenerateDocs {
               val toTypeName = toType.typeName.replace("(10,2)", "")
               CometCast.isSupported(fromType, toType, None, "LEGACY") match {
                 case Compatible =>
-                  w.write(s"| $fromTypeName | $toTypeName | Compatible | |".getBytes)
+                  w.write(s"| $fromTypeName | $toTypeName | Compatible | |\n".getBytes)
                 case Incompatible(Some(reason)) =>
-                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | $reason |".getBytes)
+                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | $reason |\n".getBytes)
                 case Incompatible(None) =>
-                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | |.getBytes")
+                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | |\n".getBytes)
                 case Unsupported =>
-                  w.write(s"| $fromTypeName | $toTypeName | Unsupported | |".getBytes)
+                  w.write(s"| $fromTypeName | $toTypeName | Unsupported | |\n".getBytes)
               }
             }
           }

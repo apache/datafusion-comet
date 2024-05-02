@@ -36,7 +36,7 @@ object Unsupported extends SupportLevel
 
 object CometCast {
 
-  val supportedTypes =
+  def supportedTypes: Seq[DataType] =
     Seq(
       DataTypes.BooleanType,
       DataTypes.ByteType,

@@ -576,7 +576,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case cast @ Cast(child, dt, timeZoneId, evalMode) =>
+        case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
             val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
@@ -590,7 +590,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               CometCast.isSupported(child.dataType, dt, timeZoneId, evalModeStr)
 
             def getIncompatMessage(reason: Option[String]) =
-              s"Comet does not guarantee correct results for cast " +
+              "Comet does not guarantee correct results for cast " +
                 s"from ${child.dataType} to $dt " +
                 s"with timezone $timeZoneId and evalMode $evalModeStr" +
                 reason.map(str => s" ($str)").getOrElse("")
