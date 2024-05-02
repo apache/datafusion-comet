@@ -594,12 +594,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               case _ => true
             }
 
-            if (supportedCast) {
-              // if Timezone is not UTC, we fallback to Spark
-              if (!timeZoneId.contains("UTC")) {
+            val supportedTimezone = (child.dataType, dt) match {
+              case (DataTypes.StringType, DataTypes.TimestampType)
+                  if !timeZoneId.contains("UTC") =>
                 withInfo(expr, s"Unsupported timezone ${timeZoneId} for timestamp cast")
-                None
-              }
+                false
+              case _ => true
+            }
+
+            if (supportedCast && supportedTimezone) {
               castToProto(timeZoneId, dt, childExpr, evalModeStr)
             } else {
               // no need to call withInfo here since it was called when determining
