@@ -623,20 +623,23 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
 
     match timestamp {
         Some(ts) => Ok(Some(ts)),
-        None => Err(CometError::Internal("Failed to parse timestamp".to_string())),
+        None => Err(CometError::Internal(
+            "Failed to parse timestamp".to_string(),
+        )),
     }
 }
 
 fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
-    let datetime = chrono::Utc
-        .with_ymd_and_hms(year, month, day, 0, 0, 0);
+    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0);
 
     // Check if datetime is not None
     let utc_datetime = match datetime.single() {
         Some(dt) => dt.with_timezone(&chrono::Utc),
         None => {
-            return Err(CometError::Internal("Failed to parse timestamp".to_string()));
-        },
+            return Err(CometError::Internal(
+                "Failed to parse timestamp".to_string(),
+            ));
+        }
     };
 
     Ok(Some(utc_datetime.timestamp_micros()))
@@ -651,22 +654,27 @@ fn parse_hms_timestamp(
     second: u32,
     microsecond: u32,
 ) -> CometResult<Option<i64>> {
-    let datetime = chrono::Utc
-        .with_ymd_and_hms(year, month, day, hour, minute, second);
+    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
 
     // Check if datetime is not None
     let utc_datetime = match datetime.single() {
-        Some(dt) => dt.with_timezone(&chrono::Utc).with_nanosecond(microsecond * 1000),
+        Some(dt) => dt
+            .with_timezone(&chrono::Utc)
+            .with_nanosecond(microsecond * 1000),
         None => {
-            return Err(CometError::Internal("Failed to parse timestamp".to_string()));
-        },
+            return Err(CometError::Internal(
+                "Failed to parse timestamp".to_string(),
+            ));
+        }
     };
 
     let result = match utc_datetime {
         Some(dt) => dt.timestamp_micros(),
         None => {
-            return Err(CometError::Internal("Failed to parse timestamp".to_string()));
-        },
+            return Err(CometError::Internal(
+                "Failed to parse timestamp".to_string(),
+            ));
+        }
     };
 
     Ok(Some(result))
@@ -737,12 +745,12 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
 
     let datetime = chrono::Utc::now();
     let timestamp = datetime
-    .with_hour(time_values.first().copied().unwrap_or_default())
-    .and_then(|dt| dt.with_minute(*time_values.get(1).unwrap_or(&0)))
-    .and_then(|dt| dt.with_second(*time_values.get(2).unwrap_or(&0)))
-    .and_then(|dt| dt.with_nanosecond(*time_values.get(3).unwrap_or(&0) * 1_000))
-    .map(|dt| dt.to_utc().timestamp_micros())
-    .unwrap_or_default();
+        .with_hour(time_values.first().copied().unwrap_or_default())
+        .and_then(|dt| dt.with_minute(*time_values.get(1).unwrap_or(&0)))
+        .and_then(|dt| dt.with_second(*time_values.get(2).unwrap_or(&0)))
+        .and_then(|dt| dt.with_nanosecond(*time_values.get(3).unwrap_or(&0) * 1_000))
+        .map(|dt| dt.to_utc().timestamp_micros())
+        .unwrap_or_default();
 
     Ok(Some(timestamp))
 }
@@ -843,46 +851,4 @@ mod tests {
         assert!(cast_string_to_i8("0.2", EvalMode::Ansi).is_err());
         assert!(cast_string_to_i8(".", EvalMode::Ansi).is_err());
     }
-
-    // add fuzz test for timestamp_parser
-    // #[test]
-    // fn test_timestamp_parser_fuzz() {
-    //     let mut rng = rand::thread_rng();
-
-    //     let patterns = &[
-    //         r"^\d{4}$",
-    //         r"^\d{4}-\d{2}$",
-    //         r"^\d{4}-\d{2}-\d{2}$",
-    //         r"^\d{4}-\d{2}-\d{2}T\d{1,2}$",
-    //         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$",
-    //         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
-    //         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$",
-    //         r"^T\d{1,2}$",
-    //     ];
-
-    //     for _ in 0..1000 {
-    //         let year = rand::Rng::gen_range(&mut rng, 0..10000);
-    //         let month = rand::Rng::gen_range(&mut rng,1..13);
-    //         let day = rand::Rng::gen_range(&mut rng,1..32);
-    //         let hour = rand::Rng::gen_range(&mut rng,0..24);
-    //         let minute = rand::Rng::gen_range(&mut rng,0..60);
-    //         let second = rand::Rng::gen_range(&mut rng,0..60);
-    //         let microsecond = rand::Rng::gen_range(&mut rng,0..1000000);
-    //         // let timestamp = format!(
-    //         //     "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
-    //         //     year, month, day, hour, minute, second, microsecond
-    //         // );
-
-    //         // choose a pattern randomly from patterns and create timestamp
-    //         let pattern = patterns.choose(&mut rng).unwrap();
-    //         let timestamp = 
-
-    //         // check for panic
-    //         let res = timestamp_parser(&timestamp, EvalMode::Legacy);
-    //         // accept error or valid timestamp
-    //         if let Err(e) = res {
-    //             assert_eq!(true, e.to_string().contains("Failed to parse timestamp"));
-    //         }
-    //     }
-    // }
 }
