@@ -32,12 +32,11 @@ object Compatible extends SupportLevel
 case class Incompatible(reason: Option[String] = None) extends SupportLevel
 
 /** We do not support this feature */
-case class Unsupported(reason: Option[String] = None) extends SupportLevel
+object Unsupported extends SupportLevel
 
 object CometCast {
 
   def isSupported(
-      cast: Cast,
       fromType: DataType,
       toType: DataType,
       timeZoneId: Option[String],
@@ -53,10 +52,8 @@ object CometCast {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
           case _ =>
-            Unsupported()
+            Unsupported
         }
-      case (DataTypes.TimestampType, DataTypes.LongType) =>
-        Incompatible()
       case (DataTypes.BinaryType, DataTypes.StringType) =>
         Incompatible()
       case (_: DecimalType, _: DecimalType) =>
@@ -81,7 +78,7 @@ object CometCast {
         canCastFromFloat(toType)
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
-      case _ => Unsupported()
+      case _ => Unsupported
     }
   }
 
@@ -99,22 +96,22 @@ object CometCast {
         Compatible
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
-        Unsupported()
+        Unsupported
       case _: DecimalType =>
         // https://github.com/apache/datafusion-comet/issues/325
-        Unsupported()
+        Unsupported
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
-        Unsupported()
-      case DataTypes.TimestampType if !timeZoneId.contains("UTC") =>
-        Unsupported(Some(s"Unsupported timezone $timeZoneId"))
+        Unsupported
+      case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
+        Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
       case DataTypes.TimestampType if evalMode == "ANSI" =>
-        Unsupported(Some(s"ANSI mode not supported"))
+        Incompatible(Some(s"ANSI mode not supported"))
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328
-        Compatible
+        Incompatible(Some("Not all valid formats are supported"))
       case _ =>
-        Unsupported()
+        Unsupported
     }
   }
 
@@ -129,7 +126,7 @@ object CometCast {
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
         Incompatible()
-      case _ => Unsupported()
+      case _ => Unsupported
     }
   }
 
@@ -139,13 +136,13 @@ object CometCast {
           DataTypes.IntegerType =>
         // https://github.com/apache/datafusion-comet/issues/352
         // this seems like an edge case that isn't important for us to support
-        Unsupported()
+        Unsupported
       case DataTypes.LongType =>
         // https://github.com/apache/datafusion-comet/issues/352
         Compatible
       case DataTypes.StringType => Compatible
       case DataTypes.DateType => Compatible
-      case _ => Unsupported()
+      case _ => Unsupported
     }
   }
 
@@ -153,7 +150,7 @@ object CometCast {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
         DataTypes.FloatType | DataTypes.DoubleType =>
       Compatible
-    case _ => Unsupported()
+    case _ => Unsupported
   }
 
   private def canCastFromInt(toType: DataType): SupportLevel = toType match {
@@ -161,23 +158,23 @@ object CometCast {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
         _: DecimalType =>
       Compatible
-    case _ => Unsupported()
+    case _ => Unsupported
   }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.DoubleType => Compatible
-    case _ => Unsupported()
+    case _ => Unsupported
   }
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.FloatType => Compatible
     case _: DecimalType => Incompatible()
-    case _ => Unsupported()
+    case _ => Unsupported
   }
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
     case DataTypes.FloatType | DataTypes.DoubleType => Compatible
-    case _ => Unsupported()
+    case _ => Unsupported
   }
 
 }

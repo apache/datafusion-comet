@@ -587,7 +587,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               evalMode.toString
             }
             val castSupport =
-              CometCast.isSupported(cast, child.dataType, dt, timeZoneId, evalModeStr)
+              CometCast.isSupported(child.dataType, dt, timeZoneId, evalModeStr)
 
             def getIncompatMessage(reason: Option[String]) =
               s"Comet does not guarantee correct results for cast " +
@@ -610,12 +610,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                   )
                   None
                 }
-              case Unsupported(reason) =>
+              case Unsupported =>
                 withInfo(
                   expr,
                   s"Unsupported cast from ${child.dataType} to $dt " +
-                    s"with timezone $timeZoneId and evalMode $evalModeStr" +
-                    reason.map(str => s" ($str)").getOrElse("")
+                    s"with timezone $timeZoneId and evalMode $evalModeStr"
                 )
                 None
             }
