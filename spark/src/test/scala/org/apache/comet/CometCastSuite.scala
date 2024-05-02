@@ -92,10 +92,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assertTestsExist(supportedTypes, supportedTypes)
   }
 
+  // TODO automate writing this documentation in maven build
   test("generate cast documentation") {
     // scalastyle:on println
-    println(s"| From Type | To Type | Compatible? | Notes |")
-    println(s"|-|-|-|-|")
+    println("| From Type | To Type | Compatible? | Notes |")
+    println("|-|-|-|-|")
     for (fromType <- supportedTypes) {
       for (toType <- supportedTypes) {
         if (Cast.canCast(fromType, toType)) {
