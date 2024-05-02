@@ -64,7 +64,7 @@ Linux, Apple OSX (Intel and M1)
 ## Requirements
 
 - Apache Spark 3.2, 3.3, or 3.4
-- JDK 8 and up
+- JDK 8, 11 and 17 (JDK 11 recommended because Spark 3.2 doesn't support 17)
 - GLIBC 2.17 (Centos 7) and up
 
 ## Getting started
