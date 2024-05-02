@@ -628,36 +628,3 @@ private[comet] case class ConfigBuilder(key: String) {
 private object ConfigEntry {
   val UNDEFINED = "<undefined>"
 }
-
-/**
- * Utility for generating markdown documentation from the configs.
- *
- * This is invoked when running `mvn clean package -DskipTests`.
- */
-object CometConfGenerateDocs {
-  def main(args: Array[String]): Unit = {
-    if (args.length != 2) {
-      // scalastyle:off println
-      println("Missing arguments for template file and output file")
-      // scalastyle:on println
-      sys.exit(-1)
-    }
-    val templateFilename = args.head
-    val outputFilename = args(1)
-    val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
-    for (line <- Source.fromFile(templateFilename).getLines()) {
-      if (line.trim == "<!--CONFIG_TABLE-->") {
-        val publicConfigs = CometConf.allConfs.filter(_.isPublic)
-        val confs = publicConfigs.sortBy(_.key)
-        w.write("| Config | Description | Default Value |\n".getBytes)
-        w.write("|--------|-------------|---------------|\n".getBytes)
-        for (conf <- confs) {
-          w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
-        }
-      } else {
-        w.write(s"${line.trim}\n".getBytes)
-      }
-    }
-    w.close()
-  }
-}

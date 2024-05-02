@@ -36,6 +36,22 @@ object Unsupported extends SupportLevel
 
 object CometCast {
 
+  val supportedTypes =
+    Seq(
+      DataTypes.BooleanType,
+      DataTypes.ByteType,
+      DataTypes.ShortType,
+      DataTypes.IntegerType,
+      DataTypes.LongType,
+      DataTypes.FloatType,
+      DataTypes.DoubleType,
+      DataTypes.createDecimalType(10, 2),
+      DataTypes.StringType,
+      DataTypes.BinaryType,
+      DataTypes.DateType,
+      DataTypes.TimestampType)
+  // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
+
   def isSupported(
       fromType: DataType,
       toType: DataType,

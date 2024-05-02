@@ -51,23 +51,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val datePattern = "0123456789/" + whitespaceChars
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
-  // make sure we have tests for all combinations of our supported types
-  val supportedTypes =
-    Seq(
-      DataTypes.BooleanType,
-      DataTypes.ByteType,
-      DataTypes.ShortType,
-      DataTypes.IntegerType,
-      DataTypes.LongType,
-      DataTypes.FloatType,
-      DataTypes.DoubleType,
-      DataTypes.createDecimalType(10, 2),
-      DataTypes.StringType,
-      DataTypes.BinaryType,
-      DataTypes.DateType,
-      DataTypes.TimestampType)
-  // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
-
   test("all valid cast combinations covered") {
     val names = testNames
 
@@ -89,33 +72,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    assertTestsExist(supportedTypes, supportedTypes)
-  }
-
-  // TODO automate writing this documentation in maven build
-  test("generate cast documentation") {
-    // scalastyle:on println
-    println("| From Type | To Type | Compatible? | Notes |")
-    println("|-|-|-|-|")
-    for (fromType <- supportedTypes) {
-      for (toType <- supportedTypes) {
-        if (Cast.canCast(fromType, toType)) {
-          val fromTypeName = fromType.typeName.replace("(10,2)", "")
-          val toTypeName = toType.typeName.replace("(10,2)", "")
-          CometCast.isSupported(fromType, toType, None, "LEGACY") match {
-            case Compatible =>
-              println(s"| $fromTypeName | $toTypeName | Compatible | |")
-            case Incompatible(Some(reason)) =>
-              println(s"| $fromTypeName | $toTypeName | Incompatible | $reason |")
-            case Incompatible(None) =>
-              println(s"| $fromTypeName | $toTypeName | Incompatible | |")
-            case Unsupported =>
-              println(s"| $fromTypeName | $toTypeName | Unsupported | |")
-          }
-        }
-      }
-    }
-    // scalastyle:off println
+    assertTestsExist(CometCast.supportedTypes, CometCast.supportedTypes)
   }
 
   // CAST from BooleanType

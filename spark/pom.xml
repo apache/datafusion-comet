@@ -277,10 +277,6 @@ under the License.
             </goals>
             <configuration>
               <mainClass>org.apache.comet.CometConfGenerateDocs</mainClass>
-              <arguments>
-                <argument>docs/source/user-guide/configs-template.md</argument>
-                <argument>docs/source/user-guide/configs.md</argument>
-              </arguments>
               <classpathScope>compile</classpathScope>
             </configuration>
           </execution>
