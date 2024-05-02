@@ -259,7 +259,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz") {
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -282,7 +284,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO: make the test pass for Spark 3.2 & 3.3
     assume(isSpark34Plus)
 
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -305,7 +309,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO: make the test pass for Spark 3.2 & 3.3
     assume(isSpark34Plus)
 
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -394,32 +400,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("date_trunc with timestamp_ntz") {
     assume(!isSpark32, "timestamp functions for timestamp_ntz have incorrect behavior in 3.2")
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "timetbl") {
-          Seq(
-            "YEAR",
-            "YYYY",
-            "YY",
-            "MON",
-            "MONTH",
-            "MM",
-            "QUARTER",
-            "WEEK",
-            "DAY",
-            "DD",
-            "HOUR",
-            "MINUTE",
-            "SECOND",
-            "MILLISECOND",
-            "MICROSECOND").foreach { format =>
-            checkSparkAnswerAndOperator(
-              "SELECT " +
-                s"date_trunc('$format', _3), " +
-                s"date_trunc('$format', _5)  " +
-                " from timetbl")
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
+          makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "timetbl") {
+            Seq(
+              "YEAR",
+              "YYYY",
+              "YY",
+              "MON",
+              "MONTH",
+              "MM",
+              "QUARTER",
+              "WEEK",
+              "DAY",
+              "DD",
+              "HOUR",
+              "MINUTE",
+              "SECOND",
+              "MILLISECOND",
+              "MICROSECOND").foreach { format =>
+              checkSparkAnswerAndOperator(
+                "SELECT " +
+                  s"date_trunc('$format', _3), " +
+                  s"date_trunc('$format', _5)  " +
+                  " from timetbl")
+            }
           }
         }
       }
@@ -428,22 +436,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("date_trunc with format array") {
     assume(isSpark33Plus, "TimestampNTZ is supported in Spark 3.3+, See SPARK-36182")
-    val numRows = 1000
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
-        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
-        withParquetTable(path.toString, "timeformattbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT " +
-              "format, _0, _1, _2, _3, _4, _5, " +
-              "date_trunc(format, _0), " +
-              "date_trunc(format, _1), " +
-              "date_trunc(format, _2), " +
-              "date_trunc(format, _3), " +
-              "date_trunc(format, _4), " +
-              "date_trunc(format, _5) " +
-              " from timeformattbl ")
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val numRows = 1000
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
+          makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+          withParquetTable(path.toString, "timeformattbl") {
+            checkSparkAnswerAndOperator(
+              "SELECT " +
+                "format, _0, _1, _2, _3, _4, _5, " +
+                "date_trunc(format, _0), " +
+                "date_trunc(format, _1), " +
+                "date_trunc(format, _2), " +
+                "date_trunc(format, _3), " +
+                "date_trunc(format, _4), " +
+                "date_trunc(format, _5) " +
+                " from timeformattbl ")
+          }
         }
       }
     }
@@ -552,83 +562,88 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("like (LikeSimplification enabled)") {
     val table = "names"
-    withTable(table) {
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(s"insert into $table values(1,'James Smith')")
-      sql(s"insert into $table values(2,'Michael Rose')")
-      sql(s"insert into $table values(3,'Robert Williams')")
-      sql(s"insert into $table values(4,'Rames Rose')")
-      sql(s"insert into $table values(5,'Rames rose')")
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      withTable(table) {
+        sql(s"create table $table(id int, name varchar(20)) using parquet")
+        sql(s"insert into $table values(1,'James Smith')")
+        sql(s"insert into $table values(2,'Michael Rose')")
+        sql(s"insert into $table values(3,'Robert Williams')")
+        sql(s"insert into $table values(4,'Rames Rose')")
+        sql(s"insert into $table values(5,'Rames rose')")
 
-      // Filter column having values 'Rames _ose', where any character matches for '_'
-      val query = sql(s"select id from $table where name like 'Rames _ose'")
-      checkAnswer(query, Row(4) :: Row(5) :: Nil)
+        // Filter column having values 'Rames _ose', where any character matches for '_'
+        val query = sql(s"select id from $table where name like 'Rames _ose'")
+        checkAnswer(query, Row(4) :: Row(5) :: Nil)
 
-      // Filter rows that contains 'rose' in 'name' column
-      val queryContains = sql(s"select id from $table where name like '%rose%'")
-      checkAnswer(queryContains, Row(5) :: Nil)
+        // Filter rows that contains 'rose' in 'name' column
+        val queryContains = sql(s"select id from $table where name like '%rose%'")
+        checkAnswer(queryContains, Row(5) :: Nil)
 
-      // Filter rows that starts with 'R' following by any characters
-      val queryStartsWith = sql(s"select id from $table where name like 'R%'")
-      checkAnswer(queryStartsWith, Row(3) :: Row(4) :: Row(5) :: Nil)
+        // Filter rows that starts with 'R' following by any characters
+        val queryStartsWith = sql(s"select id from $table where name like 'R%'")
+        checkAnswer(queryStartsWith, Row(3) :: Row(4) :: Row(5) :: Nil)
 
-      // Filter rows that ends with 's' following by any characters
-      val queryEndsWith = sql(s"select id from $table where name like '%s'")
-      checkAnswer(queryEndsWith, Row(3) :: Nil)
+        // Filter rows that ends with 's' following by any characters
+        val queryEndsWith = sql(s"select id from $table where name like '%s'")
+        checkAnswer(queryEndsWith, Row(3) :: Nil)
+      }
     }
   }
 
   test("contains") {
     assume(!isSpark32)
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val table = "names"
+      withTable(table) {
+        sql(s"create table $table(id int, name varchar(20)) using parquet")
+        sql(s"insert into $table values(1,'James Smith')")
+        sql(s"insert into $table values(2,'Michael Rose')")
+        sql(s"insert into $table values(3,'Robert Williams')")
+        sql(s"insert into $table values(4,'Rames Rose')")
+        sql(s"insert into $table values(5,'Rames rose')")
 
-    val table = "names"
-    withTable(table) {
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(s"insert into $table values(1,'James Smith')")
-      sql(s"insert into $table values(2,'Michael Rose')")
-      sql(s"insert into $table values(3,'Robert Williams')")
-      sql(s"insert into $table values(4,'Rames Rose')")
-      sql(s"insert into $table values(5,'Rames rose')")
-
-      // Filter rows that contains 'rose' in 'name' column
-      val queryContains = sql(s"select id from $table where contains (name, 'rose')")
-      checkAnswer(queryContains, Row(5) :: Nil)
+        // Filter rows that contains 'rose' in 'name' column
+        val queryContains = sql(s"select id from $table where contains (name, 'rose')")
+        checkAnswer(queryContains, Row(5) :: Nil)
+      }
     }
   }
 
   test("startswith") {
     assume(!isSpark32)
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val table = "names"
+      withTable(table) {
+        sql(s"create table $table(id int, name varchar(20)) using parquet")
+        sql(s"insert into $table values(1,'James Smith')")
+        sql(s"insert into $table values(2,'Michael Rose')")
+        sql(s"insert into $table values(3,'Robert Williams')")
+        sql(s"insert into $table values(4,'Rames Rose')")
+        sql(s"insert into $table values(5,'Rames rose')")
 
-    val table = "names"
-    withTable(table) {
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(s"insert into $table values(1,'James Smith')")
-      sql(s"insert into $table values(2,'Michael Rose')")
-      sql(s"insert into $table values(3,'Robert Williams')")
-      sql(s"insert into $table values(4,'Rames Rose')")
-      sql(s"insert into $table values(5,'Rames rose')")
-
-      // Filter rows that starts with 'R' following by any characters
-      val queryStartsWith = sql(s"select id from $table where startswith (name, 'R')")
-      checkAnswer(queryStartsWith, Row(3) :: Row(4) :: Row(5) :: Nil)
+        // Filter rows that starts with 'R' following by any characters
+        val queryStartsWith = sql(s"select id from $table where startswith (name, 'R')")
+        checkAnswer(queryStartsWith, Row(3) :: Row(4) :: Row(5) :: Nil)
+      }
     }
   }
 
   test("endswith") {
     assume(!isSpark32)
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val table = "names"
+      withTable(table) {
+        sql(s"create table $table(id int, name varchar(20)) using parquet")
+        sql(s"insert into $table values(1,'James Smith')")
+        sql(s"insert into $table values(2,'Michael Rose')")
+        sql(s"insert into $table values(3,'Robert Williams')")
+        sql(s"insert into $table values(4,'Rames Rose')")
+        sql(s"insert into $table values(5,'Rames rose')")
 
-    val table = "names"
-    withTable(table) {
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(s"insert into $table values(1,'James Smith')")
-      sql(s"insert into $table values(2,'Michael Rose')")
-      sql(s"insert into $table values(3,'Robert Williams')")
-      sql(s"insert into $table values(4,'Rames Rose')")
-      sql(s"insert into $table values(5,'Rames rose')")
-
-      // Filter rows that ends with 's' following by any characters
-      val queryEndsWith = sql(s"select id from $table where endswith (name, 's')")
-      checkAnswer(queryEndsWith, Row(3) :: Nil)
+        // Filter rows that ends with 's' following by any characters
+        val queryEndsWith = sql(s"select id from $table where endswith (name, 's')")
+        checkAnswer(queryEndsWith, Row(3) :: Nil)
+      }
     }
   }
 
@@ -818,7 +833,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -914,7 +931,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Various String scalar functions") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "names"
         withTable(table) {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -944,7 +963,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("InitCap") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "names"
         withTable(table) {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -997,7 +1018,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("string concat_ws") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "names"
         withTable(table) {
           sql(
@@ -1014,7 +1037,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("string repeat") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "names"
         withTable(table) {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -1094,7 +1119,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(false, true).foreach { dictionary =>
         withSQLConf(
           SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
-          "parquet.enable.dictionary" -> dictionary.toString) {
+          "parquet.enable.dictionary" -> dictionary.toString,
+          CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
           val table = "names"
           withTable(table) {
             sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -1406,7 +1432,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
