@@ -714,16 +714,12 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
 
     let datetime = chrono::Utc::now();
     let timestamp = datetime
-        .with_hour(time_values.first().copied().unwrap_or_default())
-        .unwrap()
-        .with_minute(*time_values.get(1).unwrap_or(&0))
-        .unwrap()
-        .with_second(*time_values.get(2).unwrap_or(&0))
-        .unwrap()
-        .with_nanosecond(*time_values.get(3).unwrap_or(&0) * 1_000)
-        .unwrap()
-        .to_utc()
-        .timestamp_micros();
+    .with_hour(time_values.first().copied().unwrap_or_default())
+    .and_then(|dt| dt.with_minute(*time_values.get(1).unwrap_or(&0)))
+    .and_then(|dt| dt.with_second(*time_values.get(2).unwrap_or(&0)))
+    .and_then(|dt| dt.with_nanosecond(*time_values.get(3).unwrap_or(&0) * 1_000))
+    .map(|dt| dt.to_utc().timestamp_micros())
+    .unwrap_or_default();
 
     Ok(Some(timestamp))
 }
