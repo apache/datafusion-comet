@@ -19,11 +19,9 @@
 
 package org.apache.comet
 
-import java.io.{BufferedOutputStream, FileOutputStream}
 import java.util.concurrent.TimeUnit
 
 import scala.collection.mutable.ListBuffer
-import scala.io.Source
 
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.network.util.JavaUtils
