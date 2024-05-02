@@ -884,7 +884,6 @@ class CometExecSuite extends CometTestBase {
   test("like (LikeSimplification disabled)") {
     val table = "names"
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.LikeSimplification") {
       withTable(table) {
         sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -950,9 +949,8 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SPARK-33474: Support typed literals as partition spec values") {
-    withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
-      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       withTable("t1") {
         val binaryStr = "Spark SQL"
         val binaryHexStr = Hex.hex(UTF8String.fromString(binaryStr).getBytes).toString
