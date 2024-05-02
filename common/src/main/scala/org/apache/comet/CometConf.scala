@@ -381,8 +381,7 @@ object CometConf {
           "Set this config to true to allow them anyway. See compatibility guide " +
           "for more information.")
       .booleanConf
-      // TODO change this to false and set this config explicitly in tests where needed
-      .createWithDefault(true)
+      .createWithDefault(false)
 
 }
 
