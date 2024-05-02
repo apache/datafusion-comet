@@ -20,6 +20,7 @@
 package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
 sealed trait SupportLevel
@@ -32,6 +33,9 @@ object Incompatible extends SupportLevel
 
 /** We do not support this feature */
 object Unsupported extends SupportLevel
+
+/** We do not support this feature and we explain why */
+case class UnsupportedWithReason(reason: String) extends SupportLevel
 
 object CometCast {
 
@@ -67,7 +71,7 @@ object CometCast {
         // between decimal types with different precision and scale
         Compatible
       case (DataTypes.StringType, _) =>
-        canCastFromString(toType)
+        canCastFromString(toType, timeZoneId)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType)
       case (DataTypes.TimestampType, _) =>
@@ -88,7 +92,7 @@ object CometCast {
     }
   }
 
-  private def canCastFromString(toType: DataType): SupportLevel = {
+  private def canCastFromString(toType: DataType, timeZoneId: Option[String]): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible
@@ -106,6 +110,9 @@ object CometCast {
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Unsupported
+      case DataTypes.TimestampType if !timeZoneId.contains("UTC") =>
+        UnsupportedWithReason(
+          s"Unsupported timezone $timeZoneId for cast from string to timestamp")
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328
         Incompatible

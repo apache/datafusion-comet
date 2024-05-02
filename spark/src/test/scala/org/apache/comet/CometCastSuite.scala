@@ -549,12 +549,35 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.comet.cast.stringToTimestamp is disabled")
   }
 
-  ignore("cast StringType to TimestampType") {
-    // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
-      castTest(values.toDF("a"), DataTypes.TimestampType)
+  test("cast StringType to TimestampType") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val values = Seq(
+        "2020",
+        "2020-01",
+        "2020-01-01",
+        "2020-01-01T12",
+        "2020-01-01T12:34",
+        "2020-01-01T12:34:56",
+        "2020-01-01T12:34:56.123456",
+        "T2",
+        "-9?")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
+
+    // test for invalid inputs
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val values = Seq("-9?", "1-", "0.5")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+    }
+  }
+
+  test("cast StringType to TimestampType with invalid timezone") {
+    val values = Seq("2020-01-01T12:34:56.123456", "T2")
+    castFallbackTestTimezone(values.toDF("a"), DataTypes.TimestampType, "Unsupported timezone")
   }
 
   // CAST from BinaryType
@@ -786,6 +809,44 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val str =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
         assert(str.contains(expectedMessage))
+      }
+    }
+  }
+
+  private def castFallbackTestTimezone(
+      input: DataFrame,
+      toType: DataType,
+      expectedMessage: String): Unit = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      data.createOrReplaceTempView("t")
+
+      withSQLConf(
+        (SQLConf.ANSI_ENABLED.key, "false"),
+        (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
+        (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
+        val df = data.withColumn("converted", col("a").cast(toType))
+        df.collect()
+        val str =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(str.contains(expectedMessage))
+      }
+    }
+  }
+
+  private def castTimestampTest(input: DataFrame, toType: DataType) = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      data.createOrReplaceTempView("t")
+
+      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+        // cast() should return null for invalid inputs when ansi mode is disabled
+        val df = data.withColumn("converted", col("a").cast(toType))
+        checkSparkAnswer(df)
+
+        // try_cast() should always return null for invalid inputs
+        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        checkSparkAnswer(df2)
       }
     }
   }
