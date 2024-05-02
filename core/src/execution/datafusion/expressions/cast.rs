@@ -621,7 +621,11 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
             return Ok(None);
         }
     }
-    Ok(Some(timestamp.unwrap()))
+
+    match timestamp {
+        Some(ts) => Ok(Some(ts)),
+        None => Err(CometError::Internal("Failed to parse timestamp".to_string())),
+    }
 }
 
 fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
