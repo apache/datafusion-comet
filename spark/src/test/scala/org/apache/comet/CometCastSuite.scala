@@ -19,16 +19,18 @@
 
 package org.apache.comet
 
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
-
 import java.io.File
+
 import scala.util.Random
+
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
+
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._

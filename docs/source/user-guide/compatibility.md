@@ -36,13 +36,16 @@ There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where 
 
 Cast operations in Comet fall into three levels of support:
 
-- Compatible: The results match Apache Spark
-- Incompatible: The results may match with Apache Spark for some inputs, but there are known issues where some  
-   inputs will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+- **Compatible**: The results match Apache Spark
+- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
   `spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
   recommended for production use.
-- Unsupported: Comet does not provide a native version of this cast expression and the query stage will fall back to
+- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
+
+The following table shows the current cast operations supported by Comet. Any cast that does not appear in this
+table (such as those involving complex types and timestamp_ntz, for example) are not supported by Comet.
 
 | From Type | To Type   | Compatible?  | Notes                               |
 | --------- | --------- | ------------ | ----------------------------------- |

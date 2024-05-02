@@ -591,9 +591,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
 
             def getIncompatMessage(reason: Option[String]) =
               s"Comet does not guarantee correct results for cast " +
-              s"from ${child.dataType} to $dt " +
-              s"with timezone $timeZoneId and evalMode $evalModeStr" +
-              reason.map(str => s" ($str)").getOrElse("")
+                s"from ${child.dataType} to $dt " +
+                s"with timezone $timeZoneId and evalMode $evalModeStr" +
+                reason.map(str => s" ($str)").getOrElse("")
 
             castSupport match {
               case Compatible =>
@@ -606,16 +606,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                   withInfo(
                     expr,
                     s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
-                    s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true"
-                  )
+                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
                   None
                 }
               case Unsupported =>
                 withInfo(
                   expr,
                   s"Unsupported cast from ${child.dataType} to $dt " +
-                    s"with timezone $timeZoneId and evalMode $evalModeStr"
-                )
+                    s"with timezone $timeZoneId and evalMode $evalModeStr")
                 None
             }
           } else {
