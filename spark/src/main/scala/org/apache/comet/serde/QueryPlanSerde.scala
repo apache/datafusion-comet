@@ -1400,9 +1400,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with ShimCometExpr
         case e: Unhex =>
           val unHex = unhexSerde(e)
 
-          // val childCast = Cast(unHex._1, StringType)
-          // val failOnErrorCast = Cast(unHex._2, BooleanType)
-
           val childExpr = exprToProtoInternal(unHex._1, inputs)
           val failOnErrorExpr = exprToProtoInternal(unHex._2, inputs)
 
