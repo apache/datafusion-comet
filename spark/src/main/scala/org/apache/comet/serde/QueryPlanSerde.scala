@@ -43,7 +43,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported, UnsupportedWithReason}
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
@@ -591,20 +591,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             castSupport match {
               case Compatible =>
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
-              case Incompatible if CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get() =>
-                logWarning(s"Calling incompatible CAST expression: $cast")
+              case Incompatible(reason) if CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get() =>
+                logWarning(s"Calling incompatible CAST expression: $cast" +
+                  reason.map(str => s" ($str)").getOrElse(""))
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
-              case UnsupportedWithReason(reason) =>
+              case Unsupported(reason) =>
                 withInfo(
                   expr,
                   s"Unsupported cast from ${child.dataType} to $dt " +
-                    s"with timezone $timeZoneId and evalMode $evalModeStr: $reason")
-                None
-              case Unsupported =>
-                withInfo(
-                  expr,
-                  s"Unsupported cast from ${child.dataType} to $dt " +
-                    s"with timezone $timeZoneId and evalMode $evalModeStr")
+                    s"with timezone $timeZoneId and evalMode $evalModeStr" +
+                    reason.map(str => s" ($str)").getOrElse("")
+                )
                 None
             }
           } else {
