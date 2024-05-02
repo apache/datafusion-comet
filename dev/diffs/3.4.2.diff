@@ -1149,18 +1149,27 @@ index ac710c32296..88a5329e74e 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 593bd7bb4ba..be1b82d0030 100644
+index 593bd7bb4ba..43a9fa1469d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-@@ -29,6 +29,7 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListe
+@@ -29,6 +29,8 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListe
  import org.apache.spark.sql.{Dataset, QueryTest, Row, SparkSession, Strategy}
  import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 +import org.apache.spark.sql.comet._
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
  import org.apache.spark.sql.execution.{CollectLimitExec, LocalTableScanExec, PartialReducerPartitionSpec, QueryExecution, ReusedSubqueryExec, ShuffledRowRDD, SortExec, SparkPlan, SparkPlanInfo, UnionExec}
  import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
  import org.apache.spark.sql.execution.command.DataWritingCommandExec
-@@ -116,6 +117,9 @@ class AdaptiveQueryExecSuite
+@@ -104,6 +106,7 @@ class AdaptiveQueryExecSuite
+   private def findTopLevelBroadcastHashJoin(plan: SparkPlan): Seq[BroadcastHashJoinExec] = {
+     collect(plan) {
+       case j: BroadcastHashJoinExec => j
++      case j: CometBroadcastHashJoinExec => j.originalPlan.asInstanceOf[BroadcastHashJoinExec]
+     }
+   }
+ 
+@@ -116,6 +119,9 @@ class AdaptiveQueryExecSuite
    private def findTopLevelSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] = {
      collect(plan) {
        case j: SortMergeJoinExec => j
@@ -1170,6 +1179,78 @@ index 593bd7bb4ba..be1b82d0030 100644
      }
    }
  
+@@ -134,12 +140,14 @@ class AdaptiveQueryExecSuite
+   private def findTopLevelSort(plan: SparkPlan): Seq[SortExec] = {
+     collect(plan) {
+       case s: SortExec => s
++      case s: CometSortExec => s.originalPlan.asInstanceOf[SortExec]
+     }
+   }
+ 
+   private def findTopLevelAggregate(plan: SparkPlan): Seq[BaseAggregateExec] = {
+     collect(plan) {
+       case agg: BaseAggregateExec => agg
++      case agg: CometHashAggregateExec => agg.originalPlan.asInstanceOf[BaseAggregateExec]
+     }
+   }
+ 
+@@ -176,6 +184,7 @@ class AdaptiveQueryExecSuite
+       val parts = rdd.partitions
+       assert(parts.forall(rdd.preferredLocations(_).nonEmpty))
+     }
++
+     assert(numShuffles === (numLocalReads.length + numShufflesWithoutLocalRead))
+   }
+ 
+@@ -1600,6 +1609,7 @@ class AdaptiveQueryExecSuite
+           "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
+         assert(collect(adaptivePlan) {
+           case s: ShuffleExchangeExec => s
++          case c: CometShuffleExchangeExec => c
+         }.length == 1)
+       }
+     }
+@@ -2269,6 +2279,7 @@ class AdaptiveQueryExecSuite
+     }
+ 
+     withSQLConf(
++      "spark.comet.enabled" -> "false",
+       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
+       val query = "SELECT * FROM testData join testData2 ON key = a where value = '1'"
+@@ -2404,6 +2415,7 @@ class AdaptiveQueryExecSuite
+           val (_, adaptive) = runAdaptiveAndVerifyResult(query)
+           assert(adaptive.collect {
+             case sort: SortExec => sort
++            case sort: CometSortExec => sort
+           }.size == 1)
+           val read = collect(adaptive) {
+             case read: AQEShuffleReadExec => read
+@@ -2424,6 +2436,8 @@ class AdaptiveQueryExecSuite
+   test("SPARK-37357: Add small partition factor for rebalance partitions") {
+     withTempView("v") {
+       withSQLConf(
++        // Comet shuffle changes partition size which makes the test fail
++        "spark.comet.enabled" -> "false",
+         SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
+         SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+         spark.sparkContext.parallelize(
+@@ -2534,6 +2548,7 @@ class AdaptiveQueryExecSuite
+             "JOIN skewData3 ON value2 = value3")
+         val shuffles1 = collect(adaptive1) {
+           case s: ShuffleExchangeExec => s
++          case c: CometShuffleExchangeExec => c
+         }
+         assert(shuffles1.size == 4)
+         val smj1 = findTopLevelSortMergeJoin(adaptive1)
+@@ -2545,6 +2560,7 @@ class AdaptiveQueryExecSuite
+             "JOIN skewData3 ON value1 = value3")
+         val shuffles2 = collect(adaptive2) {
+           case s: ShuffleExchangeExec => s
++          case c: CometShuffleExchangeExec => c
+         }
+         assert(shuffles2.size == 4)
+         val smj2 = findTopLevelSortMergeJoin(adaptive2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index bd9c79e5b96..ab7584e768e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
