@@ -19,10 +19,10 @@
 
 package org.apache.comet
 
+import org.apache.comet.expressions.{CometCast, Compatible}
+
 import java.io.File
-
 import scala.util.Random
-
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -167,7 +167,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBytes(), DataTypes.BinaryType)
   }
 
-  ignore("cast ByteType to TimestampType") {
+  test("cast ByteType to TimestampType") {
     // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
     castTest(generateBytes(), DataTypes.TimestampType)
   }
@@ -665,7 +665,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
-  ignore("cast TimestampType to LongType") {
+  test("cast TimestampType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 17:00:00.0, expected: 1.70407078E9, actual: 1.70407082E15]
     castTest(generateTimestamps(), DataTypes.LongType)

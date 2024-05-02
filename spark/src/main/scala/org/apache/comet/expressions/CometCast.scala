@@ -117,7 +117,7 @@ object CometCast {
         UnsupportedWithReason(s"ANSI mode not supported")
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328
-        Incompatible
+        Compatible
       case _ =>
         Unsupported
     }
@@ -147,7 +147,7 @@ object CometCast {
         Unsupported
       case DataTypes.LongType =>
         // https://github.com/apache/datafusion-comet/issues/352
-        Unsupported
+        Compatible
       case DataTypes.StringType => Compatible
       case DataTypes.DateType => Compatible
       case _ => Unsupported

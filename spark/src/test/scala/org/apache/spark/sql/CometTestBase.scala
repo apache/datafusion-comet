@@ -144,10 +144,13 @@ abstract class CometTestBase
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
+      dfSpark.show()
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
+    dfComet.show()
+    println(dfComet.queryExecution.executedPlan)
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }
 
