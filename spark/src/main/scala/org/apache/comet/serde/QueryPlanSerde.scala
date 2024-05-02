@@ -606,6 +606,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                     s"To enable all incompatible casts, set " +
                       s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true"
                   )
+                  None
                 }
               case Unsupported(reason) =>
                 withInfo(
