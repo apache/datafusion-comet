@@ -378,7 +378,9 @@ object CometConf {
 
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
-      .doc("Comet is not currently fully compatible with Spark for all cast operations.")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all cast operations. Set this config " +
+          "to true to allow them anyway. See compatibility guide for more information.")
       .booleanConf
       // TODO change this to false and set this config explicitly in tests where needed
       .createWithDefault(true)

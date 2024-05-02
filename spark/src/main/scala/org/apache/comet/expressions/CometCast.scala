@@ -62,16 +62,14 @@ object CometCast {
         Incompatible
       case (DataTypes.TimestampType, DataTypes.LongType) =>
         Incompatible
-      case (DataTypes.BinaryType | DataTypes.FloatType, DataTypes.StringType) =>
-        Incompatible
-      case (DataTypes.StringType, DataTypes.BinaryType) =>
+      case (DataTypes.BinaryType, DataTypes.StringType) =>
         Incompatible
       case (_: DecimalType, _: DecimalType) =>
         // TODO we need to file an issue for adding specific tests for casting
         // between decimal types with different precision and scale
-        Compatible
+        Incompatible
       case (DataTypes.StringType, _) =>
-        canCastFromString(toType, timeZoneId)
+        canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType)
       case (DataTypes.TimestampType, _) =>
@@ -92,7 +90,10 @@ object CometCast {
     }
   }
 
-  private def canCastFromString(toType: DataType, timeZoneId: Option[String]): SupportLevel = {
+  private def canCastFromString(
+      toType: DataType,
+      timeZoneId: Option[String],
+      evalMode: String): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible
@@ -111,8 +112,9 @@ object CometCast {
         // https://github.com/apache/datafusion-comet/issues/327
         Unsupported
       case DataTypes.TimestampType if !timeZoneId.contains("UTC") =>
-        UnsupportedWithReason(
-          s"Unsupported timezone $timeZoneId for cast from string to timestamp")
+        UnsupportedWithReason(s"Unsupported timezone $timeZoneId")
+      case DataTypes.TimestampType if evalMode == "ANSI" =>
+        UnsupportedWithReason(s"ANSI mode not supported")
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328
         Incompatible
@@ -131,7 +133,7 @@ object CometCast {
       case DataTypes.TimestampType => Compatible
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
-        Unsupported
+        Incompatible
       case _ => Unsupported
     }
   }
