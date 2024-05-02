@@ -51,10 +51,6 @@ object CometCast {
             true
           case _ => false
         }
-      case (_: DecimalType, _: DecimalType) =>
-        // TODO we need to file an issue for adding specific tests for casting
-        // between decimal types with difference precision and scale
-        true
       case (DataTypes.DoubleType, _: DecimalType) =>
         true
       case (DataTypes.TimestampType, DataTypes.LongType) =>
@@ -65,7 +61,9 @@ object CometCast {
         true
       // END HACK
 
-      case (DataTypes.StringType, DataTypes.TimestampType) =>
+      case (_: DecimalType, _: DecimalType) =>
+        // TODO we need to file an issue for adding specific tests for casting
+        // between decimal types with different precision and scale
         true
       case (DataTypes.StringType, _) =>
         canCastFromString(cast, toType)
