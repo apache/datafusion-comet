@@ -544,6 +544,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "-9?")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
+
+    // test for invalid inputs
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
+      val values = Seq("-9?", "1-", "0.5")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+    }
   }
 
   test("cast StringType to TimestampType with invalid timezone") {
