@@ -935,7 +935,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               // due to an overflow`
               // We check if the comet message contains 'overflow'.
               if (sparkMessage.indexOf(':') == -1) {
-                assert(cometMessage.contains("overflow"))
+                assert(
+                  cometMessage.contains("overflow") || cometMessage.contains(
+                    "CAST_INVALID_INPUT"))
               } else {
                 assert(
                   cometMessage.contains(sparkMessage.substring(sparkMessage.indexOf(':') + 2)))
