@@ -662,6 +662,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
+    assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestamps(), DataTypes.LongType)
   }
 
