@@ -17,7 +17,7 @@
 
 use std::{
     any::Any,
-    fmt::{Display, Formatter},
+    fmt::{Debug, Display, Formatter},
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -31,7 +31,7 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray, Float64Array,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -185,6 +185,18 @@ impl Cast {
                     ),
                 }
             }
+            (DataType::Float64, DataType::Utf8) => {
+                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Float64, DataType::LargeUtf8) => {
+                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)?
+            }
+            (DataType::Float32, DataType::Utf8) => {
+                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Float32, DataType::LargeUtf8) => {
+                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)?
+            }            
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
@@ -246,6 +258,66 @@ impl Cast {
             _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
         };
         Ok(cast_array)
+    }
+
+    fn spark_cast_float64_to_utf8<OffsetSize>(
+        from: &dyn Array,
+        _eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        let array = from.as_any().downcast_ref::<Float64Array>().unwrap();
+
+        // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
+        // result is expressed without scientific notation with at least one digit on either side of
+        // the decimal point. Otherwise, Databricks uses a mantissa followed by E and an
+        // exponent. The mantissa has an optional leading minus sign followed by one digit to the
+        // left of the decimal point, and the minimal number of digits greater than zero to the
+        // right. The exponent has and optional leading minus sign.
+        // source: https://docs.databricks.com/en/sql/language-manual/functions/cast.html
+
+        const LOWER_SCIENTIFIC_BOUND: f64 = 0.001;
+        const UPPER_SCIENTIFIC_BOUND: f64 = 10000000.0;
+
+        let output_array = array
+            .iter()
+            .map(|value| match value {
+                Some(value) if value == f64::INFINITY => Ok(Some("Infinity".to_string())),
+                Some(value) if value == f64::NEG_INFINITY => Ok(Some("-Infinity".to_string())),
+                Some(value)
+                    if (value.abs() < UPPER_SCIENTIFIC_BOUND
+                        && value.abs() >= LOWER_SCIENTIFIC_BOUND)
+                        || value.abs() == 0.0 =>
+                {
+                    let trailing_zero = if value.fract() == 0.0 { ".0" } else { "" };
+
+                    Ok(Some(format!("{value}{trailing_zero}")))
+                }
+                Some(value)
+                    if value.abs() >= UPPER_SCIENTIFIC_BOUND
+                        || value.abs() < LOWER_SCIENTIFIC_BOUND =>
+                {
+                    let formatted = format!("{value:E}");
+
+                    if formatted.contains(".") {
+                        Ok(Some(formatted))
+                    } else {
+                        let prepare_number: Vec<&str> = formatted.split("E").collect();
+
+                        let coefficient = prepare_number[0];
+
+                        let exponent = prepare_number[1];
+
+                        Ok(Some(format!("{coefficient}.0E{exponent}")))
+                    }
+                }
+                Some(value) => Ok(Some(value.to_string())),
+                _ => Ok(None),
+            })
+            .collect::<Result<GenericStringArray<OffsetSize>, CometError>>()?;
+
+        Ok(Arc::new(output_array))
     }
 
     fn spark_cast_utf8_to_boolean<OffsetSize>(
