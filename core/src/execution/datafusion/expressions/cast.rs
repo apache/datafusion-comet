@@ -17,7 +17,7 @@
 
 use std::{
     any::Any,
-    fmt::{Display, Formatter},
+    fmt::{Debug, Display, Formatter},
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -31,7 +31,8 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, OffsetSizeTrait,
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -104,6 +105,74 @@ macro_rules! cast_utf8_to_timestamp {
         }
         let result: ArrayRef = Arc::new(cast_array.finish()) as ArrayRef;
         result
+    }};
+}
+
+macro_rules! cast_float_to_string {
+    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty) => {{
+
+        fn cast<OffsetSize>(
+            from: &dyn Array,
+            _eval_mode: EvalMode,
+        ) -> CometResult<ArrayRef>
+        where
+            OffsetSize: OffsetSizeTrait, {
+                let array = from.as_any().downcast_ref::<$output_type>().unwrap();
+
+                // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
+                // result is expressed without scientific notation with at least one digit on either side of
+                // the decimal point. Otherwise, Spark uses a mantissa followed by E and an
+                // exponent. The mantissa has an optional leading minus sign followed by one digit to the
+                // left of the decimal point, and the minimal number of digits greater than zero to the
+                // right. The exponent has and optional leading minus sign.
+                // source: https://docs.databricks.com/en/sql/language-manual/functions/cast.html
+
+                const LOWER_SCIENTIFIC_BOUND: $type = 0.001;
+                const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
+
+                let output_array = array
+                    .iter()
+                    .map(|value| match value {
+                        Some(value) if value == <$type>::INFINITY => Ok(Some("Infinity".to_string())),
+                        Some(value) if value == <$type>::NEG_INFINITY => Ok(Some("-Infinity".to_string())),
+                        Some(value)
+                            if (value.abs() < UPPER_SCIENTIFIC_BOUND
+                                && value.abs() >= LOWER_SCIENTIFIC_BOUND)
+                                || value.abs() == 0.0 =>
+                        {
+                            let trailing_zero = if value.fract() == 0.0 { ".0" } else { "" };
+
+                            Ok(Some(format!("{value}{trailing_zero}")))
+                        }
+                        Some(value)
+                            if value.abs() >= UPPER_SCIENTIFIC_BOUND
+                                || value.abs() < LOWER_SCIENTIFIC_BOUND =>
+                        {
+                            let formatted = format!("{value:E}");
+
+                            if formatted.contains(".") {
+                                Ok(Some(formatted))
+                            } else {
+                                // `formatted` is already in scientific notation and can be split up by E
+                                // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
+                                let prepare_number: Vec<&str> = formatted.split("E").collect();
+
+                                let coefficient = prepare_number[0];
+
+                                let exponent = prepare_number[1];
+
+                                Ok(Some(format!("{coefficient}.0E{exponent}")))
+                            }
+                        }
+                        Some(value) => Ok(Some(value.to_string())),
+                        _ => Ok(None),
+                    })
+                    .collect::<Result<GenericStringArray<OffsetSize>, CometError>>()?;
+
+                Ok(Arc::new(output_array))
+            }
+
+        cast::<$offset_type>($from, $eval_mode)
     }};
 }
 
@@ -251,6 +320,18 @@ impl Cast {
                     ),
                 }
             }
+            (DataType::Float64, DataType::Utf8) => {
+                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Float64, DataType::LargeUtf8) => {
+                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)?
+            }
+            (DataType::Float32, DataType::Utf8) => {
+                Self::spark_cast_float32_to_utf8::<i32>(&array, self.eval_mode)?
+            }
+            (DataType::Float32, DataType::LargeUtf8) => {
+                Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
+            }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
@@ -312,6 +393,26 @@ impl Cast {
             _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
         };
         Ok(cast_array)
+    }
+
+    fn spark_cast_float64_to_utf8<OffsetSize>(
+        from: &dyn Array,
+        _eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize)
+    }
+
+    fn spark_cast_float32_to_utf8<OffsetSize>(
+        from: &dyn Array,
+        _eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        OffsetSize: OffsetSizeTrait,
+    {
+        cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
     }
 
     fn spark_cast_int_to_int(
