@@ -179,8 +179,8 @@ under the License.
             </goals>
             <configuration>
               <sources>
-                <source>src/main/${shims.majorSource}</source>
-                <source>src/main/${shims.minorSource}</source>
+                <source>src/main/${shims.majorVerSrc}</source>
+                <source>src/main/${shims.minorVerSrc}</source>
               </sources>
             </configuration>
           </execution>

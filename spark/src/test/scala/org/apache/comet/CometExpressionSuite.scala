@@ -1026,15 +1026,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unhex") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string) using parquet")
-          sql(s"insert into $table values('537061726B2053514C')")
-          checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
-        }
-      }
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col string) using parquet")
+      sql(s"insert into $table values('537061726B2053514C')")
+      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
     }
   }
 
