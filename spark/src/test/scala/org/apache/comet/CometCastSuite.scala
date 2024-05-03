@@ -30,6 +30,8 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
+import org.apache.comet.expressions.CometCast
+
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
@@ -72,22 +74,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    // make sure we have tests for all combinations of our supported types
-    val supportedTypes =
-      Seq(
-        DataTypes.BooleanType,
-        DataTypes.ByteType,
-        DataTypes.ShortType,
-        DataTypes.IntegerType,
-        DataTypes.LongType,
-        DataTypes.FloatType,
-        DataTypes.DoubleType,
-        DataTypes.createDecimalType(10, 2),
-        DataTypes.StringType,
-        DataTypes.DateType,
-        DataTypes.TimestampType)
-    // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
-    assertTestsExist(supportedTypes, supportedTypes)
+    assertTestsExist(CometCast.supportedTypes, CometCast.supportedTypes)
   }
 
   // CAST from BooleanType
@@ -164,6 +151,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBytes(), DataTypes.StringType)
   }
 
+  ignore("cast ByteType to BinaryType") {
+    castTest(generateBytes(), DataTypes.BinaryType)
+  }
+
   ignore("cast ByteType to TimestampType") {
     // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
     castTest(generateBytes(), DataTypes.TimestampType)
@@ -202,6 +193,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast ShortType to StringType") {
     castTest(generateShorts(), DataTypes.StringType)
+  }
+
+  ignore("cast ShortType to BinaryType") {
+    castTest(generateShorts(), DataTypes.BinaryType)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -246,6 +241,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.StringType)
   }
 
+  ignore("cast IntegerType to BinaryType") {
+    castTest(generateInts(), DataTypes.BinaryType)
+  }
+
   ignore("cast IntegerType to TimestampType") {
     // input: -1000479329, expected: 1938-04-19 01:04:31.0, actual: 1969-12-31 15:43:19.520671
     castTest(generateInts(), DataTypes.TimestampType)
@@ -287,6 +286,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast LongType to StringType") {
     castTest(generateLongs(), DataTypes.StringType)
+  }
+
+  ignore("cast LongType to BinaryType") {
+    castTest(generateLongs(), DataTypes.BinaryType)
   }
 
   ignore("cast LongType to TimestampType") {
@@ -537,23 +540,47 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
+  test("cast StringType to BinaryType") {
+    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.BinaryType)
+  }
+
   ignore("cast StringType to DateType") {
     // https://github.com/apache/datafusion-comet/issues/327
     castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
-    val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-    castFallbackTest(
-      values.toDF("a"),
-      DataTypes.TimestampType,
-      "spark.comet.cast.stringToTimestamp is disabled")
+    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+      castFallbackTest(
+        values.toDF("a"),
+        DataTypes.TimestampType,
+        "Not all valid formats are supported")
+    }
+  }
+
+  test("cast StringType to TimestampType disabled for non-UTC timezone") {
+    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+      castFallbackTest(
+        values.toDF("a"),
+        DataTypes.TimestampType,
+        "Cast will use UTC instead of Some(America/Denver)")
+    }
+  }
+
+  ignore("cast StringType to TimestampType (fuzz test)") {
+    // https://github.com/apache/datafusion-comet/issues/328
+    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
+      castTest(values.toDF("a"), DataTypes.TimestampType)
+    }
   }
 
   test("cast StringType to TimestampType") {
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       val values = Seq(
         "2020",
         "2020-01",
@@ -570,15 +597,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test for invalid inputs
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key -> "true") {
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       val values = Seq("-9?", "1-", "0.5")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
 
-  test("cast StringType to TimestampType with invalid timezone") {
-    val values = Seq("2020-01-01T12:34:56.123456", "T2")
-    castFallbackTestTimezone(values.toDF("a"), DataTypes.TimestampType, "Unsupported timezone")
+  // CAST from BinaryType
+
+  ignore("cast BinaryType to StringType") {
+    // TODO implement this
+    // https://github.com/apache/datafusion-comet/issues/377
   }
 
   // CAST from DateType
@@ -657,9 +686,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
-  ignore("cast TimestampType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 17:00:00.0, expected: 1.70407078E9, actual: 1.70407082E15]
+  test("cast TimestampType to LongType") {
+    assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestamps(), DataTypes.LongType)
   }
 
@@ -818,7 +846,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         (SQLConf.ANSI_ENABLED.key, "false"),
-        (CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key, "true"),
+        (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
         (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
         val df = data.withColumn("converted", col("a").cast(toType))
         df.collect()
@@ -847,6 +875,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
+
+    // we do not support the TryCast expression in Spark 3.2 and 3.3
+    // https://github.com/apache/datafusion-comet/issues/374
+    val testTryCast = CometSparkSessionExtensions.isSpark34Plus
+
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -854,12 +887,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df)
+        checkSparkAnswerAndOperator(df)
 
         // try_cast() should always return null for invalid inputs
-        val df2 =
-          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df2)
+        if (testTryCast) {
+          val df2 =
+            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          checkSparkAnswerAndOperator(df2)
+        }
       }
 
       // with ANSI enabled, we should produce the same exception as Spark
@@ -899,9 +934,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         // try_cast() should always return null for invalid inputs
-        val df2 =
-          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswer(df2)
+        if (testTryCast) {
+          val df2 =
+            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          checkSparkAnswerAndOperator(df2)
+        }
       }
     }
   }
