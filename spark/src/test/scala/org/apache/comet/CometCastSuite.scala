@@ -30,8 +30,6 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
-import org.apache.comet.Constants.EMPTY_STRING
-
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
@@ -903,13 +901,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE
               // due to an overflow`
               // We check if the comet message contains 'overflow'.
-              val sparkInvalidValue = if (sparkMessage.indexOf(':') == -1) {
-                EMPTY_STRING
+              if (sparkMessage.indexOf(':') == -1) {
+                assert(cometMessage.contains("overflow"))
               } else {
-                sparkMessage.substring(sparkMessage.indexOf(':') + 2)
+                assert(
+                  cometMessage.contains(sparkMessage.substring(sparkMessage.indexOf(':') + 2)))
               }
-              assert(
-                cometMessage.contains(sparkInvalidValue) || cometMessage.contains("overflow"))
             }
         }
 

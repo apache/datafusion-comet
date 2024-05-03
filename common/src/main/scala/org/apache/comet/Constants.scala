@@ -22,5 +22,4 @@ package org.apache.comet
 object Constants {
   val LOG_CONF_PATH = "comet.log.file.path"
   val LOG_CONF_NAME = "log4rs.yaml"
-  val EMPTY_STRING = ""
 }
