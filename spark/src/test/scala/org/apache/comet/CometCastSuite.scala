@@ -175,7 +175,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateShorts(), DataTypes.BooleanType)
   }
 
-  ignore("cast ShortType to ByteType") {
+  test("cast ShortType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateShorts(), DataTypes.ByteType)
   }
@@ -215,12 +215,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.BooleanType)
   }
 
-  ignore("cast IntegerType to ByteType") {
+  test("cast IntegerType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.ByteType)
   }
 
-  ignore("cast IntegerType to ShortType") {
+  test("cast IntegerType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateInts(), DataTypes.ShortType)
   }
@@ -257,17 +257,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.BooleanType)
   }
 
-  ignore("cast LongType to ByteType") {
+  test("cast LongType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.ByteType)
   }
 
-  ignore("cast LongType to ShortType") {
+  test("cast LongType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.ShortType)
   }
 
-  ignore("cast LongType to IntegerType") {
+  test("cast LongType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/311
     castTest(generateLongs(), DataTypes.IntegerType)
   }
@@ -663,30 +663,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to DateType") {
     castTest(generateTimestamps(), DataTypes.DateType)
-  }
-
-  test("cast short to byte") {
-    castTest(generateShorts, DataTypes.ByteType)
-  }
-
-  test("cast int to byte") {
-    castTest(generateInts, DataTypes.ByteType)
-  }
-
-  test("cast int to short") {
-    castTest(generateInts, DataTypes.ShortType)
-  }
-
-  test("cast long to byte") {
-    castTest(generateLongs, DataTypes.ByteType)
-  }
-
-  test("cast long to short") {
-    castTest(generateLongs, DataTypes.ShortType)
-  }
-
-  test("cast long to int") {
-    castTest(generateLongs, DataTypes.IntegerType)
   }
 
   private def generateFloats(): DataFrame = {
