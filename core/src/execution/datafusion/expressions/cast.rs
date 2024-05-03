@@ -30,12 +30,9 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::{
-<<<<<<< HEAD
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, GenericStringArray, OffsetSizeTrait, PrimitiveArray, Float64Array,
-=======
     Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, OffsetSizeTrait,
->>>>>>> 334bf0c (Add macro to handle both float types)
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -266,7 +263,7 @@ impl Cast {
             }
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
-            }            
+            }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
