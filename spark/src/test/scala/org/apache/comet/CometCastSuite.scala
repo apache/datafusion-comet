@@ -103,6 +103,44 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast BooleanType to IntegerType") {
     castTest(generateBools(), DataTypes.IntegerType)
   }
+  
+  test("cast double to string") {
+    val testValues = (
+      Seq(
+        1.0499721536516571e-4,
+        0.001,
+        10000000.0,
+        9999999.0,
+        Float.NegativeInfinity,
+        Float.PositiveInfinity,
+        Float.MinPositiveValue,
+        Double.MinValue,
+        Double.MaxValue,
+        Double.NaN,
+        0.0,
+        -0.0)
+    ).toDF("a")
+    castTest(testValues, DataTypes.StringType, testAnsiModeThrows = false)
+  }
+
+  test("cast float to string") {
+    val testValues = (
+      Seq(
+        1.0499721536516571e-4,
+        0.001f,
+        10000000.0f,
+        9999999.0f,
+        Float.NegativeInfinity,
+        Float.PositiveInfinity,
+        Float.MinPositiveValue,
+        Float.MinValue,
+        Float.MaxValue,
+        Float.NaN,
+        0.0f,
+        -0.0f)
+    ).toDF("a")
+    castTest(testValues, DataTypes.StringType, testAnsiModeThrows = false)
+  }
 
   test("cast BooleanType to LongType") {
     castTest(generateBools(), DataTypes.LongType)
@@ -875,7 +913,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(cometMessage.contains(sparkInvalidValue))
             }
         }
-
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
