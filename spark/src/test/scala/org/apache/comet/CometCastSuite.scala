@@ -897,6 +897,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(cometMessage.contains(sparkInvalidValue))
             }
         }
+        
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
