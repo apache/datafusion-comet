@@ -153,6 +153,8 @@ macro_rules! cast_float_to_string {
                             if formatted.contains(".") {
                                 Ok(Some(formatted))
                             } else {
+                                // `formatted` is already in scientific notation and can be split up by E
+                                // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
                                 let prepare_number: Vec<&str> = formatted.split("E").collect();
 
                                 let coefficient = prepare_number[0];
