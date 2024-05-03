@@ -921,26 +921,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val cometMessage = cometException.getCause.getMessage
               .replace("Execution error: ", "")
             if (CometSparkSessionExtensions.isSpark34Plus) {
+              // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
+            } else if (CometSparkSessionExtensions.isSpark33Plus) {
+              // for Spark 3.3 we just need to strip the prefix from the Comet message
+              // before comparing
+              val cometMessageModified = cometMessage
+                .replace("[CAST_INVALID_INPUT] ", "")
+                .replace("[CAST_OVERFLOW] ", "")
+              assert(cometMessageModified == sparkMessage)
             } else {
-              // Spark 3.2 and 3.3 have a different error message format so we can't do a direct
-              // comparison between Spark and Comet.
-              // In the case of CAST_INVALID_INPUT
-              // Spark message is in format `invalid input syntax for type TYPE: VALUE`
-              // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE`
-              // We just check that the comet message contains the same invalid value as the Spark message
-              // In the case of CAST_OVERFLOW
-              // Spark message is in format `Casting VALUE to TO_TYPE causes overflow`
-              // Comet message is in format `The value 'VALUE' of the type FROM_TYPE cannot be cast to TO_TYPE
-              // due to an overflow`
-              // We check if the comet message contains 'overflow'.
-              if (sparkMessage.indexOf(':') == -1) {
-                assert(
-                  cometMessage.contains("overflow") || cometMessage.contains(
-                    "CAST_INVALID_INPUT"))
+              // for Spark 3.2 we just make sure we are seeing a similar type of error
+              if (sparkMessage.contains("causes overflow")) {
+                assert(cometMessage.contains("due to an overflow"))
               } else {
-                assert(
-                  cometMessage.contains(sparkMessage.substring(sparkMessage.indexOf(':') + 2)))
+                // assume that this is an invalid input message in the form:
+                // `invalid input syntax for type numeric: -9223372036854775809`
+                // we just check that the Comet message contains the same literal value
+                val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
+                assert(cometMessage.contains(sparkInvalidValue))
               }
             }
         }
