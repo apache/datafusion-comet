@@ -21,9 +21,12 @@ package org.apache.comet.shims
 import org.apache.spark.sql.catalyst.expressions._
 
 /**
- * `ShimCometExpr` parses the `Unhex` expression assuming that the catalyst version is 3.2.x.
+ * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
  */
-trait ShimCometExpr {
+trait CometExprShim {
+    /**
+      * Returns a tuple of expressions for the `unhex` function.
+      */
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
