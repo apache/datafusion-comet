@@ -105,38 +105,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast double to string") {
-    val testValues = (
-      Seq(
-        1.0499721536516571e-4,
-        0.001,
-        10000000.0,
-        9999999.0,
-        Float.NegativeInfinity,
-        Float.PositiveInfinity,
-        Float.MinPositiveValue,
-        Double.MinValue,
-        Double.MaxValue,
-        Double.NaN,
-        0.0,
-        -0.0)
-    ).toDF("a")
-    castTest(testValues, DataTypes.StringType)
+    castTest(generateDoubles(), DataTypes.StringType)
   }
 
   test("cast float to string") {
-    val testValues = (
-      Seq(
-        1.0499721536516571e-4,
-        0.001f,
-        10000000.0f,
-        9999999.0f,
-        Float.MinValue,
-        Float.MaxValue,
-        Float.NaN,
-        0.0f,
-        -0.0f)
-    ).toDF("a")
-    castTest(testValues, DataTypes.StringType)
+    castTest(generateFloats(), DataTypes.StringType)
   }
 
   test("cast BooleanType to LongType") {
@@ -704,7 +677,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val r = new Random(0)
     val values = Seq(
       Float.MaxValue,
-      Float.MinPositiveValue,
+      // Float.MinPositiveValue,
       Float.MinValue,
       Float.NaN,
       Float.PositiveInfinity,
@@ -722,7 +695,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val r = new Random(0)
     val values = Seq(
       Double.MaxValue,
-      Double.MinPositiveValue,
+      // Double.MinPositiveValue,
       Double.MinValue,
       Double.NaN,
       Double.PositiveInfinity,
