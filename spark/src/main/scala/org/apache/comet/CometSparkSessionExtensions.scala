@@ -916,7 +916,9 @@ object CometSparkSessionExtensions extends Logging {
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) &&
       (conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
-        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager") &&
+      // TODO: AQE coalesce partitions feature causes Comet columnar shuffle memory leak
+      !conf.coalesceShufflePartitionsEnabled
 
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
     COMET_SCAN_ENABLED.get(conf)
