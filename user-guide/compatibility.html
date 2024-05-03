@@ -250,13 +250,6 @@ under the License.
   <a class="reference internal nav-link" href="#cast">
    Cast
   </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#cast-from-string-to-timestamp">
-     Cast from String to Timestamp
-    </a>
-   </li>
-  </ul>
  </li>
 </ul>
 
@@ -287,22 +280,22 @@ under the License.
               <div>
                 
   <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
 <section id="compatibility-guide">
 <h1>Compatibility Guide<a class="headerlink" href="#compatibility-guide" title="Link to this heading">¶</a></h1>
@@ -318,15 +311,569 @@ be used in production.</p>
 </section>
 <section id="cast">
 <h2>Cast<a class="headerlink" href="#cast" title="Link to this heading">¶</a></h2>
-<p>Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
-guaranteed to be consistent with Spark.</p>
-<p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">epic</a> where we are tracking the work to implement Spark-compatible cast expressions.</p>
-<section id="cast-from-string-to-timestamp">
-<h3>Cast from String to Timestamp<a class="headerlink" href="#cast-from-string-to-timestamp" title="Link to this heading">¶</a></h3>
-<p>Casting from String to Timestamp is disabled by default due to incompatibilities with Spark, including timezone
-issues, and can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.castStringToTimestamp=true</span></code>. See the
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/328">tracking issue</a> for more information.</p>
-</section>
+<p>Cast operations in Comet fall into three levels of support:</p>
+<ul class="simple">
+<li><p><strong>Compatible</strong>: The results match Apache Spark</p></li>
+<li><p><strong>Incompatible</strong>: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.cast.allowIncompatible=true</span></code> will allow all incompatible casts to run natively in Comet, but this is not
+recommended for production use.</p></li>
+<li><p><strong>Unsupported</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
+Spark.</p></li>
+</ul>
+<p>The following table shows the current cast operations supported by Comet. Any cast that does not appear in this
+table (such as those involving complex types and timestamp_ntz, for example) are not supported by Comet.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>From Type</p></th>
+<th class="head"><p>To Type</p></th>
+<th class="head"><p>Compatible?</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>boolean</p></td>
+<td><p>byte</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>short</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>boolean</p></td>
+<td><p>integer</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>boolean</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>boolean</p></td>
+<td><p>decimal</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>boolean</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>byte</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>short</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>byte</p></td>
+<td><p>integer</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>byte</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>byte</p></td>
+<td><p>decimal</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>byte</p></td>
+<td><p>binary</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>short</p></td>
+<td><p>byte</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>integer</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>short</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>short</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>decimal</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>short</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>binary</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>short</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>integer</p></td>
+<td><p>byte</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>short</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>integer</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>integer</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>decimal</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>integer</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>binary</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>integer</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>long</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>byte</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>long</p></td>
+<td><p>short</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>integer</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>long</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>long</p></td>
+<td><p>decimal</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>long</p></td>
+<td><p>binary</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>float</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>byte</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>float</p></td>
+<td><p>short</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>integer</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>float</p></td>
+<td><p>long</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>float</p></td>
+<td><p>decimal</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>string</p></td>
+<td><p>Incompatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>float</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>double</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>double</p></td>
+<td><p>byte</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>double</p></td>
+<td><p>short</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>double</p></td>
+<td><p>integer</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>double</p></td>
+<td><p>long</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>double</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>double</p></td>
+<td><p>decimal</p></td>
+<td><p>Incompatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>double</p></td>
+<td><p>string</p></td>
+<td><p>Incompatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>double</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>decimal</p></td>
+<td><p>boolean</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>byte</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>decimal</p></td>
+<td><p>short</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>integer</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>decimal</p></td>
+<td><p>long</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>float</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>decimal</p></td>
+<td><p>double</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>string</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>decimal</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>boolean</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>byte</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>short</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>integer</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>float</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>double</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>decimal</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>binary</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>date</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>timestamp</p></td>
+<td><p>Incompatible</p></td>
+<td><p>Not all valid formats are supported</p></td>
+</tr>
+<tr class="row-odd"><td><p>binary</p></td>
+<td><p>string</p></td>
+<td><p>Incompatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>date</p></td>
+<td><p>boolean</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>byte</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>date</p></td>
+<td><p>short</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>integer</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>date</p></td>
+<td><p>long</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>float</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>date</p></td>
+<td><p>double</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>decimal</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>date</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>timestamp</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp</p></td>
+<td><p>boolean</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>byte</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp</p></td>
+<td><p>short</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>integer</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp</p></td>
+<td><p>long</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>float</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp</p></td>
+<td><p>double</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>decimal</p></td>
+<td><p>Unsupported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp</p></td>
+<td><p>string</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>date</p></td>
+<td><p>Compatible</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
 </section>
 </section>
 
