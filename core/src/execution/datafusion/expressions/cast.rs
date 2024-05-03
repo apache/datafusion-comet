@@ -124,7 +124,7 @@ macro_rules! cast_float_to_string {
 
                 // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
                 // result is expressed without scientific notation with at least one digit on either side of
-                // the decimal point. Otherwise, Databricks uses a mantissa followed by E and an
+                // the decimal point. Otherwise, Spark uses a mantissa followed by E and an
                 // exponent. The mantissa has an optional leading minus sign followed by one digit to the
                 // left of the decimal point, and the minimal number of digits greater than zero to the
                 // right. The exponent has and optional leading minus sign.
