@@ -67,6 +67,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else if (!testExists) {
               fail(s"Missing test: $expectedTestName")
             }
+          } else if (testExists) {
+            fail(s"Found test for cast that Spark does not support: $expectedTestName")
           }
         }
       }
