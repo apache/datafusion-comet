@@ -43,6 +43,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
@@ -585,20 +586,35 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
               // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
               evalMode.toString
             }
-            val supportedCast = (child.dataType, dt) match {
-              case (DataTypes.StringType, DataTypes.TimestampType)
-                  if !CometConf.COMET_CAST_STRING_TO_TIMESTAMP.get() =>
-                // https://github.com/apache/datafusion-comet/issues/328
-                withInfo(expr, s"${CometConf.COMET_CAST_STRING_TO_TIMESTAMP.key} is disabled")
-                false
-              case _ => true
-            }
-            if (supportedCast) {
-              castToProto(timeZoneId, dt, childExpr, evalModeStr)
-            } else {
-              // no need to call withInfo here since it was called when determining
-              // the value for `supportedCast`
-              None
+            val castSupport =
+              CometCast.isSupported(child.dataType, dt, timeZoneId, evalModeStr)
+
+            def getIncompatMessage(reason: Option[String]) =
+              "Comet does not guarantee correct results for cast " +
+                s"from ${child.dataType} to $dt " +
+                s"with timezone $timeZoneId and evalMode $evalModeStr" +
+                reason.map(str => s" ($str)").getOrElse("")
+
+            castSupport match {
+              case Compatible =>
+                castToProto(timeZoneId, dt, childExpr, evalModeStr)
+              case Incompatible(reason) =>
+                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+                  logWarning(getIncompatMessage(reason))
+                  castToProto(timeZoneId, dt, childExpr, evalModeStr)
+                } else {
+                  withInfo(
+                    expr,
+                    s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
+                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
+                  None
+                }
+              case Unsupported =>
+                withInfo(
+                  expr,
+                  s"Unsupported cast from ${child.dataType} to $dt " +
+                    s"with timezone $timeZoneId and evalMode $evalModeStr")
+                None
             }
           } else {
             withInfo(expr, child)

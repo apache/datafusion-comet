@@ -949,7 +949,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SPARK-33474: Support typed literals as partition spec values") {
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       withTable("t1") {
         val binaryStr = "Spark SQL"
         val binaryHexStr = Hex.hex(UTF8String.fromString(binaryStr).getBytes).toString

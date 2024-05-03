@@ -59,6 +59,11 @@ under the License.
       <artifactId>scala-library</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-reflect</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
     </dependency>
@@ -270,17 +275,13 @@ under the License.
         <version>3.2.0</version>
         <executions>
           <execution>
-            <id>generate-config-docs</id>
+            <id>generate-user-guide-reference-docs</id>
             <phase>package</phase>
             <goals>
               <goal>java</goal>
             </goals>
             <configuration>
-              <mainClass>org.apache.comet.CometConfGenerateDocs</mainClass>
-              <arguments>
-                <argument>docs/source/user-guide/configs-template.md</argument>
-                <argument>docs/source/user-guide/configs.md</argument>
-              </arguments>
+              <mainClass>org.apache.comet.GenerateDocs</mainClass>
               <classpathScope>compile</classpathScope>
             </configuration>
           </execution>

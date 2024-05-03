@@ -863,7 +863,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
