@@ -103,7 +103,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast BooleanType to IntegerType") {
     castTest(generateBools(), DataTypes.IntegerType)
   }
-  
+
   test("cast double to string") {
     val testValues = (
       Seq(
@@ -120,7 +120,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         0.0,
         -0.0)
     ).toDF("a")
-    castTest(testValues, DataTypes.StringType, testAnsiModeThrows = false)
+    castTest(testValues, DataTypes.StringType)
   }
 
   test("cast float to string") {
@@ -136,7 +136,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         0.0f,
         -0.0f)
     ).toDF("a")
-    castTest(testValues, DataTypes.StringType, testAnsiModeThrows = false)
+    castTest(testValues, DataTypes.StringType)
   }
 
   test("cast BooleanType to LongType") {
