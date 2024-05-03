@@ -49,6 +49,7 @@ object CometCast {
       DataTypes.DateType,
       DataTypes.TimestampType)
   // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
+  // https://github.com/apache/datafusion-comet/issues/378
 
   def isSupported(
       fromType: DataType,
@@ -62,17 +63,15 @@ object CometCast {
 
     (fromType, toType) match {
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
+        // https://github.com/apache/datafusion-comet/issues/378
         toType match {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
           case _ =>
             Unsupported
         }
-      case (DataTypes.BinaryType, DataTypes.StringType) =>
-        Incompatible()
       case (_: DecimalType, _: DecimalType) =>
-        // TODO we need to file an issue for adding specific tests for casting
-        // between decimal types with different precision and scale
+        // https://github.com/apache/datafusion-comet/issues/375
         Incompatible()
       case (DataTypes.StringType, _) =>
         canCastFromString(toType, timeZoneId, evalMode)
@@ -139,6 +138,9 @@ object CometCast {
       case DataTypes.TimestampType => Compatible
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
+        Incompatible()
+      case DataTypes.BinaryType =>
+        // https://github.com/apache/datafusion-comet/issues/377
         Incompatible()
       case _ => Unsupported
     }

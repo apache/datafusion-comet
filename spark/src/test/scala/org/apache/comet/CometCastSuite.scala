@@ -582,7 +582,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from BinaryType
 
   ignore("cast BinaryType to StringType") {
-    // TODO
+    // TODO implement this
+    // https://github.com/apache/datafusion-comet/issues/377
   }
 
   // CAST from DateType
