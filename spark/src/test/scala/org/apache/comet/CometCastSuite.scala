@@ -329,9 +329,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast FloatType to StringType") {
+  test("cast FloatType to StringType") {
     // https://github.com/apache/datafusion-comet/issues/312
-    castTest(generateFloats(), DataTypes.StringType)
+    val r = new Random(0)
+    val values = Seq(
+      Float.MaxValue,
+      Float.MinValue,
+      Float.NaN,
+      Float.PositiveInfinity,
+      Float.NegativeInfinity,
+      1.0f,
+      -1.0f,
+      Short.MinValue.toFloat,
+      Short.MaxValue.toFloat,
+      0.0f) ++
+      Range(0, dataSize).map(_ => r.nextFloat())
+    withNulls(values).toDF("a")
   }
 
   ignore("cast FloatType to TimestampType") {
@@ -374,9 +387,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
   }
 
-  ignore("cast DoubleType to StringType") {
+  test("cast DoubleType to StringType") {
     // https://github.com/apache/datafusion-comet/issues/312
-    castTest(generateDoubles(), DataTypes.StringType)
+    val r = new Random(0)
+    val values = Seq(
+      Double.MaxValue,
+      Double.MinValue,
+      Double.NaN,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity,
+      0.0d) ++
+      Range(0, dataSize).map(_ => r.nextDouble())
+    withNulls(values).toDF("a")
   }
 
   ignore("cast DoubleType to TimestampType") {
