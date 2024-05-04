@@ -1149,7 +1149,7 @@ index ac710c32296..88a5329e74e 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 593bd7bb4ba..f39fe59f36b 100644
+index 593bd7bb4ba..2518d715154 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -26,9 +26,11 @@ import org.scalatest.time.SpanSugar._
@@ -1268,15 +1268,6 @@ index 593bd7bb4ba..f39fe59f36b 100644
        val localShuffleRDD0 = localReads(0).execute().asInstanceOf[ShuffledRowRDD]
        val localShuffleRDD1 = localReads(1).execute().asInstanceOf[ShuffledRowRDD]
        // the final parallelism is math.max(1, numReduces / numMappers): math.max(1, 5/2) = 2
-@@ -298,7 +315,7 @@ class AdaptiveQueryExecSuite
-           .groupBy($"a").count()
-         checkAnswer(testDf, Seq())
-         val plan = testDf.queryExecution.executedPlan
--        assert(find(plan)(_.isInstanceOf[SortMergeJoinExec]).isDefined)
-+        assert(find(plan)(_.isInstanceOf[CometSortMergeJoinExec]).isDefined)
-         val coalescedReads = collect(plan) {
-           case r: AQEShuffleReadExec => r
-         }
 @@ -322,7 +339,7 @@ class AdaptiveQueryExecSuite
      }
    }
