@@ -118,6 +118,7 @@ The following cast operations are not compatible with Spark for all inputs and a
 | float | decimal  | No overflow check |
 | double | decimal  | No overflow check |
 | string | timestamp  | Not all valid formats are supported |
+| binary | string  | Only works for binary data representing valid UTF-8 strings |
 
 ### Unsupported Casts
 
