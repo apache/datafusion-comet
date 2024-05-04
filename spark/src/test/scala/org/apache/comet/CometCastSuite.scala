@@ -30,7 +30,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
-import org.apache.comet.expressions.CometCast
+import org.apache.comet.expressions.{CometCast, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -66,6 +66,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             } else if (!testExists) {
               fail(s"Missing test: $expectedTestName")
+            } else {
+              val testIgnored =
+                tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
+              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+                case Compatible(_) =>
+                  if (testIgnored) {
+                    fail(
+                      s"Cast from $fromType to $toType is reported as compatible " +
+                        "with Spark but the test is ignored")
+                  }
+                case _ =>
+                  if (!testIgnored) {
+                    fail(
+                      s"We claim that cast from $fromType to $toType is not compatible " +
+                        "with Spark but the test is not ignored")
+                  }
+              }
             }
           } else if (testExists) {
             fail(s"Found test for cast that Spark does not support: $expectedTestName")
@@ -347,7 +364,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Short.MaxValue.toFloat,
       0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
-    withNulls(values).toDF("a")
+    castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
   ignore("cast FloatType to TimestampType") {
@@ -401,7 +418,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.NegativeInfinity,
       0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
-    withNulls(values).toDF("a")
+    castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
   ignore("cast DoubleType to TimestampType") {
@@ -559,6 +576,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  ignore("cast StringType to TimestampType") {
+    // https://github.com/apache/datafusion-comet/issues/328
+    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
+      castTest(values.toDF("a"), DataTypes.TimestampType)
+    }
+  }
+
   test("cast StringType to TimestampType disabled for non-UTC timezone") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
@@ -569,15 +594,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("cast StringType to TimestampType (fuzz test)") {
-    // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
-      castTest(values.toDF("a"), DataTypes.TimestampType)
-    }
-  }
-
-  test("cast StringType to TimestampType") {
+  test("cast StringType to TimestampType - subset of supported values") {
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
@@ -795,7 +812,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(
         "2024-01-01T12:34:56.123456",
         "2024-01-01T01:00:00Z",
-        "2024-12-31T01:00:00-02:00",
+        "9999-12-31T01:00:00-02:00",
         "2024-12-31T01:00:00+02:00")
     withNulls(values)
       .toDF("str")
