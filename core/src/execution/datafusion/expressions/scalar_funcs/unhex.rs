@@ -22,29 +22,40 @@ use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 
-fn unhex(string: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
-    if string.is_empty() {
-        return Ok(());
+/// Helper function to convert a hex digit to a binary value. Returns None if the input is not a
+/// valid hex digit.
+fn unhex_digit(c: u8) -> Result<u8, DataFusionError> {
+    match c {
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'A'..=b'F' => Ok(10 + c - b'A'),
+        b'a'..=b'f' => Ok(10 + c - b'a'),
+        _ => Err(DataFusionError::Execution(
+            "Input to unhex_digit is not a valid hex digit".to_string(),
+        )),
+    }
+}
+
+/// Convert a hex string to binary and store the result in `result`. Returns an error if the input
+/// is not a valid hex string.
+fn unhex(hex_str: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
+    let bytes = hex_str.as_bytes();
+
+    let mut i = 0;
+
+    if (bytes.len() & 0x01) != 0 {
+        let v = unhex_digit(bytes[0])?;
+
+        result.push(v);
+        i += 1;
     }
 
-    // Adjust the string if it has an odd length, and prepare to add a padding byte if needed.
-    let needs_padding = string.len() % 2 != 0;
-    let adjusted_string = if needs_padding { &string[1..] } else { string };
+    while i < bytes.len() {
+        let first = unhex_digit(bytes[i])?;
+        let second = unhex_digit(bytes[i + 1])?;
+        // result.push(((first << 4) | second) & 0xFF);
+        result.push((first << 4) | second);
 
-    let mut iter = adjusted_string.chars().peekable();
-    while let (Some(high_char), Some(low_char)) = (iter.next(), iter.next()) {
-        let high = high_char
-            .to_digit(16)
-            .ok_or_else(|| DataFusionError::Internal("Invalid hex character".to_string()))?;
-        let low = low_char
-            .to_digit(16)
-            .ok_or_else(|| DataFusionError::Internal("Invalid hex character".to_string()))?;
-
-        result.push((high << 4 | low) as u8);
-    }
-
-    if needs_padding {
-        result.push(0);
+        i += 2;
     }
 
     Ok(())
@@ -130,7 +141,7 @@ mod test {
     use super::unhex;
 
     #[test]
-    fn test_unhex() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_unhex_valid() -> Result<(), Box<dyn std::error::Error>> {
         let mut result = Vec::new();
 
         unhex("537061726B2053514C", &mut result)?;
@@ -138,12 +149,53 @@ mod test {
         assert_eq!(result_str, "Spark SQL");
         result.clear();
 
-        assert!(unhex("hello", &mut result).is_err());
+        unhex("1C", &mut result)?;
+        assert_eq!(result, vec![28]);
         result.clear();
 
-        unhex("", &mut result)?;
-        assert!(result.is_empty());
+        unhex("737472696E67", &mut result)?;
+        assert_eq!(result, "string".as_bytes());
+        result.clear();
+
+        unhex("1", &mut result)?;
+        assert_eq!(result, vec![1]);
+        result.clear();
 
         Ok(())
+    }
+
+    #[test]
+    fn test_odd_length() -> Result<(), Box<dyn std::error::Error>> {
+        let mut result = Vec::new();
+
+        unhex("A1B", &mut result)?;
+        assert_eq!(result, vec![10, 27]);
+        result.clear();
+
+        unhex("0A1B", &mut result)?;
+        assert_eq!(result, vec![10, 27]);
+        result.clear();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unhex_empty() {
+        let mut result = Vec::new();
+
+        // Empty hex string
+        unhex("", &mut result).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_unhex_invalid() {
+        let mut result = Vec::new();
+
+        // Invalid hex strings
+        assert!(unhex("##", &mut result).is_err());
+        assert!(unhex("G123", &mut result).is_err());
+        assert!(unhex("hello", &mut result).is_err());
+        assert!(unhex("\0", &mut result).is_err());
     }
 }
