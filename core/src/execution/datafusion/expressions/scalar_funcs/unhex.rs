@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, OffsetSizeTrait};
+use arrow_array::OffsetSizeTrait;
 use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
@@ -52,7 +52,6 @@ fn unhex(hex_str: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
     while i < bytes.len() {
         let first = unhex_digit(bytes[i])?;
         let second = unhex_digit(bytes[i + 1])?;
-        // result.push(((first << 4) | second) & 0xFF);
         result.push((first << 4) | second);
 
         i += 2;
@@ -69,17 +68,19 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
         ColumnarValue::Array(array) => {
             let string_array = as_generic_string_array::<T>(array)?;
 
-            let mut builder = arrow::array::BinaryBuilder::new();
             let mut encoded = Vec::new();
+            let mut builder = arrow::array::BinaryBuilder::new();
 
-            for i in 0..string_array.len() {
-                let string = string_array.value(i);
-
-                if unhex(string, &mut encoded).is_ok() {
-                    builder.append_value(encoded.as_slice());
-                    encoded.clear();
-                } else if fail_on_error {
-                    return exec_err!("Input to unhex is not a valid hex string: {string}");
+            for item in string_array.iter() {
+                if let Some(s) = item {
+                    if unhex(s, &mut encoded).is_ok() {
+                        builder.append_value(encoded.as_slice());
+                        encoded.clear();
+                    } else if fail_on_error {
+                        return exec_err!("Input to unhex is not a valid hex string: {s}");
+                    } else {
+                        builder.append_null();
+                    }
                 } else {
                     builder.append_null();
                 }
@@ -96,6 +97,9 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
             } else {
                 Ok(ColumnarValue::Scalar(ScalarValue::Binary(None)))
             }
+        }
+        ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
+            Ok(ColumnarValue::Scalar(ScalarValue::Binary(None)))
         }
         _ => {
             exec_err!(
@@ -138,7 +142,32 @@ pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
+    use arrow_array::make_array;
+    use arrow_data::ArrayData;
+    use datafusion::logical_expr::ColumnarValue;
+
     use super::unhex;
+
+    #[test]
+    fn test_spark_unhex_null() -> Result<(), Box<dyn std::error::Error>> {
+        let input = ArrayData::new_null(&arrow_schema::DataType::Utf8, 2);
+        let output = ArrayData::new_null(&arrow_schema::DataType::Binary, 2);
+
+        let input = ColumnarValue::Array(Arc::new(make_array(input)));
+        let expected = ColumnarValue::Array(Arc::new(make_array(output)));
+
+        let result = super::spark_unhex(&[input])?;
+
+        match (result, expected) {
+            (ColumnarValue::Array(result), ColumnarValue::Array(expected)) => {
+                assert_eq!(*result, *expected);
+                Ok(())
+            }
+            _ => Err("Unexpected result type".into()),
+        }
+    }
 
     #[test]
     fn test_unhex_valid() -> Result<(), Box<dyn std::error::Error>> {
