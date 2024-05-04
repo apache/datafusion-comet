@@ -82,7 +82,6 @@ object GenerateDocs {
           }
         }
       } else if (line.trim == "<!--INCOMPAT_CAST_TABLE-->") {
-        w.write("## Incompatible Casts\n".getBytes)
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {

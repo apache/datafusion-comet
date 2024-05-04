@@ -111,7 +111,6 @@ The following cast operations are generally compatible with Spark except for the
 
 The following cast operations are not compatible with Spark for all inputs and are disabled by default.
 
-## Incompatible Casts
 | From Type | To Type | Notes |
 |-|-|-|
 | integer | decimal  | No overflow check |
@@ -119,3 +118,8 @@ The following cast operations are not compatible with Spark for all inputs and a
 | float | decimal  | No overflow check |
 | double | decimal  | No overflow check |
 | string | timestamp  | Not all valid formats are supported |
+
+### Unsupported Casts
+
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
+[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.

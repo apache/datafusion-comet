@@ -55,3 +55,8 @@ The following cast operations are generally compatible with Spark except for the
 The following cast operations are not compatible with Spark for all inputs and are disabled by default.
 
 <!--INCOMPAT_CAST_TABLE-->
+
+### Unsupported Casts
+
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the 
+[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
