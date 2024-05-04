@@ -148,7 +148,7 @@ object CometCast {
               "instead of 1.4E-45"))
       case DataTypes.BinaryType =>
         // https://github.com/apache/datafusion-comet/issues/377
-        Unsupported
+        Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
       case _ => Unsupported
     }
   }

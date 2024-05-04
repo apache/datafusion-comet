@@ -623,8 +623,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from BinaryType
 
   ignore("cast BinaryType to StringType") {
-    // TODO implement this
     // https://github.com/apache/datafusion-comet/issues/377
+    castTest(generateBinary(), DataTypes.StringType)
+  }
+
+  test("cast BinaryType to StringType - valid UTF-8 inputs") {
+    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.StringType)
   }
 
   // CAST from DateType
@@ -829,6 +833,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
     val r = new Random(0)
     Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
+  }
+
+  private def generateBinary(): DataFrame = {
+    val r = new Random(0)
+    val bytes = new Array[Byte](8)
+    val values: Seq[Array[Byte]] = Range(0, dataSize).map(_ => {
+      r.nextBytes(bytes)
+      bytes.clone()
+    })
+    values.toDF("a")
   }
 
   private def withNulls[T](values: Seq[T]): Seq[Option[T]] = {
