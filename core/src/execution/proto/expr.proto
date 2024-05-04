@@ -238,7 +238,11 @@ message Cast {
   DataType datatype = 2;
   string timezone = 3;
   // LEGACY, ANSI, or TRY
-  string eval_mode = 4;
+  enum EvalMode {
+  LEGACY = 0;
+  TRY = 1;
+  ANSI = 2;
+  }
 }
 
 message Equal {
