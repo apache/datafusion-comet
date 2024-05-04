@@ -22,8 +22,7 @@ use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 
-/// Helper function to convert a hex digit to a binary value. Returns None if the input is not a
-/// valid hex digit.
+/// Helper function to convert a hex digit to a binary value.
 fn unhex_digit(c: u8) -> Result<u8, DataFusionError> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),
@@ -134,7 +133,7 @@ pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
         DataType::Utf8 => spark_unhex_inner::<i32>(val_to_unhex, fail_on_error),
         DataType::LargeUtf8 => spark_unhex_inner::<i64>(val_to_unhex, fail_on_error),
         other => exec_err!(
-            "The first argument must be a string scalar or array, but got: {:?}",
+            "The first argument must be a Utf8 or LargeUtf8: {:?}",
             other
         ),
     }
