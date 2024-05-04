@@ -233,16 +233,20 @@ message Remainder {
   DataType return_type = 4;
 }
 
+enum EvalMode {
+  LEGACY = 0;
+  TRY = 1;
+  ANSI = 2;
+}
+
 message Cast {
   Expr child = 1;
   DataType datatype = 2;
   string timezone = 3;
-  // LEGACY, ANSI, or TRY
-  enum EvalMode {
-  LEGACY = 0;
-  TRY = 1;
-  ANSI = 2;
-  }
+  // Depreciateid: LEGACY, ANSI, or TRY - preserved for backward compatibity
+  string eval_mode_string= 4; // for backward compatibility 
+  EvalMode eval_mode = 5; // New enum field
+  
 }
 
 message Equal {

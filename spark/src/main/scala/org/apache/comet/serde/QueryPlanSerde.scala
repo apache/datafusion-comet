@@ -525,6 +525,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported
    */
+
+  def stringToEvalMode(evalModeStr: String): ExprOuterClass.EvalMode =
+    evalModeStr.toUpperCase match {
+      case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
+      case "TRY" => ExprOuterClass.EvalMode.TRY
+      case "ANSI" => ExprOuterClass.EvalMode.ANSI
+      case _ =>
+        throw new IllegalArgumentException(
+          "Invalid eval mode"
+        ) // Assuming we want to catch errors strictly
+    }
+
   def exprToProto(
       expr: Expression,
       input: Seq[Attribute],
@@ -535,12 +547,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         childExpr: Option[Expr],
         evalMode: String): Option[Expr] = {
       val dataType = serializeDataType(dt)
+      val evalModeEnum = stringToEvalMode(evalMode) // Convert string to enum
 
       if (childExpr.isDefined && dataType.isDefined) {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
-        castBuilder.setEvalMode(evalMode)
+        // castBuilder.setEvalMode(evalMode)
+        castBuilder.setEvalMode(evalModeEnum) // Set the enum in protobuf
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
@@ -1207,7 +1221,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
-                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
+                    .setEvalMode(stringToEvalMode("LEGACY")) // year is not affected by ANSI mode
                     .build())
                 .build()
             })
