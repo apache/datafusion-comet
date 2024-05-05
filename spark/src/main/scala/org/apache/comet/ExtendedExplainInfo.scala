@@ -32,7 +32,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def generateExtendedInfo(plan: SparkPlan): String = {
     val info = extensionInfo(plan)
-    info.distinct.mkString("\n").trim
+    info.mkString("\n").trim
   }
 
   private def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
@@ -45,17 +45,17 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     }
   }
 
-  private def extensionInfo(node: TreeNode[_]): mutable.Seq[String] = {
+  private def extensionInfo(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)
     sorted.foreach { p =>
-      val all: Array[String] =
-        getActualPlan(p).getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse("").split("\n")
+      val all: Set[String] =
+        getActualPlan(p).getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
       for (s <- all) {
         info = info :+ s
       }
     }
-    info.filter(!_.contentEquals("\n"))
+    info.toSet
   }
 
   // get all plan nodes, breadth first traversal, then returned the reversed list so
@@ -84,5 +84,5 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 }
 
 object CometExplainInfo {
-  val EXTENSION_INFO = new TreeNodeTag[String]("CometExtensionInfo")
+  val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 }
