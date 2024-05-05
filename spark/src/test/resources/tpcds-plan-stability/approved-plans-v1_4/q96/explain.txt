@@ -1,34 +1,32 @@
 == Physical Plan ==
-* HashAggregate (30)
-+- * ColumnarToRow (29)
-   +- CometColumnarExchange (28)
-      +- RowToColumnar (27)
-         +- * HashAggregate (26)
-            +- * Project (25)
-               +- * BroadcastHashJoin Inner BuildRight (24)
-                  :- * Project (18)
-                  :  +- * BroadcastHashJoin Inner BuildRight (17)
-                  :     :- * Project (11)
-                  :     :  +- * BroadcastHashJoin Inner BuildRight (10)
-                  :     :     :- * ColumnarToRow (4)
-                  :     :     :  +- CometProject (3)
-                  :     :     :     +- CometFilter (2)
-                  :     :     :        +- CometScan parquet spark_catalog.default.store_sales (1)
-                  :     :     +- BroadcastExchange (9)
-                  :     :        +- * ColumnarToRow (8)
-                  :     :           +- CometProject (7)
-                  :     :              +- CometFilter (6)
-                  :     :                 +- CometScan parquet spark_catalog.default.household_demographics (5)
-                  :     +- BroadcastExchange (16)
-                  :        +- * ColumnarToRow (15)
-                  :           +- CometProject (14)
-                  :              +- CometFilter (13)
-                  :                 +- CometScan parquet spark_catalog.default.time_dim (12)
-                  +- BroadcastExchange (23)
-                     +- * ColumnarToRow (22)
-                        +- CometProject (21)
-                           +- CometFilter (20)
-                              +- CometScan parquet spark_catalog.default.store (19)
+* HashAggregate (28)
++- Exchange (27)
+   +- * HashAggregate (26)
+      +- * Project (25)
+         +- * BroadcastHashJoin Inner BuildRight (24)
+            :- * Project (18)
+            :  +- * BroadcastHashJoin Inner BuildRight (17)
+            :     :- * Project (11)
+            :     :  +- * BroadcastHashJoin Inner BuildRight (10)
+            :     :     :- * ColumnarToRow (4)
+            :     :     :  +- CometProject (3)
+            :     :     :     +- CometFilter (2)
+            :     :     :        +- CometScan parquet spark_catalog.default.store_sales (1)
+            :     :     +- BroadcastExchange (9)
+            :     :        +- * ColumnarToRow (8)
+            :     :           +- CometProject (7)
+            :     :              +- CometFilter (6)
+            :     :                 +- CometScan parquet spark_catalog.default.household_demographics (5)
+            :     +- BroadcastExchange (16)
+            :        +- * ColumnarToRow (15)
+            :           +- CometProject (14)
+            :              +- CometFilter (13)
+            :                 +- CometScan parquet spark_catalog.default.time_dim (12)
+            +- BroadcastExchange (23)
+               +- * ColumnarToRow (22)
+                  +- CometProject (21)
+                     +- CometFilter (20)
+                        +- CometScan parquet spark_catalog.default.store (19)
 
 
 (unknown) Scan parquet spark_catalog.default.store_sales
@@ -152,17 +150,11 @@ Functions [1]: [partial_count(1)]
 Aggregate Attributes [1]: [count#12]
 Results [1]: [count#13]
 
-(27) RowToColumnar
+(27) Exchange
 Input [1]: [count#13]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=4]
 
-(28) CometColumnarExchange
-Input [1]: [count#13]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
-
-(29) ColumnarToRow [codegen id : 5]
-Input [1]: [count#13]
-
-(30) HashAggregate [codegen id : 5]
+(28) HashAggregate [codegen id : 5]
 Input [1]: [count#13]
 Keys: []
 Functions [1]: [count(1)]

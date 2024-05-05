@@ -8,55 +8,49 @@ TakeOrderedAndProject [c_customer_id]
               BroadcastHashJoin [ctr_store_sk,ctr_store_sk,ctr_total_return,(avg(ctr_total_return) * 1.2)]
                 Filter [ctr_total_return]
                   HashAggregate [sr_customer_sk,sr_store_sk,sum] [sum(UnscaledValue(sr_return_amt)),ctr_customer_sk,ctr_store_sk,ctr_total_return,sum]
-                    ColumnarToRow
-                      InputAdapter
-                        CometColumnarExchange [sr_customer_sk,sr_store_sk] #1
-                          RowToColumnar
-                            WholeStageCodegen (2)
-                              HashAggregate [sr_customer_sk,sr_store_sk,sr_return_amt] [sum,sum]
-                                Project [sr_customer_sk,sr_store_sk,sr_return_amt]
-                                  BroadcastHashJoin [sr_returned_date_sk,d_date_sk]
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometFilter [sr_store_sk,sr_customer_sk]
-                                          CometScan parquet spark_catalog.default.store_returns [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
-                                            SubqueryBroadcast [d_date_sk] #1
-                                              BroadcastExchange #2
-                                                WholeStageCodegen (1)
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      CometProject [d_date_sk]
-                                                        CometFilter [d_year,d_date_sk]
-                                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                    InputAdapter
-                                      ReusedExchange [d_date_sk] #2
+                    InputAdapter
+                      Exchange [sr_customer_sk,sr_store_sk] #1
+                        WholeStageCodegen (2)
+                          HashAggregate [sr_customer_sk,sr_store_sk,sr_return_amt] [sum,sum]
+                            Project [sr_customer_sk,sr_store_sk,sr_return_amt]
+                              BroadcastHashJoin [sr_returned_date_sk,d_date_sk]
+                                ColumnarToRow
+                                  InputAdapter
+                                    CometFilter [sr_store_sk,sr_customer_sk]
+                                      CometScan parquet spark_catalog.default.store_returns [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
+                                        SubqueryBroadcast [d_date_sk] #1
+                                          BroadcastExchange #2
+                                            WholeStageCodegen (1)
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  CometProject [d_date_sk]
+                                                    CometFilter [d_year,d_date_sk]
+                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                InputAdapter
+                                  ReusedExchange [d_date_sk] #2
                 InputAdapter
                   BroadcastExchange #3
                     WholeStageCodegen (6)
                       Filter [(avg(ctr_total_return) * 1.2)]
                         HashAggregate [ctr_store_sk,sum,count] [avg(ctr_total_return),(avg(ctr_total_return) * 1.2),ctr_store_sk,sum,count]
-                          ColumnarToRow
-                            InputAdapter
-                              CometColumnarExchange [ctr_store_sk] #4
-                                RowToColumnar
-                                  WholeStageCodegen (5)
-                                    HashAggregate [ctr_store_sk,ctr_total_return] [sum,count,sum,count]
-                                      HashAggregate [sr_customer_sk,sr_store_sk,sum] [sum(UnscaledValue(sr_return_amt)),ctr_store_sk,ctr_total_return,sum]
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometColumnarExchange [sr_customer_sk,sr_store_sk] #5
-                                              RowToColumnar
-                                                WholeStageCodegen (4)
-                                                  HashAggregate [sr_customer_sk,sr_store_sk,sr_return_amt] [sum,sum]
-                                                    Project [sr_customer_sk,sr_store_sk,sr_return_amt]
-                                                      BroadcastHashJoin [sr_returned_date_sk,d_date_sk]
-                                                        ColumnarToRow
-                                                          InputAdapter
-                                                            CometFilter [sr_store_sk]
-                                                              CometScan parquet spark_catalog.default.store_returns [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
-                                                                ReusedSubquery [d_date_sk] #1
-                                                        InputAdapter
-                                                          ReusedExchange [d_date_sk] #2
+                          InputAdapter
+                            Exchange [ctr_store_sk] #4
+                              WholeStageCodegen (5)
+                                HashAggregate [ctr_store_sk,ctr_total_return] [sum,count,sum,count]
+                                  HashAggregate [sr_customer_sk,sr_store_sk,sum] [sum(UnscaledValue(sr_return_amt)),ctr_store_sk,ctr_total_return,sum]
+                                    InputAdapter
+                                      Exchange [sr_customer_sk,sr_store_sk] #5
+                                        WholeStageCodegen (4)
+                                          HashAggregate [sr_customer_sk,sr_store_sk,sr_return_amt] [sum,sum]
+                                            Project [sr_customer_sk,sr_store_sk,sr_return_amt]
+                                              BroadcastHashJoin [sr_returned_date_sk,d_date_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    CometFilter [sr_store_sk]
+                                                      CometScan parquet spark_catalog.default.store_returns [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
+                                                        ReusedSubquery [d_date_sk] #1
+                                                InputAdapter
+                                                  ReusedExchange [d_date_sk] #2
             InputAdapter
               BroadcastExchange #6
                 WholeStageCodegen (7)

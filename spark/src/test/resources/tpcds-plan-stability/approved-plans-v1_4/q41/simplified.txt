@@ -1,28 +1,28 @@
-WholeStageCodegen (3)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [i_product_name]
-        CometHashAggregate [i_product_name]
-          CometColumnarExchange [i_product_name] #1
-            RowToColumnar
-              WholeStageCodegen (2)
-                HashAggregate [i_product_name]
-                  Project [i_product_name]
-                    BroadcastHashJoin [i_manufact,i_manufact]
-                      ColumnarToRow
-                        InputAdapter
-                          CometProject [i_manufact,i_product_name]
-                            CometFilter [i_manufact_id,i_manufact]
-                              CometScan parquet spark_catalog.default.item [i_manufact_id,i_manufact,i_product_name]
-                      InputAdapter
-                        BroadcastExchange #2
-                          WholeStageCodegen (1)
-                            ColumnarToRow
+TakeOrderedAndProject [i_product_name]
+  WholeStageCodegen (4)
+    HashAggregate [i_product_name]
+      InputAdapter
+        Exchange [i_product_name] #1
+          WholeStageCodegen (3)
+            HashAggregate [i_product_name]
+              Project [i_product_name]
+                BroadcastHashJoin [i_manufact,i_manufact]
+                  ColumnarToRow
+                    InputAdapter
+                      CometProject [i_manufact,i_product_name]
+                        CometFilter [i_manufact_id,i_manufact]
+                          CometScan parquet spark_catalog.default.item [i_manufact_id,i_manufact,i_product_name]
+                  InputAdapter
+                    BroadcastExchange #2
+                      WholeStageCodegen (2)
+                        Project [i_manufact]
+                          Filter [item_cnt]
+                            HashAggregate [i_manufact,count] [count(1),item_cnt,count]
                               InputAdapter
-                                CometProject [i_manufact]
-                                  CometFilter [item_cnt]
-                                    CometHashAggregate [i_manufact,count]
-                                      CometColumnarExchange [i_manufact] #3
+                                Exchange [i_manufact] #3
+                                  WholeStageCodegen (1)
+                                    ColumnarToRow
+                                      InputAdapter
                                         CometHashAggregate [i_manufact]
                                           CometProject [i_manufact]
                                             CometFilter [i_category,i_color,i_units,i_size,i_manufact]
