@@ -72,5 +72,5 @@ Linux, Apple OSX (Intel and M1)
 See the [DataFusion Comet User Guide](https://datafusion.apache.org/comet/user-guide/) for installation instructions.
 
 ## Contributing
-See the [DataFusion Comet Contribution Guide](https://datafusion.apache.org/comet/contributor-guide/development.html)
+See the [DataFusion Comet Contribution Guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html)
 for information on how to get started contributing to the project.
