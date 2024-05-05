@@ -629,6 +629,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StringType to DateType") {
+    // test with hand-picked values
+    castTest(
+      Seq("2020-01-01", "2020-01", "2020-01-01", "2020-01-01T")
+        .toDF("a"),
+      DataTypes.DateType)
+    // fuzz test
+    castTest(generateStrings(datePattern, 10).toDF("a"), DataTypes.DateType)
+  }
   // CAST from BinaryType
 
   ignore("cast BinaryType to StringType") {
@@ -642,42 +651,42 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DateType
 
-  ignore("cast DateType to BooleanType") {
+  test("cast DateType to BooleanType") {
     // Arrow error: Cast error: Casting from Date32 to Boolean not supported
     castTest(generateDates(), DataTypes.BooleanType)
   }
 
-  ignore("cast DateType to ByteType") {
+  test("cast DateType to ByteType") {
     // Arrow error: Cast error: Casting from Date32 to Int8 not supported
     castTest(generateDates(), DataTypes.ByteType)
   }
 
-  ignore("cast DateType to ShortType") {
+  test("cast DateType to ShortType") {
     // Arrow error: Cast error: Casting from Date32 to Int16 not supported
     castTest(generateDates(), DataTypes.ShortType)
   }
 
-  ignore("cast DateType to IntegerType") {
+  test("cast DateType to IntegerType") {
     // input: 2345-01-01, expected: null, actual: 3789391
     castTest(generateDates(), DataTypes.IntegerType)
   }
 
-  ignore("cast DateType to LongType") {
+  test("cast DateType to LongType") {
     // input: 2024-01-01, expected: null, actual: 19723
     castTest(generateDates(), DataTypes.LongType)
   }
 
-  ignore("cast DateType to FloatType") {
+  test("cast DateType to FloatType") {
     // Arrow error: Cast error: Casting from Date32 to Float32 not supported
     castTest(generateDates(), DataTypes.FloatType)
   }
 
-  ignore("cast DateType to DoubleType") {
+  test("cast DateType to DoubleType") {
     // Arrow error: Cast error: Casting from Date32 to Float64 not supported
     castTest(generateDates(), DataTypes.DoubleType)
   }
 
-  ignore("cast DateType to DecimalType(10,2)") {
+  test("cast DateType to DecimalType(10,2)") {
     // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
     castTest(generateDates(), DataTypes.createDecimalType(10, 2))
   }
@@ -686,7 +695,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDates(), DataTypes.StringType)
   }
 
-  ignore("cast DateType to TimestampType") {
+  test("cast DateType to TimestampType") {
     // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
     castTest(generateDates(), DataTypes.TimestampType)
   }
