@@ -339,11 +339,11 @@ class CometExecSuite extends CometTestBase {
           }.map(_.metrics).get
 
           assert(metrics.contains("input_batches"))
-          assert(metrics("input_batches").value == 2L)
+          assert(metrics("input_batches").value == 8L)
           assert(metrics.contains("input_rows"))
           assert(metrics("input_rows").value == 10L)
           assert(metrics.contains("output_batches"))
-          assert(metrics("output_batches").value == 1L)
+          assert(metrics("output_batches").value == 4L)
           assert(metrics.contains("output_rows"))
           assert(metrics("output_rows").value == 5L)
           assert(metrics.contains("peak_mem_used"))
