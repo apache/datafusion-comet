@@ -184,7 +184,7 @@ object CometCast {
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.FloatType => Compatible
-    case _: DecimalType => Incompatible()
+    case _: DecimalType => Compatible
     case _ => Unsupported
   }
 

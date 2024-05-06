@@ -25,7 +25,7 @@ use std::{
 use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
-    datatypes::TimestampMicrosecondType,
+    datatypes::{DecimalType, Decimal128Type, TimestampMicrosecondType},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -39,7 +39,7 @@ use chrono::{TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use num::{traits::CheckedNeg, CheckedSub, Integer, Num};
+use num::{traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
 use regex::Regex;
 
 use crate::execution::datafusion::expressions::utils::{
@@ -266,6 +266,48 @@ impl Cast {
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
             }
+
+            (DataType::Float64, DataType::Decimal128(precision, scale)) => {
+                let input = array.as_any().downcast_ref::<Float64Array>().unwrap();
+                let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
+            
+                let mul = (*precision as f64).powi(*scale as i32);
+            
+                for i in 0..input.len() {
+                    if input.is_null(i) {
+                        cast_array.append_null();
+                    } else {
+                        let input_value = input.value(i);
+                        let value = (input_value * mul).round().to_i128();
+            
+                        if let Some(value) = value {
+                            if Decimal128Type::validate_decimal_precision(value, *precision).is_err() {
+                                return Err(
+                                    CometError::NumericValueOutOfRange {
+                                        value: input_value.to_string(),
+                                        precision: *precision,
+                                        scale: *scale,
+                                    }
+                                    .into(),
+                                );
+                            }
+            
+                            cast_array.append_value(value);
+                        } else {
+                            return Err(
+                                CometError::NumericValueOutOfRange {
+                                    value: input_value.to_string(),
+                                    precision: *precision,
+                                    scale: *scale,
+                                }
+                                .into(),
+                            );
+                        }
+                    }
+                }
+            
+                Arc::new(cast_array.with_precision_and_scale(*precision, *scale)?.finish()) as ArrayRef
+            }            
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
