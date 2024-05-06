@@ -32,7 +32,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def generateExtendedInfo(plan: SparkPlan): String = {
     val info = extensionInfo(plan)
-    info.mkString("\n").trim
+    info.toSeq.sorted.mkString("\n").trim
   }
 
   private def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
