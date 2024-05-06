@@ -178,12 +178,12 @@ object CometCast {
   }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.IntegerType => Compatible
+    case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.IntegerType | DataTypes.LongType | DataTypes.ShortType | DataTypes.ByteType => Compatible
     case _ => Unsupported
   }
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.FloatType => Compatible
+    case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.IntegerType | DataTypes.LongType | DataTypes.ShortType | DataTypes.ByteType => Compatible
     case _: DecimalType => Incompatible()
     case _ => Unsupported
   }

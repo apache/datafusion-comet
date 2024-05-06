@@ -31,8 +31,8 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, OffsetSizeTrait,
-    PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, Int32Array,
+    Int64Array, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -191,56 +191,94 @@ macro_rules! cast_int_to_int_macro {
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
-        let spark_int_literal_suffix = match $from_data_type {
-            &DataType::Int64 => "L",
-            &DataType::Int16 => "S",
-            &DataType::Int8 => "T",
-            _ => "",
-        };
 
-        let output_array = match $eval_mode {
-            EvalMode::Legacy => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
+        let output_array = cast_array
+            .iter()
+            .map(|value| match (value, $eval_mode) {
+                (Some(value), EvalMode::Ansi) => {
+                    if let Ok(res) = <$to_native_type>::try_from(value) {
+                        Ok(Some(res))
+                    } else {
+                        Err(CometError::CastOverFlow {
+                            value: format!(
+                                "{}{}",
+                                value.to_string(),
+                                match $from_data_type {
+                                    &DataType::Int64 => "L",
+                                    &DataType::Int16 => "S",
+                                    &DataType::Int8 => "T",
+                                    _ => "",
+                                }
+                            ),
+                            from_type: $spark_from_data_type_name.to_string(),
+                            to_type: $spark_to_data_type_name.to_string(),
+                        })
                     }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let res = <$to_native_type>::try_from(value);
-                        if res.is_err() {
-                            Err(CometError::CastOverFlow {
-                                value: value.to_string() + spark_int_literal_suffix,
-                                from_type: $spark_from_data_type_name.to_string(),
-                                to_type: $spark_to_data_type_name.to_string(),
-                            })
-                        } else {
-                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                }
+                (Some(value), EvalMode::Try) => {
+                    if let Ok(res) = <$to_native_type>::try_from(value) {
+                        Ok(Some(res))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                (Some(value), _) => Ok(Some(value as $to_native_type)),
+                _ => Ok(None),
+            })
+            .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>()?;
+
+        Ok(Arc::new(output_array))
+    }};
+}
+
+macro_rules! cast_decimal_to_integer {
+    ($array:expr, $eval_mode:expr, $src_array_type:ty, $dest_array_type:ty, $rust_src_type:ty, $rust_dest_type:ty, $src_type_str:expr, $dest_type_str:expr, $max_val:expr, $min_val:expr) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    let value_str = if $src_type_str == "FLOAT" {
+                        format!("{:e}", value).replace("e", "E")
+                    } else {
+                        format!("{:e}D", value).replace("e", "E")
+                    };
+                    if value.is_nan() {
+                        match $eval_mode {
+                            EvalMode::Try => Ok(None),
+                            EvalMode::Ansi => Err(CometError::CastOverFlow {
+                                value: value_str,
+                                from_type: $src_type_str.to_string(),
+                                to_type: $dest_type_str.to_string(),
+                            }),
+                            _ => Ok(Some(0)),
                         }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-            EvalMode::Try => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let res = <$to_native_type>::try_from(value);
-                        if res.is_err() {
-                            Ok::<Option<$to_native_type>, CometError>(None)
-                        } else {
-                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                    } else if value.is_infinite() || value.abs() > $max_val as $rust_src_type {
+                        match $eval_mode {
+                            EvalMode::Try => Ok(None),
+                            EvalMode::Ansi => Err(CometError::CastOverFlow {
+                                value: value_str,
+                                from_type: $src_type_str.to_string(),
+                                to_type: $dest_type_str.to_string(),
+                            }),
+                            _ => Ok(Some(if value.is_sign_positive() {
+                                $max_val
+                            } else {
+                                $min_val
+                            })),
                         }
+                    } else {
+                        Ok(Some(value as $rust_dest_type))
                     }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-        }?;
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
+
         let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
         result
     }};
@@ -275,7 +313,6 @@ impl Cast {
     }
 
     fn cast_array(&self, array: ArrayRef) -> DataFusionResult<ArrayRef> {
-        dbg!(self.eval_mode);
         let to_type = &self.data_type;
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
         let from_type = array.data_type();
@@ -347,69 +384,15 @@ impl Cast {
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
             }
-            (DataType::Float32, DataType::Int32) => {
-                Self::spark_cast_float32_to_int32(&array, self.eval_mode, "INT".to_string())?
-            }
-            (DataType::Float32, DataType::Int16) => {
-                let int32_array = Self::spark_cast_float32_to_int32(
-                    &array,
-                    self.eval_mode,
-                    "SMALLINT".to_string(),
-                )?;
-                Self::spark_cast_int_to_int(
-                    &int32_array,
-                    self.eval_mode,
-                    &DataType::Int32,
-                    to_type,
-                )?
-            }
-            (DataType::Float32, DataType::Int8) => {
-                let int32_array = Self::spark_cast_float32_to_int32(
-                    &array,
-                    self.eval_mode,
-                    "TINYINT".to_string(),
-                )?;
-                Self::spark_cast_int_to_int(
-                    &int32_array,
-                    self.eval_mode,
-                    &DataType::Int32,
-                    to_type,
-                )?
-            }
-            (DataType::Float32, DataType::Int64) => {
-                Self::spark_cast_float32_to_int64(&array, self.eval_mode)?
-            }
-            (DataType::Float64, DataType::Int32) => {
-                Self::spark_cast_float64_to_int32(&array, self.eval_mode, "INT".to_string())?
-            }
-            (DataType::Float64, DataType::Int64) => {
-                Self::spark_cast_float64_to_int64(&array, self.eval_mode)?
-            }
-            (DataType::Float64, DataType::Int16) => {
-                let int32_array = Self::spark_cast_float64_to_int32(
-                    &array,
-                    self.eval_mode,
-                    "SMALLINT".to_string(),
-                )?;
-                Self::spark_cast_int_to_int(
-                    &int32_array,
-                    self.eval_mode,
-                    &DataType::Int32,
-                    to_type,
-                )?
-            }
-            (DataType::Float64, DataType::Int8) => {
-                let int32_array = Self::spark_cast_float64_to_int32(
-                    &array,
-                    self.eval_mode,
-                    "TINYINT".to_string(),
-                )?;
-                Self::spark_cast_int_to_int(
-                    &int32_array,
-                    self.eval_mode,
-                    &DataType::Int32,
-                    to_type,
-                )?
+            (DataType::Float32, DataType::Int8)
+            | (DataType::Float32, DataType::Int16)
+            | (DataType::Float32, DataType::Int32)
+            | (DataType::Float32, DataType::Int64)
+            | (DataType::Float64, DataType::Int8)
+            | (DataType::Float64, DataType::Int16)
+            | (DataType::Float64, DataType::Int32)
+            | (DataType::Float64, DataType::Int64) => {
+                Self::spark_cast_decimal_to_integer(&array, self.eval_mode, from_type, to_type)?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -558,271 +541,158 @@ impl Cast {
         Ok(Arc::new(output_array))
     }
 
-    fn spark_cast_float32_to_int32(
-        array: &ArrayRef,
+    fn spark_cast_decimal_to_integer(
+        array: &dyn Array,
         eval_mode: EvalMode,
-        name: String,
+        from_type: &DataType,
+        to_type: &DataType,
     ) -> CometResult<ArrayRef> {
-        let float_array = array
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .expect("cast_string_to_int expected a string array");
-        let output_array = match eval_mode {
-            EvalMode::Legacy => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan() {
-                            return Ok::<Option<i32>, CometError>(Some(0));
-                        } else if value.is_infinite() && value.is_sign_positive() {
-                            return Ok(Some(std::i32::MAX));
-                        } else if value.is_infinite() && value.is_sign_negative() {
-                            return Ok(Some(std::i32::MIN));
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-            EvalMode::Try => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i32::MAX as f32
-                            || value < std::i32::MIN as f32
-                        {
-                            return Ok::<Option<i32>, CometError>(None);
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-            EvalMode::Ansi => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i32::MAX as f32
-                            || value < std::i32::MIN as f32
-                        {
-                            return Err(CometError::CastOverFlow {
-                                value: format!("{:e}", value).replace("e", "E"),
-                                from_type: "FLOAT".to_string(),
-                                to_type: name.clone(),
-                            });
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-        };
-        Ok(Arc::new(output_array))
-    }
-
-    fn spark_cast_float32_to_int64(array: &ArrayRef, eval_mode: EvalMode) -> CometResult<ArrayRef> {
-        let float_array = array
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .expect("cast_string_to_int expected a string array");
-        let output_array = match eval_mode {
-            EvalMode::Legacy => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan() {
-                            return Ok::<Option<i64>, CometError>(Some(0));
-                        } else if value.is_infinite() && value.is_sign_positive() {
-                            return Ok(Some(std::i64::MAX));
-                        } else if value.is_infinite() && value.is_sign_negative() {
-                            return Ok(Some(std::i64::MIN));
-                        } else {
-                            return Ok(Some(value as i64));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-            EvalMode::Try => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i64::MAX as f32
-                            || value < std::i64::MIN as f32
-                        {
-                            return Ok::<Option<i64>, CometError>(None);
-                        } else {
-                            return Ok(Some(value as i64));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-            EvalMode::Ansi => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i64::MAX as f32
-                            || value < std::i64::MIN as f32
-                        {
-                            return Err(CometError::CastOverFlow {
-                                value: format!("{:e}", value).replace("e", "E"),
-                                from_type: "FLOAT".to_string(),
-                                to_type: "BIGINT".to_string(),
-                            });
-                        } else {
-                            return Ok(Some(value as i64));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-        };
-        Ok(Arc::new(output_array))
-    }
-
-    fn spark_cast_float64_to_int32(
-        array: &ArrayRef,
-        eval_mode: EvalMode,
-        name: String,
-    ) -> CometResult<ArrayRef> {
-        let float_array = array
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .expect("cast_string_to_int expected a string array");
-        let output_array = match eval_mode {
-            EvalMode::Legacy => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan() {
-                            return Ok::<Option<i32>, CometError>(Some(0));
-                        } else if value.is_infinite() && value.is_sign_positive() {
-                            return Ok(Some(std::i32::MAX));
-                        } else if value.is_infinite() && value.is_sign_negative() {
-                            return Ok(Some(std::i32::MIN));
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-            EvalMode::Try => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i32::MAX as f64
-                            || value < std::i32::MIN as f64
-                        {
-                            return Ok::<Option<i32>, CometError>(None);
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-            EvalMode::Ansi => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i32::MAX as f64
-                            || value < std::i32::MIN as f64
-                        {
-                            return Err(CometError::CastOverFlow {
-                                value: format!("{:e}D", value).replace("e", "E"),
-                                from_type: "DOUBLE".to_string(),
-                                to_type: name.clone(),
-                            });
-                        } else {
-                            return Ok(Some(value as i32));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int32Array, _>>()?,
-        };
-        Ok(Arc::new(output_array))
+        match (from_type, to_type) {
+            (DataType::Float32, DataType::Int32) => cast_decimal_to_integer!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int32Array,
+                f32,
+                i32,
+                "FLOAT",
+                "INT",
+                std::i32::MAX,
+                std::i32::MIN
+            ),
+            (DataType::Float32, DataType::Int64) => cast_decimal_to_integer!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int64Array,
+                f32,
+                i64,
+                "FLOAT",
+                "BIGINT",
+                std::i64::MAX,
+                std::i64::MIN
+            ),
+            (DataType::Float32, DataType::Int16) => {
+                let int32_array = cast_decimal_to_integer!(
+                    array,
+                    eval_mode,
+                    Float32Array,
+                    Int32Array,
+                    f32,
+                    i32,
+                    "FLOAT",
+                    "SMALLINT",
+                    std::i32::MAX,
+                    std::i32::MIN
+                )?;
+                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            }
+            (DataType::Float32, DataType::Int8) => {
+                let int32_array = cast_decimal_to_integer!(
+                    array,
+                    eval_mode,
+                    Float32Array,
+                    Int32Array,
+                    f32,
+                    i32,
+                    "FLOAT",
+                    "TINYINT",
+                    std::i32::MAX,
+                    std::i32::MIN
+                )?;
+                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            }
+            (DataType::Float64, DataType::Int32) => cast_decimal_to_integer!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int32Array,
+                f64,
+                i32,
+                "DOUBLE",
+                "INT",
+                std::i32::MAX,
+                std::i32::MIN
+            ),
+            (DataType::Float64, DataType::Int64) => cast_decimal_to_integer!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int64Array,
+                f64,
+                i64,
+                "DOUBLE",
+                "BIGINT",
+                std::i64::MAX,
+                std::i64::MIN
+            ),
+            (DataType::Float64, DataType::Int16) => {
+                let int32_array = cast_decimal_to_integer!(
+                    array,
+                    eval_mode,
+                    Float64Array,
+                    Int32Array,
+                    f64,
+                    i32,
+                    "DOUBLE",
+                    "SMALLINT",
+                    std::i32::MAX,
+                    std::i32::MIN
+                )?;
+                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            }
+            (DataType::Float64, DataType::Int8) => {
+                let int32_array = cast_decimal_to_integer!(
+                    array,
+                    eval_mode,
+                    Float64Array,
+                    Int32Array,
+                    f64,
+                    i32,
+                    "DOUBLE",
+                    "TINYINT",
+                    std::i32::MAX,
+                    std::i32::MIN
+                )?;
+                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            }
+            _ => unreachable!(
+                "{}",
+                format!("invalid decimal type {to_type} in cast from {from_type}")
+            ),
+        }
     }
 
     fn spark_cast_float64_to_int64(array: &ArrayRef, eval_mode: EvalMode) -> CometResult<ArrayRef> {
         let float_array = array
             .as_any()
             .downcast_ref::<Float64Array>()
-            .expect("cast_string_to_int expected a string array");
-        let output_array = match eval_mode {
-            EvalMode::Legacy => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan() {
-                            return Ok::<Option<i64>, CometError>(Some(0));
-                        } else if value.is_infinite() && value.is_sign_positive() {
-                            return Ok(Some(std::i64::MAX));
-                        } else if value.is_infinite() && value.is_sign_negative() {
-                            return Ok(Some(std::i64::MIN));
-                        } else {
-                            return Ok(Some(value as i64));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-            EvalMode::Try => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i64::MAX as f64
-                            || value < std::i64::MIN as f64
-                        {
-                            return Ok::<Option<i64>, CometError>(None);
-                        } else {
-                            return Ok(Some(value as i64));
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-            EvalMode::Ansi => float_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if value.is_nan()
-                            || value.is_infinite()
-                            || value > std::i64::MAX as f64
-                            || value < std::i64::MIN as f64
-                        {
-                            return Err(CometError::CastOverFlow {
+            .expect("Expected a Float64Array");
+
+        let output_array = float_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    if value.is_nan() {
+                        Ok(Some(0))
+                    } else if value.is_infinite() || value.abs() > std::i64::MAX as f64 {
+                        match eval_mode {
+                            EvalMode::Legacy => Ok(Some(value.signum() as i64 * std::i64::MAX)),
+                            EvalMode::Try => Ok(None),
+                            EvalMode::Ansi => Err(CometError::CastOverFlow {
                                 value: format!("{:e}D", value).replace("e", "E"),
                                 from_type: "DOUBLE".to_string(),
                                 to_type: "BIGINT".to_string(),
-                            });
-                        } else {
-                            return Ok(Some(value as i64));
+                            }),
                         }
+                    } else {
+                        Ok(Some(value as i64))
                     }
-                    _ => Ok(None),
-                })
-                .collect::<Result<arrow_array::Int64Array, _>>()?,
-        };
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<arrow_array::Int64Array, _>>()?;
+
         Ok(Arc::new(output_array))
     }
 }

@@ -303,23 +303,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.BooleanType)
   }
 
-  ignore("cast FloatType to ByteType") {
+  test("cast FloatType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ByteType)
   }
 
-  ignore("cast FloatType to ShortType") {
+  test("cast FloatType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ShortType)
   }
 
   test("cast FloatType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.IntegerType)
   }
 
-  ignore("cast FloatType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast FloatType to LongType") {
     castTest(generateFloats(), DataTypes.LongType)
   }
 
@@ -361,22 +359,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.BooleanType)
   }
 
-  ignore("cast DoubleType to ByteType") {
+  test("cast DoubleType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ByteType)
   }
 
-  ignore("cast DoubleType to ShortType") {
+  test("cast DoubleType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ShortType)
   }
 
-  ignore("cast DoubleType to IntegerType") {
+  test("cast DoubleType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.IntegerType)
   }
 
-  ignore("cast DoubleType to LongType") {
+  test("cast DoubleType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.LongType)
   }
