@@ -652,39 +652,6 @@ impl Cast {
             ),
         }
     }
-
-    fn spark_cast_float64_to_int64(array: &ArrayRef, eval_mode: EvalMode) -> CometResult<ArrayRef> {
-        let float_array = array
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .expect("Expected a Float64Array");
-
-        let output_array = float_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    if value.is_nan() {
-                        Ok(Some(0))
-                    } else if value.is_infinite() || value.abs() > std::i64::MAX as f64 {
-                        match eval_mode {
-                            EvalMode::Legacy => Ok(Some(value.signum() as i64 * std::i64::MAX)),
-                            EvalMode::Try => Ok(None),
-                            EvalMode::Ansi => Err(CometError::CastOverFlow {
-                                value: format!("{:e}D", value).replace("e", "E"),
-                                from_type: "DOUBLE".to_string(),
-                                to_type: "BIGINT".to_string(),
-                            }),
-                        }
-                    } else {
-                        Ok(Some(value as i64))
-                    }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<arrow_array::Int64Array, _>>()?;
-
-        Ok(Arc::new(output_array))
-    }
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
