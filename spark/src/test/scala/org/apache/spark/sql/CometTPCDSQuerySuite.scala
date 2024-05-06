@@ -73,7 +73,8 @@ class CometTPCDSQuerySuite
         "q36",
         "q37",
         "q38",
-        // TODO: comment 39a and 39b for now because the expected result for stddev failed:
+        // TODO: https://github.com/apache/datafusion-comet/issues/392
+        //  comment out 39a and 39b for now because the expected result for stddev failed:
         //  expected: 1.5242630430075292, actual: 1.524263043007529.
         //  Will change the comparison logic to detect floating-point numbers and compare
         //  with epsilon

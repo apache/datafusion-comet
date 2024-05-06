@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Defines physical expressions that can evaluated at runtime during query execution
-
 use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::expressions::{
@@ -52,7 +50,7 @@ impl Stddev {
         stats_type: StatsType,
         null_on_divide_by_zero: bool,
     ) -> Self {
-        // the result of stddev just support FLOAT64 and Decimal data type.
+        // the result of stddev just support FLOAT64.
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
@@ -126,7 +124,7 @@ impl PartialEq<dyn Any> for Stddev {
     }
 }
 
-/// An accumulator to compute the average
+/// An accumulator to compute the standard deviation
 #[derive(Debug)]
 pub struct StddevAccumulator {
     variance: VarianceAccumulator,
