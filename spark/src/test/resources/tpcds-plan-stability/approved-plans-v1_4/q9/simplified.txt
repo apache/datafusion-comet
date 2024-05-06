@@ -1,68 +1,78 @@
 WholeStageCodegen (1)
   Project
     Subquery #1
-      WholeStageCodegen (1)
+      WholeStageCodegen (2)
         Project [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)]
-          ColumnarToRow
+          HashAggregate [count,sum,count,sum,count] [count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid)),count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count,sum,count,sum,count]
             InputAdapter
-              CometHashAggregate [count,sum,count,sum,count]
-                CometExchange #1
-                  CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
-                    CometProject [ss_ext_discount_amt,ss_net_paid]
-                      CometFilter [ss_quantity]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+              Exchange #1
+                WholeStageCodegen (1)
+                  ColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
+                        CometProject [ss_ext_discount_amt,ss_net_paid]
+                          CometFilter [ss_quantity]
+                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #1
     ReusedSubquery [mergedValue] #1
     Subquery #2
-      WholeStageCodegen (1)
+      WholeStageCodegen (2)
         Project [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)]
-          ColumnarToRow
+          HashAggregate [count,sum,count,sum,count] [count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid)),count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count,sum,count,sum,count]
             InputAdapter
-              CometHashAggregate [count,sum,count,sum,count]
-                CometExchange #2
-                  CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
-                    CometProject [ss_ext_discount_amt,ss_net_paid]
-                      CometFilter [ss_quantity]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+              Exchange #2
+                WholeStageCodegen (1)
+                  ColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
+                        CometProject [ss_ext_discount_amt,ss_net_paid]
+                          CometFilter [ss_quantity]
+                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #2
     ReusedSubquery [mergedValue] #2
     Subquery #3
-      WholeStageCodegen (1)
+      WholeStageCodegen (2)
         Project [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)]
-          ColumnarToRow
+          HashAggregate [count,sum,count,sum,count] [count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid)),count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count,sum,count,sum,count]
             InputAdapter
-              CometHashAggregate [count,sum,count,sum,count]
-                CometExchange #3
-                  CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
-                    CometProject [ss_ext_discount_amt,ss_net_paid]
-                      CometFilter [ss_quantity]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+              Exchange #3
+                WholeStageCodegen (1)
+                  ColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
+                        CometProject [ss_ext_discount_amt,ss_net_paid]
+                          CometFilter [ss_quantity]
+                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #3
     ReusedSubquery [mergedValue] #3
     Subquery #4
-      WholeStageCodegen (1)
+      WholeStageCodegen (2)
         Project [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)]
-          ColumnarToRow
+          HashAggregate [count,sum,count,sum,count] [count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid)),count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count,sum,count,sum,count]
             InputAdapter
-              CometHashAggregate [count,sum,count,sum,count]
-                CometExchange #4
-                  CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
-                    CometProject [ss_ext_discount_amt,ss_net_paid]
-                      CometFilter [ss_quantity]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+              Exchange #4
+                WholeStageCodegen (1)
+                  ColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
+                        CometProject [ss_ext_discount_amt,ss_net_paid]
+                          CometFilter [ss_quantity]
+                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #4
     ReusedSubquery [mergedValue] #4
     Subquery #5
-      WholeStageCodegen (1)
+      WholeStageCodegen (2)
         Project [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)]
-          ColumnarToRow
+          HashAggregate [count,sum,count,sum,count] [count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid)),count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count,sum,count,sum,count]
             InputAdapter
-              CometHashAggregate [count,sum,count,sum,count]
-                CometExchange #5
-                  CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
-                    CometProject [ss_ext_discount_amt,ss_net_paid]
-                      CometFilter [ss_quantity]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+              Exchange #5
+                WholeStageCodegen (1)
+                  ColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [ss_ext_discount_amt,ss_net_paid]
+                        CometProject [ss_ext_discount_amt,ss_net_paid]
+                          CometFilter [ss_quantity]
+                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5
     ColumnarToRow

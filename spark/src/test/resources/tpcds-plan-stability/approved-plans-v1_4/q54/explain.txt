@@ -389,9 +389,9 @@ Input [1]: [d_date_sk#29]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=10]
 
 Subquery:4 Hosting operator id = 62 Hosting Expression = Subquery scalar-subquery#42, [id=#43]
-* ColumnarToRow (72)
-+- CometHashAggregate (71)
-   +- CometExchange (70)
+* HashAggregate (72)
++- Exchange (71)
+   +- * ColumnarToRow (70)
       +- CometHashAggregate (69)
          +- CometProject (68)
             +- CometFilter (67)
@@ -418,22 +418,24 @@ Input [1]: [(d_month_seq + 1)#49]
 Keys [1]: [(d_month_seq + 1)#49]
 Functions: []
 
-(70) CometExchange
+(70) ColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 1)#49]
-Arguments: hashpartitioning((d_month_seq + 1)#49, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=11]
 
-(71) CometHashAggregate
+(71) Exchange
+Input [1]: [(d_month_seq + 1)#49]
+Arguments: hashpartitioning((d_month_seq + 1)#49, 5), ENSURE_REQUIREMENTS, [plan_id=11]
+
+(72) HashAggregate [codegen id : 2]
 Input [1]: [(d_month_seq + 1)#49]
 Keys [1]: [(d_month_seq + 1)#49]
 Functions: []
-
-(72) ColumnarToRow [codegen id : 1]
-Input [1]: [(d_month_seq + 1)#49]
+Aggregate Attributes: []
+Results [1]: [(d_month_seq + 1)#49]
 
 Subquery:5 Hosting operator id = 62 Hosting Expression = Subquery scalar-subquery#44, [id=#45]
-* ColumnarToRow (79)
-+- CometHashAggregate (78)
-   +- CometExchange (77)
+* HashAggregate (79)
++- Exchange (78)
+   +- * ColumnarToRow (77)
       +- CometHashAggregate (76)
          +- CometProject (75)
             +- CometFilter (74)
@@ -460,16 +462,18 @@ Input [1]: [(d_month_seq + 3)#53]
 Keys [1]: [(d_month_seq + 3)#53]
 Functions: []
 
-(77) CometExchange
+(77) ColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 3)#53]
-Arguments: hashpartitioning((d_month_seq + 3)#53, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
-(78) CometHashAggregate
+(78) Exchange
+Input [1]: [(d_month_seq + 3)#53]
+Arguments: hashpartitioning((d_month_seq + 3)#53, 5), ENSURE_REQUIREMENTS, [plan_id=12]
+
+(79) HashAggregate [codegen id : 2]
 Input [1]: [(d_month_seq + 3)#53]
 Keys [1]: [(d_month_seq + 3)#53]
 Functions: []
-
-(79) ColumnarToRow [codegen id : 1]
-Input [1]: [(d_month_seq + 3)#53]
+Aggregate Attributes: []
+Results [1]: [(d_month_seq + 3)#53]
 
 
