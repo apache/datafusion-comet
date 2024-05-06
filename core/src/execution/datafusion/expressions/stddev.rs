@@ -120,6 +120,7 @@ impl PartialEq<dyn Any> for Stddev {
                 self.name == x.name
                     && self.expr.eq(&x.expr)
                     && self.null_on_divide_by_zero == x.null_on_divide_by_zero
+                    && self.stats_type == x.stats_type
             })
             .unwrap_or(false)
     }
@@ -168,13 +169,8 @@ impl Accumulator for StddevAccumulator {
     fn evaluate(&mut self) -> Result<ScalarValue> {
         let variance = self.variance.evaluate()?;
         match variance {
-            ScalarValue::Float64(e) => {
-                if e.is_none() {
-                    Ok(ScalarValue::Float64(None))
-                } else {
-                    Ok(ScalarValue::Float64(e.map(|f| f.sqrt())))
-                }
-            }
+            ScalarValue::Float64(Some(e)) => Ok(ScalarValue::Float64(Some(e.sqrt()))),
+            ScalarValue::Float64(None) => Ok(ScalarValue::Float64(None)),
             _ => internal_err!("Variance should be f64"),
         }
     }
