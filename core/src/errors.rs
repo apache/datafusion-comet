@@ -72,6 +72,15 @@ pub enum CometError {
         to_type: String,
     },
 
+    #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+        due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    CastOverFlow {
+        value: String,
+        from_type: String,
+        to_type: String,
+    },
+
     #[error(transparent)]
     Arrow {
         #[from]

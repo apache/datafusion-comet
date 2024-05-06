@@ -149,6 +149,17 @@ object CometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_ENFORCE_MODE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.enforceMode.enabled")
+      .doc(
+        "Comet shuffle doesn't support Spark AQE coalesce partitions. If AQE coalesce " +
+          "partitions is enabled, Comet shuffle won't be triggered even enabled. This config " +
+          "is used to enforce Comet to trigger shuffle even if AQE coalesce partitions is " +
+          "enabled. This is for testing purpose only.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
