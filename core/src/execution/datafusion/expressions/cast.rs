@@ -232,7 +232,17 @@ macro_rules! cast_int_to_int_macro {
 }
 
 macro_rules! cast_decimal_to_integer {
-    ($array:expr, $eval_mode:expr, $src_array_type:ty, $dest_array_type:ty, $rust_src_type:ty, $rust_dest_type:ty, $src_type_str:expr, $dest_type_str:expr, $max_val:expr, $min_val:expr) => {{
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr,
+        $max_dest_val:expr
+    ) => {{
         let cast_array = $array
             .as_any()
             .downcast_ref::<$src_array_type>()
@@ -242,34 +252,22 @@ macro_rules! cast_decimal_to_integer {
             .iter()
             .map(|value| match value {
                 Some(value) => {
-                    let value_str = if $src_type_str == "FLOAT" {
-                        format!("{:e}", value).replace("e", "E")
-                    } else {
-                        format!("{:e}D", value).replace("e", "E")
-                    };
-                    if value.is_nan() {
+                    if value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val {
                         match $eval_mode {
                             EvalMode::Try => Ok(None),
-                            EvalMode::Ansi => Err(CometError::CastOverFlow {
-                                value: value_str,
-                                from_type: $src_type_str.to_string(),
-                                to_type: $dest_type_str.to_string(),
-                            }),
-                            _ => Ok(Some(0)),
-                        }
-                    } else if value.is_infinite() || value.abs() > $max_val as $rust_src_type {
-                        match $eval_mode {
-                            EvalMode::Try => Ok(None),
-                            EvalMode::Ansi => Err(CometError::CastOverFlow {
-                                value: value_str,
-                                from_type: $src_type_str.to_string(),
-                                to_type: $dest_type_str.to_string(),
-                            }),
-                            _ => Ok(Some(if value.is_sign_positive() {
-                                $max_val
-                            } else {
-                                $min_val
-                            })),
+                            EvalMode::Ansi => {
+                                let value_str = if $src_type_str == "FLOAT" {
+                                    format!("{:e}", value).replace("e", "E")
+                                } else {
+                                    format!("{:e}D", value).replace("e", "E")
+                                };
+                                Err(CometError::CastOverFlow {
+                                    value: value_str,
+                                    from_type: $src_type_str.to_string(),
+                                    to_type: $dest_type_str.to_string(),
+                                })
+                            }
+                            _ => Ok(Some(value as $rust_dest_type)),
                         }
                     } else {
                         Ok(Some(value as $rust_dest_type))
@@ -557,8 +555,7 @@ impl Cast {
                 i32,
                 "FLOAT",
                 "INT",
-                std::i32::MAX,
-                std::i32::MIN
+                std::i32::MAX
             ),
             (DataType::Float32, DataType::Int64) => cast_decimal_to_integer!(
                 array,
@@ -569,8 +566,7 @@ impl Cast {
                 i64,
                 "FLOAT",
                 "BIGINT",
-                std::i64::MAX,
-                std::i64::MIN
+                std::i64::MAX
             ),
             (DataType::Float32, DataType::Int16) => {
                 let int32_array = cast_decimal_to_integer!(
@@ -582,8 +578,7 @@ impl Cast {
                     i32,
                     "FLOAT",
                     "SMALLINT",
-                    std::i32::MAX,
-                    std::i32::MIN
+                    std::i32::MAX
                 )?;
                 Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
             }
@@ -597,8 +592,7 @@ impl Cast {
                     i32,
                     "FLOAT",
                     "TINYINT",
-                    std::i32::MAX,
-                    std::i32::MIN
+                    std::i32::MAX
                 )?;
                 Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
             }
@@ -611,8 +605,7 @@ impl Cast {
                 i32,
                 "DOUBLE",
                 "INT",
-                std::i32::MAX,
-                std::i32::MIN
+                std::i32::MAX
             ),
             (DataType::Float64, DataType::Int64) => cast_decimal_to_integer!(
                 array,
@@ -623,8 +616,7 @@ impl Cast {
                 i64,
                 "DOUBLE",
                 "BIGINT",
-                std::i64::MAX,
-                std::i64::MIN
+                std::i64::MAX
             ),
             (DataType::Float64, DataType::Int16) => {
                 let int32_array = cast_decimal_to_integer!(
@@ -636,8 +628,7 @@ impl Cast {
                     i32,
                     "DOUBLE",
                     "SMALLINT",
-                    std::i32::MAX,
-                    std::i32::MIN
+                    std::i32::MAX
                 )?;
                 Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
             }
@@ -651,8 +642,7 @@ impl Cast {
                     i32,
                     "DOUBLE",
                     "TINYINT",
-                    std::i32::MAX,
-                    std::i32::MIN
+                    std::i32::MAX
                 )?;
                 Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
             }
