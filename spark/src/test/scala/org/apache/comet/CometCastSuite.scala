@@ -313,7 +313,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.ShortType)
   }
 
-  ignore("cast FloatType to IntegerType") {
+  test("cast FloatType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.IntegerType)
   }
