@@ -264,8 +264,6 @@ abstract class CometTestBase
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
-    // scalastyle:off println
-    println(s"extendedInfo: $extendedInfo, expectedInfo: $expectedInfo")
     assert(extendedInfo.equalsIgnoreCase(expectedInfo))
   }
 
