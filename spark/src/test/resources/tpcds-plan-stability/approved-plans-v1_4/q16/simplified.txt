@@ -1,8 +1,8 @@
-WholeStageCodegen (9)
+WholeStageCodegen (12)
   HashAggregate [sum,sum,count] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),order count ,total shipping cost ,total net profit ,sum,sum,count]
     InputAdapter
       Exchange #1
-        WholeStageCodegen (8)
+        WholeStageCodegen (11)
           HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),sum,sum,count,sum,sum,count]
             HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),sum,sum,sum,sum]
               HashAggregate [cs_order_number,cs_ext_ship_cost,cs_net_profit] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),sum,sum,sum,sum]
@@ -14,37 +14,43 @@ WholeStageCodegen (9)
                           BroadcastHashJoin [cs_ship_date_sk,d_date_sk]
                             SortMergeJoin [cs_order_number,cr_order_number]
                               InputAdapter
-                                WholeStageCodegen (3)
+                                WholeStageCodegen (5)
                                   Project [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
                                     SortMergeJoin [cs_order_number,cs_order_number,cs_warehouse_sk,cs_warehouse_sk]
                                       InputAdapter
-                                        WholeStageCodegen (1)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometSort [cs_order_number]
-                                                CometExchange [cs_order_number] #2
-                                                  CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
-                                                    CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk]
-                                                      CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
-                                      InputAdapter
                                         WholeStageCodegen (2)
+                                          Sort [cs_order_number]
+                                            InputAdapter
+                                              Exchange [cs_order_number] #2
+                                                WholeStageCodegen (1)
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                                                        CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk]
+                                                          CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
+                                      InputAdapter
+                                        WholeStageCodegen (4)
+                                          Sort [cs_order_number]
+                                            InputAdapter
+                                              Exchange [cs_order_number] #3
+                                                WholeStageCodegen (3)
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      CometProject [cs_warehouse_sk,cs_order_number]
+                                                        CometScan parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
+                              InputAdapter
+                                WholeStageCodegen (7)
+                                  Sort [cr_order_number]
+                                    InputAdapter
+                                      Exchange [cr_order_number] #4
+                                        WholeStageCodegen (6)
                                           ColumnarToRow
                                             InputAdapter
-                                              CometSort [cs_order_number]
-                                                CometExchange [cs_order_number] #3
-                                                  CometProject [cs_warehouse_sk,cs_order_number]
-                                                    CometScan parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
-                              InputAdapter
-                                WholeStageCodegen (4)
-                                  ColumnarToRow
-                                    InputAdapter
-                                      CometSort [cr_order_number]
-                                        CometExchange [cr_order_number] #4
-                                          CometProject [cr_order_number]
-                                            CometScan parquet spark_catalog.default.catalog_returns [cr_order_number,cr_returned_date_sk]
+                                              CometProject [cr_order_number]
+                                                CometScan parquet spark_catalog.default.catalog_returns [cr_order_number,cr_returned_date_sk]
                             InputAdapter
                               BroadcastExchange #5
-                                WholeStageCodegen (5)
+                                WholeStageCodegen (8)
                                   ColumnarToRow
                                     InputAdapter
                                       CometProject [d_date_sk]
@@ -52,7 +58,7 @@ WholeStageCodegen (9)
                                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                         InputAdapter
                           BroadcastExchange #6
-                            WholeStageCodegen (6)
+                            WholeStageCodegen (9)
                               ColumnarToRow
                                 InputAdapter
                                   CometProject [ca_address_sk]
@@ -60,7 +66,7 @@ WholeStageCodegen (9)
                                       CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     InputAdapter
                       BroadcastExchange #7
-                        WholeStageCodegen (7)
+                        WholeStageCodegen (10)
                           ColumnarToRow
                             InputAdapter
                               CometProject [cc_call_center_sk]

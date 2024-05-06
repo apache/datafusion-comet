@@ -76,6 +76,7 @@ abstract class CometTestBase
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
+    conf.set(SQLConf.COALESCE_PARTITIONS_ENABLED.key, "false")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")

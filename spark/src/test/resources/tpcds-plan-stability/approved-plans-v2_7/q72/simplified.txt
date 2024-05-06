@@ -1,9 +1,9 @@
 TakeOrderedAndProject [total_cnt,i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo]
-  WholeStageCodegen (14)
+  WholeStageCodegen (15)
     HashAggregate [i_item_desc,w_warehouse_name,d_week_seq,count] [count(1),no_promo,promo,total_cnt,count]
       InputAdapter
         Exchange [i_item_desc,w_warehouse_name,d_week_seq] #1
-          WholeStageCodegen (13)
+          WholeStageCodegen (14)
             HashAggregate [i_item_desc,w_warehouse_name,d_week_seq] [count,count]
               Project [w_warehouse_name,i_item_desc,d_week_seq]
                 SortMergeJoin [cs_item_sk,cs_order_number,cr_item_sk,cr_order_number]
@@ -104,11 +104,13 @@ TakeOrderedAndProject [total_cnt,i_item_desc,w_warehouse_name,d_week_seq,no_prom
                                             CometFilter [p_promo_sk]
                                               CometScan parquet spark_catalog.default.promotion [p_promo_sk]
                   InputAdapter
-                    WholeStageCodegen (12)
-                      ColumnarToRow
+                    WholeStageCodegen (13)
+                      Sort [cr_item_sk,cr_order_number]
                         InputAdapter
-                          CometSort [cr_item_sk,cr_order_number]
-                            CometExchange [cr_item_sk,cr_order_number] #12
-                              CometProject [cr_item_sk,cr_order_number]
-                                CometFilter [cr_item_sk,cr_order_number]
-                                  CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_returned_date_sk]
+                          Exchange [cr_item_sk,cr_order_number] #12
+                            WholeStageCodegen (12)
+                              ColumnarToRow
+                                InputAdapter
+                                  CometProject [cr_item_sk,cr_order_number]
+                                    CometFilter [cr_item_sk,cr_order_number]
+                                      CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_returned_date_sk]

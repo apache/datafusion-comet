@@ -10,11 +10,11 @@ TakeOrderedAndProject (20)
                :     +- CometFilter (2)
                :        +- CometScan parquet spark_catalog.default.item (1)
                +- BroadcastExchange (14)
-                  +- * ColumnarToRow (13)
-                     +- CometProject (12)
-                        +- CometFilter (11)
-                           +- CometHashAggregate (10)
-                              +- CometExchange (9)
+                  +- * Project (13)
+                     +- * Filter (12)
+                        +- * HashAggregate (11)
+                           +- Exchange (10)
+                              +- * ColumnarToRow (9)
                                  +- CometHashAggregate (8)
                                     +- CometProject (7)
                                        +- CometFilter (6)
@@ -36,7 +36,7 @@ Condition : (((isnotnull(i_manufact_id#1) AND (i_manufact_id#1 >= 738)) AND (i_m
 Input [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 Arguments: [i_manufact#2, i_product_name#3], [i_manufact#2, i_product_name#3]
 
-(4) ColumnarToRow [codegen id : 2]
+(4) ColumnarToRow [codegen id : 3]
 Input [2]: [i_manufact#2, i_product_name#3]
 
 (unknown) Scan parquet spark_catalog.default.item
@@ -59,41 +59,43 @@ Input [1]: [i_manufact#5]
 Keys [1]: [i_manufact#5]
 Functions [1]: [partial_count(1)]
 
-(9) CometExchange
+(9) ColumnarToRow [codegen id : 1]
 Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(10) CometHashAggregate
+(10) Exchange
+Input [2]: [i_manufact#5, count#9]
+Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+
+(11) HashAggregate [codegen id : 2]
 Input [2]: [i_manufact#5, count#9]
 Keys [1]: [i_manufact#5]
 Functions [1]: [count(1)]
+Aggregate Attributes [1]: [count(1)#10]
+Results [2]: [count(1)#10 AS item_cnt#11, i_manufact#5]
 
-(11) CometFilter
-Input [2]: [item_cnt#10, i_manufact#5]
-Condition : (item_cnt#10 > 0)
+(12) Filter [codegen id : 2]
+Input [2]: [item_cnt#11, i_manufact#5]
+Condition : (item_cnt#11 > 0)
 
-(12) CometProject
-Input [2]: [item_cnt#10, i_manufact#5]
-Arguments: [i_manufact#5], [i_manufact#5]
-
-(13) ColumnarToRow [codegen id : 1]
-Input [1]: [i_manufact#5]
+(13) Project [codegen id : 2]
+Output [1]: [i_manufact#5]
+Input [2]: [item_cnt#11, i_manufact#5]
 
 (14) BroadcastExchange
 Input [1]: [i_manufact#5]
 Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
 
-(15) BroadcastHashJoin [codegen id : 2]
+(15) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [i_manufact#2]
 Right keys [1]: [i_manufact#5]
 Join type: Inner
 Join condition: None
 
-(16) Project [codegen id : 2]
+(16) Project [codegen id : 3]
 Output [1]: [i_product_name#3]
 Input [3]: [i_manufact#2, i_product_name#3, i_manufact#5]
 
-(17) HashAggregate [codegen id : 2]
+(17) HashAggregate [codegen id : 3]
 Input [1]: [i_product_name#3]
 Keys [1]: [i_product_name#3]
 Functions: []
@@ -104,7 +106,7 @@ Results [1]: [i_product_name#3]
 Input [1]: [i_product_name#3]
 Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, [plan_id=3]
 
-(19) HashAggregate [codegen id : 3]
+(19) HashAggregate [codegen id : 4]
 Input [1]: [i_product_name#3]
 Keys [1]: [i_product_name#3]
 Functions: []
