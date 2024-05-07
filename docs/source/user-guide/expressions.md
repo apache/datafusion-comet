@@ -107,3 +107,5 @@ The following Spark expressions are currently available:
   - CovSample
   - VariancePop
   - VarianceSamp
+  - StddevPop
+  - StddevSamp

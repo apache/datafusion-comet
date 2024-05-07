@@ -95,6 +95,7 @@ message AggExpr {
     CovSample covSample = 12;
     CovPopulation covPopulation = 13;
     Variance variance = 14;
+    Stddev stddev = 15;
   }
 }
 
@@ -172,6 +173,13 @@ message CovPopulation {
 }
 
 message Variance {
+  Expr child = 1;
+  bool null_on_divide_by_zero = 2;
+  DataType datatype = 3;
+  StatisticsType stats_type = 4;
+}
+
+message Stddev {
   Expr child = 1;
   bool null_on_divide_by_zero = 2;
   DataType datatype = 3;

@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Defines physical expressions that can evaluated at runtime during query execution
-
 use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::expressions::{stats::StatsType, utils::down_cast_any_ref};
