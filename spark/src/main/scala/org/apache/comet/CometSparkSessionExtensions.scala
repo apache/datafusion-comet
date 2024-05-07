@@ -722,10 +722,7 @@ class CometSparkSessionExtensions
       }
 
       // We shouldn't transform Spark query plan if Comet is disabled.
-      if (!isCometEnabled(conf)) {
-        logWarning("Comet is not enabled")
-        return plan
-      }
+      if (!isCometEnabled(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
