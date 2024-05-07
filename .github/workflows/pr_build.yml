@@ -47,6 +47,7 @@ jobs:
         java_version: [8, 11, 17]
         test-target: [rust, java]
         spark-version: ['3.4']
+        scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
         exclude: # exclude java 11 for pull_request event
@@ -71,7 +72,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
           # upload test reports only for java 17
           upload-test-reports: ${{ matrix.java_version == '17' }}
 
@@ -82,11 +83,14 @@ jobs:
         java_version: [8, 11, 17]
         test-target: [java]
         spark-version: ['3.2', '3.3']
+        scala-version: ['2.12', '2.13']
         exclude:
           - java_version: 17
             spark-version: '3.2'
           - java_version: 11
             spark-version: '3.2'
+          - spark-version: '3.2'
+            scala-version: '2.13'
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
@@ -102,7 +106,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
   macos-test:
     strategy:
@@ -111,6 +115,7 @@ jobs:
         java_version: [8, 11, 17]
         test-target: [rust, java]
         spark-version: ['3.4']
+        scala-version: ['2.12', '2.13']
       fail-fast: false
     if: github.event_name == 'push'
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
@@ -129,7 +134,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
   macos-aarch64-test:
     strategy:
@@ -137,6 +142,7 @@ jobs:
         java_version: [8, 11, 17]
         test-target: [rust, java]
         spark-version: ['3.4']
+        scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
         exclude: # exclude java 11 for pull_request event
@@ -161,7 +167,7 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
   macos-aarch64-test-with-old-spark:
     strategy:
@@ -169,11 +175,14 @@ jobs:
         java_version: [8, 17]
         test-target: [java]
         spark-version: ['3.2', '3.3']
+        scala-version: ['2.12', '2.13']
         exclude:
           - java_version: 17
             spark-version: '3.2'
           - java_version: 8
             spark-version: '3.3'
+          - spark-version: '3.2'
+            scala-version: '2.13'
       fail-fast: false
     name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
     runs-on: macos-14
@@ -190,5 +199,5 @@ jobs:
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
