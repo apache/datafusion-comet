@@ -33,6 +33,7 @@ import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.shims.ShimCometTPCHQuerySuite
 
 /**
  * End-to-end tests to check TPCH query results.
@@ -49,7 +50,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  *     ./mvnw -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
  * }}}
  */
-class CometTPCHQuerySuite extends QueryTest with CometTPCBase with SQLQueryTestHelper {
+class CometTPCHQuerySuite extends QueryTest with CometTPCBase with ShimCometTPCHQuerySuite {
 
   private val tpchDataPath = sys.env.get("SPARK_TPCH_DATA")
 
@@ -142,7 +143,7 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with SQLQueryTestH
     val shouldSortResults = sortMergeJoinConf != conf // Sort for other joins
     withSQLConf(conf.toSeq: _*) {
       try {
-        val (schema, output) = handleExceptions(getNormalizedResult(spark, query))
+        val (schema, output) = handleExceptions(getNormalizedQueryExecutionResult(spark, query))
         val queryString = query.trim
         val outputString = output.mkString("\n").replaceAll("\\s+$", "")
         if (shouldRegenerateGoldenFiles) {

@@ -58,7 +58,8 @@ class ParquetFilters(
     pushDownStringPredicate: Boolean,
     pushDownInFilterThreshold: Int,
     caseSensitive: Boolean,
-    datetimeRebaseSpec: RebaseSpec) extends ShimSQLConf {
+    datetimeRebaseSpec: RebaseSpec)
+    extends ShimSQLConf {
   // A map which contains parquet field name and data type, if predicate push down applies.
   //
   // Each key in `nameToParquetField` represents a column; `dots` are used as separators for

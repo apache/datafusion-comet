@@ -42,4 +42,7 @@ trait ShimCometShuffleExchangeExec {
   // TODO: remove after dropping Spark 3.x support
   protected def fromAttributes(attributes: Seq[Attribute]): StructType =
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
+
+  // TODO: remove after dropping Spark 3.x support
+  protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int = 0
 }

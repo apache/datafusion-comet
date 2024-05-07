@@ -27,7 +27,7 @@ import org.apache.comet.CometConf
 class CometTPCDSQuerySuite
     extends {
       // This is private in `TPCDSBase`.
-      val excludedTpcdsQueries: Seq[String] = Seq()
+      override val excludedTpcdsQueries: Set[String] = Set()
 
       // This is private in `TPCDSBase` and `excludedTpcdsQueries` is private too.
       // So we cannot override `excludedTpcdsQueries` to exclude the queries.

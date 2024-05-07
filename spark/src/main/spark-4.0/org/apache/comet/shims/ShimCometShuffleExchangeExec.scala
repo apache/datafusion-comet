@@ -19,6 +19,7 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.ShuffleDependency
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, ShuffleType}
@@ -41,4 +42,6 @@ trait ShimCometShuffleExchangeExec {
   }
 
   protected def fromAttributes(attributes: Seq[Attribute]): StructType = DataTypeUtils.fromAttributes(attributes)
+
+  protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int = shuffleDependency.shuffleId
 }

@@ -56,9 +56,7 @@ class CometDriverPlugin extends DriverPlugin with Logging {
             EXECUTOR_MEMORY_OVERHEAD_FACTOR,
             EXECUTOR_MEMORY_OVERHEAD_FACTOR_DEFAULT)
         val memoryOverheadMinMib =
-          sc.getConf.getLong(
-            EXECUTOR_MIN_MEMORY_OVERHEAD,
-            EXECUTOR_MIN_MEMORY_OVERHEAD_DEFAULT)
+          sc.getConf.getLong(EXECUTOR_MIN_MEMORY_OVERHEAD, EXECUTOR_MIN_MEMORY_OVERHEAD_DEFAULT)
 
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
