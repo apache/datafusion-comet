@@ -232,6 +232,9 @@ macro_rules! cast_int_to_int_macro {
     }};
 }
 
+// When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
+// It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
+// this can cause unexpected Short/Byte cast results. Replicate this behavior.
 macro_rules! cast_float_to_int16_down {
     (
         $array:expr,
@@ -322,6 +325,9 @@ macro_rules! cast_float_to_int32_up {
     }};
 }
 
+// When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
+// It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
+// this can cause unexpected Short/Byte cast results. Replicate this behavior.
 macro_rules! cast_decimal_to_int16_down {
     (
         $array:expr,
@@ -341,20 +347,19 @@ macro_rules! cast_decimal_to_int16_down {
             .iter()
             .map(|value| match value {
                 Some(value) => {
-                    let divisor: i128 = 10_i128.pow($scale as u32);
-                    let truncated: i128 = value / divisor;
-                    let remainder: i128 = (value % divisor).abs();
-                    let is_overflow = truncated > std::i32::MAX.into();
+                    let divisor = 10_i128.pow($scale as u32);
+                    let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                    let is_overflow = truncated.abs() > std::i32::MAX.into();
                     let i32_value = truncated as i32;
                     match (is_overflow, $eval_mode) {
                         (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!("{}.{}BD", truncated, remainder),
+                            value: format!("{}.{}BD", truncated, decimal),
                             from_type: format!("DECIMAL({},{})", $precision, $scale),
                             to_type: $dest_type_str.to_string(),
                         }),
                         (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| CometError::CastOverFlow {
-                                value: format!("{}.{}BD", truncated, remainder),
+                                value: format!("{}.{}BD", truncated, decimal),
                                 from_type: format!("DECIMAL({},{})", $precision, $scale),
                                 to_type: $dest_type_str.to_string(),
                             })
@@ -390,13 +395,12 @@ macro_rules! cast_decimal_to_int32_up {
             .iter()
             .map(|value| match value {
                 Some(value) => {
-                    let divisor: i128 = 10_i128.pow($scale as u32);
-                    let truncated: i128 = value / divisor;
-                    let remainder: i128 = (value % divisor).abs();
-                    let is_overflow = truncated > $max_dest_val.into();
+                    let divisor = 10_i128.pow($scale as u32);
+                    let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                    let is_overflow = truncated.abs() > $max_dest_val.into();
                     match (is_overflow, $eval_mode) {
                         (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!("{}.{}BD", truncated, remainder),
+                            value: format!("{}.{}BD", truncated, decimal),
                             from_type: format!("DECIMAL({},{})", $precision, $scale),
                             to_type: $dest_type_str.to_string(),
                         }),
@@ -806,7 +810,7 @@ impl Cast {
                     eval_mode,
                     Int64Array,
                     i64,
-                    "LONG",
+                    "BIGINT",
                     std::i64::MAX,
                     *precision,
                     *scale
