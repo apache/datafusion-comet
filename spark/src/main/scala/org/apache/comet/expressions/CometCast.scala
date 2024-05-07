@@ -226,19 +226,25 @@ object CometCast {
   }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.DoubleType => Compatible()
+    case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
+        DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
     case _: DecimalType => Incompatible(Some("No overflow check"))
     case _ => Unsupported
   }
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.FloatType => Compatible()
+    case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.ByteType | DataTypes.ShortType |
+        DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
     case _: DecimalType => Incompatible(Some("No overflow check"))
     case _ => Unsupported
   }
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
-    case DataTypes.FloatType | DataTypes.DoubleType => Compatible()
+    case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
+        DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
     case _ => Unsupported
   }
 
