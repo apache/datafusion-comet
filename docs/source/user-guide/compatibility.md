@@ -38,122 +38,89 @@ Cast operations in Comet fall into three levels of support:
 
 - **Compatible**: The results match Apache Spark
 - **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-  `spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
-  recommended for production use.
+will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+`spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
+recommended for production use.
 - **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
-  Spark.
+Spark.
 
-The following table shows the current cast operations supported by Comet. Any cast that does not appear in this
-table (such as those involving complex types and timestamp_ntz, for example) are not supported by Comet.
+### Compatible Casts
 
-| From Type | To Type   | Compatible?  | Notes                               |
-| --------- | --------- | ------------ | ----------------------------------- |
-| boolean   | byte      | Compatible   |                                     |
-| boolean   | short     | Compatible   |                                     |
-| boolean   | integer   | Compatible   |                                     |
-| boolean   | long      | Compatible   |                                     |
-| boolean   | float     | Compatible   |                                     |
-| boolean   | double    | Compatible   |                                     |
-| boolean   | decimal   | Unsupported  |                                     |
-| boolean   | string    | Compatible   |                                     |
-| boolean   | timestamp | Unsupported  |                                     |
-| byte      | boolean   | Compatible   |                                     |
-| byte      | short     | Compatible   |                                     |
-| byte      | integer   | Compatible   |                                     |
-| byte      | long      | Compatible   |                                     |
-| byte      | float     | Compatible   |                                     |
-| byte      | double    | Compatible   |                                     |
-| byte      | decimal   | Compatible   |                                     |
-| byte      | string    | Compatible   |                                     |
-| byte      | binary    | Unsupported  |                                     |
-| byte      | timestamp | Unsupported  |                                     |
-| short     | boolean   | Compatible   |                                     |
-| short     | byte      | Compatible   |                                     |
-| short     | integer   | Compatible   |                                     |
-| short     | long      | Compatible   |                                     |
-| short     | float     | Compatible   |                                     |
-| short     | double    | Compatible   |                                     |
-| short     | decimal   | Compatible   |                                     |
-| short     | string    | Compatible   |                                     |
-| short     | binary    | Unsupported  |                                     |
-| short     | timestamp | Unsupported  |                                     |
-| integer   | boolean   | Compatible   |                                     |
-| integer   | byte      | Compatible   |                                     |
-| integer   | short     | Compatible   |                                     |
-| integer   | long      | Compatible   |                                     |
-| integer   | float     | Compatible   |                                     |
-| integer   | double    | Compatible   |                                     |
-| integer   | decimal   | Compatible   |                                     |
-| integer   | string    | Compatible   |                                     |
-| integer   | binary    | Unsupported  |                                     |
-| integer   | timestamp | Unsupported  |                                     |
-| long      | boolean   | Compatible   |                                     |
-| long      | byte      | Compatible   |                                     |
-| long      | short     | Compatible   |                                     |
-| long      | integer   | Compatible   |                                     |
-| long      | float     | Compatible   |                                     |
-| long      | double    | Compatible   |                                     |
-| long      | decimal   | Compatible   |                                     |
-| long      | string    | Compatible   |                                     |
-| long      | binary    | Unsupported  |                                     |
-| long      | timestamp | Unsupported  |                                     |
-| float     | boolean   | Compatible   |                                     |
-| float     | byte      | Unsupported  |                                     |
-| float     | short     | Unsupported  |                                     |
-| float     | integer   | Unsupported  |                                     |
-| float     | long      | Unsupported  |                                     |
-| float     | double    | Compatible   |                                     |
-| float     | decimal   | Unsupported  |                                     |
-| float     | string    | Incompatible |                                     |
-| float     | timestamp | Unsupported  |                                     |
-| double    | boolean   | Compatible   |                                     |
-| double    | byte      | Unsupported  |                                     |
-| double    | short     | Unsupported  |                                     |
-| double    | integer   | Unsupported  |                                     |
-| double    | long      | Unsupported  |                                     |
-| double    | float     | Compatible   |                                     |
-| double    | decimal   | Incompatible |                                     |
-| double    | string    | Incompatible |                                     |
-| double    | timestamp | Unsupported  |                                     |
-| decimal   | boolean   | Unsupported  |                                     |
-| decimal   | byte      | Unsupported  |                                     |
-| decimal   | short     | Unsupported  |                                     |
-| decimal   | integer   | Unsupported  |                                     |
-| decimal   | long      | Unsupported  |                                     |
-| decimal   | float     | Compatible   |                                     |
-| decimal   | double    | Compatible   |                                     |
-| decimal   | string    | Unsupported  |                                     |
-| decimal   | timestamp | Unsupported  |                                     |
-| string    | boolean   | Compatible   |                                     |
-| string    | byte      | Compatible   |                                     |
-| string    | short     | Compatible   |                                     |
-| string    | integer   | Compatible   |                                     |
-| string    | long      | Compatible   |                                     |
-| string    | float     | Unsupported  |                                     |
-| string    | double    | Unsupported  |                                     |
-| string    | decimal   | Unsupported  |                                     |
-| string    | binary    | Compatible   |                                     |
-| string    | date      | Unsupported  |                                     |
-| string    | timestamp | Incompatible | Not all valid formats are supported |
-| binary    | string    | Incompatible |                                     |
-| date      | boolean   | Unsupported  |                                     |
-| date      | byte      | Unsupported  |                                     |
-| date      | short     | Unsupported  |                                     |
-| date      | integer   | Unsupported  |                                     |
-| date      | long      | Unsupported  |                                     |
-| date      | float     | Unsupported  |                                     |
-| date      | double    | Unsupported  |                                     |
-| date      | decimal   | Unsupported  |                                     |
-| date      | string    | Compatible   |                                     |
-| date      | timestamp | Unsupported  |                                     |
-| timestamp | boolean   | Unsupported  |                                     |
-| timestamp | byte      | Unsupported  |                                     |
-| timestamp | short     | Unsupported  |                                     |
-| timestamp | integer   | Unsupported  |                                     |
-| timestamp | long      | Compatible   |                                     |
-| timestamp | float     | Unsupported  |                                     |
-| timestamp | double    | Unsupported  |                                     |
-| timestamp | decimal   | Unsupported  |                                     |
-| timestamp | string    | Compatible   |                                     |
-| timestamp | date      | Compatible   |                                     |
+The following cast operations are generally compatible with Spark except for the differences noted here.
+
+| From Type | To Type | Notes |
+|-|-|-|
+| boolean | byte |  |
+| boolean | short |  |
+| boolean | integer |  |
+| boolean | long |  |
+| boolean | float |  |
+| boolean | double |  |
+| boolean | string |  |
+| byte | boolean |  |
+| byte | short |  |
+| byte | integer |  |
+| byte | long |  |
+| byte | float |  |
+| byte | double |  |
+| byte | decimal |  |
+| byte | string |  |
+| short | boolean |  |
+| short | byte |  |
+| short | integer |  |
+| short | long |  |
+| short | float |  |
+| short | double |  |
+| short | decimal |  |
+| short | string |  |
+| integer | boolean |  |
+| integer | byte |  |
+| integer | short |  |
+| integer | long |  |
+| integer | float |  |
+| integer | double |  |
+| integer | string |  |
+| long | boolean |  |
+| long | byte |  |
+| long | short |  |
+| long | integer |  |
+| long | float |  |
+| long | double |  |
+| long | string |  |
+| float | boolean |  |
+| float | double |  |
+| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| double | boolean |  |
+| double | float |  |
+| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | float |  |
+| decimal | double |  |
+| string | boolean |  |
+| string | byte |  |
+| string | short |  |
+| string | integer |  |
+| string | long |  |
+| string | binary |  |
+| date | string |  |
+| timestamp | long |  |
+| timestamp | decimal |  |
+| timestamp | string |  |
+| timestamp | date |  |
+
+### Incompatible Casts
+
+The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+
+| From Type | To Type | Notes |
+|-|-|-|
+| integer | decimal  | No overflow check |
+| long | decimal  | No overflow check |
+| float | decimal  | No overflow check |
+| double | decimal  | No overflow check |
+| string | timestamp  | Not all valid formats are supported |
+| binary | string  | Only works for binary data representing valid UTF-8 strings |
+
+### Unsupported Casts
+
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
+[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.

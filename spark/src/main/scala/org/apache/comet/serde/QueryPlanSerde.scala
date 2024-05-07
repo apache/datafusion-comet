@@ -636,7 +636,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                 reason.map(str => s" ($str)").getOrElse("")
 
             castSupport match {
-              case Compatible =>
+              case Compatible(_) =>
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
               case Incompatible(reason) =>
                 if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
