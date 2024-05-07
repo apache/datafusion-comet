@@ -253,7 +253,8 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
           if (subqueryType == "BINARY") {
@@ -339,11 +340,11 @@ class CometExecSuite extends CometTestBase {
           }.map(_.metrics).get
 
           assert(metrics.contains("input_batches"))
-          assert(metrics("input_batches").value == 2L)
+          assert(metrics("input_batches").value == 8L)
           assert(metrics.contains("input_rows"))
           assert(metrics("input_rows").value == 10L)
           assert(metrics.contains("output_batches"))
-          assert(metrics("output_batches").value == 1L)
+          assert(metrics("output_batches").value == 4L)
           assert(metrics.contains("output_rows"))
           assert(metrics("output_rows").value == 5L)
           assert(metrics.contains("peak_mem_used"))

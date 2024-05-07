@@ -63,9 +63,9 @@ TakeOrderedAndProject (70)
                :              +- * ColumnarToRow (53)
                :                 +- CometFilter (52)
                :                    +- CometScan parquet spark_catalog.default.promotion (51)
-               +- * ColumnarToRow (64)
-                  +- CometSort (63)
-                     +- CometExchange (62)
+               +- * Sort (64)
+                  +- Exchange (63)
+                     +- * ColumnarToRow (62)
                         +- CometProject (61)
                            +- CometFilter (60)
                               +- CometScan parquet spark_catalog.default.catalog_returns (59)
@@ -355,28 +355,28 @@ Condition : (isnotnull(cr_item_sk#30) AND isnotnull(cr_order_number#31))
 Input [3]: [cr_item_sk#30, cr_order_number#31, cr_returned_date_sk#32]
 Arguments: [cr_item_sk#30, cr_order_number#31], [cr_item_sk#30, cr_order_number#31]
 
-(62) CometExchange
-Input [2]: [cr_item_sk#30, cr_order_number#31]
-Arguments: hashpartitioning(cr_item_sk#30, cr_order_number#31, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=10]
-
-(63) CometSort
-Input [2]: [cr_item_sk#30, cr_order_number#31]
-Arguments: [cr_item_sk#30, cr_order_number#31], [cr_item_sk#30 ASC NULLS FIRST, cr_order_number#31 ASC NULLS FIRST]
-
-(64) ColumnarToRow [codegen id : 12]
+(62) ColumnarToRow [codegen id : 12]
 Input [2]: [cr_item_sk#30, cr_order_number#31]
 
-(65) SortMergeJoin [codegen id : 13]
+(63) Exchange
+Input [2]: [cr_item_sk#30, cr_order_number#31]
+Arguments: hashpartitioning(cr_item_sk#30, cr_order_number#31, 5), ENSURE_REQUIREMENTS, [plan_id=10]
+
+(64) Sort [codegen id : 13]
+Input [2]: [cr_item_sk#30, cr_order_number#31]
+Arguments: [cr_item_sk#30 ASC NULLS FIRST, cr_order_number#31 ASC NULLS FIRST], false, 0
+
+(65) SortMergeJoin [codegen id : 14]
 Left keys [2]: [cs_item_sk#4, cs_order_number#6]
 Right keys [2]: [cr_item_sk#30, cr_order_number#31]
 Join type: LeftOuter
 Join condition: None
 
-(66) Project [codegen id : 13]
+(66) Project [codegen id : 14]
 Output [3]: [w_warehouse_name#15, i_item_desc#17, d_week_seq#24]
 Input [7]: [cs_item_sk#4, cs_order_number#6, w_warehouse_name#15, i_item_desc#17, d_week_seq#24, cr_item_sk#30, cr_order_number#31]
 
-(67) HashAggregate [codegen id : 13]
+(67) HashAggregate [codegen id : 14]
 Input [3]: [w_warehouse_name#15, i_item_desc#17, d_week_seq#24]
 Keys [3]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24]
 Functions [1]: [partial_count(1)]
@@ -387,7 +387,7 @@ Results [4]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, count#34]
 Input [4]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, count#34]
 Arguments: hashpartitioning(i_item_desc#17, w_warehouse_name#15, d_week_seq#24, 5), ENSURE_REQUIREMENTS, [plan_id=11]
 
-(69) HashAggregate [codegen id : 14]
+(69) HashAggregate [codegen id : 15]
 Input [4]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, count#34]
 Keys [3]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24]
 Functions [1]: [count(1)]

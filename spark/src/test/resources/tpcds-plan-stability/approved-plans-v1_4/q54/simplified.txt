@@ -79,25 +79,29 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                 CometProject [d_date_sk]
                                                                   CometFilter [d_month_seq,d_date_sk]
                                                                     Subquery #3
-                                                                      WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                      WholeStageCodegen (2)
+                                                                        HashAggregate [(d_month_seq + 1)]
                                                                           InputAdapter
-                                                                            CometHashAggregate [(d_month_seq + 1)]
-                                                                              CometExchange [(d_month_seq + 1)] #9
-                                                                                CometHashAggregate [(d_month_seq + 1)]
-                                                                                  CometProject [d_month_seq] [(d_month_seq + 1)]
-                                                                                    CometFilter [d_year,d_moy]
-                                                                                      CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
+                                                                            Exchange [(d_month_seq + 1)] #9
+                                                                              WholeStageCodegen (1)
+                                                                                ColumnarToRow
+                                                                                  InputAdapter
+                                                                                    CometHashAggregate [(d_month_seq + 1)]
+                                                                                      CometProject [d_month_seq] [(d_month_seq + 1)]
+                                                                                        CometFilter [d_year,d_moy]
+                                                                                          CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
                                                                     Subquery #4
-                                                                      WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                      WholeStageCodegen (2)
+                                                                        HashAggregate [(d_month_seq + 3)]
                                                                           InputAdapter
-                                                                            CometHashAggregate [(d_month_seq + 3)]
-                                                                              CometExchange [(d_month_seq + 3)] #10
-                                                                                CometHashAggregate [(d_month_seq + 3)]
-                                                                                  CometProject [d_month_seq] [(d_month_seq + 3)]
-                                                                                    CometFilter [d_year,d_moy]
-                                                                                      CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
+                                                                            Exchange [(d_month_seq + 3)] #10
+                                                                              WholeStageCodegen (1)
+                                                                                ColumnarToRow
+                                                                                  InputAdapter
+                                                                                    CometHashAggregate [(d_month_seq + 3)]
+                                                                                      CometProject [d_month_seq] [(d_month_seq + 3)]
+                                                                                        CometFilter [d_year,d_moy]
+                                                                                          CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
                                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                     InputAdapter
                                       BroadcastExchange #11
