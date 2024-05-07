@@ -25,7 +25,10 @@ use std::{
 use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
-    datatypes::{Decimal128Type, DecimalType, TimestampMicrosecondType},
+    datatypes::{
+        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type,
+        TimestampMicrosecondType,
+    },
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -39,7 +42,7 @@ use chrono::{TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use num::{traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
+use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
 use regex::Regex;
 
 use crate::execution::datafusion::expressions::utils::{
@@ -332,6 +335,9 @@ impl Cast {
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
             }
+            (DataType::Float32, DataType::Decimal128(precision, scale)) => {
+                Self::cast_float32_to_decimal128(&array, *precision, *scale, self.eval_mode)?
+            }
             (DataType::Float64, DataType::Decimal128(precision, scale)) => {
                 Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)?
             }
@@ -404,7 +410,28 @@ impl Cast {
         scale: i8,
         eval_mode: EvalMode,
     ) -> CometResult<ArrayRef> {
-        let input = array.as_any().downcast_ref::<Float64Array>().unwrap();
+        Self::cast_floating_point_to_decimal128::<Float64Type>(array, precision, scale, eval_mode)
+    }
+
+    fn cast_float32_to_decimal128(
+        array: &dyn Array,
+        precision: u8,
+        scale: i8,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef> {
+        Self::cast_floating_point_to_decimal128::<Float32Type>(array, precision, scale, eval_mode)
+    }
+
+    fn cast_floating_point_to_decimal128<T: ArrowPrimitiveType>(
+        array: &dyn Array,
+        precision: u8,
+        scale: i8,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef>
+    where
+        <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
+    {
+        let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
         let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
 
         let mul = 10_f64.powi(scale as i32);
@@ -413,7 +440,7 @@ impl Cast {
             if input.is_null(i) {
                 cast_array.append_null();
             } else {
-                let input_value = input.value(i);
+                let input_value = input.value(i).as_();
                 let value = (input_value * mul).round().to_i128();
 
                 match value {

@@ -227,7 +227,7 @@ object CometCast {
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.DoubleType => Compatible()
-    case _: DecimalType => Incompatible(Some("No overflow check"))
+    case _: DecimalType => Compatible()
     case _ => Unsupported
   }
 
