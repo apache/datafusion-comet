@@ -33,6 +33,7 @@ import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 import org.apache.comet.expressions.{CometCast, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
   import testImplicits._
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
@@ -569,7 +570,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast StringType to DateType") {
     // https://github.com/apache/datafusion-comet/issues/327
-    castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
+    castTest(
+      Seq("2020-01-01", "2020-01", "2020-01-01", "2020-01-01T").toDF("a"),
+      DataTypes.DateType)
+    // fuzz test
+    castTest(gen.generateStrings(dataSize, datePattern, 10).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
