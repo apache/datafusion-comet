@@ -797,7 +797,7 @@ class CometSparkSessionExtensions
 
         // Convert native execution block by linking consecutive native operators.
         var firstNativeOp = true
-        val finalPlan = newPlan.transformDown {
+        newPlan.transformDown {
           case op: CometNativeExec =>
             if (firstNativeOp) {
               firstNativeOp = false
@@ -809,8 +809,6 @@ class CometSparkSessionExtensions
             firstNativeOp = true
             op
         }
-
-        finalPlan
       }
     }
 
