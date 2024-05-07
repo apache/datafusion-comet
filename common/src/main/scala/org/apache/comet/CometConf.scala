@@ -280,7 +280,7 @@ object CometConf {
     conf("spark.comet.explainFallback.enabled")
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
-          "why a query stage cannot be executed natively with Comet.")
+          "why a query stage cannot be executed natively.")
       .booleanConf
       .createWithDefault(false)
 
