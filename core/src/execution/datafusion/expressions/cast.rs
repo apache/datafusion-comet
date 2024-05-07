@@ -25,7 +25,7 @@ use std::{
 use crate::errors::{CometError, CometResult};
 use arrow::{
     compute::{cast_with_options, CastOptions},
-    datatypes::{DecimalType, Decimal128Type, TimestampMicrosecondType},
+    datatypes::{Decimal128Type, DecimalType, TimestampMicrosecondType},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -335,7 +335,7 @@ impl Cast {
 
             (DataType::Float64, DataType::Decimal128(precision, scale)) => {
                 Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)?
-            }            
+            }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
                 cast_with_options(&array, to_type, &CAST_OPTIONS)?
@@ -399,7 +399,7 @@ impl Cast {
         Ok(cast_array)
     }
 
-    fn cast_float64_to_decimal128 (
+    fn cast_float64_to_decimal128(
         array: &dyn Array,
         precision: u8,
         scale: i8,
@@ -407,16 +407,16 @@ impl Cast {
     ) -> CometResult<ArrayRef> {
         let input = array.as_any().downcast_ref::<Float64Array>().unwrap();
         let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
-    
+
         let mul = (precision as f64).powi(scale as i32);
-    
+
         for i in 0..input.len() {
             if input.is_null(i) {
                 cast_array.append_null();
             } else {
-                let input_value = input.value(i);    
+                let input_value = input.value(i);
                 let value = (input_value * mul).round().to_i128();
-        
+
                 match value {
                     Some(v) => {
                         if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
@@ -441,11 +441,15 @@ impl Cast {
                     }
                 }
             }
-        }        
-    
-        let res = Arc::new(cast_array.with_precision_and_scale(precision, scale)?.finish()) as ArrayRef;
+        }
+
+        let res = Arc::new(
+            cast_array
+                .with_precision_and_scale(precision, scale)?
+                .finish(),
+        ) as ArrayRef;
         Ok(res)
-    }        
+    }
 
     fn spark_cast_float64_to_utf8<OffsetSize>(
         from: &dyn Array,
