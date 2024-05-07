@@ -54,7 +54,7 @@ jobs:
           - java_version: 11
             is_push_event: false
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -92,7 +92,7 @@ jobs:
           - spark-version: '3.2'
             scala-version: '2.13'
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -118,7 +118,7 @@ jobs:
         scala-version: ['2.12', '2.13']
       fail-fast: false
     if: github.event_name == 'push'
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
           - java_version: 11
             is_push_event: false
       fail-fast: false
-    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +184,7 @@ jobs:
           - spark-version: '3.2'
             scala-version: '2.13'
       fail-fast: false
-    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
