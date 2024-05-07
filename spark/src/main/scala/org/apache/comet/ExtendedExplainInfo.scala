@@ -45,7 +45,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     }
   }
 
-  private def extensionInfo(node: TreeNode[_]): Set[String] = {
+  def extensionInfo(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)
     sorted.foreach { p =>

@@ -776,7 +776,7 @@ class CometSparkSessionExtensions
 
         // Convert native execution block by linking consecutive native operators.
         var firstNativeOp = true
-        newPlan.transformDown {
+        val finalPlan = newPlan.transformDown {
           case op: CometNativeExec =>
             if (firstNativeOp) {
               firstNativeOp = false
@@ -788,6 +788,19 @@ class CometSparkSessionExtensions
             firstNativeOp = true
             op
         }
+
+        // if the plan cannot be run natively then explain why, if verbose explain is enabled
+        val explainVerbose = "VERBOSE".equalsIgnoreCase(CometConf.COMET_EXPLAIN_ENABLED.get())
+        if (explainVerbose && !isCometNative(finalPlan)) {
+          val fallbackReasons = new ExtendedExplainInfo().extensionInfo(finalPlan)
+          if (fallbackReasons.isEmpty) {
+            logInfo(s"Cannot run plan natively, but no reason is given. This is likely a bug.")
+          } else {
+            logInfo(s"Cannot run plan natively:\n\t- ${fallbackReasons.mkString("\n\t- ")}")
+          }
+        }
+
+        finalPlan
       }
     }
 

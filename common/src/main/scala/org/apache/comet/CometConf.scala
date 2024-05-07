@@ -276,6 +276,14 @@ object CometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_ENABLED: ConfigEntry[String] =
+    conf("spark.comet.explain")
+      .doc(
+        "Set this config to VERBOSE to see logging explaining the reason(s) why a query " +
+          "stage cannot be executed natively with Comet.")
+      .stringConf
+      .createWithDefault("NONE")
+
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
     .intConf
