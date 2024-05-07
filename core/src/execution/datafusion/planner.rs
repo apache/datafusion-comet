@@ -71,6 +71,7 @@ use crate::{
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
+                stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
@@ -1256,6 +1257,30 @@ impl PhysicalPlanner {
                     ))),
                     stats_type => Err(ExecutionError::GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
+                        stats_type
+                    ))),
+                }
+            }
+            AggExprStruct::Stddev(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                match expr.stats_type {
+                    0 => Ok(Arc::new(Stddev::new(
+                        child,
+                        "stddev",
+                        datatype,
+                        StatsType::Sample,
+                        expr.null_on_divide_by_zero,
+                    ))),
+                    1 => Ok(Arc::new(Stddev::new(
+                        child,
+                        "stddev_pop",
+                        datatype,
+                        StatsType::Population,
+                        expr.null_on_divide_by_zero,
+                    ))),
+                    stats_type => Err(ExecutionError::GeneralError(format!(
+                        "Unknown StatisticsType {:?} for stddev",
                         stats_type
                     ))),
                 }
