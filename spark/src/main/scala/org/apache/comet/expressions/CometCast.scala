@@ -193,8 +193,8 @@ object CometCast {
   }
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
-    case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.IntegerType |
-         DataTypes.LongType | DataTypes.ShortType | DataTypes.ByteType =>
+    case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.IntegerType | DataTypes.LongType |
+        DataTypes.ShortType | DataTypes.ByteType =>
       Compatible
     case _ => Unsupported
   }
