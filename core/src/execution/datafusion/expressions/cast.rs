@@ -744,11 +744,13 @@ fn cast_decimal_to_int3(
         .iter()
         .map(|value| match value {
             Some(value) => {
-                let truncated: i128 = value / 10_i128.pow(scale as u32);
+                let divisor = 10_i128.pow(scale as u32);
+                let truncated: i128 = value / divisor;
+                let remainder: i128 = (value % divisor).abs();
                 let is_overflow = truncated > std::i32::MAX.into();
                 match (is_overflow, eval_mode) {
                     (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                        value: truncated.to_string(),
+                        value: format!("{}.{}BD", truncated, remainder),
                         from_type: format!("DECIMAL({},{})", precision, scale),
                         to_type: "INT32".to_string(),
                     }),
@@ -777,18 +779,20 @@ fn cast_decimal_to_int4(
         .iter()
         .map(|value| match value {
             Some(value) => {
-                let truncated: i128 = value / 10_i128.pow(scale as u32);
+                let divisor = 10_i128.pow(scale as u32);
+                let truncated: i128 = value / divisor;
+                let remainder: i128 = (value % divisor).abs();
                 let is_overflow = truncated > std::i32::MAX.into();
                 let i32_value = truncated as i32;
                 match (is_overflow, eval_mode) {
                     (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                        value: truncated.to_string(),
+                        value: format!("{}.{}BD", truncated, remainder),
                         from_type: format!("DECIMAL({},{})", precision, scale),
                         to_type: "INT32".to_string(),
                     }),
                     (false, EvalMode::Ansi) => i16::try_from(i32_value)
                         .map_err(|_| CometError::CastOverFlow {
-                            value: format!("DECIMAL({},{})", precision, scale),
+                            value: format!("{}.{}BD", truncated, remainder),
                             from_type: format!("DECIMAL({},{})", precision, scale),
                             to_type: "SMALLINT".to_string(),
                         })
