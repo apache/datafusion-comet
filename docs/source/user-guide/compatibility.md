@@ -1,20 +1,20 @@
 <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
 
 # Compatibility Guide
@@ -34,13 +34,93 @@ There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where 
 
 ## Cast
 
-Comet currently delegates to Apache DataFusion for most cast operations, and this means that the behavior is not
-guaranteed to be consistent with Spark.
+Cast operations in Comet fall into three levels of support:
 
-There is an [epic](https://github.com/apache/datafusion-comet/issues/286) where we are tracking the work to implement Spark-compatible cast expressions.
+- **Compatible**: The results match Apache Spark
+- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+`spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
+recommended for production use.
+- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
+Spark.
 
-### Cast from String to Timestamp
+### Compatible Casts
 
-Casting from String to Timestamp is disabled by default due to incompatibilities with Spark, including timezone
-issues, and can be enabled by setting `spark.comet.castStringToTimestamp=true`. See the
-[tracking issue](https://github.com/apache/datafusion-comet/issues/328) for more information.
+The following cast operations are generally compatible with Spark except for the differences noted here.
+
+| From Type | To Type | Notes |
+|-|-|-|
+| boolean | byte |  |
+| boolean | short |  |
+| boolean | integer |  |
+| boolean | long |  |
+| boolean | float |  |
+| boolean | double |  |
+| boolean | string |  |
+| byte | boolean |  |
+| byte | short |  |
+| byte | integer |  |
+| byte | long |  |
+| byte | float |  |
+| byte | double |  |
+| byte | decimal |  |
+| byte | string |  |
+| short | boolean |  |
+| short | byte |  |
+| short | integer |  |
+| short | long |  |
+| short | float |  |
+| short | double |  |
+| short | decimal |  |
+| short | string |  |
+| integer | boolean |  |
+| integer | byte |  |
+| integer | short |  |
+| integer | long |  |
+| integer | float |  |
+| integer | double |  |
+| integer | string |  |
+| long | boolean |  |
+| long | byte |  |
+| long | short |  |
+| long | integer |  |
+| long | float |  |
+| long | double |  |
+| long | string |  |
+| float | boolean |  |
+| float | double |  |
+| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| double | boolean |  |
+| double | float |  |
+| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | float |  |
+| decimal | double |  |
+| string | boolean |  |
+| string | byte |  |
+| string | short |  |
+| string | integer |  |
+| string | long |  |
+| string | binary |  |
+| date | string |  |
+| timestamp | long |  |
+| timestamp | decimal |  |
+| timestamp | string |  |
+| timestamp | date |  |
+
+### Incompatible Casts
+
+The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+
+| From Type | To Type | Notes |
+|-|-|-|
+| integer | decimal  | No overflow check |
+| long | decimal  | No overflow check |
+| float | decimal  | No overflow check |
+| double | decimal  | No overflow check |
+| string | timestamp  | Not all valid formats are supported |
+| binary | string  | Only works for binary data representing valid UTF-8 strings |
+
+### Unsupported Casts
+
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
+[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.

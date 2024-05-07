@@ -118,3 +118,6 @@ harness = false
 name = "row_columnar"
 harness = false
 
+[[bench]]
+name = "cast"
+harness = false

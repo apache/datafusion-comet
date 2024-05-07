@@ -259,7 +259,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz") {
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -282,7 +284,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO: make the test pass for Spark 3.2 & 3.3
     assume(isSpark34Plus)
 
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -305,7 +309,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO: make the test pass for Spark 3.2 & 3.3
     assume(isSpark34Plus)
 
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -394,32 +400,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("date_trunc with timestamp_ntz") {
     assume(!isSpark32, "timestamp functions for timestamp_ntz have incorrect behavior in 3.2")
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "timetbl") {
-          Seq(
-            "YEAR",
-            "YYYY",
-            "YY",
-            "MON",
-            "MONTH",
-            "MM",
-            "QUARTER",
-            "WEEK",
-            "DAY",
-            "DD",
-            "HOUR",
-            "MINUTE",
-            "SECOND",
-            "MILLISECOND",
-            "MICROSECOND").foreach { format =>
-            checkSparkAnswerAndOperator(
-              "SELECT " +
-                s"date_trunc('$format', _3), " +
-                s"date_trunc('$format', _5)  " +
-                " from timetbl")
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
+          makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "timetbl") {
+            Seq(
+              "YEAR",
+              "YYYY",
+              "YY",
+              "MON",
+              "MONTH",
+              "MM",
+              "QUARTER",
+              "WEEK",
+              "DAY",
+              "DD",
+              "HOUR",
+              "MINUTE",
+              "SECOND",
+              "MILLISECOND",
+              "MICROSECOND").foreach { format =>
+              checkSparkAnswerAndOperator(
+                "SELECT " +
+                  s"date_trunc('$format', _3), " +
+                  s"date_trunc('$format', _5)  " +
+                  " from timetbl")
+            }
           }
         }
       }
@@ -428,22 +436,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("date_trunc with format array") {
     assume(isSpark33Plus, "TimestampNTZ is supported in Spark 3.3+, See SPARK-36182")
-    val numRows = 1000
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
-        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
-        withParquetTable(path.toString, "timeformattbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT " +
-              "format, _0, _1, _2, _3, _4, _5, " +
-              "date_trunc(format, _0), " +
-              "date_trunc(format, _1), " +
-              "date_trunc(format, _2), " +
-              "date_trunc(format, _3), " +
-              "date_trunc(format, _4), " +
-              "date_trunc(format, _5) " +
-              " from timeformattbl ")
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val numRows = 1000
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
+          makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+          withParquetTable(path.toString, "timeformattbl") {
+            checkSparkAnswerAndOperator(
+              "SELECT " +
+                "format, _0, _1, _2, _3, _4, _5, " +
+                "date_trunc(format, _0), " +
+                "date_trunc(format, _1), " +
+                "date_trunc(format, _2), " +
+                "date_trunc(format, _3), " +
+                "date_trunc(format, _4), " +
+                "date_trunc(format, _5) " +
+                " from timeformattbl ")
+          }
         }
       }
     }
@@ -818,7 +828,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -1357,8 +1369,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assume(isSpark34Plus)
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       "spark.sql.extendedExplainProvider" -> "org.apache.comet.ExtendedExplainInfo") {
@@ -1370,29 +1384,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(
           (
             s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
-            "make_interval is not supported"),
+            Set("make_interval is not supported")),
           (
             "SELECT "
               + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
               + " + "
               + "date_part('MONTH', make_interval(c0, c1, c0, c1, c0, c0, c2))"
               + s" as yrs_and_mths from $table",
-            "extractintervalyears is not supported\n" +
-              "extractintervalmonths is not supported"),
+            Set(
+              "extractintervalyears is not supported",
+              "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            "Native shuffle is not enabled\n" +
-              "AQEShuffleRead is not supported"),
+            Set("Native shuffle is not enabled", "AQEShuffleRead is not supported")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
-            "Native shuffle is not enabled\n" +
-              "AQEShuffleRead is not supported\n" +
-              "make_interval is not supported\n" +
-              "BroadcastExchange is not supported\n" +
-              "BroadcastHashJoin disabled because not all child plans are native"))
+            Set(
+              "Native shuffle is not enabled",
+              "AQEShuffleRead is not supported",
+              "make_interval is not supported",
+              "BroadcastExchange is not supported",
+              "BroadcastHashJoin disabled because not all child plans are native")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1406,7 +1421,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")

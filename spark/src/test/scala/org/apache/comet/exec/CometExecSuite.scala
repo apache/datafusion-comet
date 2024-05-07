@@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
@@ -58,6 +58,29 @@ class CometExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  test("CometShuffleExchangeExec logical link should be correct") {
+    withTempView("v") {
+      spark.sparkContext
+        .parallelize((1 to 4).map(i => TestData(i, i.toString)), 2)
+        .toDF("c1", "c2")
+        .createOrReplaceTempView("v")
+
+      Seq(true, false).foreach { columnarShuffle =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
+          val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
+          val shuffle = find(df.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec if columnarShuffle => true
+            case _: ShuffleExchangeExec if !columnarShuffle => true
+            case _ => false
+          }.get
+          assert(shuffle.logicalLink.isEmpty)
+        }
       }
     }
   }
@@ -230,7 +253,8 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
           if (subqueryType == "BINARY") {
@@ -302,7 +326,8 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-      "spark.sql.autoBroadcastJoinThreshold" -> "0",
+      "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "-1",
+      "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.join.preferSortMergeJoin" -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl1") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl2") {
@@ -315,11 +340,11 @@ class CometExecSuite extends CometTestBase {
           }.map(_.metrics).get
 
           assert(metrics.contains("input_batches"))
-          assert(metrics("input_batches").value == 2L)
+          assert(metrics("input_batches").value == 8L)
           assert(metrics.contains("input_rows"))
           assert(metrics("input_rows").value == 10L)
           assert(metrics.contains("output_batches"))
-          assert(metrics("output_batches").value == 1L)
+          assert(metrics("output_batches").value == 4L)
           assert(metrics.contains("output_rows"))
           assert(metrics("output_rows").value == 5L)
           assert(metrics.contains("peak_mem_used"))
@@ -407,6 +432,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
       withTable(tableName, dim) {
@@ -924,7 +950,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SPARK-33474: Support typed literals as partition spec values") {
-    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+    withSQLConf(
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       withTable("t1") {
         val binaryStr = "Spark SQL"
         val binaryHexStr = Hex.hex(UTF8String.fromString(binaryStr).getBytes).toString
@@ -1340,3 +1368,5 @@ case class BucketedTableTestSpec(
     expectedShuffle: Boolean = true,
     expectedSort: Boolean = true,
     expectedNumOutputPartitions: Option[Int] = None)
+
+case class TestData(key: Int, value: String)

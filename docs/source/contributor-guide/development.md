@@ -40,7 +40,7 @@ A few common commands are specified in project's `Makefile`:
 
 - `make`: compile the entire project, but don't run tests
 - `make test-rust`: compile the project and run tests in Rust side
-- `make test-java`: compile the project and run tests in Java side
+- `make test-jvm`: compile the project and run tests in Java side
 - `make test`: compile the project and run tests in both Rust and Java
   side.
 - `make release`: compile the project and creates a release build. This

@@ -64,9 +64,13 @@ Linux, Apple OSX (Intel and M1)
 ## Requirements
 
 - Apache Spark 3.2, 3.3, or 3.4
-- JDK 8 and up
+- JDK 8, 11 and 17 (JDK 11 recommended because Spark 3.2 doesn't support 17)
 - GLIBC 2.17 (Centos 7) and up
 
 ## Getting started
 
-See the [DataFusion Comet User Guide](https://datafusion.apache.org/comet/user-guide/) for installation instructions.
+See the [DataFusion Comet User Guide](https://datafusion.apache.org/comet/user-guide/installation.html) for installation instructions.
+
+## Contributing
+See the [DataFusion Comet Contribution Guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html)
+for information on how to get started contributing to the project.

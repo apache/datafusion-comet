@@ -901,7 +901,7 @@ under the License.
             <exclude>rust-toolchain</exclude>
             <exclude>Makefile</exclude>
             <exclude>dev/Dockerfile*</exclude>
-            <exclude>dev/diff/**</exclude>
+            <exclude>dev/diffs/**</exclude>
             <exclude>dev/deploy-file</exclude>
             <exclude>**/test/resources/**</exclude>
             <exclude>**/benchmarks/*.txt</exclude>

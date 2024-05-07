@@ -46,7 +46,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -120,7 +120,7 @@ class CometSparkSessionExtensions
             val info3 = createMessage(
               getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isDefined,
               "Comet does not support pushed aggregate")
-            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString("\n"))
+            withInfos(scanExec, Seq(info1, info2, info3).flatten.toSet)
             scanExec
 
           // Other datasource V2 scan
@@ -147,7 +147,7 @@ class CometSparkSessionExtensions
                   !isSchemaSupported(scanExec.scan.readSchema()),
                   "Comet extension is not enabled for " +
                     s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
-                withInfo(scanExec, Seq(info1, info2).flatten.mkString("\n"))
+                withInfos(scanExec, Seq(info1, info2).flatten.toSet)
 
               // If it is data source V2 other than Parquet or Iceberg,
               // attach the unsupported reason to the plan.
@@ -340,7 +340,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec =>
+        case op: LocalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -349,7 +349,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec =>
+        case op: GlobalLimitExec if getOffset(op) == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -741,9 +741,37 @@ class CometSparkSessionExtensions
         }
 
         // Set up logical links
-        newPlan = newPlan.transform { case op: CometExec =>
-          op.originalPlan.logicalLink.foreach(op.setLogicalLink)
-          op
+        newPlan = newPlan.transform {
+          case op: CometExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+          case op: CometShuffleExchangeExec =>
+            // Original Spark shuffle exchange operator might have empty logical link.
+            // But the `setLogicalLink` call above on downstream operator of
+            // `CometShuffleExchangeExec` will set its logical link to the downstream
+            // operators which cause AQE behavior to be incorrect. So we need to unset
+            // the logical link here.
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+
+          case op: CometBroadcastExchangeExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
         }
 
         // Convert native execution block by linking consecutive native operators.
@@ -888,7 +916,10 @@ object CometSparkSessionExtensions extends Logging {
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) &&
       (conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
-        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager") &&
+      // TODO: AQE coalesce partitions feature causes Comet shuffle memory leak.
+      // We should disable Comet shuffle when AQE coalesce partitions is enabled.
+      (!conf.coalesceShufflePartitionsEnabled || COMET_SHUFFLE_ENFORCE_MODE_ENABLED.get())
 
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
     COMET_SCAN_ENABLED.get(conf)
@@ -1014,17 +1045,36 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
-    val exprInfo = exprs
-      .flatMap { e => Seq(e.getTagValue(CometExplainInfo.EXTENSION_INFO)) }
-      .flatten
-      .mkString("\n")
-    if (info != null && info.nonEmpty && exprInfo.nonEmpty) {
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, Seq(exprInfo, info).mkString("\n"))
-    } else if (exprInfo.nonEmpty) {
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, exprInfo)
-    } else if (info != null && info.nonEmpty) {
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, info)
+    // support existing approach of passing in multiple infos in a newline-delimited string
+    val infoSet = if (info == null || info.isEmpty) {
+      Set.empty[String]
+    } else {
+      info.split("\n").toSet
     }
+    withInfos(node, infoSet, exprs: _*)
+  }
+
+  /**
+   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
+   * from any child nodes. For now, we are using this to attach the reasons why certain Spark
+   * operators or expressions are disabled.
+   *
+   * @param node
+   *   The node to attach the explain information to. Typically a SparkPlan
+   * @param info
+   *   Information text. May contain zero or more strings. If not provided, then only information
+   *   from child nodes will be included.
+   * @param exprs
+   *   Child nodes. Information attached in these nodes will be be included in the information
+   *   attached to @node
+   * @tparam T
+   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   * @return
+   *   The node with information (if any) attached
+   */
+  def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
+    val exprInfo = exprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten.toSet
+    node.setTagValue(CometExplainInfo.EXTENSION_INFO, exprInfo ++ info)
     node
   }
 
@@ -1043,7 +1093,7 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
-    withInfo(node, "", exprs: _*)
+    withInfos(node, Set.empty, exprs: _*)
   }
 
   // Helper to reduce boilerplate
