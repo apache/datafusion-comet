@@ -86,6 +86,8 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
+    <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
+    <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
     <shims.source>spark-3.x</shims.source>
   </properties>
 
@@ -495,6 +497,9 @@ under the License.
         <spark.version>3.2.2</spark.version>
         <spark.version.short>3.2</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
+        <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
+        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
       </properties>
     </profile>
 
@@ -505,6 +510,7 @@ under the License.
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
       </properties>
     </profile>
 
