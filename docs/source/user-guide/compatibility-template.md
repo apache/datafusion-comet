@@ -44,7 +44,19 @@ Cast operations in Comet fall into three levels of support:
 - **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 
-The following table shows the current cast operations supported by Comet. Any cast that does not appear in this
-table (such as those involving complex types and timestamp_ntz, for example) are not supported by Comet.
+### Compatible Casts
 
-<!--CAST_TABLE-->
+The following cast operations are generally compatible with Spark except for the differences noted here.
+
+<!--COMPAT_CAST_TABLE-->
+
+### Incompatible Casts
+
+The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+
+<!--INCOMPAT_CAST_TABLE-->
+
+### Unsupported Casts
+
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the 
+[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.

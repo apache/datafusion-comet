@@ -25,7 +25,7 @@ import scala.io.Source
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
+import org.apache.comet.expressions.{CometCast, Compatible, Incompatible}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -64,23 +64,36 @@ object GenerateDocs {
     val outputFilename = "docs/source/user-guide/compatibility.md"
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
     for (line <- Source.fromFile(templateFilename).getLines()) {
-      if (line.trim == "<!--CAST_TABLE-->") {
-        w.write("| From Type | To Type | Compatible? | Notes |\n".getBytes)
-        w.write("|-|-|-|-|\n".getBytes)
+      if (line.trim == "<!--COMPAT_CAST_TABLE-->") {
+        w.write("| From Type | To Type | Notes |\n".getBytes)
+        w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
           for (toType <- CometCast.supportedTypes) {
             if (Cast.canCast(fromType, toType) && fromType != toType) {
               val fromTypeName = fromType.typeName.replace("(10,2)", "")
               val toTypeName = toType.typeName.replace("(10,2)", "")
               CometCast.isSupported(fromType, toType, None, "LEGACY") match {
-                case Compatible =>
-                  w.write(s"| $fromTypeName | $toTypeName | Compatible | |\n".getBytes)
-                case Incompatible(Some(reason)) =>
-                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | $reason |\n".getBytes)
-                case Incompatible(None) =>
-                  w.write(s"| $fromTypeName | $toTypeName | Incompatible | |\n".getBytes)
-                case Unsupported =>
-                  w.write(s"| $fromTypeName | $toTypeName | Unsupported | |\n".getBytes)
+                case Compatible(notes) =>
+                  val notesStr = notes.getOrElse("").trim
+                  w.write(s"| $fromTypeName | $toTypeName | $notesStr |\n".getBytes)
+                case _ =>
+              }
+            }
+          }
+        }
+      } else if (line.trim == "<!--INCOMPAT_CAST_TABLE-->") {
+        w.write("| From Type | To Type | Notes |\n".getBytes)
+        w.write("|-|-|-|\n".getBytes)
+        for (fromType <- CometCast.supportedTypes) {
+          for (toType <- CometCast.supportedTypes) {
+            if (Cast.canCast(fromType, toType) && fromType != toType) {
+              val fromTypeName = fromType.typeName.replace("(10,2)", "")
+              val toTypeName = toType.typeName.replace("(10,2)", "")
+              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+                case Incompatible(notes) =>
+                  val notesStr = notes.getOrElse("").trim
+                  w.write(s"| $fromTypeName | $toTypeName  | $notesStr |\n".getBytes)
+                case _ =>
               }
             }
           }

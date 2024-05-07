@@ -24,10 +24,10 @@ import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 sealed trait SupportLevel
 
 /** We support this feature with full compatibility with Spark */
-object Compatible extends SupportLevel
+case class Compatible(notes: Option[String] = None) extends SupportLevel
 
 /** We support this feature but results can be different from Spark */
-case class Incompatible(reason: Option[String] = None) extends SupportLevel
+case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** We do not support this feature */
 object Unsupported extends SupportLevel
@@ -58,7 +58,7 @@ object CometCast {
       evalMode: String): SupportLevel = {
 
     if (fromType == toType) {
-      return Compatible
+      return Compatible()
     }
 
     (fromType, toType) match {
@@ -83,10 +83,14 @@ object CometCast {
         canCastFromDecimal(toType)
       case (DataTypes.BooleanType, _) =>
         canCastFromBoolean(toType)
-      case (
-            DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType,
-            _) =>
+      case (DataTypes.ByteType, _) =>
+        canCastFromByte(toType)
+      case (DataTypes.ShortType, _) =>
+        canCastFromShort(toType)
+      case (DataTypes.IntegerType, _) =>
         canCastFromInt(toType)
+      case (DataTypes.LongType, _) =>
+        canCastFromLong(toType)
       case (DataTypes.FloatType, _) =>
         canCastFromFloat(toType)
       case (DataTypes.DoubleType, _) =>
@@ -101,12 +105,12 @@ object CometCast {
       evalMode: String): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
-        Compatible
+        Compatible()
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        Compatible
+        Compatible()
       case DataTypes.BinaryType =>
-        Compatible
+        Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         // https://github.com/apache/datafusion-comet/issues/326
         Unsupported
@@ -130,18 +134,21 @@ object CometCast {
 
   private def canCastToString(fromType: DataType): SupportLevel = {
     fromType match {
-      case DataTypes.BooleanType => Compatible
+      case DataTypes.BooleanType => Compatible()
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        Compatible
-      case DataTypes.DateType => Compatible
-      case DataTypes.TimestampType => Compatible
+        Compatible()
+      case DataTypes.DateType => Compatible()
+      case DataTypes.TimestampType => Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
-        // https://github.com/apache/datafusion-comet/issues/326
-        Incompatible()
+        Compatible(
+          Some(
+            "There can be differences in precision. " +
+              "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
+              "instead of 1.4E-45"))
       case DataTypes.BinaryType =>
         // https://github.com/apache/datafusion-comet/issues/377
-        Incompatible()
+        Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
       case _ => Unsupported
     }
   }
@@ -155,9 +162,10 @@ object CometCast {
         Unsupported
       case DataTypes.LongType =>
         // https://github.com/apache/datafusion-comet/issues/352
-        Compatible
-      case DataTypes.StringType => Compatible
-      case DataTypes.DateType => Compatible
+        Compatible()
+      case DataTypes.StringType => Compatible()
+      case DataTypes.DateType => Compatible()
+      case _: DecimalType => Compatible()
       case _ => Unsupported
     }
   }
@@ -165,31 +173,72 @@ object CometCast {
   private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
         DataTypes.FloatType | DataTypes.DoubleType =>
-      Compatible
+      Compatible()
     case _ => Unsupported
+  }
+
+  private def canCastFromByte(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType =>
+      Compatible()
+    case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
+    case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+      Compatible()
+    case _ =>
+      Unsupported
+  }
+
+  private def canCastFromShort(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType =>
+      Compatible()
+    case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
+    case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+      Compatible()
+    case _ =>
+      Unsupported
   }
 
   private def canCastFromInt(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-        DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
-        _: DecimalType =>
-      Compatible
-    case _ => Unsupported
+    case DataTypes.BooleanType =>
+      Compatible()
+    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.LongType =>
+      Compatible()
+    case DataTypes.FloatType | DataTypes.DoubleType =>
+      Compatible()
+    case _: DecimalType =>
+      Incompatible(Some("No overflow check"))
+    case _ =>
+      Unsupported
+  }
+
+  private def canCastFromLong(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType =>
+      Compatible()
+    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
+      Compatible()
+    case DataTypes.FloatType | DataTypes.DoubleType =>
+      Compatible()
+    case _: DecimalType =>
+      Incompatible(Some("No overflow check"))
+    case _ =>
+      Unsupported
   }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.DoubleType => Compatible
+    case DataTypes.BooleanType | DataTypes.DoubleType => Compatible()
+    case _: DecimalType => Incompatible(Some("No overflow check"))
     case _ => Unsupported
   }
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType | DataTypes.FloatType => Compatible
-    case _: DecimalType => Compatible
+    case DataTypes.BooleanType | DataTypes.FloatType => Compatible()
+    case _: DecimalType => Compatible()
     case _ => Unsupported
   }
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
-    case DataTypes.FloatType | DataTypes.DoubleType => Compatible
+    case DataTypes.FloatType | DataTypes.DoubleType => Compatible()
     case _ => Unsupported
   }
 

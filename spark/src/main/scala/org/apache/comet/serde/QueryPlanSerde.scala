@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -506,6 +506,46 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           withInfo(aggExpr, child)
           None
         }
+      case std @ StddevSamp(child, nullOnDivideByZero) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(std.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+          stdBuilder.setChild(childExpr.get)
+          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          stdBuilder.setDatatype(dataType.get)
+          stdBuilder.setStatsTypeValue(0)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setStddev(stdBuilder)
+              .build())
+        } else {
+          withInfo(aggExpr, child)
+          None
+        }
+      case std @ StddevPop(child, nullOnDivideByZero) =>
+        val childExpr = exprToProto(child, inputs, binding)
+        val dataType = serializeDataType(std.dataType)
+
+        if (childExpr.isDefined && dataType.isDefined) {
+          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+          stdBuilder.setChild(childExpr.get)
+          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          stdBuilder.setDatatype(dataType.get)
+          stdBuilder.setStatsTypeValue(1)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setStddev(stdBuilder)
+              .build())
+        } else {
+          withInfo(aggExpr, child)
+          None
+        }
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
@@ -596,7 +636,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                 reason.map(str => s" ($str)").getOrElse("")
 
             castSupport match {
-              case Compatible =>
+              case Compatible(_) =>
                 castToProto(timeZoneId, dt, childExpr, evalModeStr)
               case Incompatible(reason) =>
                 if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
