@@ -722,7 +722,10 @@ class CometSparkSessionExtensions
       }
 
       // We shouldn't transform Spark query plan if Comet is disabled.
-      if (!isCometEnabled(conf)) return plan
+      if (!isCometEnabled(conf)) {
+        logWarning("Comet is not enabled")
+        return plan
+      }
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
@@ -733,6 +736,24 @@ class CometSparkSessionExtensions
         }
       } else {
         var newPlan = transform(plan)
+
+        // if the plan cannot be run natively then explain why, if verbose explain is enabled
+        if (!isCometNative(newPlan)) {
+          if ("VERBOSE".equals(CometConf.COMET_EXPLAIN_ENABLED.get())) {
+            new ExtendedExplainInfo().extensionInfo(newPlan) match {
+              case reasons if reasons.isEmpty =>
+                logWarning(
+                  s"Comet cannot execute this plan natively, but no reason is given. " +
+                    s"This is likely a bug.")
+              case reasons if reasons.size == 1 =>
+                logWarning(s"Comet cannot execute this plan natively because ${reasons.head}")
+              case reasons =>
+                logWarning(
+                  s"Comet cannot execute this plan natively because:\n\t- " +
+                    s"${reasons.mkString("\n\t- ")}")
+            }
+          }
+        }
 
         // Remove placeholders
         newPlan = newPlan.transform {
@@ -787,17 +808,6 @@ class CometSparkSessionExtensions
           case op =>
             firstNativeOp = true
             op
-        }
-
-        // if the plan cannot be run natively then explain why, if verbose explain is enabled
-        val explainVerbose = "VERBOSE".equalsIgnoreCase(CometConf.COMET_EXPLAIN_ENABLED.get())
-        if (explainVerbose && !isCometNative(finalPlan)) {
-          val fallbackReasons = new ExtendedExplainInfo().extensionInfo(finalPlan)
-          if (fallbackReasons.isEmpty) {
-            logInfo(s"Cannot run plan natively, but no reason is given. This is likely a bug.")
-          } else {
-            logInfo(s"Cannot run plan natively:\n\t- ${fallbackReasons.mkString("\n\t- ")}")
-          }
         }
 
         finalPlan

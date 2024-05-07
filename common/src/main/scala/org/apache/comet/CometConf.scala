@@ -282,7 +282,7 @@ object CometConf {
         "Set this config to VERBOSE to see logging explaining the reason(s) why a query " +
           "stage cannot be executed natively with Comet.")
       .stringConf
-      .createWithDefault("NONE")
+      .createWithDefault("VERBOSE")
 
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
