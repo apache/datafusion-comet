@@ -31,8 +31,8 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, Int32Array,
-    Int64Array, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
+    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -191,43 +191,44 @@ macro_rules! cast_int_to_int_macro {
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
+        let spark_int_literal_suffix = match $from_data_type {
+            &DataType::Int64 => "L",
+            &DataType::Int16 => "S",
+            &DataType::Int8 => "T",
+            _ => "",
+        };
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match (value, $eval_mode) {
-                (Some(value), EvalMode::Ansi) => {
-                    if let Ok(res) = <$to_native_type>::try_from(value) {
-                        Ok(Some(res))
-                    } else {
-                        Err(CometError::CastOverFlow {
-                            value: format!(
-                                "{}{}",
-                                value.to_string(),
-                                match $from_data_type {
-                                    &DataType::Int64 => "L",
-                                    &DataType::Int16 => "S",
-                                    &DataType::Int8 => "T",
-                                    _ => "",
-                                }
-                            ),
-                            from_type: $spark_from_data_type_name.to_string(),
-                            to_type: $spark_to_data_type_name.to_string(),
-                        })
+        let output_array = match $eval_mode {
+            EvalMode::Legacy => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
                     }
-                }
-                (Some(value), EvalMode::Try) => {
-                    if let Ok(res) = <$to_native_type>::try_from(value) {
-                        Ok(Some(res))
-                    } else {
-                        Ok(None)
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let res = <$to_native_type>::try_from(value);
+                        if res.is_err() {
+                            Err(CometError::CastOverFlow {
+                                value: value.to_string() + spark_int_literal_suffix,
+                                from_type: $spark_from_data_type_name.to_string(),
+                                to_type: $spark_to_data_type_name.to_string(),
+                            })
+                        } else {
+                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                        }
                     }
-                }
-                (Some(value), _) => Ok(Some(value as $to_native_type)),
-                _ => Ok(None),
-            })
-            .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>()?;
-
-        Ok(Arc::new(output_array))
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
+        }?;
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
     }};
 }
 
@@ -253,6 +254,127 @@ macro_rules! cast_decimal_to_integer {
             .map(|value| match value {
                 Some(value) => {
                     if value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val {
+                        match $eval_mode {
+                            EvalMode::Ansi => {
+                                let value_str = if $src_type_str == "FLOAT" {
+                                    format!("{:e}", value).replace("e", "E")
+                                } else {
+                                    format!("{:e}D", value).replace("e", "E")
+                                };
+                                Err(CometError::CastOverFlow {
+                                    value: value_str,
+                                    from_type: $src_type_str.to_string(),
+                                    to_type: $dest_type_str.to_string(),
+                                })
+                            }
+                            _ => Ok(Some(value as $rust_dest_type)),
+                        }
+                    } else {
+                        Ok(Some(value as $rust_dest_type))
+                    }
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
+
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
+    }};
+}
+
+macro_rules! cast_decimal_to_integer2 {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    if value.is_nan() || value.abs() as i32 == std::i32::MAX {
+                        match $eval_mode {
+                            EvalMode::Ansi => {
+                                let value_str = if $src_type_str == "FLOAT" {
+                                    format!("{:e}", value).replace("e", "E")
+                                } else {
+                                    format!("{:e}D", value).replace("e", "E")
+                                };
+                                Err(CometError::CastOverFlow {
+                                    value: value_str,
+                                    from_type: $src_type_str.to_string(),
+                                    to_type: $dest_type_str.to_string(),
+                                })
+                            }
+                            _ => {
+                                let i32_value = value as i32;
+                                Ok(Some(i32_value as $rust_dest_type))
+                            }
+                        }
+                    } else {
+                        let value = value as i32;
+                        match $eval_mode {
+                            EvalMode::Ansi => {
+                                if let Ok(res) = <$rust_dest_type>::try_from(value) {
+                                    Ok(Some(res))
+                                } else {
+                                    let value_str = if $src_type_str == "FLOAT" {
+                                        format!("{:e}", value).replace("e", "E")
+                                    } else {
+                                        format!("{:e}D", value).replace("e", "E")
+                                    };
+                                    Err(CometError::CastOverFlow {
+                                        value: value_str,
+                                        from_type: $src_type_str.to_string(),
+                                        to_type: $dest_type_str.to_string(),
+                                    })
+                                }
+                            }
+                            _ => Ok(Some(value as $rust_dest_type)),
+                        }
+                    }
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
+
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
+    }};
+}
+
+macro_rules! cast_decimal_to_integer3 {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr,
+        $max_dest_val:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    if value.abs() as $rust_dest_type == $max_dest_val {
                         match $eval_mode {
                             EvalMode::Try => Ok(None),
                             EvalMode::Ansi => {
@@ -281,7 +403,6 @@ macro_rules! cast_decimal_to_integer {
         result
     }};
 }
-
 impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
@@ -389,7 +510,13 @@ impl Cast {
             | (DataType::Float64, DataType::Int8)
             | (DataType::Float64, DataType::Int16)
             | (DataType::Float64, DataType::Int32)
-            | (DataType::Float64, DataType::Int64) => {
+            | (DataType::Float64, DataType::Int64)
+            | (DataType::Decimal128(_, _), DataType::Int8)
+            | (DataType::Decimal128(_, _), DataType::Int16)
+            | (DataType::Decimal128(_, _), DataType::Int32)
+            | (DataType::Decimal128(_, _), DataType::Int64)
+                if self.eval_mode != EvalMode::Try =>
+            {
                 Self::spark_cast_decimal_to_integer(&array, self.eval_mode, from_type, to_type)?
             }
             _ => {
@@ -546,6 +673,26 @@ impl Cast {
         to_type: &DataType,
     ) -> CometResult<ArrayRef> {
         match (from_type, to_type) {
+            (DataType::Float32, DataType::Int8) => cast_decimal_to_integer2!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int8Array,
+                f32,
+                i8,
+                "FLOAT",
+                "TINYINT"
+            ),
+            (DataType::Float32, DataType::Int16) => cast_decimal_to_integer2!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int16Array,
+                f32,
+                i16,
+                "FLOAT",
+                "SMALLINT"
+            ),
             (DataType::Float32, DataType::Int32) => cast_decimal_to_integer!(
                 array,
                 eval_mode,
@@ -568,34 +715,26 @@ impl Cast {
                 "BIGINT",
                 std::i64::MAX
             ),
-            (DataType::Float32, DataType::Int16) => {
-                let int32_array = cast_decimal_to_integer!(
-                    array,
-                    eval_mode,
-                    Float32Array,
-                    Int32Array,
-                    f32,
-                    i32,
-                    "FLOAT",
-                    "SMALLINT",
-                    std::i32::MAX
-                )?;
-                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
-            }
-            (DataType::Float32, DataType::Int8) => {
-                let int32_array = cast_decimal_to_integer!(
-                    array,
-                    eval_mode,
-                    Float32Array,
-                    Int32Array,
-                    f32,
-                    i32,
-                    "FLOAT",
-                    "TINYINT",
-                    std::i32::MAX
-                )?;
-                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
-            }
+            (DataType::Float64, DataType::Int8) => cast_decimal_to_integer2!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int8Array,
+                f64,
+                i8,
+                "DOUBLE",
+                "TINYINT"
+            ),
+            (DataType::Float64, DataType::Int16) => cast_decimal_to_integer2!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int16Array,
+                f64,
+                i16,
+                "DOUBLE",
+                "SMALLINT"
+            ),
             (DataType::Float64, DataType::Int32) => cast_decimal_to_integer!(
                 array,
                 eval_mode,
@@ -618,34 +757,20 @@ impl Cast {
                 "BIGINT",
                 std::i64::MAX
             ),
-            (DataType::Float64, DataType::Int16) => {
-                let int32_array = cast_decimal_to_integer!(
-                    array,
-                    eval_mode,
-                    Float64Array,
-                    Int32Array,
-                    f64,
-                    i32,
-                    "DOUBLE",
-                    "SMALLINT",
-                    std::i32::MAX
-                )?;
-                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            // (DataType::Decimal128(_, _), DataType::Int8) => {
+            //     let int32_array = cast_with_options(array, &DataType::Int32, &CAST_OPTIONS)?;
+            //     Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            // }
+            (DataType::Decimal128(precision, scale), DataType::Int16) => {
+                cast_decimal_to_int4(array, eval_mode, *precision, *scale)
             }
-            (DataType::Float64, DataType::Int8) => {
-                let int32_array = cast_decimal_to_integer!(
-                    array,
-                    eval_mode,
-                    Float64Array,
-                    Int32Array,
-                    f64,
-                    i32,
-                    "DOUBLE",
-                    "TINYINT",
-                    std::i32::MAX
-                )?;
-                Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            (DataType::Decimal128(precision, scale), DataType::Int32) => {
+                cast_decimal_to_int3(array, eval_mode, *precision, *scale)
             }
+            // (DataType::Decimal128(_, _), DataType::Int64) => {
+            //     let int32_array = cast_with_options(array, &DataType::Int32, &CAST_OPTIONS)?;
+            //     Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
+            // }
             _ => unreachable!(
                 "{}",
                 format!("invalid decimal type {to_type} in cast from {from_type}")
@@ -664,6 +789,95 @@ fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> 
         i8::MAX as i32,
     )?
     .map(|v| v as i8))
+}
+
+fn cast_decimal_to_int3(
+    array: &dyn Array,
+    eval_mode: EvalMode,
+    precision: u8,
+    scale: i8,
+) -> CometResult<ArrayRef> {
+    let cast_array = array
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .expect("asdfa");
+    let output_array = cast_array
+        .iter()
+        .map(|value| match value {
+            Some(value) => {
+                let truncated: i128 = value / 10_i128.pow(scale as u32);
+                let is_overflow = truncated > std::i32::MAX.into();
+                if is_overflow {
+                    match eval_mode {
+                        EvalMode::Ansi => Err(CometError::CastOverFlow {
+                            value: format!("DECIMAL({},{})", precision, scale),
+                            from_type: format!("DECIMAL({},{})", precision, scale),
+                            to_type: "INT32".to_string(),
+                        }),
+                        _ => Ok(Some(truncated as i32)),
+                    }
+                } else {
+                    Ok(Some(truncated as i32))
+                }
+            }
+            None => Ok(None),
+        })
+        .collect::<Result<Int32Array, _>>()?;
+    let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+    result
+}
+
+fn cast_decimal_to_int4(
+    array: &dyn Array,
+    eval_mode: EvalMode,
+    precision: u8,
+    scale: i8,
+) -> CometResult<ArrayRef> {
+    let cast_array = array
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .expect("asdfa");
+    let output_array = cast_array
+        .iter()
+        .map(|value| match value {
+            Some(value) => {
+                let truncated: i128 = value / 10_i128.pow(scale as u32);
+                let is_overflow = truncated > std::i32::MAX.into();
+                if is_overflow {
+                    match eval_mode {
+                        EvalMode::Ansi => Err(CometError::CastOverFlow {
+                            value: truncated.to_string(),
+                            from_type: format!("DECIMAL({},{})", precision, scale),
+                            to_type: "INT32".to_string(),
+                        }),
+                        _ => {
+                            let i32_value = truncated as i32;
+                            Ok(Some(i32_value as i16))
+                        }
+                    }
+                } else {
+                    let value = truncated as i32;
+                    match eval_mode {
+                        EvalMode::Ansi => {
+                            if let Ok(res) = i16::try_from(value) {
+                                Ok(Some(res))
+                            } else {
+                                Err(CometError::CastOverFlow {
+                                    value: truncated.to_string(),
+                                    from_type: format!("DECIMAL({},{})", precision, scale),
+                                    to_type: "SMALLINT".to_string(),
+                                })
+                            }
+                        }
+                        _ => Ok(Some(value as i16)),
+                    }
+                }
+            }
+            None => Ok(None),
+        })
+        .collect::<Result<Int16Array, _>>()?;
+    let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+    result
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
