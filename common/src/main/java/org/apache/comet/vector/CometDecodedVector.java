@@ -38,6 +38,7 @@ public abstract class CometDecodedVector extends CometVector {
   private int numValues;
   private int validityByteCacheIndex = -1;
   private byte validityByteCache;
+  protected boolean isUuid;
 
   protected CometDecodedVector(ValueVector vector, Field valueField, boolean useDecimal128) {
     super(Utils.fromArrowField(valueField), useDecimal128);
@@ -45,6 +46,10 @@ public abstract class CometDecodedVector extends CometVector {
     this.numNulls = valueVector.getNullCount();
     this.numValues = valueVector.getValueCount();
     this.hasNull = numNulls != 0;
+  }
+
+  public void setIsUuid(boolean isUuid) {
+    this.isUuid = isUuid;
   }
 
   @Override

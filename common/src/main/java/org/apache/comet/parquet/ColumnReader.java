@@ -41,6 +41,7 @@ import org.apache.parquet.column.page.DataPageV1;
 import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
@@ -169,6 +170,7 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometDecodedVector loadVector() {
+
     // Only re-use Comet vector iff:
     //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
     //      side may fallback to plain encoding and the underlying memory address for the vector
@@ -199,6 +201,11 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector.close();
     }
 
+    LogicalTypeAnnotation logicalTypeAnnotation =
+        descriptor.getPrimitiveType().getLogicalTypeAnnotation();
+    boolean isUuid =
+        logicalTypeAnnotation instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
+
     long[] addresses = Native.currentBatch(nativeHandle);
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
@@ -207,6 +214,7 @@ public class ColumnReader extends AbstractColumnReader {
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
       CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      cometVector.setIsUuid(isUuid);
 
       // Update whether the current vector contains any null values. This is used in the following
       // batch(s) to determine whether we can skip loading the native vector.
@@ -230,11 +238,14 @@ public class ColumnReader extends AbstractColumnReader {
         Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
         CometPlainVector dictionaryVector =
             new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
+        dictionaryVector.setIsUuid(isUuid);
         dictionary = new CometDictionary(dictionaryVector);
       }
 
       currentVector =
           new CometDictionaryVector(cometVector, dictionary, dictionaryProvider, useDecimal128);
+      cometVector.setIsUuid(isUuid);
+
       return currentVector;
     }
   }
