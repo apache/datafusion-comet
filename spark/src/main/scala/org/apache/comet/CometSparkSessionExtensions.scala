@@ -740,13 +740,13 @@ class CometSparkSessionExtensions
             new ExtendedExplainInfo().extensionInfo(newPlan) match {
               case reasons if reasons.isEmpty =>
                 logWarning(
-                  s"Comet cannot execute this plan natively, but no reason is given. " +
-                    s"This is likely a bug.")
+                  "Comet cannot execute this plan natively, but no reason is given. " +
+                    "This is likely a bug.")
               case reasons if reasons.size == 1 =>
                 logWarning(s"Comet cannot execute this plan natively because ${reasons.head}")
               case reasons =>
                 logWarning(
-                  s"Comet cannot execute this plan natively because:\n\t- " +
+                  "Comet cannot execute this plan natively because:\n\t- " +
                     s"${reasons.mkString("\n\t- ")}")
             }
           }
