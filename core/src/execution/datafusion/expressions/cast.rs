@@ -232,7 +232,7 @@ macro_rules! cast_int_to_int_macro {
     }};
 }
 
-macro_rules! cast_decimal_to_integer {
+macro_rules! cast_float_to_int16_down {
     (
         $array:expr,
         $eval_mode:expr,
@@ -242,54 +242,7 @@ macro_rules! cast_decimal_to_integer {
         $rust_dest_type:ty,
         $src_type_str:expr,
         $dest_type_str:expr,
-        $max_dest_val:expr
-    ) => {{
-        let cast_array = $array
-            .as_any()
-            .downcast_ref::<$src_array_type>()
-            .expect(concat!("Expected a ", stringify!($src_array_type)));
-
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    let is_overflow =
-                        value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
-                    match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => {
-                            let value_str = if $src_type_str == "FLOAT" {
-                                format!("{:e}", value).replace("e", "E")
-                            } else {
-                                format!("{:e}D", value).replace("e", "E")
-                            };
-                            Err(CometError::CastOverFlow {
-                                value: value_str,
-                                from_type: $src_type_str.to_string(),
-                                to_type: $dest_type_str.to_string(),
-                            })
-                        }
-                        _ => Ok(Some(value as $rust_dest_type)),
-                    }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
-
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
-    }};
-}
-
-macro_rules! cast_decimal_to_integer2 {
-    (
-        $array:expr,
-        $eval_mode:expr,
-        $src_array_type:ty,
-        $dest_array_type:ty,
-        $rust_src_type:ty,
-        $rust_dest_type:ty,
-        $src_type_str:expr,
-        $dest_type_str:expr
+        $format_str:expr
     ) => {{
         let cast_array = $array
             .as_any()
@@ -303,32 +256,18 @@ macro_rules! cast_decimal_to_integer2 {
                     let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
                     let i32_value = value as i32;
                     match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => {
-                            let value_str = if $src_type_str == "FLOAT" {
-                                format!("{:e}", value).replace("e", "E")
-                            } else {
-                                format!("{:e}D", value).replace("e", "E")
-                            };
-                            Err(CometError::CastOverFlow {
-                                value: value_str,
+                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                            value: format!($format_str, value).replace("e", "E"),
+                            from_type: $src_type_str.to_string(),
+                            to_type: $dest_type_str.to_string(),
+                        }),
+                        (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
+                            .map_err(|_| CometError::CastOverFlow {
+                                value: format!($format_str, value).replace("e", "E"),
                                 from_type: $src_type_str.to_string(),
                                 to_type: $dest_type_str.to_string(),
                             })
-                        }
-                        (false, EvalMode::Ansi) => {
-                            let value_str = if $src_type_str == "FLOAT" {
-                                format!("{:e}", value).replace("e", "E")
-                            } else {
-                                format!("{:e}D", value).replace("e", "E")
-                            };
-                            <$rust_dest_type>::try_from(i32_value)
-                                .map_err(|_| CometError::CastOverFlow {
-                                    value: value_str,
-                                    from_type: $src_type_str.to_string(),
-                                    to_type: $dest_type_str.to_string(),
-                                })
-                                .map(Some)
-                        }
+                            .map(Some),
                         (_, _) => Ok(Some(i32_value as $rust_dest_type)),
                     }
                 }
@@ -336,6 +275,137 @@ macro_rules! cast_decimal_to_integer2 {
             })
             .collect::<Result<$dest_array_type, _>>()?;
 
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
+    }};
+}
+
+macro_rules! cast_float_to_int32_up {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr,
+        $max_dest_val:expr,
+        $format_str:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    let is_overflow =
+                        value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
+                    match (is_overflow, $eval_mode) {
+                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                            value: format!($format_str, value).replace("e", "E"),
+                            from_type: $src_type_str.to_string(),
+                            to_type: $dest_type_str.to_string(),
+                        }),
+                        _ => Ok(Some(value as $rust_dest_type)),
+                    }
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
+
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
+    }};
+}
+
+macro_rules! cast_decimal_to_int16_down {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $dest_array_type:ty,
+        $rust_dest_type:ty,
+        $dest_type_str:expr,
+        $precision:expr,
+        $scale:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect(concat!("Expected a Decimal128ArrayType"));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    let divisor: i128 = 10_i128.pow($scale as u32);
+                    let truncated: i128 = value / divisor;
+                    let remainder: i128 = (value % divisor).abs();
+                    let is_overflow = truncated > std::i32::MAX.into();
+                    let i32_value = truncated as i32;
+                    match (is_overflow, $eval_mode) {
+                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                            value: format!("{}.{}BD", truncated, remainder),
+                            from_type: format!("DECIMAL({},{})", $precision, $scale),
+                            to_type: $dest_type_str.to_string(),
+                        }),
+                        (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
+                            .map_err(|_| CometError::CastOverFlow {
+                                value: format!("{}.{}BD", truncated, remainder),
+                                from_type: format!("DECIMAL({},{})", $precision, $scale),
+                                to_type: $dest_type_str.to_string(),
+                            })
+                            .map(Some),
+                        (_, _) => Ok(Some(i32_value as $rust_dest_type)),
+                    }
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
+    }};
+}
+
+macro_rules! cast_decimal_to_int32_up {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $dest_array_type:ty,
+        $rust_dest_type:ty,
+        $dest_type_str:expr,
+        $max_dest_val:expr,
+        $precision:expr,
+        $scale:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect(concat!("Expected a Decimal128ArrayType"));
+
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => {
+                    let divisor: i128 = 10_i128.pow($scale as u32);
+                    let truncated: i128 = value / divisor;
+                    let remainder: i128 = (value % divisor).abs();
+                    let is_overflow = truncated > $max_dest_val.into();
+                    match (is_overflow, $eval_mode) {
+                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                            value: format!("{}.{}BD", truncated, remainder),
+                            from_type: format!("DECIMAL({},{})", $precision, $scale),
+                            to_type: $dest_type_str.to_string(),
+                        }),
+                        _ => Ok(Some(truncated as $rust_dest_type)),
+                    }
+                }
+                None => Ok(None),
+            })
+            .collect::<Result<$dest_array_type, _>>()?;
         let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
         result
     }};
@@ -455,7 +525,12 @@ impl Cast {
             | (DataType::Decimal128(_, _), DataType::Int64)
                 if self.eval_mode != EvalMode::Try =>
             {
-                Self::spark_cast_decimal_to_integer(&array, self.eval_mode, from_type, to_type)?
+                Self::spark_cast_nonintegral_numeric_to_integral(
+                    &array,
+                    self.eval_mode,
+                    from_type,
+                    to_type,
+                )?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -604,14 +679,14 @@ impl Cast {
         Ok(Arc::new(output_array))
     }
 
-    fn spark_cast_decimal_to_integer(
+    fn spark_cast_nonintegral_numeric_to_integral(
         array: &dyn Array,
         eval_mode: EvalMode,
         from_type: &DataType,
         to_type: &DataType,
     ) -> CometResult<ArrayRef> {
         match (from_type, to_type) {
-            (DataType::Float32, DataType::Int8) => cast_decimal_to_integer2!(
+            (DataType::Float32, DataType::Int8) => cast_float_to_int16_down!(
                 array,
                 eval_mode,
                 Float32Array,
@@ -619,9 +694,10 @@ impl Cast {
                 f32,
                 i8,
                 "FLOAT",
-                "TINYINT"
+                "TINYINT",
+                "{:e}"
             ),
-            (DataType::Float32, DataType::Int16) => cast_decimal_to_integer2!(
+            (DataType::Float32, DataType::Int16) => cast_float_to_int16_down!(
                 array,
                 eval_mode,
                 Float32Array,
@@ -629,9 +705,10 @@ impl Cast {
                 f32,
                 i16,
                 "FLOAT",
-                "SMALLINT"
+                "SMALLINT",
+                "{:e}"
             ),
-            (DataType::Float32, DataType::Int32) => cast_decimal_to_integer!(
+            (DataType::Float32, DataType::Int32) => cast_float_to_int32_up!(
                 array,
                 eval_mode,
                 Float32Array,
@@ -640,9 +717,10 @@ impl Cast {
                 i32,
                 "FLOAT",
                 "INT",
-                std::i32::MAX
+                std::i32::MAX,
+                "{:e}"
             ),
-            (DataType::Float32, DataType::Int64) => cast_decimal_to_integer!(
+            (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
                 array,
                 eval_mode,
                 Float32Array,
@@ -651,9 +729,10 @@ impl Cast {
                 i64,
                 "FLOAT",
                 "BIGINT",
-                std::i64::MAX
+                std::i64::MAX,
+                "{:e}"
             ),
-            (DataType::Float64, DataType::Int8) => cast_decimal_to_integer2!(
+            (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
                 array,
                 eval_mode,
                 Float64Array,
@@ -661,9 +740,10 @@ impl Cast {
                 f64,
                 i8,
                 "DOUBLE",
-                "TINYINT"
+                "TINYINT",
+                "{:e}D"
             ),
-            (DataType::Float64, DataType::Int16) => cast_decimal_to_integer2!(
+            (DataType::Float64, DataType::Int16) => cast_float_to_int16_down!(
                 array,
                 eval_mode,
                 Float64Array,
@@ -671,9 +751,10 @@ impl Cast {
                 f64,
                 i16,
                 "DOUBLE",
-                "SMALLINT"
+                "SMALLINT",
+                "{:e}D"
             ),
-            (DataType::Float64, DataType::Int32) => cast_decimal_to_integer!(
+            (DataType::Float64, DataType::Int32) => cast_float_to_int32_up!(
                 array,
                 eval_mode,
                 Float64Array,
@@ -682,9 +763,10 @@ impl Cast {
                 i32,
                 "DOUBLE",
                 "INT",
-                std::i32::MAX
+                std::i32::MAX,
+                "{:e}D"
             ),
-            (DataType::Float64, DataType::Int64) => cast_decimal_to_integer!(
+            (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
                 array,
                 eval_mode,
                 Float64Array,
@@ -693,22 +775,43 @@ impl Cast {
                 i64,
                 "DOUBLE",
                 "BIGINT",
-                std::i64::MAX
+                std::i64::MAX,
+                "{:e}D"
             ),
-            // (DataType::Decimal128(_, _), DataType::Int8) => {
-            //     let int32_array = cast_with_options(array, &DataType::Int32, &CAST_OPTIONS)?;
-            //     Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
-            // }
+            (DataType::Decimal128(precision, scale), DataType::Int8) => {
+                cast_decimal_to_int16_down!(
+                    array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
+                )
+            }
             (DataType::Decimal128(precision, scale), DataType::Int16) => {
-                cast_decimal_to_int4(array, eval_mode, *precision, *scale)
+                cast_decimal_to_int16_down!(
+                    array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
+                )
             }
             (DataType::Decimal128(precision, scale), DataType::Int32) => {
-                cast_decimal_to_int3(array, eval_mode, *precision, *scale)
+                cast_decimal_to_int32_up!(
+                    array,
+                    eval_mode,
+                    Int32Array,
+                    i32,
+                    "INT",
+                    std::i32::MAX,
+                    *precision,
+                    *scale
+                )
             }
-            // (DataType::Decimal128(_, _), DataType::Int64) => {
-            //     let int32_array = cast_with_options(array, &DataType::Int32, &CAST_OPTIONS)?;
-            //     Self::spark_cast_int_to_int(&int32_array, eval_mode, &DataType::Int32, to_type)
-            // }
+            (DataType::Decimal128(precision, scale), DataType::Int64) => {
+                cast_decimal_to_int32_up!(
+                    array,
+                    eval_mode,
+                    Int64Array,
+                    i64,
+                    "LONG",
+                    std::i64::MAX,
+                    *precision,
+                    *scale
+                )
+            }
             _ => unreachable!(
                 "{}",
                 format!("invalid decimal type {to_type} in cast from {from_type}")
@@ -727,84 +830,6 @@ fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> 
         i8::MAX as i32,
     )?
     .map(|v| v as i8))
-}
-
-fn cast_decimal_to_int3(
-    array: &dyn Array,
-    eval_mode: EvalMode,
-    precision: u8,
-    scale: i8,
-) -> CometResult<ArrayRef> {
-    let cast_array = array
-        .as_any()
-        .downcast_ref::<Decimal128Array>()
-        .expect("asdfa");
-
-    let output_array = cast_array
-        .iter()
-        .map(|value| match value {
-            Some(value) => {
-                let divisor = 10_i128.pow(scale as u32);
-                let truncated: i128 = value / divisor;
-                let remainder: i128 = (value % divisor).abs();
-                let is_overflow = truncated > std::i32::MAX.into();
-                match (is_overflow, eval_mode) {
-                    (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                        value: format!("{}.{}BD", truncated, remainder),
-                        from_type: format!("DECIMAL({},{})", precision, scale),
-                        to_type: "INT32".to_string(),
-                    }),
-                    _ => Ok(Some(truncated as i32)),
-                }
-            }
-            None => Ok(None),
-        })
-        .collect::<Result<Int32Array, _>>()?;
-    let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-    result
-}
-
-fn cast_decimal_to_int4(
-    array: &dyn Array,
-    eval_mode: EvalMode,
-    precision: u8,
-    scale: i8,
-) -> CometResult<ArrayRef> {
-    let cast_array = array
-        .as_any()
-        .downcast_ref::<Decimal128Array>()
-        .expect("asdfa");
-
-    let output_array = cast_array
-        .iter()
-        .map(|value| match value {
-            Some(value) => {
-                let divisor = 10_i128.pow(scale as u32);
-                let truncated: i128 = value / divisor;
-                let remainder: i128 = (value % divisor).abs();
-                let is_overflow = truncated > std::i32::MAX.into();
-                let i32_value = truncated as i32;
-                match (is_overflow, eval_mode) {
-                    (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                        value: format!("{}.{}BD", truncated, remainder),
-                        from_type: format!("DECIMAL({},{})", precision, scale),
-                        to_type: "INT32".to_string(),
-                    }),
-                    (false, EvalMode::Ansi) => i16::try_from(i32_value)
-                        .map_err(|_| CometError::CastOverFlow {
-                            value: format!("{}.{}BD", truncated, remainder),
-                            from_type: format!("DECIMAL({},{})", precision, scale),
-                            to_type: "SMALLINT".to_string(),
-                        })
-                        .map(Some),
-                    (_, _) => Ok(Some(i32_value as i16)),
-                }
-            }
-            None => Ok(None),
-        })
-        .collect::<Result<Int16Array, _>>()?;
-    let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-    result
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
