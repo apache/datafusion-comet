@@ -734,21 +734,19 @@ class CometSparkSessionExtensions
       } else {
         var newPlan = transform(plan)
 
-        // if the plan cannot be run natively then explain why, if verbose explain is enabled
-        if (!isCometNative(newPlan)) {
-          if ("VERBOSE".equals(CometConf.COMET_EXPLAIN_ENABLED.get())) {
-            new ExtendedExplainInfo().extensionInfo(newPlan) match {
-              case reasons if reasons.isEmpty =>
-                logWarning(
-                  "Comet cannot execute this plan natively, but no reason is given. " +
-                    "This is likely a bug.")
-              case reasons if reasons.size == 1 =>
-                logWarning(s"Comet cannot execute this plan natively because ${reasons.head}")
-              case reasons =>
-                logWarning(
-                  "Comet cannot execute this plan natively because:\n\t- " +
-                    s"${reasons.mkString("\n\t- ")}")
-            }
+        // if the plan cannot be run natively then explain why (when appropriate config is enabled)
+        if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get() && !isCometNative(newPlan)) {
+          new ExtendedExplainInfo().extensionInfo(newPlan) match {
+            case reasons if reasons.isEmpty =>
+              logWarning(
+                "Comet cannot execute this plan natively, but no reason is given. " +
+                  "This is likely a bug.")
+            case reasons if reasons.size == 1 =>
+              logWarning(s"Comet cannot execute this plan natively because ${reasons.head}")
+            case reasons =>
+              logWarning(
+                "Comet cannot execute this plan natively because:\n\t- " +
+                  s"${reasons.mkString("\n\t- ")}")
           }
         }
 
