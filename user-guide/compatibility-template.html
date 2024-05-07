@@ -248,6 +248,23 @@ under the License.
   <a class="reference internal nav-link" href="#cast">
    Cast
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#compatible-casts">
+     Compatible Casts
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#incompatible-casts">
+     Incompatible Casts
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#unsupported-casts">
+     Unsupported Casts
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -319,9 +336,21 @@ recommended for production use.</p></li>
 <li><p><strong>Unsupported</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
 Spark.</p></li>
 </ul>
-<p>The following table shows the current cast operations supported by Comet. Any cast that does not appear in this
-table (such as those involving complex types and timestamp_ntz, for example) are not supported by Comet.</p>
-<!--CAST_TABLE-->
+<section id="compatible-casts">
+<h3>Compatible Casts<a class="headerlink" href="#compatible-casts" title="Link to this heading">¶</a></h3>
+<p>The following cast operations are generally compatible with Spark except for the differences noted here.</p>
+<!--COMPAT_CAST_TABLE-->
+</section>
+<section id="incompatible-casts">
+<h3>Incompatible Casts<a class="headerlink" href="#incompatible-casts" title="Link to this heading">¶</a></h3>
+<p>The following cast operations are not compatible with Spark for all inputs and are disabled by default.</p>
+<!--INCOMPAT_CAST_TABLE-->
+</section>
+<section id="unsupported-casts">
+<h3>Unsupported Casts<a class="headerlink" href="#unsupported-casts" title="Link to this heading">¶</a></h3>
+<p>Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">tracking issue</a> for more details.</p>
+</section>
 </section>
 </section>
 
