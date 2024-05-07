@@ -20,16 +20,13 @@
 package org.apache.comet
 
 import java.io.File
-
 import scala.util.Random
-
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes}
-
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 import org.apache.comet.expressions.CometCast
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -304,12 +301,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ByteType)
   }
 
   test("cast FloatType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateFloats(), DataTypes.ShortType)
   }
 
@@ -360,22 +355,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ByteType)
   }
 
   test("cast DoubleType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.ShortType)
   }
 
   test("cast DoubleType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.IntegerType)
   }
 
   test("cast DoubleType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDoubles(), DataTypes.LongType)
   }
 
@@ -414,22 +405,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimals(), DataTypes.BooleanType)
   }
 
-  ignore("cast DecimalType(10,2) to ByteType") {
+  test("cast DecimalType(10,2) to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.ByteType)
   }
 
-  ignore("cast DecimalType(10,2) to ShortType") {
+  test("cast DecimalType(10,2) to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.ShortType)
   }
 
-  ignore("cast DecimalType(10,2) to IntegerType") {
+  test("cast DecimalType(10,2) to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.IntegerType)
   }
 
-  ignore("cast DecimalType(10,2) to LongType") {
+  test("cast DecimalType(10,2) to LongType") {
     // https://github.com/apache/datafusion-comet/issues/350
     castTest(generateDecimals(), DataTypes.LongType)
   }
@@ -780,7 +771,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def generateDecimals(): DataFrame = {
     // TODO improve this
     val values = Seq(BigDecimal("123456.789"), BigDecimal("-123456.789"), BigDecimal("0.0"))
-    withNulls(values).toDF("a")
+    withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10,2))).drop("b")
   }
 
   private def generateDates(): DataFrame = {

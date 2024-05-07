@@ -253,24 +253,22 @@ macro_rules! cast_decimal_to_integer {
             .iter()
             .map(|value| match value {
                 Some(value) => {
-                    if value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val {
-                        match $eval_mode {
-                            EvalMode::Ansi => {
-                                let value_str = if $src_type_str == "FLOAT" {
-                                    format!("{:e}", value).replace("e", "E")
-                                } else {
-                                    format!("{:e}D", value).replace("e", "E")
-                                };
-                                Err(CometError::CastOverFlow {
-                                    value: value_str,
-                                    from_type: $src_type_str.to_string(),
-                                    to_type: $dest_type_str.to_string(),
-                                })
-                            }
-                            _ => Ok(Some(value as $rust_dest_type)),
+                    let is_overflow =
+                        value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
+                    match (is_overflow, $eval_mode) {
+                        (true, EvalMode::Ansi) => {
+                            let value_str = if $src_type_str == "FLOAT" {
+                                format!("{:e}", value).replace("e", "E")
+                            } else {
+                                format!("{:e}D", value).replace("e", "E")
+                            };
+                            Err(CometError::CastOverFlow {
+                                value: value_str,
+                                from_type: $src_type_str.to_string(),
+                                to_type: $dest_type_str.to_string(),
+                            })
                         }
-                    } else {
-                        Ok(Some(value as $rust_dest_type))
+                        _ => Ok(Some(value as $rust_dest_type)),
                     }
                 }
                 None => Ok(None),
@@ -302,46 +300,36 @@ macro_rules! cast_decimal_to_integer2 {
             .iter()
             .map(|value| match value {
                 Some(value) => {
-                    if value.is_nan() || value.abs() as i32 == std::i32::MAX {
-                        match $eval_mode {
-                            EvalMode::Ansi => {
-                                let value_str = if $src_type_str == "FLOAT" {
-                                    format!("{:e}", value).replace("e", "E")
-                                } else {
-                                    format!("{:e}D", value).replace("e", "E")
-                                };
-                                Err(CometError::CastOverFlow {
+                    let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
+                    let i32_value = value as i32;
+                    match (is_overflow, $eval_mode) {
+                        (true, EvalMode::Ansi) => {
+                            let value_str = if $src_type_str == "FLOAT" {
+                                format!("{:e}", value).replace("e", "E")
+                            } else {
+                                format!("{:e}D", value).replace("e", "E")
+                            };
+                            Err(CometError::CastOverFlow {
+                                value: value_str,
+                                from_type: $src_type_str.to_string(),
+                                to_type: $dest_type_str.to_string(),
+                            })
+                        }
+                        (false, EvalMode::Ansi) => {
+                            let value_str = if $src_type_str == "FLOAT" {
+                                format!("{:e}", value).replace("e", "E")
+                            } else {
+                                format!("{:e}D", value).replace("e", "E")
+                            };
+                            <$rust_dest_type>::try_from(i32_value)
+                                .map_err(|_| CometError::CastOverFlow {
                                     value: value_str,
                                     from_type: $src_type_str.to_string(),
                                     to_type: $dest_type_str.to_string(),
                                 })
-                            }
-                            _ => {
-                                let i32_value = value as i32;
-                                Ok(Some(i32_value as $rust_dest_type))
-                            }
+                                .map(Some)
                         }
-                    } else {
-                        let value = value as i32;
-                        match $eval_mode {
-                            EvalMode::Ansi => {
-                                if let Ok(res) = <$rust_dest_type>::try_from(value) {
-                                    Ok(Some(res))
-                                } else {
-                                    let value_str = if $src_type_str == "FLOAT" {
-                                        format!("{:e}", value).replace("e", "E")
-                                    } else {
-                                        format!("{:e}D", value).replace("e", "E")
-                                    };
-                                    Err(CometError::CastOverFlow {
-                                        value: value_str,
-                                        from_type: $src_type_str.to_string(),
-                                        to_type: $dest_type_str.to_string(),
-                                    })
-                                }
-                            }
-                            _ => Ok(Some(value as $rust_dest_type)),
-                        }
+                        (_, _) => Ok(Some(i32_value as $rust_dest_type)),
                     }
                 }
                 None => Ok(None),
@@ -353,56 +341,6 @@ macro_rules! cast_decimal_to_integer2 {
     }};
 }
 
-macro_rules! cast_decimal_to_integer3 {
-    (
-        $array:expr,
-        $eval_mode:expr,
-        $src_array_type:ty,
-        $dest_array_type:ty,
-        $rust_src_type:ty,
-        $rust_dest_type:ty,
-        $src_type_str:expr,
-        $dest_type_str:expr,
-        $max_dest_val:expr
-    ) => {{
-        let cast_array = $array
-            .as_any()
-            .downcast_ref::<$src_array_type>()
-            .expect(concat!("Expected a ", stringify!($src_array_type)));
-
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    if value.abs() as $rust_dest_type == $max_dest_val {
-                        match $eval_mode {
-                            EvalMode::Try => Ok(None),
-                            EvalMode::Ansi => {
-                                let value_str = if $src_type_str == "FLOAT" {
-                                    format!("{:e}", value).replace("e", "E")
-                                } else {
-                                    format!("{:e}D", value).replace("e", "E")
-                                };
-                                Err(CometError::CastOverFlow {
-                                    value: value_str,
-                                    from_type: $src_type_str.to_string(),
-                                    to_type: $dest_type_str.to_string(),
-                                })
-                            }
-                            _ => Ok(Some(value as $rust_dest_type)),
-                        }
-                    } else {
-                        Ok(Some(value as $rust_dest_type))
-                    }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
-
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
-    }};
-}
 impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
@@ -801,23 +739,20 @@ fn cast_decimal_to_int3(
         .as_any()
         .downcast_ref::<Decimal128Array>()
         .expect("asdfa");
+
     let output_array = cast_array
         .iter()
         .map(|value| match value {
             Some(value) => {
                 let truncated: i128 = value / 10_i128.pow(scale as u32);
                 let is_overflow = truncated > std::i32::MAX.into();
-                if is_overflow {
-                    match eval_mode {
-                        EvalMode::Ansi => Err(CometError::CastOverFlow {
-                            value: format!("DECIMAL({},{})", precision, scale),
-                            from_type: format!("DECIMAL({},{})", precision, scale),
-                            to_type: "INT32".to_string(),
-                        }),
-                        _ => Ok(Some(truncated as i32)),
-                    }
-                } else {
-                    Ok(Some(truncated as i32))
+                match (is_overflow, eval_mode) {
+                    (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                        value: truncated.to_string(),
+                        from_type: format!("DECIMAL({},{})", precision, scale),
+                        to_type: "INT32".to_string(),
+                    }),
+                    _ => Ok(Some(truncated as i32)),
                 }
             }
             None => Ok(None),
@@ -837,40 +772,28 @@ fn cast_decimal_to_int4(
         .as_any()
         .downcast_ref::<Decimal128Array>()
         .expect("asdfa");
+
     let output_array = cast_array
         .iter()
         .map(|value| match value {
             Some(value) => {
                 let truncated: i128 = value / 10_i128.pow(scale as u32);
                 let is_overflow = truncated > std::i32::MAX.into();
-                if is_overflow {
-                    match eval_mode {
-                        EvalMode::Ansi => Err(CometError::CastOverFlow {
-                            value: truncated.to_string(),
+                let i32_value = truncated as i32;
+                match (is_overflow, eval_mode) {
+                    (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
+                        value: truncated.to_string(),
+                        from_type: format!("DECIMAL({},{})", precision, scale),
+                        to_type: "INT32".to_string(),
+                    }),
+                    (false, EvalMode::Ansi) => i16::try_from(i32_value)
+                        .map_err(|_| CometError::CastOverFlow {
+                            value: format!("DECIMAL({},{})", precision, scale),
                             from_type: format!("DECIMAL({},{})", precision, scale),
-                            to_type: "INT32".to_string(),
-                        }),
-                        _ => {
-                            let i32_value = truncated as i32;
-                            Ok(Some(i32_value as i16))
-                        }
-                    }
-                } else {
-                    let value = truncated as i32;
-                    match eval_mode {
-                        EvalMode::Ansi => {
-                            if let Ok(res) = i16::try_from(value) {
-                                Ok(Some(res))
-                            } else {
-                                Err(CometError::CastOverFlow {
-                                    value: truncated.to_string(),
-                                    from_type: format!("DECIMAL({},{})", precision, scale),
-                                    to_type: "SMALLINT".to_string(),
-                                })
-                            }
-                        }
-                        _ => Ok(Some(value as i16)),
-                    }
+                            to_type: "SMALLINT".to_string(),
+                        })
+                        .map(Some),
+                    (_, _) => Ok(Some(i32_value as i16)),
                 }
             }
             None => Ok(None),
