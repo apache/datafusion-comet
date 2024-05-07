@@ -332,7 +332,6 @@ impl Cast {
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
             }
-
             (DataType::Float64, DataType::Decimal128(precision, scale)) => {
                 Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)?
             }
@@ -408,7 +407,7 @@ impl Cast {
         let input = array.as_any().downcast_ref::<Float64Array>().unwrap();
         let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
 
-        let mul = (precision as f64).powi(scale as i32);
+        let mul = 10_f64.powi(scale as i32);
 
         for i in 0..input.len() {
             if input.is_null(i) {
