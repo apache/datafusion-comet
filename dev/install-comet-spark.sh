@@ -57,6 +57,9 @@ SCALA_VERSION=$($COMET_WORKSPACE/mvnw -nsu -q $PROFILES help:evaluate -Dexpressi
 
 if [ $SKIP_COMET = "true" ]; then
   echo Skipping comet build...
+
+  # Force using the provided Comet version by purging previous snapshots from the local repository
+  $COMET_WORKSPACE/mvnw dependency:purge-local-repository -DmanualInclude=org.apache.comet:comet-spark-spark${SPARK_MINOR_VERSION}_${SCALA_BINARY_VERSION}
 else
   make clean release
 fi
