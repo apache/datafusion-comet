@@ -1025,6 +1025,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   test("unhex") {
+    assume(!isSpark32, "unhex function has incorrect behavior in 3.2")
+
     val table = "unhex_table"
     withTable(table) {
       sql(s"create table $table(col string) using parquet")

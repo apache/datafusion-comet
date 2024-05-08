@@ -1397,7 +1397,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val optExpr = scalarExprToProto("atan2", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
 
-        case e: Unhex =>
+        case e: Unhex if !isSpark32 =>
           val unHex = unhexSerde(e)
 
           val childExpr = exprToProtoInternal(unHex._1, inputs)
