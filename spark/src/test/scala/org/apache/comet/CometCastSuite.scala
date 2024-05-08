@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes}
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
 import org.apache.comet.expressions.{CometCast, Compatible}
 
@@ -320,23 +320,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.BooleanType)
   }
 
-  ignore("cast FloatType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast FloatType to ByteType") {
     castTest(generateFloats(), DataTypes.ByteType)
   }
 
-  ignore("cast FloatType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast FloatType to ShortType") {
     castTest(generateFloats(), DataTypes.ShortType)
   }
 
-  ignore("cast FloatType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast FloatType to IntegerType") {
     castTest(generateFloats(), DataTypes.IntegerType)
   }
 
-  ignore("cast FloatType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast FloatType to LongType") {
     castTest(generateFloats(), DataTypes.LongType)
   }
 
@@ -377,23 +373,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.BooleanType)
   }
 
-  ignore("cast DoubleType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast DoubleType to ByteType") {
     castTest(generateDoubles(), DataTypes.ByteType)
   }
 
-  ignore("cast DoubleType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast DoubleType to ShortType") {
     castTest(generateDoubles(), DataTypes.ShortType)
   }
 
-  ignore("cast DoubleType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast DoubleType to IntegerType") {
     castTest(generateDoubles(), DataTypes.IntegerType)
   }
 
-  ignore("cast DoubleType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/350
+  test("cast DoubleType to LongType") {
     castTest(generateDoubles(), DataTypes.LongType)
   }
 
@@ -428,45 +420,57 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast DecimalType(10,2) to BooleanType") {
     // Arrow error: Cast error: Casting from Decimal128(38, 18) to Boolean not supported
-    castTest(generateDecimals(), DataTypes.BooleanType)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.BooleanType)
   }
 
-  ignore("cast DecimalType(10,2) to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/350
-    castTest(generateDecimals(), DataTypes.ByteType)
+  test("cast DecimalType(10,2) to ByteType") {
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.ByteType)
   }
 
-  ignore("cast DecimalType(10,2) to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/350
-    castTest(generateDecimals(), DataTypes.ShortType)
+  test("cast DecimalType(10,2) to ShortType") {
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.ShortType)
   }
 
-  ignore("cast DecimalType(10,2) to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/350
-    castTest(generateDecimals(), DataTypes.IntegerType)
+  test("cast DecimalType(10,2) to IntegerType") {
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.IntegerType)
   }
 
-  ignore("cast DecimalType(10,2) to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/350
-    castTest(generateDecimals(), DataTypes.LongType)
+  test("cast DecimalType(10,2) to LongType") {
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.LongType)
   }
 
   test("cast DecimalType(10,2) to FloatType") {
-    castTest(generateDecimals(), DataTypes.FloatType)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.FloatType)
   }
 
   test("cast DecimalType(10,2) to DoubleType") {
-    castTest(generateDecimals(), DataTypes.DoubleType)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.DoubleType)
+  }
+
+  test("cast DecimalType(38,18) to ByteType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.ByteType)
+  }
+
+  test("cast DecimalType(38,18) to ShortType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.ShortType)
+  }
+
+  test("cast DecimalType(38,18) to IntegerType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.IntegerType)
+  }
+
+  test("cast DecimalType(38,18) to LongType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.LongType)
   }
 
   ignore("cast DecimalType(10,2) to StringType") {
     // input: 0E-18, expected: 0E-18, actual: 0.000000000000000000
-    castTest(generateDecimals(), DataTypes.StringType)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
   ignore("cast DecimalType(10,2) to TimestampType") {
     // input: -123456.789000000000000000, expected: 1969-12-30 05:42:23.211, actual: 1969-12-31 15:59:59.876544
-    castTest(generateDecimals(), DataTypes.TimestampType)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
 
   // CAST from StringType
@@ -798,9 +802,47 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values).toDF("a")
   }
 
-  private def generateDecimals(): DataFrame = {
-    // TODO improve this
-    val values = Seq(BigDecimal("123456.789"), BigDecimal("-123456.789"), BigDecimal("0.0"))
+  private def generateDecimalsPrecision10Scale2(): DataFrame = {
+    val values = Seq(
+      BigDecimal("-99999999.999"),
+      BigDecimal("-123456.789"),
+      BigDecimal("-32768.678"),
+      // Short Min
+      BigDecimal("-32767.123"),
+      BigDecimal("-128.12312"),
+      // Byte Min
+      BigDecimal("-127.123"),
+      BigDecimal("0.0"),
+      // Byte Max
+      BigDecimal("127.123"),
+      BigDecimal("128.12312"),
+      BigDecimal("32767.122"),
+      // Short Max
+      BigDecimal("32768.678"),
+      BigDecimal("123456.789"),
+      BigDecimal("99999999.999"))
+    withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10, 2))).drop("b")
+  }
+
+  private def generateDecimalsPrecision38Scale18(): DataFrame = {
+    val values = Seq(
+      BigDecimal("-99999999999999999999.999999999999"),
+      BigDecimal("-9223372036854775808.234567"),
+      // Long Min
+      BigDecimal("-9223372036854775807.123123"),
+      BigDecimal("-2147483648.123123123"),
+      // Int Min
+      BigDecimal("-2147483647.123123123"),
+      BigDecimal("-123456.789"),
+      BigDecimal("0.00000000000"),
+      BigDecimal("123456.789"),
+      // Int Max
+      BigDecimal("2147483647.123123123"),
+      BigDecimal("2147483648.123123123"),
+      BigDecimal("9223372036854775807.123123"),
+      // Long Max
+      BigDecimal("9223372036854775808.234567"),
+      BigDecimal("99999999999999999999.999999999999"))
     withNulls(values).toDF("a")
   }
 
@@ -865,26 +907,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def castFallbackTestTimezone(
-      input: DataFrame,
-      toType: DataType,
-      expectedMessage: String): Unit = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
-
-      withSQLConf(
-        (SQLConf.ANSI_ENABLED.key, "false"),
-        (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
-        (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
-        val df = data.withColumn("converted", col("a").cast(toType))
-        df.collect()
-        val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(str.contains(expectedMessage))
-      }
-    }
-  }
+  // TODO Commented out to work around scalafix since this is currently unused.
+  // private def castFallbackTestTimezone(
+  //     input: DataFrame,
+  //     toType: DataType,
+  //     expectedMessage: String): Unit = {
+  //   withTempPath { dir =>
+  //     val data = roundtripParquet(input, dir).coalesce(1)
+  //     data.createOrReplaceTempView("t")
+  //
+  //     withSQLConf(
+  //       (SQLConf.ANSI_ENABLED.key, "false"),
+  //       (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
+  //       (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
+  //       val df = data.withColumn("converted", col("a").cast(toType))
+  //       df.collect()
+  //       val str =
+  //         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+  //       assert(str.contains(expectedMessage))
+  //     }
+  //   }
+  // }
 
   private def castTimestampTest(input: DataFrame, toType: DataType) = {
     withTempPath { dir =>
