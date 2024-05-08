@@ -867,26 +867,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def castFallbackTestTimezone(
-      input: DataFrame,
-      toType: DataType,
-      expectedMessage: String): Unit = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
-
-      withSQLConf(
-        (SQLConf.ANSI_ENABLED.key, "false"),
-        (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
-        (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
-        val df = data.withColumn("converted", col("a").cast(toType))
-        df.collect()
-        val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(str.contains(expectedMessage))
-      }
-    }
-  }
+  // TODO Commented out to work around scalafix since this is currently unused.
+  // private def castFallbackTestTimezone(
+  //     input: DataFrame,
+  //     toType: DataType,
+  //     expectedMessage: String): Unit = {
+  //   withTempPath { dir =>
+  //     val data = roundtripParquet(input, dir).coalesce(1)
+  //     data.createOrReplaceTempView("t")
+  //
+  //     withSQLConf(
+  //       (SQLConf.ANSI_ENABLED.key, "false"),
+  //       (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
+  //       (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
+  //       val df = data.withColumn("converted", col("a").cast(toType))
+  //       df.collect()
+  //       val str =
+  //         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+  //       assert(str.contains(expectedMessage))
+  //     }
+  //   }
+  // }
 
   private def castTimestampTest(input: DataFrame, toType: DataType) = {
     withTempPath { dir =>
