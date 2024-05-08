@@ -446,11 +446,15 @@ impl Cast {
                 match value {
                     Some(v) => {
                         if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
-                            return Err(CometError::NumericValueOutOfRange {
-                                value: input_value.to_string(),
-                                precision,
-                                scale,
-                            });
+                            if eval_mode == EvalMode::Ansi {
+                                return Err(CometError::NumericValueOutOfRange {
+                                    value: input_value.to_string(),
+                                    precision,
+                                    scale,
+                                });
+                            } else {
+                                cast_array.append_null();
+                            }
                         }
                         cast_array.append_value(v);
                     }
