@@ -39,12 +39,13 @@ use arrow_array::{
     Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
-use chrono::{Datelike, NaiveDate, TimeZone, Timelike};
+use chrono::{NaiveDate, TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
 use log::info;
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::{
@@ -55,6 +56,7 @@ use crate::{
 };
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
+static EPOCH: Lazy<NaiveDate> = Lazy::new(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
     format_options: FormatOptions::new()
@@ -115,23 +117,7 @@ macro_rules! cast_utf8_to_timestamp {
         result
     }};
 }
-macro_rules! cast_utf8_to_date {
-    ($array:expr, $eval_mode:expr, $array_type:ty, $date_parser:ident) => {{
-        let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
-        for i in 0..len {
-            if $array.is_null(i) {
-                cast_array.append_null()
-            } else if let Ok(Some(cast_value)) = $date_parser($array.value(i).trim(), $eval_mode) {
-                cast_array.append_value(cast_value);
-            } else {
-                cast_array.append_null()
-            }
-        }
-        let result: ArrayRef = Arc::new(cast_array.finish()) as ArrayRef;
-        result
-    }};
-}
+
 macro_rules! cast_float_to_string {
     ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty) => {{
 
@@ -677,7 +663,7 @@ impl Cast {
                     if string_array.is_null(i) {
                         cast_array.append_null()
                     } else if let Ok(Some(cast_value)) =
-                        date_parser(string_array.value(i).trim(), eval_mode)
+                        date_parser(string_array.value(i), eval_mode)
                     {
                         cast_array.append_value(cast_value);
                     } else {
@@ -1501,7 +1487,6 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
 }
 
 fn date_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    info!("Date String is {:?}", value);
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -1533,7 +1518,6 @@ fn date_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
         _ => None,
     };
 
-    info!("Returned Date is {:?}", date);
     if date.is_none() && eval_mode == EvalMode::Ansi {
         return Err(CometError::CastInvalidValue {
             value: value.to_string(),
@@ -1543,14 +1527,17 @@ fn date_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
     }
 
     match date {
-        Some(date) => Ok(Some(date.num_days_from_ce())),
+        Some(date) => {
+            let duration_since_epoch = date.signed_duration_since(*EPOCH).num_days();
+            Ok(Some(duration_since_epoch.to_i32().unwrap()))
+        }
         None => Ok(None),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::{Date32Type, TimestampMicrosecondType};
+    use arrow::datatypes::TimestampMicrosecondType;
     use arrow_array::StringArray;
     use arrow_schema::TimeUnit;
 
@@ -1625,7 +1612,7 @@ mod tests {
         //test valid dates for all eval modes
         for date in &["2020", "2020-01", "2020-01-01", "2020-01-01T"] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(737425));
+                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(18262));
             }
         }
 
@@ -1667,7 +1654,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_string_as_date() {
+    fn test_cast_string_to_date() {
+        // Create a StringArray with various date strings
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020"),
             Some("2020-01"),
@@ -1675,16 +1663,19 @@ mod tests {
             Some("2020-01-01T"),
         ]));
 
-        let string_array = array
+        // Invoke cast_string_to_date
+        let result =
+            Cast::cast_string_to_date(&array, &DataType::Date32, EvalMode::Legacy).unwrap();
+
+        // Verify that each element of the result is 18262
+        let date32_array = result
             .as_any()
-            .downcast_ref::<GenericStringArray<i32>>()
-            .expect("Expected a string array");
-
-        let eval_mode = EvalMode::Legacy;
-        let result = cast_utf8_to_date!(&string_array, eval_mode, Date32Type, date_parser);
-
-        assert_eq!(result.data_type(), &DataType::Date32);
-        assert_eq!(result.len(), 4);
+            .downcast_ref::<arrow::array::Date32Array>()
+            .unwrap();
+        assert_eq!(date32_array.len(), 4);
+        date32_array
+            .iter()
+            .for_each(|v| assert_eq!(v.unwrap(), 18262));
     }
 
     #[test]
