@@ -1034,7 +1034,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"""INSERT INTO $table VALUES
         |('537061726B2053514C'),
         |('737472696E67'),
-        |('\0'),
+        |('\\0'),
         |(''),
         |('###'),
         |('G123'),
