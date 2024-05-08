@@ -671,7 +671,20 @@ impl Cast {
 
         let cast_array: ArrayRef = match to_type {
             DataType::Date32 | DataType::Date64 => {
-                cast_utf8_to_date!(string_array, eval_mode, Date32Type, date_parser)
+                let len = string_array.len();
+                let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
+                for i in 0..len {
+                    if string_array.is_null(i) {
+                        cast_array.append_null()
+                    } else if let Ok(Some(cast_value)) =
+                        date_parser(string_array.value(i).trim(), eval_mode)
+                    {
+                        cast_array.append_value(cast_value);
+                    } else {
+                        cast_array.append_null()
+                    }
+                }
+                Arc::new(cast_array.finish()) as ArrayRef
             }
             _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
         };
