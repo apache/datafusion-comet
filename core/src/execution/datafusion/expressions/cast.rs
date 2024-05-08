@@ -810,7 +810,7 @@ impl Cast {
             }
             _ => unreachable!(
                 "{}",
-                format!("invalid non-integral numeric type {to_type} in cast from {from_type}")
+                format!("invalid cast from non-integral numeric type: {from_type} to integral numeric type: {to_type}")
             ),
         }
     }
