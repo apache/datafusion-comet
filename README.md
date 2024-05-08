@@ -74,15 +74,3 @@ See the [DataFusion Comet User Guide](https://datafusion.apache.org/comet/user-g
 ## Contributing
 See the [DataFusion Comet Contribution Guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html)
 for information on how to get started contributing to the project.
-
-## Running ScalaTest suites from the CLI
-
-Running single ScalaTest suites from the CLI is possible using the `suites`
-argument, for example if you only want to execute the test cases that contains *valid*
-in their name in `org.apache.comet.CometCastSuite` you can use
-
-```sh
-mvn test -Dsuites="org.apache.comet.CometCastSuite valid" -Dskip.surefire.tests=true
-```
-
-Other options for selecting specific suites are described in the [ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin)
