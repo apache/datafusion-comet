@@ -19,36 +19,20 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 
 object ShimBatchReader {
 
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly call PartitionedFile
   def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
-    classOf[PartitionedFile].getDeclaredConstructors
-      .map(c =>
-        c.getParameterCount match {
-          case 5 =>
-            c.newInstance(
-              partitionValues,
-              file,
-              Long.box(-1), // -1 means we read the entire file
-              Long.box(-1),
-              Array.empty[String])
-          case 7 =>
-            c.newInstance(
-              partitionValues,
-              c.getParameterTypes()(1)
-                .getConstructor(classOf[String])
-                .newInstance(file)
-                .asInstanceOf[AnyRef],
-              Long.box(-1), // -1 means we read the entire file
-              Long.box(-1),
-              Array.empty[String],
-              Long.box(0),
-              Long.box(0))
-        })
-      .head
-      .asInstanceOf[PartitionedFile]
+    PartitionedFile(
+      partitionValues,
+      SparkPath.fromUrlString(file),
+      -1, // -1 means we read the entire file
+      -1,
+      Array.empty[String],
+      0,
+      0
+    )
 }

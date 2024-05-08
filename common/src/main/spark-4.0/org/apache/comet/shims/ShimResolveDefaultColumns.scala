@@ -21,18 +21,10 @@ package org.apache.comet.shims
 
 import scala.util.Try
 
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns
 import org.apache.spark.sql.types.{StructField, StructType}
 
 object ShimResolveDefaultColumns {
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use ResolveDefaultColumns
   def getExistenceDefaultValue(field: StructField): Any =
-    Try {
-      // scalastyle:off classforname
-      Class.forName("org.apache.spark.sql.catalyst.util.ResolveDefaultColumns$")
-      // scalastyle:on classforname
-    }.map { objClass =>
-      val objInstance = objClass.getField("MODULE$").get(null)
-      val method = objClass.getMethod("getExistenceDefaultValues", classOf[StructType])
-      method.invoke(objInstance, StructType(Seq(field))).asInstanceOf[Array[Any]].head
-    }.getOrElse(null)
+    ResolveDefaultColumns.getExistenceDefaultValues(StructType(Seq(field))).head
 }
