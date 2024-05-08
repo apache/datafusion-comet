@@ -518,7 +518,7 @@ impl Cast {
             (DataType::Utf8, DataType::Timestamp(_, _)) => {
                 Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
             }
-            (DataType::Utf8, DataType::Date32) | (DataType::Utf8, DataType::Date64) => {
+            (DataType::Utf8, DataType::Date32) => {
                 Self::cast_string_to_date(&array, to_type, self.eval_mode)?
             }
             (DataType::Int64, DataType::Int32)
@@ -656,7 +656,7 @@ impl Cast {
             .expect("Expected a string array");
 
         let cast_array: ArrayRef = match to_type {
-            DataType::Date32 | DataType::Date64 => {
+            DataType::Date32 => {
                 let len = string_array.len();
                 let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
                 for i in 0..len {

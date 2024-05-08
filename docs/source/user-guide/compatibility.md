@@ -111,6 +111,7 @@ The following cast operations are generally compatible with Spark except for the
 | decimal | double |  |
 | string | boolean |  |
 | string | binary |  |
+| string | date |  |
 | date | string |  |
 | timestamp | long |  |
 | timestamp | decimal |  |
