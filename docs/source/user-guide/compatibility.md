@@ -88,11 +88,23 @@ The following cast operations are generally compatible with Spark except for the
 | long | double |  |
 | long | string |  |
 | float | boolean |  |
+| float | byte |  |
+| float | short |  |
+| float | integer |  |
+| float | long |  |
 | float | double |  |
 | float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
 | double | boolean |  |
+| double | byte |  |
+| double | short |  |
+| double | integer |  |
+| double | long |  |
 | double | float |  |
 | double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | byte |  |
+| decimal | short |  |
+| decimal | integer |  |
+| decimal | long |  |
 | decimal | float |  |
 | decimal | double |  |
 | string | boolean |  |
