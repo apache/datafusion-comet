@@ -23,19 +23,7 @@ use datafusion_physical_expr::{expressions::Column, PhysicalExpr};
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..1000 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else if i % 2 == 0 {
-            b.append_value(format!("{}", rand::random::<f64>()));
-        } else {
-            b.append_value(format!("{}", rand::random::<i64>()));
-        }
-    }
-    let array = b.finish();
-    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+    let batch = create_utf8_batch();
     let expr = Arc::new(Column::new("a", 0));
     let timezone = "".to_string();
     let cast_string_to_i8 = Cast::new(
@@ -58,7 +46,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
     let cast_string_to_i64 = Cast::new(expr, DataType::Int64, EvalMode::Legacy, timezone);
 
-    let mut group = c.benchmark_group("cast");
+    let mut group = c.benchmark_group("cast_string_to_int");
     group.bench_function("cast_string_to_i8", |b| {
         b.iter(|| cast_string_to_i8.evaluate(&batch).unwrap());
     });
@@ -71,6 +59,23 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("cast_string_to_i64", |b| {
         b.iter(|| cast_string_to_i64.evaluate(&batch).unwrap());
     });
+}
+
+fn create_utf8_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+    let mut b = StringBuilder::new();
+    for i in 0..1000 {
+        if i % 10 == 0 {
+            b.append_null();
+        } else if i % 2 == 0 {
+            b.append_value(format!("{}", rand::random::<f64>()));
+        } else {
+            b.append_value(format!("{}", rand::random::<i64>()));
+        }
+    }
+    let array = b.finish();
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+    batch
 }
 
 fn config() -> Criterion {

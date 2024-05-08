@@ -119,5 +119,9 @@ name = "row_columnar"
 harness = false
 
 [[bench]]
-name = "cast"
+name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_numeric"
 harness = false
