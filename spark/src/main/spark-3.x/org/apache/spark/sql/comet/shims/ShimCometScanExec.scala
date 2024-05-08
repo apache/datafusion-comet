@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.spark.sql.comet.shims
 
 import scala.language.implicitConversions
 
@@ -65,7 +65,7 @@ trait ShimCometScanExec {
 
   // TODO: remove after dropping Spark 3.2 support and directly call new FileScanRDD
   protected def newFileScanRDD(
-      sparkSession: SparkSession,
+      fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
       filePartitions: Seq[FilePartition],
       readSchema: StructType,
@@ -73,12 +73,12 @@ trait ShimCometScanExec {
     classOf[FileScanRDD].getDeclaredConstructors
       .map { c =>
         c.getParameterCount match {
-          case 3 => c.newInstance(sparkSession, readFunction, filePartitions)
+          case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
           case 5 =>
-            c.newInstance(sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
+            c.newInstance(fsRelation.sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
           case 6 =>
             c.newInstance(
-              sparkSession,
+              fsRelation.sparkSession,
               readFunction,
               filePartitions,
               readSchema,

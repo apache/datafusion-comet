@@ -32,6 +32,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -406,7 +407,7 @@ case class CometScanExec(
         Map.empty)
     } else {
       newFileScanRDD(
-        fsRelation.sparkSession,
+        fsRelation,
         readFile,
         partitions,
         new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),

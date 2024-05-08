@@ -17,15 +17,16 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning}
+import org.apache.spark.SparkConf
+import org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD_FACTOR
+import org.apache.spark.internal.config.EXECUTOR_MIN_MEMORY_OVERHEAD
 
-trait ShimCometBroadcastHashJoinExec {
-  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
-    partitioning match {
-      case p: HashPartitioningLike => p.expressions
-      case _ => Seq()
-    }
+trait ShimCometDriverPlugin {
+  def getMemoryOverheadFactor(sparkConf: SparkConf): Double = sparkConf.get(
+    EXECUTOR_MEMORY_OVERHEAD_FACTOR)
+
+  def getMemoryOverheadMinMib(sparkConf: SparkConf): Long = sparkConf.get(
+    EXECUTOR_MIN_MEMORY_OVERHEAD)
 }

@@ -20,28 +20,15 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.execution.{LimitExec, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, LocalLimitExec, QueryExecution}
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
-  import org.apache.comet.shims.ShimCometSparkSessionExtensions._
-
   def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
-  /**
-   * TODO: delete after dropping Spark 3.2 and 3.3 support
-   */
-  def getOffset(limit: LimitExec): Int = getOffsetOpt(limit).getOrElse(0)
-
-}
-
-object ShimCometSparkSessionExtensions {
-  private def getOffsetOpt(plan: SparkPlan): Option[Int] = plan.getClass.getDeclaredFields
-    .filter(_.getName == "offset")
-    .map { a => a.setAccessible(true); a.get(plan) }
-    .filter(_.isInstanceOf[Int])
-    .map(_.asInstanceOf[Int])
-    .headOption
+  def getOffset(limit: LocalLimitExec): Int = 0
+  def getOffset(limit: GlobalLimitExec): Int = limit.offset
+  def getOffset(limit: CollectLimitExec): Int = limit.offset
 
   def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 }

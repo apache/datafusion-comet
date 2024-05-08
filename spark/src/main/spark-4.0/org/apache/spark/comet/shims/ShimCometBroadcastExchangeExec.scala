@@ -17,15 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning}
+import scala.reflect.ClassTag
 
-trait ShimCometBroadcastHashJoinExec {
-  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
-    partitioning match {
-      case p: HashPartitioningLike => p.expressions
-      case _ => Seq()
-    }
+import org.apache.spark.SparkContext
+import org.apache.spark.broadcast.Broadcast
+
+trait ShimCometBroadcastExchangeExec {
+  protected def doBroadcast[T: ClassTag](sparkContext: SparkContext, value: T): Broadcast[Any] =
+    sparkContext.broadcastInternal(value, true)
 }

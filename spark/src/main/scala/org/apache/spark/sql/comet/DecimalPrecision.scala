@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import scala.math.{max, min}
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.comet.shims.ShimDecimalPrecision
 import org.apache.spark.sql.types.DecimalType
 
 /**

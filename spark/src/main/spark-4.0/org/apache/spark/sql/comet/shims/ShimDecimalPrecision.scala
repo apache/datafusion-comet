@@ -17,15 +17,13 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning}
 
-trait ShimCometBroadcastHashJoinExec {
-  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
-    partitioning match {
-      case p: HashPartitioningLike => p.expressions
-      case _ => Seq()
-    }
+trait ShimDecimalPrecision {
+  object DecimalExpression {
+    def unapply(e: Expression): Option[(Int, Int)] =
+      org.apache.spark.sql.types.DecimalExpression.unapply(e)
+  }
 }

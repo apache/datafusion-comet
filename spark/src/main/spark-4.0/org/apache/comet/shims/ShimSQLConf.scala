@@ -23,7 +23,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.LegacyBehaviorPolicy
 
 trait ShimSQLConf {
-
   protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
     sqlConf.parquetFilterPushDownStringPredicate
 

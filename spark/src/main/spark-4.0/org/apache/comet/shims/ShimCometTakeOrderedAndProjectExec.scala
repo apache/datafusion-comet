@@ -22,6 +22,5 @@ package org.apache.comet.shims
 import org.apache.spark.sql.execution.TakeOrderedAndProjectExec
 
 trait ShimCometTakeOrderedAndProjectExec {
-
   protected def getOffset(plan: TakeOrderedAndProjectExec): Option[Int] = Some(plan.offset)
 }

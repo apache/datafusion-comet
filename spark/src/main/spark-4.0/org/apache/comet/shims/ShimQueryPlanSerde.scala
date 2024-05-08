@@ -19,52 +19,19 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.DeclarativeAggregate
+import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression, BloomFilterMightContain, EvalMode}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
 
 trait ShimQueryPlanSerde {
   def getFailOnError(b: BinaryArithmetic): Boolean =
     b.getClass.getMethod("failOnError").invoke(b).asInstanceOf[Boolean]
 
-  def getFailOnError(aggregate: DeclarativeAggregate): Boolean = {
-    val failOnError = aggregate.getClass.getDeclaredMethods.flatMap(m =>
-      m.getName match {
-        case "failOnError" | "useAnsiAdd" => Some(m.invoke(aggregate).asInstanceOf[Boolean])
-        case _ => None
-      })
-    if (failOnError.isEmpty) {
-      aggregate.getClass.getDeclaredMethods
-        .flatMap(m =>
-          m.getName match {
-            case "initQueryContext" => Some(m.invoke(aggregate).asInstanceOf[Option[_]].isDefined)
-            case _ => None
-          })
-        .head
-    } else {
-      failOnError.head
-    }
-  }
+  def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
+  def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
 
-  // TODO: delete after drop Spark 3.2/3.3 support
-  // This method is used to check if the aggregate function is in legacy mode.
-  // EvalMode is an enum object in Spark 3.4.
-  def isLegacyMode(aggregate: DeclarativeAggregate): Boolean = {
-    val evalMode = aggregate.getClass.getDeclaredMethods
-      .flatMap(m =>
-        m.getName match {
-          case "evalMode" => Some(m.invoke(aggregate))
-          case _ => None
-        })
+  def isLegacyMode(aggregate: Sum): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
+  def isLegacyMode(aggregate: Average): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
 
-    if (evalMode.isEmpty) {
-      true
-    } else {
-      "legacy".equalsIgnoreCase(evalMode.head.toString)
-    }
-  }
-
-  // TODO: delete after drop Spark 3.2 support
-  def isBloomFilterMightContain(binary: BinaryExpression): Boolean = {
-    binary.getClass.getName == "org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain"
-  }
+  def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
+    binary.isInstanceOf[BloomFilterMightContain]
 }
