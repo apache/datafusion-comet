@@ -1076,7 +1076,7 @@ impl PhysicalPlanner {
                 // we need to change dictionary type to data type for join filter expression.
                 .map(|f| match f.data_type() {
                     DataType::Dictionary(_, val_type) => {
-                        Field::new(f.name(), val_type.as_ref().clone(), true)
+                        Field::new(f.name(), val_type.as_ref().clone(), f.is_nullable())
                     }
                     _ => f.clone(),
                 })
