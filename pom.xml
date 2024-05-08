@@ -727,7 +727,6 @@ under the License.
             </systemPropertyVariables>
             <skipTests>${skip.surefire.tests}</skipTests>
           </configuration>
-
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
