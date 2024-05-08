@@ -191,6 +191,7 @@ macro_rules! cast_int_to_int_macro {
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
+
         let spark_int_literal_suffix = match $from_data_type {
             &DataType::Int64 => "L",
             &DataType::Int16 => "S",
@@ -198,37 +199,28 @@ macro_rules! cast_int_to_int_macro {
             _ => "",
         };
 
-        let output_array = match $eval_mode {
-            EvalMode::Legacy => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
+        let output_array = cast_array
+            .iter()
+            .map(|value| match value {
+                Some(value) => match $eval_mode {
+                    EvalMode::Legacy => Ok(Some(value as $to_native_type)),
+                    _ => {
                         let res = <$to_native_type>::try_from(value);
-                        if res.is_err() {
-                            Err(CometError::CastOverFlow {
-                                value: value.to_string() + spark_int_literal_suffix,
-                                from_type: $spark_from_data_type_name.to_string(),
-                                to_type: $spark_to_data_type_name.to_string(),
-                            })
-                        } else {
-                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
-                        }
+                        res.map_err(|_| {
+                            cast_overflow(
+                                &(value.to_string() + spark_int_literal_suffix),
+                                $spark_from_data_type_name,
+                                $spark_to_data_type_name,
+                            )
+                        })
+                        .map(Some)
                     }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-        }?;
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+                },
+                _ => Ok(None),
+            })
+            .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>()?;
+
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -259,16 +251,18 @@ macro_rules! cast_float_to_int16_down {
                     let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
                     let i32_value = value as i32;
                     match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!($format_str, value).replace("e", "E"),
-                            from_type: $src_type_str.to_string(),
-                            to_type: $dest_type_str.to_string(),
-                        }),
+                        (true, EvalMode::Ansi) => Err(cast_overflow(
+                            &format!($format_str, value).replace("e", "E"),
+                            $src_type_str,
+                            $dest_type_str,
+                        )),
                         (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| CometError::CastOverFlow {
-                                value: format!($format_str, value).replace("e", "E"),
-                                from_type: $src_type_str.to_string(),
-                                to_type: $dest_type_str.to_string(),
+                            .map_err(|_| {
+                                cast_overflow(
+                                    &format!($format_str, value).replace("e", "E"),
+                                    $src_type_str,
+                                    $dest_type_str,
+                                )
                             })
                             .map(Some),
                         (_, _) => Ok(Some(i32_value as $rust_dest_type)),
@@ -278,8 +272,7 @@ macro_rules! cast_float_to_int16_down {
             })
             .collect::<Result<$dest_array_type, _>>()?;
 
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -308,11 +301,11 @@ macro_rules! cast_float_to_int32_up {
                     let is_overflow =
                         value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
                     match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!($format_str, value).replace("e", "E"),
-                            from_type: $src_type_str.to_string(),
-                            to_type: $dest_type_str.to_string(),
-                        }),
+                        (true, EvalMode::Ansi) => Err(cast_overflow(
+                            &format!($format_str, value).replace("e", "E"),
+                            $src_type_str,
+                            $dest_type_str,
+                        )),
                         _ => Ok(Some(value as $rust_dest_type)),
                     }
                 }
@@ -320,8 +313,7 @@ macro_rules! cast_float_to_int32_up {
             })
             .collect::<Result<$dest_array_type, _>>()?;
 
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -352,16 +344,18 @@ macro_rules! cast_decimal_to_int16_down {
                     let is_overflow = truncated.abs() > std::i32::MAX.into();
                     let i32_value = truncated as i32;
                     match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!("{}.{}BD", truncated, decimal),
-                            from_type: format!("DECIMAL({},{})", $precision, $scale),
-                            to_type: $dest_type_str.to_string(),
-                        }),
+                        (true, EvalMode::Ansi) => Err(cast_overflow(
+                            &format!("{}.{}BD", truncated, decimal),
+                            &format!("DECIMAL({},{})", $precision, $scale),
+                            $dest_type_str,
+                        )),
                         (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| CometError::CastOverFlow {
-                                value: format!("{}.{}BD", truncated, decimal),
-                                from_type: format!("DECIMAL({},{})", $precision, $scale),
-                                to_type: $dest_type_str.to_string(),
+                            .map_err(|_| {
+                                cast_overflow(
+                                    &format!("{}.{}BD", truncated, decimal),
+                                    &format!("DECIMAL({},{})", $precision, $scale),
+                                    $dest_type_str,
+                                )
                             })
                             .map(Some),
                         (_, _) => Ok(Some(i32_value as $rust_dest_type)),
@@ -370,8 +364,7 @@ macro_rules! cast_decimal_to_int16_down {
                 None => Ok(None),
             })
             .collect::<Result<$dest_array_type, _>>()?;
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -399,19 +392,18 @@ macro_rules! cast_decimal_to_int32_up {
                     let (truncated, decimal) = (value / divisor, (value % divisor).abs());
                     let is_overflow = truncated.abs() > $max_dest_val.into();
                     match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(CometError::CastOverFlow {
-                            value: format!("{}.{}BD", truncated, decimal),
-                            from_type: format!("DECIMAL({},{})", $precision, $scale),
-                            to_type: $dest_type_str.to_string(),
-                        }),
+                        (true, EvalMode::Ansi) => Err(cast_overflow(
+                            &format!("{}.{}BD", truncated, decimal),
+                            &format!("DECIMAL({},{})", $precision, $scale),
+                            $dest_type_str,
+                        )),
                         _ => Ok(Some(truncated as $rust_dest_type)),
                     }
                 }
                 None => Ok(None),
             })
             .collect::<Result<$dest_array_type, _>>()?;
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -1014,6 +1006,15 @@ fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResul
 #[inline]
 fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
     CometError::CastInvalidValue {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
+    }
+}
+
+#[inline]
+fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> CometError {
+    CometError::CastOverFlow {
         value: value.to_string(),
         from_type: from_type.to_string(),
         to_type: to_type.to_string(),
