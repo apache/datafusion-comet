@@ -191,7 +191,6 @@ macro_rules! cast_int_to_int_macro {
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
-
         let spark_int_literal_suffix = match $from_data_type {
             &DataType::Int64 => "L",
             &DataType::Int16 => "S",
@@ -199,28 +198,37 @@ macro_rules! cast_int_to_int_macro {
             _ => "",
         };
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => match $eval_mode {
-                    EvalMode::Legacy => Ok(Some(value as $to_native_type)),
-                    _ => {
+        let output_array = match $eval_mode {
+            EvalMode::Legacy => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
+                    }
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
                         let res = <$to_native_type>::try_from(value);
-                        res.map_err(|_| {
-                            cast_overflow(
+                        if res.is_err() {
+                            Err(cast_overflow(
                                 &(value.to_string() + spark_int_literal_suffix),
                                 $spark_from_data_type_name,
                                 $spark_to_data_type_name,
-                            )
-                        })
-                        .map(Some)
+                            ))
+                        } else {
+                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                        }
                     }
-                },
-                _ => Ok(None),
-            })
-            .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>()?;
-
-        Ok(Arc::new(output_array) as ArrayRef)
+                    _ => Ok(None),
+                })
+                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
+        }?;
+        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        result
     }};
 }
 
