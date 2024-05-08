@@ -1292,7 +1292,7 @@ builds:
     version: 3.4_2.12
     disabled: false
     trigger:
-      timer: '@midnight'
+      timer: '45 4 * * *'
       gitPush: false
     machine:
       <<: *rio3-machine
@@ -1309,7 +1309,7 @@ builds:
     version: 3.4_2.13
     disabled: false
     trigger:
-      timer: '@midnight'
+      timer: '45 4 * * *'
       gitPush: false
     machine:
       <<: *rio3-machine
