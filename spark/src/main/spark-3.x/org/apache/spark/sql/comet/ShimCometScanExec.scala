@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet
 
 import scala.language.implicitConversions
 

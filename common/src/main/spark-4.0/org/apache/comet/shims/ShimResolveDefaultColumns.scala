@@ -19,7 +19,6 @@
 
 package org.apache.comet.shims
 
-import scala.util.Try
 
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns
 import org.apache.spark.sql.types.{StructField, StructType}

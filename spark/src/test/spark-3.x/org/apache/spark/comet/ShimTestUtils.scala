@@ -17,13 +17,12 @@
  * under the License.
  */
 
-package org.apache.comet
+package org.apache.spark.comet
 
 import java.io.File
-
 import scala.collection.mutable.ArrayBuffer
 
-object TestUtils {
+object ShimTestUtils {
 
   /**
    * Spark 3.3.0 moved {{{SpecificParquetRecordReaderBase.listDirectory}}} to

@@ -43,7 +43,7 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
-import org.apache.comet.shims.{ShimCometScanExec, ShimFileFormat}
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's

@@ -17,18 +17,12 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.comet
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
-import org.apache.spark.sql.connector.read.InputPartition
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import java.io.File
 
-trait ShimCometBatchScanExec {
-  def wrapped: BatchScanExec
+object ShimTestUtils {
 
-  def keyGroupedPartitioning: Option[Seq[Expression]] = wrapped.keyGroupedPartitioning
-
-  def inputPartitions: Seq[InputPartition] = wrapped.inputPartitions
-
-  def ordering: Option[Seq[SortOrder]] = wrapped.ordering
+  def listDirectory(path: File): Array[String] =
+    org.apache.spark.TestUtils.listDirectory(path)
 }

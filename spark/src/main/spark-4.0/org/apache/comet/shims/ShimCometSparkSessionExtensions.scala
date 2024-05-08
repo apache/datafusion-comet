@@ -26,14 +26,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 trait ShimCometSparkSessionExtensions {
   import org.apache.comet.shims.ShimCometSparkSessionExtensions._
 
-  /**
-   * TODO: delete after dropping Spark 3.2.0 support and directly call scan.pushedAggregate
-   */
-  def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.getClass.getDeclaredFields
-    .filter(_.getName == "pushedAggregate")
-    .map { a => a.setAccessible(true); a }
-    .flatMap(_.get(scan).asInstanceOf[Option[Aggregation]])
-    .headOption
+  def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
   /**
    * TODO: delete after dropping Spark 3.2 and 3.3 support
@@ -50,18 +43,5 @@ object ShimCometSparkSessionExtensions {
     .map(_.asInstanceOf[Int])
     .headOption
 
-  // Extended info is available only since Spark 4.0.0
-  // (https://issues.apache.org/jira/browse/SPARK-47289)
-  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
-    try {
-      // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
-      qe.getClass.getDeclaredMethod(
-        "extendedExplainInfo",
-        classOf[String => Unit],
-        classOf[SparkPlan])
-    } catch {
-      case _: NoSuchMethodException | _: SecurityException => return false
-    }
-    true
-  }
+  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 }
