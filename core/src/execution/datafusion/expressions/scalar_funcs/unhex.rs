@@ -74,12 +74,12 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
                 if let Some(s) = item {
                     if unhex(s, &mut encoded).is_ok() {
                         builder.append_value(encoded.as_slice());
-                        encoded.clear();
                     } else if fail_on_error {
                         return exec_err!("Input to unhex is not a valid hex string: {s}");
                     } else {
                         builder.append_null();
                     }
+                    encoded.clear();
                 } else {
                     builder.append_null();
                 }
@@ -143,9 +143,11 @@ pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
 mod test {
     use std::sync::Arc;
 
+    use arrow::array::{BinaryBuilder, StringBuilder};
     use arrow_array::make_array;
     use arrow_data::ArrayData;
     use datafusion::logical_expr::ColumnarValue;
+    use datafusion_common::ScalarValue;
 
     use super::unhex;
 
@@ -162,6 +164,32 @@ mod test {
         match (result, expected) {
             (ColumnarValue::Array(result), ColumnarValue::Array(expected)) => {
                 assert_eq!(*result, *expected);
+                Ok(())
+            }
+            _ => Err("Unexpected result type".into()),
+        }
+    }
+
+    #[test]
+    fn test_partial_error() -> Result<(), Box<dyn std::error::Error>> {
+        let mut input = StringBuilder::new();
+
+        input.append_value("1CGG"); // 1C is ok, but GG is invalid
+        input.append_value("537061726B2053514C"); // followed by valid
+
+        let input = ColumnarValue::Array(Arc::new(input.finish()));
+        let fail_on_error = ColumnarValue::Scalar(ScalarValue::Boolean(Some(false)));
+
+        let result = super::spark_unhex(&[input, fail_on_error])?;
+
+        let mut expected = BinaryBuilder::new();
+        expected.append_null();
+        expected.append_value("Spark SQL".as_bytes());
+
+        match (result, ColumnarValue::Array(Arc::new(expected.finish()))) {
+            (ColumnarValue::Array(result), ColumnarValue::Array(expected)) => {
+                assert_eq!(*result, *expected);
+
                 Ok(())
             }
             _ => Err("Unexpected result type".into()),
