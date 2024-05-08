@@ -1045,9 +1045,11 @@ impl PhysicalPlanner {
                 .fields()
                 .iter()
                 .map(|f| match f.data_type() {
-                    DataType::Dictionary(_, val_type) => {
-                        Arc::new(Field::new(f.name(), val_type.as_ref().clone(), f.is_nullable()))
-                    }
+                    DataType::Dictionary(_, val_type) => Arc::new(Field::new(
+                        f.name(),
+                        val_type.as_ref().clone(),
+                        f.is_nullable(),
+                    )),
                     _ => f.clone(),
                 })
                 .collect();
