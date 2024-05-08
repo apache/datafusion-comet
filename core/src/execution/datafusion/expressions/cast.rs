@@ -252,19 +252,21 @@ macro_rules! cast_float_to_int16_down {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
-                    let i32_value = value as i32;
-                    match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(cast_overflow(
-                            &format!($format_str, value).replace("e", "E"),
-                            $src_type_str,
-                            $dest_type_str,
-                        )),
-                        (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!($format_str, value).replace("e", "E"),
+                                $src_type_str,
+                                $dest_type_str,
+                            ));
+                        }
+                        let i32_value = value as i32;
+                        <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| {
                                 cast_overflow(
                                     &format!($format_str, value).replace("e", "E"),
@@ -272,14 +274,24 @@ macro_rules! cast_float_to_int16_down {
                                     $dest_type_str,
                                 )
                             })
-                            .map(Some),
-                        (_, _) => Ok(Some(i32_value as $rust_dest_type)),
+                            .map(Some)
                     }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
-
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let i32_value = value as i32;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            i32_value as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
@@ -302,25 +314,35 @@ macro_rules! cast_float_to_int32_up {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    let is_overflow =
-                        value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
-                    match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(cast_overflow(
-                            &format!($format_str, value).replace("e", "E"),
-                            $src_type_str,
-                            $dest_type_str,
-                        )),
-                        _ => Ok(Some(value as $rust_dest_type)),
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let is_overflow =
+                            value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!($format_str, value).replace("e", "E"),
+                                $src_type_str,
+                                $dest_type_str,
+                            ));
+                        }
+                        Ok(Some(value as $rust_dest_type))
                     }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
-
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(value as $rust_dest_type))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
@@ -343,21 +365,23 @@ macro_rules! cast_decimal_to_int16_down {
             .downcast_ref::<Decimal128Array>()
             .expect(concat!("Expected a Decimal128ArrayType"));
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    let divisor = 10_i128.pow($scale as u32);
-                    let (truncated, decimal) = (value / divisor, (value % divisor).abs());
-                    let is_overflow = truncated.abs() > std::i32::MAX.into();
-                    let i32_value = truncated as i32;
-                    match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(cast_overflow(
-                            &format!("{}.{}BD", truncated, decimal),
-                            &format!("DECIMAL({},{})", $precision, $scale),
-                            $dest_type_str,
-                        )),
-                        (false, EvalMode::Ansi) => <$rust_dest_type>::try_from(i32_value)
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let is_overflow = truncated.abs() > std::i32::MAX.into();
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!("{}.{}BD", truncated, decimal),
+                                &format!("DECIMAL({},{})", $precision, $scale),
+                                $dest_type_str,
+                            ));
+                        }
+                        let i32_value = truncated as i32;
+                        <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| {
                                 cast_overflow(
                                     &format!("{}.{}BD", truncated, decimal),
@@ -365,13 +389,25 @@ macro_rules! cast_decimal_to_int16_down {
                                     $dest_type_str,
                                 )
                             })
-                            .map(Some),
-                        (_, _) => Ok(Some(i32_value as $rust_dest_type)),
+                            .map(Some)
                     }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let i32_value = (value / divisor) as i32;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            i32_value as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
@@ -392,25 +428,40 @@ macro_rules! cast_decimal_to_int32_up {
             .downcast_ref::<Decimal128Array>()
             .expect(concat!("Expected a Decimal128ArrayType"));
 
-        let output_array = cast_array
-            .iter()
-            .map(|value| match value {
-                Some(value) => {
-                    let divisor = 10_i128.pow($scale as u32);
-                    let (truncated, decimal) = (value / divisor, (value % divisor).abs());
-                    let is_overflow = truncated.abs() > $max_dest_val.into();
-                    match (is_overflow, $eval_mode) {
-                        (true, EvalMode::Ansi) => Err(cast_overflow(
-                            &format!("{}.{}BD", truncated, decimal),
-                            &format!("DECIMAL({},{})", $precision, $scale),
-                            $dest_type_str,
-                        )),
-                        _ => Ok(Some(truncated as $rust_dest_type)),
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let is_overflow = truncated.abs() > $max_dest_val.into();
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!("{}.{}BD", truncated, decimal),
+                                &format!("DECIMAL({},{})", $precision, $scale),
+                                $dest_type_str,
+                            ));
+                        }
+                        Ok(Some(truncated as $rust_dest_type))
                     }
-                }
-                None => Ok(None),
-            })
-            .collect::<Result<$dest_array_type, _>>()?;
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let truncated = value / divisor;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            truncated as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
