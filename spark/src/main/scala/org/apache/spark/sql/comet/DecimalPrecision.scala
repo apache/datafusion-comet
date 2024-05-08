@@ -40,7 +40,7 @@ import org.apache.spark.sql.types.DecimalType
  * TODO: instead of relying on this rule, it's probably better to enhance arithmetic kernels to
  * handle different decimal precisions
  */
-object DecimalPrecision {
+object DecimalPrecision extends ShimDecimalPrecision {
   def promote(
       allowPrecisionLoss: Boolean,
       expr: Expression,
@@ -105,14 +105,6 @@ object DecimalPrecision {
         CheckOverflow(rem, resultType, nullOnOverflow)
 
       case e => e
-    }
-  }
-
-  // `org.apache.spark.sql.types.DecimalExpression` is added in Spark 3.5
-  object DecimalExpression {
-    def unapply(e: Expression): Option[(Int, Int)] = e.dataType match {
-      case t: DecimalType => Some((t.precision, t.scale))
-      case _ => None
     }
   }
 }
