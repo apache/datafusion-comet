@@ -31,8 +31,8 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, OffsetSizeTrait,
-    PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
+    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -214,11 +214,11 @@ macro_rules! cast_int_to_int_macro {
                     Some(value) => {
                         let res = <$to_native_type>::try_from(value);
                         if res.is_err() {
-                            Err(CometError::CastOverFlow {
-                                value: value.to_string() + spark_int_literal_suffix,
-                                from_type: $spark_from_data_type_name.to_string(),
-                                to_type: $spark_to_data_type_name.to_string(),
-                            })
+                            Err(cast_overflow(
+                                &(value.to_string() + spark_int_literal_suffix),
+                                $spark_from_data_type_name,
+                                $spark_to_data_type_name,
+                            ))
                         } else {
                             Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
                         }
@@ -229,6 +229,240 @@ macro_rules! cast_int_to_int_macro {
         }?;
         let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
         result
+    }};
+}
+
+// When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
+// It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
+// this can cause unexpected Short/Byte cast results. Replicate this behavior.
+macro_rules! cast_float_to_int16_down {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr,
+        $format_str:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!($format_str, value).replace("e", "E"),
+                                $src_type_str,
+                                $dest_type_str,
+                            ));
+                        }
+                        let i32_value = value as i32;
+                        <$rust_dest_type>::try_from(i32_value)
+                            .map_err(|_| {
+                                cast_overflow(
+                                    &format!($format_str, value).replace("e", "E"),
+                                    $src_type_str,
+                                    $dest_type_str,
+                                )
+                            })
+                            .map(Some)
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let i32_value = value as i32;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            i32_value as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
+    }};
+}
+
+macro_rules! cast_float_to_int32_up {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $src_array_type:ty,
+        $dest_array_type:ty,
+        $rust_src_type:ty,
+        $rust_dest_type:ty,
+        $src_type_str:expr,
+        $dest_type_str:expr,
+        $max_dest_val:expr,
+        $format_str:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<$src_array_type>()
+            .expect(concat!("Expected a ", stringify!($src_array_type)));
+
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let is_overflow =
+                            value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!($format_str, value).replace("e", "E"),
+                                $src_type_str,
+                                $dest_type_str,
+                            ));
+                        }
+                        Ok(Some(value as $rust_dest_type))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(value as $rust_dest_type))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
+    }};
+}
+
+// When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
+// It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
+// this can cause unexpected Short/Byte cast results. Replicate this behavior.
+macro_rules! cast_decimal_to_int16_down {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $dest_array_type:ty,
+        $rust_dest_type:ty,
+        $dest_type_str:expr,
+        $precision:expr,
+        $scale:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect(concat!("Expected a Decimal128ArrayType"));
+
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let is_overflow = truncated.abs() > std::i32::MAX.into();
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!("{}.{}BD", truncated, decimal),
+                                &format!("DECIMAL({},{})", $precision, $scale),
+                                $dest_type_str,
+                            ));
+                        }
+                        let i32_value = truncated as i32;
+                        <$rust_dest_type>::try_from(i32_value)
+                            .map_err(|_| {
+                                cast_overflow(
+                                    &format!("{}.{}BD", truncated, decimal),
+                                    &format!("DECIMAL({},{})", $precision, $scale),
+                                    $dest_type_str,
+                                )
+                            })
+                            .map(Some)
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let i32_value = (value / divisor) as i32;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            i32_value as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
+    }};
+}
+
+macro_rules! cast_decimal_to_int32_up {
+    (
+        $array:expr,
+        $eval_mode:expr,
+        $dest_array_type:ty,
+        $rust_dest_type:ty,
+        $dest_type_str:expr,
+        $max_dest_val:expr,
+        $precision:expr,
+        $scale:expr
+    ) => {{
+        let cast_array = $array
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect(concat!("Expected a Decimal128ArrayType"));
+
+        let output_array = match $eval_mode {
+            EvalMode::Ansi => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let is_overflow = truncated.abs() > $max_dest_val.into();
+                        if is_overflow {
+                            return Err(cast_overflow(
+                                &format!("{}.{}BD", truncated, decimal),
+                                &format!("DECIMAL({},{})", $precision, $scale),
+                                $dest_type_str,
+                            ));
+                        }
+                        Ok(Some(truncated as $rust_dest_type))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+            _ => cast_array
+                .iter()
+                .map(|value| match value {
+                    Some(value) => {
+                        let divisor = 10_i128.pow($scale as u32);
+                        let truncated = value / divisor;
+                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                            truncated as $rust_dest_type,
+                        ))
+                    }
+                    None => Ok(None),
+                })
+                .collect::<Result<$dest_array_type, _>>()?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -331,6 +565,27 @@ impl Cast {
             }
             (DataType::Float32, DataType::LargeUtf8) => {
                 Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
+            }
+            (DataType::Float32, DataType::Int8)
+            | (DataType::Float32, DataType::Int16)
+            | (DataType::Float32, DataType::Int32)
+            | (DataType::Float32, DataType::Int64)
+            | (DataType::Float64, DataType::Int8)
+            | (DataType::Float64, DataType::Int16)
+            | (DataType::Float64, DataType::Int32)
+            | (DataType::Float64, DataType::Int64)
+            | (DataType::Decimal128(_, _), DataType::Int8)
+            | (DataType::Decimal128(_, _), DataType::Int16)
+            | (DataType::Decimal128(_, _), DataType::Int32)
+            | (DataType::Decimal128(_, _), DataType::Int64)
+                if self.eval_mode != EvalMode::Try =>
+            {
+                Self::spark_cast_nonintegral_numeric_to_integral(
+                    &array,
+                    self.eval_mode,
+                    from_type,
+                    to_type,
+                )?
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
@@ -477,6 +732,146 @@ impl Cast {
             .collect::<Result<BooleanArray, _>>()?;
 
         Ok(Arc::new(output_array))
+    }
+
+    fn spark_cast_nonintegral_numeric_to_integral(
+        array: &dyn Array,
+        eval_mode: EvalMode,
+        from_type: &DataType,
+        to_type: &DataType,
+    ) -> CometResult<ArrayRef> {
+        match (from_type, to_type) {
+            (DataType::Float32, DataType::Int8) => cast_float_to_int16_down!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int8Array,
+                f32,
+                i8,
+                "FLOAT",
+                "TINYINT",
+                "{:e}"
+            ),
+            (DataType::Float32, DataType::Int16) => cast_float_to_int16_down!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int16Array,
+                f32,
+                i16,
+                "FLOAT",
+                "SMALLINT",
+                "{:e}"
+            ),
+            (DataType::Float32, DataType::Int32) => cast_float_to_int32_up!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int32Array,
+                f32,
+                i32,
+                "FLOAT",
+                "INT",
+                std::i32::MAX,
+                "{:e}"
+            ),
+            (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
+                array,
+                eval_mode,
+                Float32Array,
+                Int64Array,
+                f32,
+                i64,
+                "FLOAT",
+                "BIGINT",
+                std::i64::MAX,
+                "{:e}"
+            ),
+            (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int8Array,
+                f64,
+                i8,
+                "DOUBLE",
+                "TINYINT",
+                "{:e}D"
+            ),
+            (DataType::Float64, DataType::Int16) => cast_float_to_int16_down!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int16Array,
+                f64,
+                i16,
+                "DOUBLE",
+                "SMALLINT",
+                "{:e}D"
+            ),
+            (DataType::Float64, DataType::Int32) => cast_float_to_int32_up!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int32Array,
+                f64,
+                i32,
+                "DOUBLE",
+                "INT",
+                std::i32::MAX,
+                "{:e}D"
+            ),
+            (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
+                array,
+                eval_mode,
+                Float64Array,
+                Int64Array,
+                f64,
+                i64,
+                "DOUBLE",
+                "BIGINT",
+                std::i64::MAX,
+                "{:e}D"
+            ),
+            (DataType::Decimal128(precision, scale), DataType::Int8) => {
+                cast_decimal_to_int16_down!(
+                    array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
+                )
+            }
+            (DataType::Decimal128(precision, scale), DataType::Int16) => {
+                cast_decimal_to_int16_down!(
+                    array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
+                )
+            }
+            (DataType::Decimal128(precision, scale), DataType::Int32) => {
+                cast_decimal_to_int32_up!(
+                    array,
+                    eval_mode,
+                    Int32Array,
+                    i32,
+                    "INT",
+                    std::i32::MAX,
+                    *precision,
+                    *scale
+                )
+            }
+            (DataType::Decimal128(precision, scale), DataType::Int64) => {
+                cast_decimal_to_int32_up!(
+                    array,
+                    eval_mode,
+                    Int64Array,
+                    i64,
+                    "BIGINT",
+                    std::i64::MAX,
+                    *precision,
+                    *scale
+                )
+            }
+            _ => unreachable!(
+                "{}",
+                format!("invalid cast from non-integral numeric type: {from_type} to integral numeric type: {to_type}")
+            ),
+        }
     }
 }
 
@@ -670,6 +1065,15 @@ fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResul
 #[inline]
 fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
     CometError::CastInvalidValue {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
+    }
+}
+
+#[inline]
+fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> CometError {
+    CometError::CastOverFlow {
         value: value.to_string(),
         from_type: from_type.to_string(),
         to_type: to_type.to_string(),
