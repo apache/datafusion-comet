@@ -37,7 +37,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_VERSION: nightly
+  RUST_VERSION: stable
 
 jobs:
   linux-test:
