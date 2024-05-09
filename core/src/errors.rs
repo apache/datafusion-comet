@@ -72,6 +72,13 @@ pub enum CometError {
         to_type: String,
     },
 
+    #[error("[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
+    NumericValueOutOfRange {
+        value: String,
+        precision: u8,
+        scale: i8,
+    },
+
     #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
         set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
@@ -205,6 +212,10 @@ impl jni::errors::ToException for CometError {
                 msg: self.to_string(),
             },
             CometError::CastInvalidValue { .. } => Exception {
+                class: "org/apache/spark/SparkException".to_string(),
+                msg: self.to_string(),
+            },
+            CometError::NumericValueOutOfRange { .. } => Exception {
                 class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },

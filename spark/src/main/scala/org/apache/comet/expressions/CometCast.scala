@@ -229,7 +229,7 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Incompatible(Some("No overflow check"))
+    case _: DecimalType => Compatible()
     case _ => Unsupported
   }
 
@@ -237,7 +237,7 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Incompatible(Some("No overflow check"))
+    case _: DecimalType => Compatible()
     case _ => Unsupported
   }
 
