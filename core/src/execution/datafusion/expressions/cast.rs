@@ -34,8 +34,9 @@ use arrow::{
 };
 use arrow_array::{
     types::{Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericBinaryArray,
+    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{TimeZone, Timelike};
@@ -469,6 +470,34 @@ macro_rules! cast_decimal_to_int32_up {
     }};
 }
 
+macro_rules! cast_numeric_to_binary {
+    ($from:expr, $eval_mode: expr, $type:ty, $offset_type:ty) => {{
+        fn cast<OffsetSize>(from: &dyn Array, _eval_mode: EvalMode) -> CometResult<ArrayRef>
+        where
+            OffsetSize: OffsetSizeTrait,
+        {
+            let array = from
+                .as_any()
+                .downcast_ref::<PrimitiveArray<$type>>()
+                .unwrap();
+
+            let output_array = array
+                .iter()
+                .map(|value| match value {
+                    // Datafusion results in little endian values
+                    // while spark results in big endian
+                    Some(value) => Ok(Some(value.to_be_bytes())),
+                    _ => Ok(None),
+                })
+                .collect::<Result<GenericBinaryArray<OffsetSize>, CometError>>()?;
+
+            Ok(Arc::new(output_array))
+        }
+
+        cast::<$offset_type>($from, $eval_mode)?
+    }};
+}
+
 impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
@@ -595,6 +624,18 @@ impl Cast {
                     from_type,
                     to_type,
                 )?
+            }
+            (DataType::Int8, DataType::Binary) => {
+                cast_numeric_to_binary!(&array, self.eval_mode, Int8Type, i32)
+            }
+            (DataType::Int16, DataType::Binary) => {
+                cast_numeric_to_binary!(&array, self.eval_mode, Int16Type, i32)
+            }
+            (DataType::Int32, DataType::Binary) => {
+                cast_numeric_to_binary!(&array, self.eval_mode, Int32Type, i32)
+            }
+            (DataType::Int64, DataType::Binary) => {
+                cast_numeric_to_binary!(&array, self.eval_mode, Int64Type, i32)
             }
             _ => {
                 // when we have no Spark-specific casting we delegate to DataFusion
