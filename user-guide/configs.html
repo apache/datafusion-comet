@@ -318,8 +318,8 @@ under the License.
 <td><p>3</p></td>
 </tr>
 <tr class="row-even"><td><p>spark.comet.columnar.shuffle.enabled</p></td>
-<td><p>Force Comet to only use columnar shuffle for CometScan and Spark regular operators. If this is enabled, Comet native shuffle will not be enabled but only Arrow shuffle. By default, this config is false.</p></td>
-<td><p>false</p></td>
+<td><p>Whether to enable Arrow-based columnar shuffle for Comet and Spark regular operators. If this is enabled, Comet prefers columnar shuffle than native shuffle. By default, this config is true.</p></td>
+<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.columnar.shuffle.memory.factor</p></td>
 <td><p>Fraction of Comet memory to be allocated per executor process for Comet shuffle. Comet memory size is specified by <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> or calculated by <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> * <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>. By default, this config is 1.0.</p></td>
