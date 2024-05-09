@@ -250,7 +250,7 @@ object CometCast {
     case _ => Unsupported
   }
 
-  private def canCastToBinary(toType: DataType): SupportLevel = toType match {
+  private def canCastToBinary(fromType: DataType): SupportLevel = fromType match {
     case DataTypes.BooleanType => Compatible()
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
