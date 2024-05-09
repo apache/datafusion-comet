@@ -168,7 +168,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBytes(), DataTypes.StringType)
   }
 
-  ignore("cast ByteType to BinaryType") {
+  test("cast ByteType to BinaryType") {
     castTest(generateBytes(), DataTypes.BinaryType)
   }
 
@@ -212,7 +212,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateShorts(), DataTypes.StringType)
   }
 
-  ignore("cast ShortType to BinaryType") {
+  test("cast ShortType to BinaryType") {
     castTest(generateShorts(), DataTypes.BinaryType)
   }
 
@@ -258,7 +258,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.StringType)
   }
 
-  ignore("cast IntegerType to BinaryType") {
+  test("cast IntegerType to BinaryType") {
     castTest(generateInts(), DataTypes.BinaryType)
   }
 
@@ -305,7 +305,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.StringType)
   }
 
-  ignore("cast LongType to BinaryType") {
+  test("cast LongType to BinaryType") {
     castTest(generateLongs(), DataTypes.BinaryType)
   }
 
