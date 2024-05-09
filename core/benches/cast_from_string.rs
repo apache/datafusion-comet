@@ -61,6 +61,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 }
 
+// Create UTF8 batch with strings representing ints, floats, nulls
 fn create_utf8_batch() -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
     let mut b = StringBuilder::new();
