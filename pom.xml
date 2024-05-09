@@ -119,6 +119,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -137,7 +142,7 @@ under the License.
           <!-- Comet uses arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -257,7 +262,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -283,7 +288,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -323,6 +328,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -338,6 +348,10 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -398,6 +412,11 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
+          </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
