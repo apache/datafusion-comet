@@ -340,8 +340,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  ignore("cast FloatType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE]
+  test("cast FloatType to DecimalType(10,2)") {
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
@@ -394,8 +393,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast DoubleType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE]
+  test("cast DoubleType to DecimalType(10,2)") {
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
   }
 
@@ -1003,11 +1001,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessageModified = cometMessage
                 .replace("[CAST_INVALID_INPUT] ", "")
                 .replace("[CAST_OVERFLOW] ", "")
-              assert(cometMessageModified == sparkMessage)
+                .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
+
+              if (sparkMessage.contains("cannot be represented as")) {
+                assert(cometMessage.contains("cannot be represented as"))
+              } else {
+                assert(cometMessageModified == sparkMessage)
+              }
             } else {
               // for Spark 3.2 we just make sure we are seeing a similar type of error
               if (sparkMessage.contains("causes overflow")) {
                 assert(cometMessage.contains("due to an overflow"))
+              } else if (sparkMessage.contains("cannot be represented as")) {
+                assert(cometMessage.contains("cannot be represented as"))
               } else {
                 // assume that this is an invalid input message in the form:
                 // `invalid input syntax for type numeric: -9223372036854775809`
