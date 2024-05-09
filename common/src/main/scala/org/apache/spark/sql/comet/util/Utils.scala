@@ -242,7 +242,7 @@ object Utils {
             }
           }
 
-          getFieldVector(valueVector)
+          getFieldVector(valueVector, "serialize")
 
         case c =>
           throw new SparkException(
@@ -253,14 +253,15 @@ object Utils {
     (fieldVectors, provider)
   }
 
-  def getFieldVector(valueVector: ValueVector): FieldVector = {
+  def getFieldVector(valueVector: ValueVector, reason: String): FieldVector = {
     valueVector match {
       case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector) =>
         v.asInstanceOf[FieldVector]
-      case _ => throw new SparkException(s"Unsupported Arrow Vector: ${valueVector.getClass}")
+      case _ =>
+        throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
   }
 }
