@@ -24,7 +24,6 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 
 object ShimBatchReader {
-
   def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
     PartitionedFile(
       partitionValues,

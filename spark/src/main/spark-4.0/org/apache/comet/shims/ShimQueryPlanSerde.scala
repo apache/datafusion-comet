@@ -23,15 +23,15 @@ import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpres
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
 
 trait ShimQueryPlanSerde {
-  def getFailOnError(b: BinaryArithmetic): Boolean =
+  protected def getFailOnError(b: BinaryArithmetic): Boolean =
     b.getClass.getMethod("failOnError").invoke(b).asInstanceOf[Boolean]
 
-  def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
-  def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
+  protected def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
+  protected def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
 
-  def isLegacyMode(aggregate: Sum): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
-  def isLegacyMode(aggregate: Average): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
+  protected def isLegacyMode(aggregate: Sum): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
+  protected def isLegacyMode(aggregate: Average): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
 
-  def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
+  protected def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
     binary.isInstanceOf[BloomFilterMightContain]
 }

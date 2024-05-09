@@ -19,9 +19,11 @@
 
 package org.apache.spark.sql.comet.shims
 
+import org.apache.comet.shims.ShimFileFormat
+
 import scala.language.implicitConversions
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileStatus, Path}
 
 import org.apache.spark.{SparkContext, SparkException}
 import org.apache.spark.sql.SparkSession
@@ -29,7 +31,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFactory}
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, FileStatusWithMetadata, PartitionDirectory, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, PartitionDirectory, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -124,7 +126,7 @@ trait ShimCometScanExec {
     findRowIndexColumnIndexInSchema(sparkSchema) >= 0
   }
 
-  protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
+  protected def getPartitionedFile(f: FileStatus, p: PartitionDirectory): PartitionedFile =
     PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
 
   protected def splitFiles(sparkSession: SparkSession,

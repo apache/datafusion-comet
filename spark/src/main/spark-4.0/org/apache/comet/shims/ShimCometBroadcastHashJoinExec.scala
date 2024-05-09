@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning}
 
 trait ShimCometBroadcastHashJoinExec {
-  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
+  protected def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
     partitioning match {
       case p: HashPartitioningLike => p.expressions
       case _ => Seq()

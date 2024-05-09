@@ -28,10 +28,10 @@ import scala.concurrent.Future
 
 import org.apache.spark._
 import org.apache.spark.internal.config
-import org.apache.spark.rdd.{MapPartitionsRDD, RDD}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriteProcessor}
+import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter}
 import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, UnsafeProjection, UnsafeRow}
@@ -39,6 +39,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometPlan}
+import org.apache.spark.sql.comet.shims.ShimCometShuffleWriteProcessor
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -448,7 +449,7 @@ class CometShuffleWriteProcessor(
     outputPartitioning: Partitioning,
     outputAttributes: Seq[Attribute],
     metrics: Map[String, SQLMetric])
-    extends ShuffleWriteProcessor {
+    extends ShimCometShuffleWriteProcessor {
 
   private val OFFSET_LENGTH = 8
 
@@ -457,23 +458,9 @@ class CometShuffleWriteProcessor(
     new SQLShuffleWriteMetricsReporter(context.taskMetrics().shuffleWriteMetrics, metrics)
   }
 
-  // For Spark-3.x
-  def write(
-      rdd: RDD[_],
-      dep: ShuffleDependency[_, _, _],
-      mapId: Long,
-      context: TaskContext,
-      partition: Partition): MapStatus = {
-    // Getting rid of the fake partitionId
-    val cometRDD = rdd.asInstanceOf[MapPartitionsRDD[_, _]].prev.asInstanceOf[RDD[ColumnarBatch]]
-    val rawIter = cometRDD.iterator(partition, context)
-    write(rawIter, dep, mapId, partition.index, context)
-  }
-
-  // TODO: add `override` keyword after dropping Spark-3.x supports
   // FIXME: we need actually prev of rdd?
-  def write(
-      inputs: Iterator[ColumnarBatch],
+  override def write(
+      inputs: Iterator[_],
       dep: ShuffleDependency[_, _, _],
       mapId: Long,
       mapIndex: Int,
@@ -496,7 +483,10 @@ class CometShuffleWriteProcessor(
       "elapsed_compute" -> metrics("shuffleReadElapsedCompute"))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
-    val cometIter = CometExec.getCometIterator(Seq(inputs), nativePlan, nativeMetrics)
+    val cometIter = CometExec.getCometIterator(
+      Seq(inputs.asInstanceOf[Iterator[ColumnarBatch]]),
+      nativePlan,
+      nativeMetrics)
 
     while (cometIter.hasNext) {
       cometIter.next()

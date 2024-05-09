@@ -22,7 +22,6 @@ package org.apache.spark.comet.shims
 import java.io.File
 
 object ShimTestUtils {
-
   def listDirectory(path: File): Array[String] =
     org.apache.spark.TestUtils.listDirectory(path)
 }

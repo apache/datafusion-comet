@@ -24,11 +24,11 @@ import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, LocalL
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
-  def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
+  protected def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
-  def getOffset(limit: LocalLimitExec): Int = 0
-  def getOffset(limit: GlobalLimitExec): Int = limit.offset
-  def getOffset(limit: CollectLimitExec): Int = limit.offset
+  protected def getOffset(limit: LocalLimitExec): Int = 0
+  protected def getOffset(limit: GlobalLimitExec): Int = limit.offset
+  protected def getOffset(limit: CollectLimitExec): Int = limit.offset
 
-  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
+  protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 }
