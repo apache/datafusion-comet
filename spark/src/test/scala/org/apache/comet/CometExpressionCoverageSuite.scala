@@ -213,8 +213,9 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       sys.error("DATAFUSIONCLI_PATH env variable not set"))
 
     val tempFilePath = Files.createTempFile("temp-", ".sql")
+    try {
     Files.write(tempFilePath, sql.getBytes)
-
+   
     val command = s"""$datafusionCliPath/datafusion-cli -f $tempFilePath"""
 
     val stdout = new StringBuilder
@@ -225,8 +226,9 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
         out => stdout.append(out).append("\n"), // stdout
         err => stderr.append(err).append("\n") // stderr
       ))
-
-    Files.delete(tempFilePath)
+   } finally {
+      Files.delete(tempFilePath)
+   }
 
     val err = stderr.toString()
     val out = stdout.toString()
