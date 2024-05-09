@@ -1036,7 +1036,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("unhex") {
+    // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
+    // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
+    // the same (and this only applies to edge cases with hex inputs with lengths that are not divisible by 2)
+    assume(!isSpark32, "unhex function has incorrect behavior in 3.2")
 
+    val table = "unhex_table"
+    withTable(table) {
+      sql(s"create table $table(col string) using parquet")
+
+      sql(s"""INSERT INTO $table VALUES
+        |('537061726B2053514C'),
+        |('737472696E67'),
+        |('\\0'),
+        |(''),
+        |('###'),
+        |('G123'),
+        |('hello'),
+        |('A1B'),
+        |('0A1B')""".stripMargin)
+
+      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+    }
+  }
   test("length, reverse, instr, replace, translate") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
