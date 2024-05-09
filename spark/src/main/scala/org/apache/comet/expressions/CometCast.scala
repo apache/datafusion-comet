@@ -77,6 +77,8 @@ object CometCast {
         canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType)
+      case (_, DataTypes.BinaryType) =>
+        canCastToBinary(fromType)
       case (DataTypes.TimestampType, _) =>
         canCastFromTimestamp(toType)
       case (_: DecimalType, _) =>
@@ -248,4 +250,12 @@ object CometCast {
     case _ => Unsupported
   }
 
+  private def canCastToBinary(toType: DataType): SupportLevel = toType match {
+    case DataTypes.BooleanType => Compatible
+    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible
+    case DataTypes.DateType => Compatible
+    case DataTypes.TimestampType => Compatible
+    case _ => Unsupported
+  }
 }
