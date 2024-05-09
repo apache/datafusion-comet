@@ -276,6 +276,11 @@ under the License.
      Running Tests in IDEA
     </a>
    </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#running-tests-from-command-line">
+     Running Tests from command line
+    </a>
+   </li>
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -395,6 +400,16 @@ After that you can open the project in CLion. The IDE should automatically detec
 <h3>Running Tests in IDEA<a class="headerlink" href="#running-tests-in-idea" title="Link to this heading">¶</a></h3>
 <p>Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting “Run” or “Debug”.
 However if the tests is related to the native side. Please make sure to run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> or <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">core</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">build</span></code> before running the tests in IDEA.</p>
+</section>
+<section id="running-tests-from-command-line">
+<h3>Running Tests from command line<a class="headerlink" href="#running-tests-from-command-line" title="Link to this heading">¶</a></h3>
+<p>It is possible to specify which ScalaTest suites you want to run from the CLI using the <code class="docutils literal notranslate"><span class="pre">suites</span></code>
+argument, for example if you only want to execute the test cases that contains <em>valid</em>
+in their name in <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometCastSuite</span></code> you can use</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span><span class="w"> </span>-Dskip.surefire.tests<span class="o">=</span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>Other options for selecting specific suites are described in the <a class="reference external" href="https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin">ScalaTest Maven Plugin documentation</a></p>
 </section>
 </section>
 <section id="benchmark">
