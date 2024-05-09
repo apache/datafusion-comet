@@ -52,7 +52,7 @@ under the License.
     <protobuf.version>3.19.6</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
-    <arrow.version>16.0.0</arrow.version>
+    <arrow.version>14.0.2</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
