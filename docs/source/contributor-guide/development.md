@@ -73,6 +73,18 @@ After that you can open the project in CLion. The IDE should automatically detec
 Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting "Run" or "Debug".
 However if the tests is related to the native side. Please make sure to run `make core` or `cd core && cargo build` before running the tests in IDEA.
 
+### Running Tests from command line
+
+It is possible to specify which ScalaTest suites you want to run from the CLI using the `suites`
+argument, for example if you only want to execute the test cases that contains *valid*
+in their name in `org.apache.comet.CometCastSuite` you can use
+
+```sh
+mvn test -Dsuites="org.apache.comet.CometCastSuite valid" -Dskip.surefire.tests=true
+```
+
+Other options for selecting specific suites are described in the [ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin)
+
 ## Benchmark
 
 There's a `make` command to run micro benchmarks in the repo. For

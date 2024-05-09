@@ -733,6 +733,7 @@ under the License.
             <systemPropertyVariables>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
             </systemPropertyVariables>
+            <skipTests>${skip.surefire.tests}</skipTests>
           </configuration>
         </plugin>
         <plugin>
