@@ -47,12 +47,13 @@ import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupp
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
+import org.apache.comet.shims.CometExprShim
 import org.apache.comet.shims.ShimQueryPlanSerde
 
 /**
  * An utility object for query plan and expression serialization.
  */
-object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
+object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -1466,6 +1467,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
           val rightExpr = exprToProtoInternal(right, inputs)
           val optExpr = scalarExprToProto("atan2", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
+
+        case e: Unhex if !isSpark32 =>
+          val unHex = unhexSerde(e)
+
+          val childExpr = exprToProtoInternal(unHex._1, inputs)
+          val failOnErrorExpr = exprToProtoInternal(unHex._2, inputs)
+
+          val optExpr =
+            scalarExprToProtoWithReturnType("unhex", e.dataType, childExpr, failOnErrorExpr)
+          optExprWithInfo(optExpr, expr, unHex._1)
 
         case e @ Ceil(child) =>
           val childExpr = exprToProtoInternal(child, inputs)

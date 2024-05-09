@@ -52,6 +52,9 @@ use num::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+mod unhex;
+use unhex::spark_unhex;
+
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
@@ -105,6 +108,10 @@ pub fn create_comet_physical_fun(
         "make_decimal" => {
             make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
         }
+        "unhex" => {
+            let func = Arc::new(spark_unhex);
+            make_comet_scalar_udf!("unhex", func, without data_type)
+        }
         "decimal_div" => {
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
         }
@@ -123,11 +130,10 @@ pub fn create_comet_physical_fun(
             make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
         }
         _ => {
-            let fun = BuiltinScalarFunction::from_str(fun_name);
-            if fun.is_err() {
-                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
+            if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
+                Ok(ScalarFunctionDefinition::BuiltIn(fun))
             } else {
-                Ok(ScalarFunctionDefinition::BuiltIn(fun?))
+                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
             }
         }
     }
