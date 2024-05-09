@@ -39,7 +39,11 @@ public class CometPlainVector extends CometDecodedVector {
   private int booleanByteCacheIndex = -1;
 
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
-    super(vector, vector.getField(), useDecimal128);
+    this(vector, useDecimal128, false);
+  }
+
+  public CometPlainVector(ValueVector vector, boolean useDecimal128, boolean isUuid) {
+    super(vector, vector.getField(), useDecimal128, isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
       this.valueBufferAddress = -1;

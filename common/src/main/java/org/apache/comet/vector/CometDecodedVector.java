@@ -41,14 +41,16 @@ public abstract class CometDecodedVector extends CometVector {
   protected boolean isUuid;
 
   protected CometDecodedVector(ValueVector vector, Field valueField, boolean useDecimal128) {
+    this(vector, valueField, useDecimal128, false);
+  }
+
+  protected CometDecodedVector(
+      ValueVector vector, Field valueField, boolean useDecimal128, boolean isUuid) {
     super(Utils.fromArrowField(valueField), useDecimal128);
     this.valueVector = vector;
     this.numNulls = valueVector.getNullCount();
     this.numValues = valueVector.getValueCount();
     this.hasNull = numNulls != 0;
-  }
-
-  public void setIsUuid(boolean isUuid) {
     this.isUuid = isUuid;
   }
 

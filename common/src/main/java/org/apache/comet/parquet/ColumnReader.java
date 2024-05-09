@@ -170,7 +170,6 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometDecodedVector loadVector() {
-
     // Only re-use Comet vector iff:
     //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
     //      side may fallback to plain encoding and the underlying memory address for the vector
@@ -213,8 +212,7 @@ public class ColumnReader extends AbstractColumnReader {
       FieldVector vector = Data.importVector(ALLOCATOR, array, schema, dictionaryProvider);
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
-      cometVector.setIsUuid(isUuid);
+      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, isUuid);
 
       // Update whether the current vector contains any null values. This is used in the following
       // batch(s) to determine whether we can skip loading the native vector.
@@ -237,14 +235,13 @@ public class ColumnReader extends AbstractColumnReader {
         // initialized yet.
         Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
         CometPlainVector dictionaryVector =
-            new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
-        dictionaryVector.setIsUuid(isUuid);
+            new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
         dictionary = new CometDictionary(dictionaryVector);
       }
 
       currentVector =
-          new CometDictionaryVector(cometVector, dictionary, dictionaryProvider, useDecimal128);
-      cometVector.setIsUuid(isUuid);
+          new CometDictionaryVector(
+              cometVector, dictionary, dictionaryProvider, useDecimal128, false, isUuid);
 
       return currentVector;
     }
