@@ -88,7 +88,8 @@ under the License.
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
-    <shims.source>spark-3.x</shims.source>
+    <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
+    <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
   </properties>
 
   <dependencyManagement>
@@ -500,6 +501,7 @@ under the License.
         <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
         <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
+        <shims.minorVerSrc>spark-3.2</shims.minorVerSrc>
       </properties>
     </profile>
 
@@ -511,6 +513,7 @@ under the License.
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
+        <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
     </profile>
 
@@ -533,7 +536,8 @@ under the License.
         <spark.version>4.0.0-SNAPSHOT</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
-        <shims.source>spark-4.0</shims.source>
+        <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
+        <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -740,6 +744,7 @@ under the License.
             <systemPropertyVariables>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
             </systemPropertyVariables>
+            <skipTests>${skip.surefire.tests}</skipTests>
           </configuration>
         </plugin>
         <plugin>

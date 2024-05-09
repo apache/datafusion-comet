@@ -25,7 +25,7 @@ import scala.collection.JavaConverters._
 import scala.util.Random
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.comet.ShimTestUtils
+import org.apache.spark.comet.shims.ShimTestUtils
 import org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector

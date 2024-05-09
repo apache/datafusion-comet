@@ -16,13 +16,18 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+package org.apache.comet.shims
 
-package org.apache.spark.comet
+import org.apache.spark.sql.catalyst.expressions._
 
-import java.io.File
-
-object ShimTestUtils {
-
-  def listDirectory(path: File): Array[String] =
-    org.apache.spark.TestUtils.listDirectory(path)
+/**
+ * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
+ */
+trait CometExprShim {
+    /**
+      * Returns a tuple of expressions for the `unhex` function.
+      */
+    def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+        (unhex.child, Literal(false))
+    }
 }
