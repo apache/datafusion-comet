@@ -251,11 +251,11 @@ object CometCast {
   }
 
   private def canCastToBinary(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType => Compatible
+    case DataTypes.BooleanType => Compatible()
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
-      Compatible
-    case DataTypes.DateType => Compatible
-    case DataTypes.TimestampType => Compatible
+      Compatible()
+    case DataTypes.DateType => Compatible()
+    case DataTypes.TimestampType => Compatible()
     case _ => Unsupported
   }
 }
