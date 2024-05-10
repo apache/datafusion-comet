@@ -21,17 +21,14 @@ package org.apache.comet
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
-
 import scala.collection.mutable
 import scala.sys.process._
-
 import org.scalatest.exceptions.TestFailedException
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-
 import org.apache.comet.CoverageResultStatus.CoverageResultStatus
+import org.scalatest.Ignore
 
 /**
  * Manual test to calculate Spark builtin expressions coverage support by the Comet
@@ -39,7 +36,7 @@ import org.apache.comet.CoverageResultStatus.CoverageResultStatus
  * The test will update files docs/spark_builtin_expr_coverage.txt,
  * docs/spark_builtin_expr_coverage_agg.txt
  */
-//@Ignore
+@Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
