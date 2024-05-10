@@ -950,7 +950,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     // we do not support the TryCast expression in Spark 3.2 and 3.3
     // https://github.com/apache/datafusion-comet/issues/374
-    val testTryCast = CometSparkSessionExtensions.isSpark34Plus
+    // val testTryCast = CometSparkSessionExtensions.isSpark34Plus
+    val testTryCast = true
 
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)

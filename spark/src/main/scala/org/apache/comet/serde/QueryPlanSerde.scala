@@ -617,6 +617,43 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
+        case TryCast(child, dt, timeZoneId) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          if (childExpr.isDefined) {
+            val castSupport = CometCast.isSupported(child.dataType, dt, timeZoneId, "TRY")
+
+            def getIncompatMessage(reason: Option[String]) =
+              "Comet does not guarantee correct results for cast " +
+                s"from ${child.dataType} to $dt " +
+                s"with timezone $timeZoneId and evalMode TRY" +
+                reason.map(str => s" ($str)").getOrElse("")
+
+            castSupport match {
+              case Compatible(_) =>
+                castToProto(timeZoneId, dt, childExpr, "TRY")
+              case Incompatible(reason) =>
+                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+                  logWarning(getIncompatMessage(reason))
+                  castToProto(timeZoneId, dt, childExpr, "TRY")
+                } else {
+                  withInfo(
+                    expr,
+                    s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
+                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
+                  None
+                }
+              case Unsupported =>
+                withInfo(
+                  expr,
+                  s"Unsupported cast from ${child.dataType} to $dt " +
+                    s"with timezone $timeZoneId and evalMode TRY")
+                None
+            }
+          } else {
+            withInfo(expr, child)
+            None
+          }
+
         case Cast(child, dt, timeZoneId, evalMode) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
