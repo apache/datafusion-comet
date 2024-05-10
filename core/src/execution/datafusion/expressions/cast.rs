@@ -33,8 +33,6 @@ use arrow::{
 };
 use arrow_array::{
     types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, GenericStringArray, OffsetSizeTrait,
-    PrimitiveArray,
     Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
     Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
 };
@@ -44,7 +42,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
-use log::info;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -900,7 +897,7 @@ impl Cast {
                 i32,
                 "FLOAT",
                 "INT",
-                std::i32::MAX,
+                i32::MAX,
                 "{:e}"
             ),
             (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
@@ -912,7 +909,7 @@ impl Cast {
                 i64,
                 "FLOAT",
                 "BIGINT",
-                std::i64::MAX,
+                i64::MAX,
                 "{:e}"
             ),
             (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
@@ -946,7 +943,7 @@ impl Cast {
                 i32,
                 "DOUBLE",
                 "INT",
-                std::i32::MAX,
+                i32::MAX,
                 "{:e}D"
             ),
             (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
@@ -958,7 +955,7 @@ impl Cast {
                 i64,
                 "DOUBLE",
                 "BIGINT",
-                std::i64::MAX,
+                i64::MAX,
                 "{:e}D"
             ),
             (DataType::Decimal128(precision, scale), DataType::Int8) => {
@@ -978,7 +975,7 @@ impl Cast {
                     Int32Array,
                     i32,
                     "INT",
-                    std::i32::MAX,
+                    i32::MAX,
                     *precision,
                     *scale
                 )
@@ -990,7 +987,7 @@ impl Cast {
                     Int64Array,
                     i64,
                     "BIGINT",
-                    std::i64::MAX,
+                    i64::MAX,
                     *precision,
                     *scale
                 )
@@ -1486,53 +1483,127 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
     Ok(Some(timestamp))
 }
 
-fn date_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
+//a string to date parser - port of spark's SparkDateTimeUtils#stringToDate.
+fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+    // local functions
+    fn get_trimmed_start(bytes: &[u8]) -> usize {
+        let mut start = 0;
+        while start < bytes.len() && is_whitespace_or_iso_control(bytes[start]) {
+            start += 1;
+        }
+        start
     }
-    let parts: Vec<&str> = value.split('-').collect();
-    let date = match parts.len() {
-        1 => match parts[0].parse() {
-            Ok(year) => NaiveDate::from_ymd_opt(year, 1, 1),
-            _ => None,
-        },
-        2 => match parts[0].parse() {
-            Ok(year) => {
-                let month = parts[1].parse();
-                match month {
-                    Ok(month) => NaiveDate::from_ymd_opt(year, month, 1),
-                    _ => None,
-                }
+
+    fn get_trimmed_end(start: usize, bytes: &[u8]) -> usize {
+        let mut end = bytes.len() - 1;
+        while end > start && is_whitespace_or_iso_control(bytes[end]) {
+            end -= 1;
+        }
+        end + 1
+    }
+
+    fn is_whitespace_or_iso_control(byte: u8) -> bool {
+        byte.is_ascii_whitespace() || byte.is_ascii_control()
+    }
+
+    fn is_valid_digits(segment: i32, digits: usize) -> bool {
+        // An integer is able to represent a date within [+-]5 million years.
+        let max_digits_year = 7;
+        //year (segment 0) can be between 4 to 7 digits,
+        //month and day (segment 1 and 2) can be between 1 to 2 digits
+        (segment == 0 && digits >= 4 && digits <= max_digits_year)
+            || (segment != 0 && digits > 0 && digits <= 2)
+    }
+
+    fn return_result(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+        return if eval_mode == EvalMode::Ansi {
+            Err(CometError::CastInvalidValue {
+                value: date_str.to_string(),
+                from_type: "STRING".to_string(),
+                to_type: "DATE".to_string(),
+            })
+        } else {
+            Ok(None)
+        };
+    }
+    // end local functions
+
+    if date_str.is_empty() {
+        return return_result(date_str, eval_mode);
+    }
+
+    //values of date segments year, month and day defaulting to 1
+    let mut date_segments = [1, 1, 1];
+    let mut sign = 1;
+    let mut current_segment = 0;
+    let mut current_segment_value = 0;
+    let mut current_segment_digits = 0;
+    let bytes = date_str.as_bytes();
+
+    let mut j = get_trimmed_start(bytes);
+    let str_end_trimmed = get_trimmed_end(j, bytes);
+
+    if j == str_end_trimmed {
+        return return_result(date_str, eval_mode);
+    }
+
+    //assign a sign to the date
+    if bytes[j] == b'-' || bytes[j] == b'+' {
+        sign = if bytes[j] == b'-' { -1 } else { 1 };
+        j += 1;
+    }
+
+    //loop to the end of string until we have processed 3 segments,
+    //but quit early current byte value is a space or 'T' character
+    const MAX_YEAR_VALUE: i32 = 5881580;
+    while j < str_end_trimmed && (current_segment < 3 && !(bytes[j] == b' ' || bytes[j] == b'T')) {
+        let b = bytes[j];
+        if current_segment < 2 && b == b'-' {
+            //check for validity of year and month segments if current byte is separator
+            if !is_valid_digits(current_segment, current_segment_digits) {
+                return return_result(date_str, eval_mode);
             }
-            _ => None,
-        },
-        3 => {
-            let value = value.trim_end_matches('T');
-            let date = NaiveDate::parse_from_str(value, "%Y-%m-%d");
-            match date {
-                Ok(date) => Some(date),
-                _ => None,
+            //if valid update corresponding segment with the current segment value.
+            date_segments[current_segment as usize] = current_segment_value;
+            current_segment_value = 0;
+            current_segment_digits = 0;
+            current_segment += 1;
+        } else {
+            //increment value of current segment by the next digit
+            let parsed_value = (b - b'0') as i32;
+            if parsed_value < 0 || parsed_value > 9 {
+                return return_result(date_str, eval_mode);
+            } else {
+                current_segment_value = current_segment_value * 10 + parsed_value;
+                current_segment_digits += 1;
             }
         }
-        _ => None,
-    };
-
-    if date.is_none() && eval_mode == EvalMode::Ansi {
-        return Err(CometError::CastInvalidValue {
-            value: value.to_string(),
-            from_type: "STRING".to_string(),
-            to_type: "DATE".to_string(),
-        });
+        j += 1;
     }
 
-    match date {
+    //check for validity of last segment
+    if !is_valid_digits(current_segment, current_segment_digits) {
+        return return_result(date_str, eval_mode);
+    }
+
+    if current_segment < 2 && j < str_end_trimmed {
+        // For the `yyyy` and `yyyy-[m]m` formats, entire input must be consumed.
+        return return_result(date_str, eval_mode);
+    }
+
+    date_segments[current_segment as usize] = current_segment_value;
+
+    return match NaiveDate::from_ymd_opt(
+        sign * date_segments[0],
+        date_segments[1] as u32,
+        date_segments[2] as u32,
+    ) {
         Some(date) => {
             let duration_since_epoch = date.signed_duration_since(*EPOCH).num_days();
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
-    }
+    };
 }
 
 #[cfg(test)]
@@ -1609,45 +1680,55 @@ mod tests {
 
     #[test]
     fn date_parser_test() {
-        //test valid dates for all eval modes
-        for date in &["2020", "2020-01", "2020-01-01", "2020-01-01T"] {
+        for date in &[
+            "2020",
+            "2020-01",
+            "2020-01-01",
+            "02020-01-01",
+            "002020-01-01",
+            "0002020-01-01",
+            "2020-1-1",
+            "2020-01-01 ",
+            "2020-01-01T",
+        ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
                 assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(18262));
             }
         }
 
-        //test fuzzy dates for all modes
-        assert_eq!(date_parser("-0973250", EvalMode::Legacy).unwrap(), None);
-        assert_eq!(date_parser("-3638-5", EvalMode::Legacy).unwrap(), None);
-
-        assert!(date_parser("-0973250", EvalMode::Ansi).is_err());
-        assert!(date_parser("-3638-5", EvalMode::Ansi).is_err());
-
-        assert_eq!(date_parser("-0973250", EvalMode::Try).unwrap(), None);
-        assert_eq!(date_parser("-3638-5", EvalMode::Try).unwrap(), None);
-
-        let invalid_dates = ["20200-01-01", "2020-010-01", "2020-10-010", "2020-10-010T"];
-        //test invalid dates return err for Ansi
-        for date in &invalid_dates {
-            assert!(date_parser(*date, EvalMode::Ansi).is_err());
-        }
-
-        //test invalid dates return None for Legacy and Try
-        for date in &invalid_dates {
+        //dates in invalid formats
+        for date in &[
+            "202",
+            "2020-010-01",
+            "2020-10-010",
+            "2020-10-010T",
+            "--262143-12-31",
+            "--262143-12-31 ",
+        ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
                 assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
             }
-        }
-
-        let fuzzy_dates = ["-0973250", "-3638-5"];
-        //test invalid dates return err for Ansi
-        for date in &fuzzy_dates {
             assert!(date_parser(*date, EvalMode::Ansi).is_err());
         }
 
-        //test invalid dates return None for Legacy and Try
-        for date in &fuzzy_dates {
-            for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
+        for date in &["-3638-5"] {
+            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(-2048160));
+            }
+        }
+
+        //Naive Date only supports years 262142 AD to 262143 BC
+        //returns None for dates out of range supported by Naive Date.
+        for date in &[
+            "-262144-1-1",
+            "262143-01-1",
+            "262143-1-1",
+            "262143-01-1 ",
+            "262143-01-01T ",
+            "262143-1-01T 1234",
+            "-0973250",
+        ] {
+            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
                 assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
             }
         }
