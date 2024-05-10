@@ -33,8 +33,7 @@ import org.scalatest.Ignore
 /**
  * Manual test to calculate Spark builtin expressions coverage support by the Comet
  *
- * The test will update files docs/spark_builtin_expr_coverage.txt,
- * docs/spark_builtin_expr_coverage_agg.txt
+ * The test will update files docs/spark_builtin_expr_coverage.txt
  */
 @Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
