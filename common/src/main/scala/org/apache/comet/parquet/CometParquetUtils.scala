@@ -20,7 +20,7 @@
 package org.apache.comet.parquet
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.comet.parquet.ShimCometParquetUtils
+import org.apache.spark.sql.comet.shims.ShimCometParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 
 object CometParquetUtils extends ShimCometParquetUtils {

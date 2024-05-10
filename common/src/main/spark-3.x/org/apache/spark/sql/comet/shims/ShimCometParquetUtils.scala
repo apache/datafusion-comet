@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet.parquet
+package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.sql.types._
 
