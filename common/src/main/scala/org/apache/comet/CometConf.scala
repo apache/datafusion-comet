@@ -167,6 +167,7 @@ object CometConf {
           "this config is false. Comet broadcast feature will be enabled automatically by " +
           "Comet extension. But for unit tests, we need this feature to force enabling it " +
           "for invalid cases. So this config is only used for unit test.")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 
