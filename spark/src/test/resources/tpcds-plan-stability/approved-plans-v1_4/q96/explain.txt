@@ -29,7 +29,7 @@
                         +- CometScan parquet spark_catalog.default.store (19)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(1) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -47,7 +47,7 @@ Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3], [ss_sold_time_sk#1
 (4) ColumnarToRow [codegen id : 4]
 Input [3]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
 
-(unknown) Scan parquet spark_catalog.default.household_demographics
+(5) Scan parquet spark_catalog.default.household_demographics
 Output [2]: [hd_demo_sk#5, hd_dep_count#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
@@ -79,7 +79,7 @@ Join condition: None
 Output [2]: [ss_sold_time_sk#1, ss_store_sk#3]
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.time_dim
+(12) Scan parquet spark_catalog.default.time_dim
 Output [3]: [t_time_sk#7, t_hour#8, t_minute#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
@@ -111,7 +111,7 @@ Join condition: None
 Output [1]: [ss_store_sk#3]
 Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#7]
 
-(unknown) Scan parquet spark_catalog.default.store
+(19) Scan parquet spark_catalog.default.store
 Output [2]: [s_store_sk#10, s_store_name#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]

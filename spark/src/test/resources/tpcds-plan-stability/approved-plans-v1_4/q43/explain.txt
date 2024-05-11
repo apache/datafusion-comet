@@ -22,7 +22,7 @@ TakeOrderedAndProject (21)
                            +- CometScan parquet spark_catalog.default.store (11)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(1) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#1, d_year#2, d_day_name#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -40,7 +40,7 @@ Arguments: [d_date_sk#1, d_day_name#3], [d_date_sk#1, d_day_name#3]
 (4) ColumnarToRow [codegen id : 3]
 Input [2]: [d_date_sk#1, d_day_name#3]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(5) Scan parquet spark_catalog.default.store_sales
 Output [3]: [ss_store_sk#4, ss_sales_price#5, ss_sold_date_sk#6]
 Batched: true
 Location: InMemoryFileIndex []
@@ -69,7 +69,7 @@ Join condition: None
 Output [3]: [d_day_name#3, ss_store_sk#4, ss_sales_price#5]
 Input [5]: [d_date_sk#1, d_day_name#3, ss_store_sk#4, ss_sales_price#5, ss_sold_date_sk#6]
 
-(unknown) Scan parquet spark_catalog.default.store
+(11) Scan parquet spark_catalog.default.store
 Output [4]: [s_store_sk#7, s_store_id#8, s_store_name#9, s_gmt_offset#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]

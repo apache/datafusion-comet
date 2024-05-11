@@ -52,7 +52,7 @@
                      +- ReusedExchange (43)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, ws_sold_date_sk#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -70,7 +70,7 @@ Arguments: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3], [ws_sold_t
 (4) ColumnarToRow [codegen id : 4]
 Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 
-(unknown) Scan parquet spark_catalog.default.household_demographics
+(5) Scan parquet spark_catalog.default.household_demographics
 Output [2]: [hd_demo_sk#5, hd_dep_count#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
@@ -102,7 +102,7 @@ Join condition: None
 Output [2]: [ws_sold_time_sk#1, ws_web_page_sk#3]
 Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, hd_demo_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.time_dim
+(12) Scan parquet spark_catalog.default.time_dim
 Output [2]: [t_time_sk#7, t_hour#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
@@ -134,7 +134,7 @@ Join condition: None
 Output [1]: [ws_web_page_sk#3]
 Input [3]: [ws_sold_time_sk#1, ws_web_page_sk#3, t_time_sk#7]
 
-(unknown) Scan parquet spark_catalog.default.web_page
+(19) Scan parquet spark_catalog.default.web_page
 Output [2]: [wp_web_page_sk#9, wp_char_count#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_page]
@@ -184,7 +184,7 @@ Functions [1]: [count(1)]
 Aggregate Attributes [1]: [count(1)#13]
 Results [1]: [count(1)#13 AS amc#14]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(29) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_sold_time_sk#15, ws_ship_hdemo_sk#16, ws_web_page_sk#17, ws_sold_date_sk#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -215,7 +215,7 @@ Join condition: None
 Output [2]: [ws_sold_time_sk#15, ws_web_page_sk#17]
 Input [4]: [ws_sold_time_sk#15, ws_ship_hdemo_sk#16, ws_web_page_sk#17, hd_demo_sk#19]
 
-(unknown) Scan parquet spark_catalog.default.time_dim
+(36) Scan parquet spark_catalog.default.time_dim
 Output [2]: [t_time_sk#20, t_hour#21]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
