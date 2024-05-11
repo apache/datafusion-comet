@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
@@ -527,7 +529,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
    */
 
   def stringToEvalMode(evalModeStr: String): ExprOuterClass.EvalMode =
-    evalModeStr.toUpperCase match {
+    evalModeStr.toUpperCase(Locale.ROOT) match {
       case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
       case "TRY" => ExprOuterClass.EvalMode.TRY
       case "ANSI" => ExprOuterClass.EvalMode.ANSI
