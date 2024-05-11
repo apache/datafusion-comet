@@ -291,7 +291,7 @@ jobs:
         name: Install Spark
         shell: bash
         run: |
-          pushd apache-spark
+          pushd spark
           build/mvn install -Phive -Phadoop-cloud -DskipTests
           popd
       - if: matrix.test-target == 'java'
