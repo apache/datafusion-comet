@@ -101,6 +101,18 @@ jobs:
         name: Rust test steps
         uses: ./.github/actions/rust-test
       - if: matrix.test-target == 'java'
+        name: Clone Spark
+        uses: actions/checkout@v4
+        with:
+          repository: "apache/spark"
+      - if: matrix.test-target == 'java'
+        name: Install Spark
+        shell: bash
+        run: |
+          pushd apache-spark
+          build/mvn install -Phive -Phadoop-cloud -DskipTests
+          popd
+      - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -224,6 +236,18 @@ jobs:
         name: Rust test steps
         uses: ./.github/actions/rust-test
       - if: matrix.test-target == 'java'
+        name: Clone Spark
+        uses: actions/checkout@v4
+        with:
+          repository: "apache/spark"
+      - if: matrix.test-target == 'java'
+        name: Install Spark
+        shell: bash
+        run: |
+          pushd apache-spark
+          build/mvn install -Phive -Phadoop-cloud -DskipTests
+          popd
+      - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -258,6 +282,18 @@ jobs:
       - if: matrix.test-target == 'rust'
         name: Rust test steps
         uses: ./.github/actions/rust-test
+      - if: matrix.test-target == 'java'
+        name: Clone Spark
+        uses: actions/checkout@v4
+        with:
+          repository: "apache/spark"
+      - if: matrix.test-target == 'java'
+        name: Install Spark
+        shell: bash
+        run: |
+          pushd apache-spark
+          build/mvn install -Phive -Phadoop-cloud -DskipTests
+          popd
       - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
