@@ -105,13 +105,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
-        shell: bash
-        run: |
-          pushd apache-spark
-          build/mvn install -Phive -Phadoop-cloud -DskipTests
-          popd
+          path: "apache-spark"
+        working-directory: ./apache-spark
+        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
@@ -240,13 +236,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
-        shell: bash
-        run: |
-          pushd apache-spark
-          build/mvn install -Phive -Phadoop-cloud -DskipTests
-          popd
+          path: "apache-spark"
+        working-directory: ./apache-spark
+        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
@@ -287,13 +279,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
-        shell: bash
-        run: |
-          pushd spark
-          build/mvn install -Phive -Phadoop-cloud -DskipTests
-          popd
+          path: "apache-spark"
+        working-directory: ./apache-spark
+        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
