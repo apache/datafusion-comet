@@ -346,10 +346,10 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match expr.eval_mode.as_str() {
-                    "ANSI" => EvalMode::Ansi,
-                    "TRY" => EvalMode::Try,
-                    "LEGACY" => EvalMode::Legacy,
+                let eval_mode = match expr.eval_mode {
+                    0 => EvalMode::Legacy,
+                    1 => EvalMode::Try,
+                    2 => EvalMode::Ansi,
                     other => {
                         return Err(ExecutionError::GeneralError(format!(
                             "Invalid Cast EvalMode: \"{other}\""
