@@ -1516,7 +1516,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
     }
 
     fn return_result(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
-        return if eval_mode == EvalMode::Ansi {
+        if eval_mode == EvalMode::Ansi {
             Err(CometError::CastInvalidValue {
                 value: date_str.to_string(),
                 from_type: "STRING".to_string(),
@@ -1524,7 +1524,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
             })
         } else {
             Ok(None)
-        };
+        }
     }
     // end local functions
 
@@ -1554,8 +1554,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
     }
 
     //loop to the end of string until we have processed 3 segments,
-    //but quit early current byte value is a space or 'T' character
-    const MAX_YEAR_VALUE: i32 = 5881580;
+    //exit loop on encountering any space ' ' or 'T' after the 3rd segment
     while j < str_end_trimmed && (current_segment < 3 && !(bytes[j] == b' ' || bytes[j] == b'T')) {
         let b = bytes[j];
         if current_segment < 2 && b == b'-' {
@@ -1571,7 +1570,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
         } else {
             //increment value of current segment by the next digit
             let parsed_value = (b - b'0') as i32;
-            if parsed_value < 0 || parsed_value > 9 {
+            if !(0..=9).contains(&parsed_value) {
                 return return_result(date_str, eval_mode);
             } else {
                 current_segment_value = current_segment_value * 10 + parsed_value;
@@ -1593,7 +1592,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
 
     date_segments[current_segment as usize] = current_segment_value;
 
-    return match NaiveDate::from_ymd_opt(
+    match NaiveDate::from_ymd_opt(
         sign * date_segments[0],
         date_segments[1] as u32,
         date_segments[2] as u32,
@@ -1603,7 +1602,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
-    };
+    }
 }
 
 #[cfg(test)]
