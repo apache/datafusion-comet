@@ -186,7 +186,7 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
+  val COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.async.thread.num")
       .doc("Number of threads used for Comet async columnar shuffle per shuffle task. " +
         "By default, this config is 3. Note that more threads means more memory requirement to " +
@@ -195,7 +195,7 @@ object CometConf {
       .intConf
       .createWithDefault(3)
 
-  val COMET_EXEC_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
+  val COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
     conf("spark.comet.columnar.shuffle.async.max.thread.num")
       .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
         "By default, this config is 100. This is the upper bound of total number of shuffle " +
@@ -207,7 +207,7 @@ object CometConf {
       .createWithDefault(100)
   }
 
-  val COMET_EXEC_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
+  val COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.spill.threshold")
       .doc(
         "Number of rows to be spilled used for Comet columnar shuffle. " +
