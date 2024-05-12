@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
+import scala.reflect.macros.whitebox.Context
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -663,16 +664,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        // do the following only for spark 3.2 and 3.3
         case TryCast(child, dt, timeZoneId) =>
           handleCast(child, inputs, dt, timeZoneId, "TRY")
 
         case Cast(child, dt, timeZoneId, evalMode) =>
           val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
-            // Spark 3.2 & 3.3 has ansiEnabled boolean
             if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
           } else {
-            // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
             evalMode.toString
           }
           handleCast(child, inputs, dt, timeZoneId, evalModeStr)
