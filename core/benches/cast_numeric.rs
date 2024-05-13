@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{builder::StringBuilder, RecordBatch};
+use arrow_array::{builder::Int32Builder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use comet::execution::datafusion::expressions::cast::{Cast, EvalMode};
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -23,54 +23,48 @@ use datafusion_physical_expr::{expressions::Column, PhysicalExpr};
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..1000 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else if i % 2 == 0 {
-            b.append_value(format!("{}", rand::random::<f64>()));
-        } else {
-            b.append_value(format!("{}", rand::random::<i64>()));
-        }
-    }
-    let array = b.finish();
-    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+    let batch = create_int32_batch();
     let expr = Arc::new(Column::new("a", 0));
     let timezone = "".to_string();
-    let cast_string_to_i8 = Cast::new(
+    let cast_i32_to_i8 = Cast::new(
         expr.clone(),
         DataType::Int8,
         EvalMode::Legacy,
         timezone.clone(),
     );
-    let cast_string_to_i16 = Cast::new(
+    let cast_i32_to_i16 = Cast::new(
         expr.clone(),
         DataType::Int16,
         EvalMode::Legacy,
         timezone.clone(),
     );
-    let cast_string_to_i32 = Cast::new(
-        expr.clone(),
-        DataType::Int32,
-        EvalMode::Legacy,
-        timezone.clone(),
-    );
-    let cast_string_to_i64 = Cast::new(expr, DataType::Int64, EvalMode::Legacy, timezone);
+    let cast_i32_to_i64 = Cast::new(expr, DataType::Int64, EvalMode::Legacy, timezone);
 
-    let mut group = c.benchmark_group("cast");
-    group.bench_function("cast_string_to_i8", |b| {
-        b.iter(|| cast_string_to_i8.evaluate(&batch).unwrap());
+    let mut group = c.benchmark_group("cast_int_to_int");
+    group.bench_function("cast_i32_to_i8", |b| {
+        b.iter(|| cast_i32_to_i8.evaluate(&batch).unwrap());
     });
-    group.bench_function("cast_string_to_i16", |b| {
-        b.iter(|| cast_string_to_i16.evaluate(&batch).unwrap());
+    group.bench_function("cast_i32_to_i16", |b| {
+        b.iter(|| cast_i32_to_i16.evaluate(&batch).unwrap());
     });
-    group.bench_function("cast_string_to_i32", |b| {
-        b.iter(|| cast_string_to_i32.evaluate(&batch).unwrap());
+    group.bench_function("cast_i32_to_i64", |b| {
+        b.iter(|| cast_i32_to_i64.evaluate(&batch).unwrap());
     });
-    group.bench_function("cast_string_to_i64", |b| {
-        b.iter(|| cast_string_to_i64.evaluate(&batch).unwrap());
-    });
+}
+
+fn create_int32_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+    let mut b = Int32Builder::new();
+    for i in 0..1000 {
+        if i % 10 == 0 {
+            b.append_null();
+        } else {
+            b.append_value(rand::random::<i32>());
+        }
+    }
+    let array = b.finish();
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+    batch
 }
 
 fn config() -> Criterion {

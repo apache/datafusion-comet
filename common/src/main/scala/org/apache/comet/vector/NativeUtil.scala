@@ -66,7 +66,7 @@ class NativeUtil {
           val arrowArray = ArrowArray.allocateNew(allocator)
           Data.exportVector(
             allocator,
-            getFieldVector(valueVector),
+            getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
             arrowSchema)
