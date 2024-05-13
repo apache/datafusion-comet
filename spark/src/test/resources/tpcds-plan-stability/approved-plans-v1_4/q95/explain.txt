@@ -59,7 +59,7 @@
                               +- CometScan parquet spark_catalog.default.web_site (47)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ws_sold_date_sk#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -85,7 +85,7 @@ Arguments: hashpartitioning(ws_order_number#4, 5), ENSURE_REQUIREMENTS, [plan_id
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Arguments: [ws_order_number#4 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(7) Scan parquet spark_catalog.default.web_sales
 Output [3]: [ws_warehouse_sk#8, ws_order_number#9, ws_sold_date_sk#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -134,7 +134,7 @@ Right keys [1]: [ws_order_number#9]
 Join type: LeftSemi
 Join condition: None
 
-(unknown) Scan parquet spark_catalog.default.web_returns
+(18) Scan parquet spark_catalog.default.web_returns
 Output [2]: [wr_order_number#13, wr_returned_date_sk#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
@@ -200,7 +200,7 @@ Right keys [1]: [wr_order_number#13]
 Join type: LeftSemi
 Join condition: None
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(33) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#15, d_date#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -232,7 +232,7 @@ Join condition: None
 Output [5]: [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, d_date_sk#15]
 
-(unknown) Scan parquet spark_catalog.default.customer_address
+(40) Scan parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#17, ca_state#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -264,7 +264,7 @@ Join condition: None
 Output [4]: [ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Input [6]: [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ca_address_sk#17]
 
-(unknown) Scan parquet spark_catalog.default.web_site
+(47) Scan parquet spark_catalog.default.web_site
 Output [2]: [web_site_sk#19, web_company_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_site]

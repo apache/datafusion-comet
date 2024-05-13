@@ -38,7 +38,7 @@ TakeOrderedAndProject (37)
                                                    +- ReusedExchange (19)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [3]: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 Batched: true
 Location: InMemoryFileIndex []
@@ -108,7 +108,7 @@ Arguments: hashpartitioning(item_sk#10, d_date#6, 5), ENSURE_REQUIREMENTS, [plan
 Input [3]: [item_sk#10, d_date#6, cume_sales#12]
 Arguments: [item_sk#10 ASC NULLS FIRST, d_date#6 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(16) Scan parquet spark_catalog.default.store_sales
 Output [3]: [ss_item_sk#13, ss_sales_price#14, ss_sold_date_sk#15]
 Batched: true
 Location: InMemoryFileIndex []
@@ -218,7 +218,7 @@ BroadcastExchange (42)
          +- CometScan parquet spark_catalog.default.date_dim (38)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(38) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#5, d_date#6, d_month_seq#31]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

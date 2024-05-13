@@ -130,7 +130,7 @@ TakeOrderedAndProject (129)
                                              +- ReusedExchange (113)
 
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(1) Scan parquet spark_catalog.default.catalog_sales
 Output [5]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, cs_sold_date_sk#5]
 Batched: true
 Location: InMemoryFileIndex []
@@ -145,7 +145,7 @@ Condition : isnotnull(cs_item_sk#1)
 (3) ColumnarToRow [codegen id : 3]
 Input [5]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, cs_sold_date_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.item
+(4) Scan parquet spark_catalog.default.item
 Output [6]: [i_item_sk#7, i_brand_id#8, i_class_id#9, i_category_id#10, i_category#11, i_manufact_id#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -198,7 +198,7 @@ Arguments: hashpartitioning(cs_order_number#2, cs_item_sk#1, 5), ENSURE_REQUIREM
 Input [9]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
 Arguments: [cs_order_number#2 ASC NULLS FIRST, cs_item_sk#1 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.catalog_returns
+(16) Scan parquet spark_catalog.default.catalog_returns
 Output [5]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18, cr_returned_date_sk#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
@@ -234,7 +234,7 @@ Join condition: None
 Output [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, (cs_quantity#3 - coalesce(cr_return_quantity#17, 0)) AS sales_cnt#20, (cs_ext_sales_price#4 - coalesce(cr_return_amount#18, 0.00)) AS sales_amt#21]
 Input [13]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14, cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(24) Scan parquet spark_catalog.default.store_sales
 Output [5]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26]
 Batched: true
 Location: InMemoryFileIndex []
@@ -283,7 +283,7 @@ Arguments: hashpartitioning(ss_ticket_number#23, ss_item_sk#22, 5), ENSURE_REQUI
 Input [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
 Arguments: [ss_ticket_number#23 ASC NULLS FIRST, ss_item_sk#22 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.store_returns
+(35) Scan parquet spark_catalog.default.store_returns
 Output [5]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38, sr_returned_date_sk#39]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
@@ -319,7 +319,7 @@ Join condition: None
 Output [7]: [d_year#34, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, (ss_quantity#24 - coalesce(sr_return_quantity#37, 0)) AS sales_cnt#40, (ss_ext_sales_price#25 - coalesce(sr_return_amt#38, 0.00)) AS sales_amt#41]
 Input [13]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34, sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(43) Scan parquet spark_catalog.default.web_sales
 Output [5]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46]
 Batched: true
 Location: InMemoryFileIndex []
@@ -368,7 +368,7 @@ Arguments: hashpartitioning(ws_order_number#43, ws_item_sk#42, 5), ENSURE_REQUIR
 Input [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
 Arguments: [ws_order_number#43 ASC NULLS FIRST, ws_item_sk#42 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.web_returns
+(54) Scan parquet spark_catalog.default.web_returns
 Output [5]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58, wr_returned_date_sk#59]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
@@ -454,7 +454,7 @@ Arguments: hashpartitioning(i_brand_id#8, i_class_id#9, i_category_id#10, i_manu
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
 Arguments: [i_brand_id#8 ASC NULLS FIRST, i_class_id#9 ASC NULLS FIRST, i_category_id#10 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST], false, 0
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(72) Scan parquet spark_catalog.default.catalog_sales
 Output [5]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74]
 Batched: true
 Location: InMemoryFileIndex []
@@ -520,7 +520,7 @@ Join condition: None
 Output [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, (cs_quantity#72 - coalesce(cr_return_quantity#85, 0)) AS sales_cnt#20, (cs_ext_sales_price#73 - coalesce(cr_return_amount#86, 0.00)) AS sales_amt#21]
 Input [13]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82, cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(87) Scan parquet spark_catalog.default.store_sales
 Output [5]: [ss_item_sk#87, ss_ticket_number#88, ss_quantity#89, ss_ext_sales_price#90, ss_sold_date_sk#91]
 Batched: true
 Location: InMemoryFileIndex []
@@ -586,7 +586,7 @@ Join condition: None
 Output [7]: [d_year#99, i_brand_id#94, i_class_id#95, i_category_id#96, i_manufact_id#97, (ss_quantity#89 - coalesce(sr_return_quantity#102, 0)) AS sales_cnt#40, (ss_ext_sales_price#90 - coalesce(sr_return_amt#103, 0.00)) AS sales_amt#41]
 Input [13]: [ss_item_sk#87, ss_ticket_number#88, ss_quantity#89, ss_ext_sales_price#90, i_brand_id#94, i_class_id#95, i_category_id#96, i_manufact_id#97, d_year#99, sr_item_sk#100, sr_ticket_number#101, sr_return_quantity#102, sr_return_amt#103]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(102) Scan parquet spark_catalog.default.web_sales
 Output [5]: [ws_item_sk#104, ws_order_number#105, ws_quantity#106, ws_ext_sales_price#107, ws_sold_date_sk#108]
 Batched: true
 Location: InMemoryFileIndex []
@@ -725,7 +725,7 @@ BroadcastExchange (133)
       +- CometScan parquet spark_catalog.default.date_dim (130)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(130) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#13, d_year#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -754,7 +754,7 @@ BroadcastExchange (137)
       +- CometScan parquet spark_catalog.default.date_dim (134)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(134) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#81, d_year#82]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
