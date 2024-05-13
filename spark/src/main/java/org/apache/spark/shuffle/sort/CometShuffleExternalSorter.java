@@ -146,7 +146,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.numPartitions = numPartitions;
     this.schema = schema;
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
     this.writeMetrics = writeMetrics;
 
     this.peakMemoryUsedBytes = getMemoryUsage();
@@ -158,7 +158,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
 
     if (isAsync) {
-      this.threadNum = (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_ASYNC_THREAD_NUM().get();
+      this.threadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
       assert (this.threadNum > 0);
       this.threadPool = ShuffleThreadPool.getThreadPool();
     } else {
