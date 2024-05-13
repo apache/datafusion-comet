@@ -1467,4 +1467,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("base64") {
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col string) using parquet")
+      sql(s"""INSERT INTO $table VALUES
+             |('537061726B2053514C'),
+             |('737472696E67'),
+             |('\\0'),
+             |(''),
+             |('###'),
+             |('G123'),
+             |('hello'),
+             |('A1B'),
+             |('0A1B')""".stripMargin)
+
+      checkSparkAnswerAndOperator(s"SELECT base64(col) FROM $table")
+    }
+  }
 }
