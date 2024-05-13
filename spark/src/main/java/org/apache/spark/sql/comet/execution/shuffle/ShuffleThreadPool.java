@@ -37,7 +37,8 @@ public class ShuffleThreadPool {
         ThreadFactory factory =
             new ThreadFactoryBuilder().setNameFormat("async-shuffle-writer-%d").build();
 
-        int threadNum = (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_ASYNC_MAX_THREAD_NUM().get();
+        int threadNum =
+            (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM().get();
         INSTANCE =
             new ThreadPoolExecutor(
                 0, threadNum, 1L, TimeUnit.SECONDS, new ThreadPoolQueue(threadNum), factory);
