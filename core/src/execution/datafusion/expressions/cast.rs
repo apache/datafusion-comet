@@ -1569,6 +1569,9 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
             current_segment += 1;
         } else {
             //increment value of current segment by the next digit
+            if !b.is_ascii_digit() {
+                return return_result(date_str, eval_mode);
+            }
             let parsed_value = (b - b'0') as i32;
             if !(0..=9).contains(&parsed_value) {
                 return return_result(date_str, eval_mode);
@@ -1697,6 +1700,13 @@ mod tests {
 
         //dates in invalid formats
         for date in &[
+            "abc",
+            "",
+            "not_a_date",
+            "3/",
+            "3/12",
+            "3/12/2020",
+            "3/12/2002 T",
             "202",
             "2020-010-01",
             "2020-10-010",
