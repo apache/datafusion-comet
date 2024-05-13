@@ -592,10 +592,29 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "2020-10-01T  1221213",
         "002020-01-01  ",
         "0002020-01-01  123344",
-        "-3638-5").toDF("a"),
+        "-3638-5",
+        /*invalid entries*/
+        "0",
+        "202",
+        "2020-010-01",
+        "2020-10-010",
+        "2020-10-010T",
+        "--262143-12-31",
+        "--262143-12-31T 1234 ",
+        "abc-def-ghi",
+        "abc-def-ghi jkl",
+        "2020-mar-20",
+        "not_a_date",
+        "T2").toDF("a"),
       DataTypes.DateType)
     // TODO: fuzz test
     // castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
+  }
+
+  // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
+  // we can't test all possible fuzz dates
+  ignore("cast StringType to DataType - Fuzz Test") {
+    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
