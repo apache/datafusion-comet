@@ -5,7 +5,7 @@
       +- CometScan parquet spark_catalog.default.reason (1)
 
 
-(unknown) Scan parquet spark_catalog.default.reason
+(1) Scan parquet spark_catalog.default.reason
 Output [1]: [r_reason_sk#1]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
@@ -36,7 +36,7 @@ Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
                   +- CometScan parquet spark_catalog.default.store_sales (5)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(5) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -89,7 +89,7 @@ Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
                   +- CometScan parquet spark_catalog.default.store_sales (13)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(13) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#33, ss_ext_discount_amt#34, ss_net_paid#35, ss_sold_date_sk#36]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -142,7 +142,7 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
                   +- CometScan parquet spark_catalog.default.store_sales (21)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(21) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#49, ss_ext_discount_amt#50, ss_net_paid#51, ss_sold_date_sk#52]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -195,7 +195,7 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
                   +- CometScan parquet spark_catalog.default.store_sales (29)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(29) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#65, ss_ext_discount_amt#66, ss_net_paid#67, ss_sold_date_sk#68]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -248,7 +248,7 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
                   +- CometScan parquet spark_catalog.default.store_sales (37)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(37) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#81, ss_ext_discount_amt#82, ss_net_paid#83, ss_sold_date_sk#84]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

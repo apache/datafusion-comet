@@ -86,7 +86,7 @@ TakeOrderedAndProject (85)
                                        +- ReusedExchange (71)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(1) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -114,7 +114,7 @@ Join condition: None
 Output [3]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3]
 Input [5]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4, d_date_sk#6]
 
-(unknown) Scan parquet spark_catalog.default.store
+(7) Scan parquet spark_catalog.default.store
 Output [1]: [s_store_sk#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -160,7 +160,7 @@ Functions [2]: [sum(UnscaledValue(ss_ext_sales_price#2)), sum(UnscaledValue(ss_n
 Aggregate Attributes [2]: [sum(UnscaledValue(ss_ext_sales_price#2))#12, sum(UnscaledValue(ss_net_profit#3))#13]
 Results [3]: [s_store_sk#7, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#2))#12,17,2) AS sales#14, MakeDecimal(sum(UnscaledValue(ss_net_profit#3))#13,17,2) AS profit#15]
 
-(unknown) Scan parquet spark_catalog.default.store_returns
+(16) Scan parquet spark_catalog.default.store_returns
 Output [4]: [sr_store_sk#16, sr_return_amt#17, sr_net_loss#18, sr_returned_date_sk#19]
 Batched: true
 Location: InMemoryFileIndex []
@@ -233,7 +233,7 @@ Join condition: None
 Output [5]: [sales#14, coalesce(returns#29, 0.00) AS returns#31, (profit#15 - coalesce(profit_loss#30, 0.00)) AS profit#32, store channel AS channel#33, s_store_sk#7 AS id#34]
 Input [6]: [s_store_sk#7, sales#14, profit#15, s_store_sk#22, returns#29, profit_loss#30]
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(31) Scan parquet spark_catalog.default.catalog_sales
 Output [4]: [cs_call_center_sk#35, cs_ext_sales_price#36, cs_net_profit#37, cs_sold_date_sk#38]
 Batched: true
 Location: InMemoryFileIndex []
@@ -278,7 +278,7 @@ Results [3]: [cs_call_center_sk#35, MakeDecimal(sum(UnscaledValue(cs_ext_sales_p
 Input [3]: [cs_call_center_sk#35, sales#47, profit#48]
 Arguments: IdentityBroadcastMode, [plan_id=6]
 
-(unknown) Scan parquet spark_catalog.default.catalog_returns
+(40) Scan parquet spark_catalog.default.catalog_returns
 Output [3]: [cr_return_amount#49, cr_net_loss#50, cr_returned_date_sk#51]
 Batched: true
 Location: InMemoryFileIndex []
@@ -327,7 +327,7 @@ Join condition: None
 Output [5]: [sales#47, returns#60, (profit#48 - profit_loss#61) AS profit#62, catalog channel AS channel#63, cs_call_center_sk#35 AS id#64]
 Input [5]: [cs_call_center_sk#35, sales#47, profit#48, returns#60, profit_loss#61]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(50) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_web_page_sk#65, ws_ext_sales_price#66, ws_net_profit#67, ws_sold_date_sk#68]
 Batched: true
 Location: InMemoryFileIndex []
@@ -355,7 +355,7 @@ Join condition: None
 Output [3]: [ws_web_page_sk#65, ws_ext_sales_price#66, ws_net_profit#67]
 Input [5]: [ws_web_page_sk#65, ws_ext_sales_price#66, ws_net_profit#67, ws_sold_date_sk#68, d_date_sk#70]
 
-(unknown) Scan parquet spark_catalog.default.web_page
+(56) Scan parquet spark_catalog.default.web_page
 Output [1]: [wp_web_page_sk#71]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_page]
@@ -401,7 +401,7 @@ Functions [2]: [sum(UnscaledValue(ws_ext_sales_price#66)), sum(UnscaledValue(ws_
 Aggregate Attributes [2]: [sum(UnscaledValue(ws_ext_sales_price#66))#76, sum(UnscaledValue(ws_net_profit#67))#77]
 Results [3]: [wp_web_page_sk#71, MakeDecimal(sum(UnscaledValue(ws_ext_sales_price#66))#76,17,2) AS sales#78, MakeDecimal(sum(UnscaledValue(ws_net_profit#67))#77,17,2) AS profit#79]
 
-(unknown) Scan parquet spark_catalog.default.web_returns
+(65) Scan parquet spark_catalog.default.web_returns
 Output [4]: [wr_web_page_sk#80, wr_return_amt#81, wr_net_loss#82, wr_returned_date_sk#83]
 Batched: true
 Location: InMemoryFileIndex []
@@ -512,7 +512,7 @@ BroadcastExchange (90)
          +- CometScan parquet spark_catalog.default.date_dim (86)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(86) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#6, d_date#120]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

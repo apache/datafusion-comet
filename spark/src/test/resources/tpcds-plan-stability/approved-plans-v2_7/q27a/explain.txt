@@ -74,7 +74,7 @@ TakeOrderedAndProject (73)
                            +- CometScan parquet spark_catalog.default.item (63)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(1) Scan parquet spark_catalog.default.store_sales
 Output [8]: [ss_item_sk#1, ss_cdemo_sk#2, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 Batched: true
 Location: InMemoryFileIndex []
@@ -89,7 +89,7 @@ Condition : ((isnotnull(ss_cdemo_sk#2) AND isnotnull(ss_store_sk#3)) AND isnotnu
 (3) ColumnarToRow [codegen id : 5]
 Input [8]: [ss_item_sk#1, ss_cdemo_sk#2, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 
-(unknown) Scan parquet spark_catalog.default.customer_demographics
+(4) Scan parquet spark_catalog.default.customer_demographics
 Output [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
@@ -134,7 +134,7 @@ Join condition: None
 Output [6]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7]
 Input [8]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8, d_date_sk#14]
 
-(unknown) Scan parquet spark_catalog.default.store
+(14) Scan parquet spark_catalog.default.store
 Output [2]: [s_store_sk#15, s_state#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -162,7 +162,7 @@ Join condition: None
 Output [6]: [ss_item_sk#1, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, s_state#16]
 Input [8]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, s_store_sk#15, s_state#16]
 
-(unknown) Scan parquet spark_catalog.default.item
+(20) Scan parquet spark_catalog.default.item
 Output [2]: [i_item_sk#17, i_item_id#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -208,7 +208,7 @@ Functions [4]: [avg(agg1#19), avg(UnscaledValue(agg2#20)), avg(UnscaledValue(agg
 Aggregate Attributes [4]: [avg(agg1#19)#39, avg(UnscaledValue(agg2#20))#40, avg(UnscaledValue(agg3#21))#41, avg(UnscaledValue(agg4#22))#42]
 Results [7]: [i_item_id#18, s_state#16, 0 AS g_state#43, avg(agg1#19)#39 AS agg1#44, cast((avg(UnscaledValue(agg2#20))#40 / 100.0) as decimal(11,6)) AS agg2#45, cast((avg(UnscaledValue(agg3#21))#41 / 100.0) as decimal(11,6)) AS agg3#46, cast((avg(UnscaledValue(agg4#22))#42 / 100.0) as decimal(11,6)) AS agg4#47]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(29) Scan parquet spark_catalog.default.store_sales
 Output [8]: [ss_item_sk#1, ss_cdemo_sk#2, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 Batched: true
 Location: InMemoryFileIndex []
@@ -249,7 +249,7 @@ Join condition: None
 Output [6]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7]
 Input [8]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8, d_date_sk#14]
 
-(unknown) Scan parquet spark_catalog.default.store
+(38) Scan parquet spark_catalog.default.store
 Output [2]: [s_store_sk#15, s_state#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -312,7 +312,7 @@ Functions [4]: [avg(agg1#19), avg(UnscaledValue(agg2#20)), avg(UnscaledValue(agg
 Aggregate Attributes [4]: [avg(agg1#19)#65, avg(UnscaledValue(agg2#20))#66, avg(UnscaledValue(agg3#21))#67, avg(UnscaledValue(agg4#22))#68]
 Results [7]: [i_item_id#18, null AS s_state#69, 1 AS g_state#70, avg(agg1#19)#65 AS agg1#71, cast((avg(UnscaledValue(agg2#20))#66 / 100.0) as decimal(11,6)) AS agg2#72, cast((avg(UnscaledValue(agg3#21))#67 / 100.0) as decimal(11,6)) AS agg3#73, cast((avg(UnscaledValue(agg4#22))#68 / 100.0) as decimal(11,6)) AS agg4#74]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(51) Scan parquet spark_catalog.default.store_sales
 Output [8]: [ss_item_sk#1, ss_cdemo_sk#2, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 Batched: true
 Location: InMemoryFileIndex []
@@ -366,7 +366,7 @@ Join condition: None
 Output [5]: [ss_item_sk#1, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7]
 Input [7]: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, s_store_sk#15]
 
-(unknown) Scan parquet spark_catalog.default.item
+(63) Scan parquet spark_catalog.default.item
 Output [1]: [i_item_sk#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -428,7 +428,7 @@ BroadcastExchange (78)
          +- CometScan parquet spark_catalog.default.date_dim (74)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(74) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#14, d_year#103]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
