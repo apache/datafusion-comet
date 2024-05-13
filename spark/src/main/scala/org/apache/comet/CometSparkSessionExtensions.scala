@@ -744,7 +744,7 @@ class CometSparkSessionExtensions
                   s"because ${reasons.head}")
             case reasons if reasons.size > 1 =>
               logWarning(
-                "Comet cannot execute some parts of execute this plan natively" +
+                "Comet cannot execute some parts of this plan natively" +
                   s" because:\n\t- ${reasons.mkString("\n\t- ")}")
             case _ =>
             // no reasons recorded

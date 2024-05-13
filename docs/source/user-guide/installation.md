@@ -100,10 +100,11 @@ With the configuration `spark.comet.explainFallback.enabled=true`, Comet will lo
 being executed natively.
 
 ```scala
-scala> spark.sql("select * from t1 where cast(cast(a as double) as decimal(10,2)) > 5").show
-WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute this plan natively because:
-	- Comet does not guarantee correct results for cast from DoubleType to DecimalType(10,2) with timezone Some(America/Denver) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
-	- CollectLimit is not supported
+scala> Seq(1,2,3,4).toDF("a").write.parquet("/tmp/test.parquet")
+WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively because:
+  - LocalTableScan is not supported
+  - WriteFiles is not supported
+  - Execute InsertIntoHadoopFsRelationCommand is not supported
 ```
 
 ### Enable Comet shuffle
