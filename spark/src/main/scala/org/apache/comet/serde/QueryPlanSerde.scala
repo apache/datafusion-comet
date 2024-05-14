@@ -2074,7 +2074,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case Base64(child) =>
-          val castExpr = Cast(child, StringType)
+          val castExpr = Cast(child, BinaryType)
           val childExpr = exprToProtoInternal(castExpr, inputs)
           val encoding = exprToProtoInternal(Literal("base64"), inputs)
           val optExpr = scalarExprToProto("encode", childExpr, encoding)
