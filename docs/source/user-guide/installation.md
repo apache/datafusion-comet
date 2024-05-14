@@ -40,20 +40,20 @@ There are no public releases available yet, so it is necessary to build from sou
 
 Clone the repository:
 
-```commandline
+```console
 git clone https://github.com/apache/datafusion-comet.git
 ```
 
 Build Comet for a specific Spark version:
 
-```commandline
+```console
 cd datafusion-comet
 make release PROFILES="-Pspark-3.4"
 ```
 
 Note that the project builds for Scala 2.12 by default but can be built for Scala 2.13 using an additional profile:
 
-```commandline
+```console
 make release PROFILES="-Pspark-3.4 -Pscala-2.13"
 ```
 
@@ -61,7 +61,7 @@ make release PROFILES="-Pspark-3.4 -Pscala-2.13"
 
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
-```commandline
+```console
 $SPARK_HOME/bin/spark-shell \
     --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
@@ -128,7 +128,7 @@ components which will then fail at runtime. For example:
 --driver-class-path spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar
 ```
 
-Some cluster managers may require additional configuration, see https://spark.apache.org/docs/latest/cluster-overview.html
+Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
 
 To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
 
