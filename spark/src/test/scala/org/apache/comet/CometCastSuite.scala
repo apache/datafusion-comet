@@ -38,7 +38,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   /** Create a data generator using a fixed seed so that tests are reproducible */
   private val gen = new DataGenerator(new Random(42))
 
-  private val dataSize = 1000
+  /** Number of random data items to generate in each test */
+  private val dataSize = 10000
 
   // we should eventually add more whitespace chars here as documented in
   // https://docs.oracle.com/javase/8/docs/api/java/lang/Character.html#isWhitespace-char-
@@ -518,28 +519,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "9223372036854775808" // Long.MaxValue + 1
   )
 
-  test("cast StringType to ByteType") {
+  ignore("cast StringType to ByteType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 4).toDF("a"), DataTypes.ByteType)
   }
 
-  test("cast StringType to ShortType") {
+  ignore("cast StringType to ShortType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
-  test("cast StringType to IntegerType") {
+  ignore("cast StringType to IntegerType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
-  test("cast StringType to LongType") {
+  ignore("cast StringType to LongType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test
