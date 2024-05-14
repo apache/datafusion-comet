@@ -35,6 +35,9 @@ import org.apache.comet.expressions.{CometCast, Compatible}
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  /** Create a data generator using a fixed seed so that tests are reproducible */
+  private val gen = new DataGenerator(new Random(42))
+
   private val dataSize = 1000
 
   // we should eventually add more whitespace chars here as documented in
@@ -478,7 +481,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast StringType to BooleanType") {
     val testValues =
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
-        generateStrings("truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
+        gen.generateStrings(dataSize, "truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
     castTest(testValues, DataTypes.BooleanType)
   }
 
@@ -519,53 +522,53 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 4).toDF("a"), DataTypes.ByteType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 4).toDF("a"), DataTypes.ByteType)
   }
 
   test("cast StringType to ShortType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 5).toDF("a"), DataTypes.ShortType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
   test("cast StringType to IntegerType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.IntegerType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
   test("cast StringType to LongType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.LongType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
   ignore("cast StringType to FloatType") {
     // https://github.com/apache/datafusion-comet/issues/326
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.FloatType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
   }
 
   ignore("cast StringType to DoubleType") {
     // https://github.com/apache/datafusion-comet/issues/326
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.DoubleType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
   ignore("cast StringType to DecimalType(10,2)") {
     // https://github.com/apache/datafusion-comet/issues/325
-    val values = generateStrings(numericPattern, 8).toDF("a")
+    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
   test("cast StringType to BinaryType") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.BinaryType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.BinaryType)
   }
 
   ignore("cast StringType to DateType") {
     // https://github.com/apache/datafusion-comet/issues/327
-    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
+    castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
@@ -581,7 +584,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   ignore("cast StringType to TimestampType") {
     // https://github.com/apache/datafusion-comet/issues/328
     withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
+        dataSize,
+        timestampPattern,
+        8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -630,7 +636,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast BinaryType to StringType - valid UTF-8 inputs") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.StringType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.StringType)
   }
 
   // CAST from DateType
@@ -862,17 +868,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))
       .drop("str")
-  }
-
-  private def generateString(r: Random, chars: String, maxLen: Int): String = {
-    val len = r.nextInt(maxLen)
-    Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
-  }
-
-  // TODO return DataFrame for consistency with other generators and include null values
-  private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
-    val r = new Random(0)
-    Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
   }
 
   private def generateBinary(): DataFrame = {
