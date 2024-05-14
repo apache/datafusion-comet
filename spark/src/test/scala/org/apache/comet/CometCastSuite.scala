@@ -987,12 +987,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             fail(s"Comet should have failed with ${e.getCause.getMessage}")
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
-            val sparkMessage = sparkException.getCause.getMessage
+            val sparkMessage =
+              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
             // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
             // removing the "Execution error: " error message prefix that is added by DataFusion
-            val cometMessage = cometException.getCause.getMessage
-              .replace("Execution error: ", "")
-            if (CometSparkSessionExtensions.isSpark34Plus) {
+            val cometMessage = cometException.getCause.getMessage.replace("Execution error: ", "")
+            if (CometSparkSessionExtensions.isSpark4Plus) {
+              // for Spark 4 we expect to sparkException carries the message
+              assert(
+                cometMessage == sparkException.getMessage
+                  .split("\n")
+                  .head
+                  .replace(".WITH_SUGGESTION] ", "]")
+                  .replace(" SQLSTATE: 22003", "")
+                  .replace(" SQLSTATE: 22018a", ""))
+            } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
             } else if (CometSparkSessionExtensions.isSpark33Plus) {
