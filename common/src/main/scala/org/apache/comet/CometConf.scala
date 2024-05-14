@@ -120,15 +120,6 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_ALL_EXPR_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.all.expr.enabled")
-      .doc(
-        "Whether to enable all Comet exprs. By default, this config is false. Note that " +
-          "this config precedes all separate config 'spark.comet.exec.<expr_name>.enabled'. " +
-          "That being said, if this config is enabled, separate configs are ignored.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .doc(
