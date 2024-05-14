@@ -349,29 +349,29 @@ under the License.
 <section id="building-from-source">
 <h2>Building From Source<a class="headerlink" href="#building-from-source" title="Link to this heading">¶</a></h2>
 <p>Clone the repository:</p>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>git clone https://github.com/apache/datafusion-comet.git
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">git clone https://github.com/apache/datafusion-comet.git</span>
 </pre></div>
 </div>
 <p>Build Comet for a specific Spark version:</p>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>cd datafusion-comet
-make release PROFILES=&quot;-Pspark-3.4&quot;
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">cd datafusion-comet</span>
+<span class="go">make release PROFILES=&quot;-Pspark-3.4&quot;</span>
 </pre></div>
 </div>
 <p>Note that the project builds for Scala 2.12 by default but can be built for Scala 2.13 using an additional profile:</p>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>make release PROFILES=&quot;-Pspark-3.4 -Pscala-2.13&quot;
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">make release PROFILES=&quot;-Pspark-3.4 -Pscala-2.13&quot;</span>
 </pre></div>
 </div>
 </section>
 <section id="run-spark-with-comet-enabled">
 <h2>Run Spark with Comet enabled<a class="headerlink" href="#run-spark-with-comet-enabled" title="Link to this heading">¶</a></h2>
 <p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>$SPARK_HOME/bin/spark-shell \
-    --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true \
-    --conf spark.comet.explainFallback.enabled=true
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>SPARK_HOME/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--jars<span class="w"> </span>spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.all.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
 <section id="verify-comet-enabled-for-spark-sql-query">
@@ -422,7 +422,7 @@ components which will then fail at runtime. For example:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">driver</span><span class="o">-</span><span class="n">class</span><span class="o">-</span><span class="n">path</span> <span class="n">spark</span><span class="o">/</span><span class="n">target</span><span class="o">/</span><span class="n">comet</span><span class="o">-</span><span class="n">spark</span><span class="o">-</span><span class="n">spark3</span><span class="mf">.4_2.12</span><span class="o">-</span><span class="mf">0.1.0</span><span class="o">-</span><span class="n">SNAPSHOT</span><span class="o">.</span><span class="n">jar</span>
 </pre></div>
 </div>
-<p>Some cluster managers may require additional configuration, see https://spark.apache.org/docs/latest/cluster-overview.html</p>
+<p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
 <p>To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">columnar</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 </pre></div>

@@ -247,7 +247,7 @@ under the License.
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#in-intellij">
-     In Intellij
+     In IntelliJ
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
@@ -257,7 +257,7 @@ under the License.
    </li>
    <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#after-your-debugging-is-done">
-     After your debugging is done,
+     After your debugging is done
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
@@ -322,9 +322,9 @@ under the License.
 <h1>Comet Debugging Guide<a class="headerlink" href="#comet-debugging-guide" title="Link to this heading">¶</a></h1>
 <p>This HOWTO describes how to debug JVM code and Native code concurrently. The guide assumes you have:</p>
 <ol class="arabic simple">
-<li><p>Intellij as the Java IDE</p></li>
+<li><p>IntelliJ as the Java IDE</p></li>
 <li><p>CLion as the Native IDE. For Rust code, the CLion Rust language plugin is required. Note that the
-Intellij Rust plugin is not sufficient.</p></li>
+IntelliJ Rust plugin is not sufficient.</p></li>
 <li><p>CLion/LLDB as the native debugger. CLion ships with a bundled LLDB and the Rust community has
 its own packaging of LLDB (<code class="docutils literal notranslate"><span class="pre">lldb-rust</span></code>). Both provide a better display of Rust symbols than plain
 LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with CLion for this guide.</p></li>
@@ -336,7 +336,7 @@ LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with 
 <p>Add a <code class="docutils literal notranslate"><span class="pre">.lldbinit</span></code> to comet/core. This is not strictly necessary but will be useful if you want to
 use advanced <code class="docutils literal notranslate"><span class="pre">lldb</span></code> debugging.</p>
 <section id="in-intellij">
-<h3>In Intellij<a class="headerlink" href="#in-intellij" title="Link to this heading">¶</a></h3>
+<h3>In IntelliJ<a class="headerlink" href="#in-intellij" title="Link to this heading">¶</a></h3>
 <ol class="arabic">
 <li><p>Set a breakpoint in <code class="docutils literal notranslate"><span class="pre">NativeBase.load()</span></code>, at a point <em>after</em> the Comet library has been loaded.</p></li>
 <li><p>Add a Debug Configuration for the unit test</p></li>
@@ -344,37 +344,37 @@ use advanced <code class="docutils literal notranslate"><span class="pre">lldb</
 undocumented <em>magic</em>. Without this, the LLDB debugger hits a EXC_BAD_ACCESS (or EXC_BAD_INSTRUCTION) from
 which one cannot recover.</p></li>
 <li><p>Add a println to the unit test to print the PID of the JVM process. (jps can also be used but this is less error prone if you have multiple jvm processes running)</p>
-<div class="highlight-JDK8 notranslate"><div class="highlight"><pre><span></span>     println(&quot;Waiting for Debugger: PID - &quot;, ManagementFactory.getRuntimeMXBean().getName())
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">     </span><span class="n">println</span><span class="p">(</span><span class="s">&quot;Waiting for Debugger: PID - &quot;</span><span class="p">,</span><span class="w"> </span><span class="nc">ManagementFactory</span><span class="p">.</span><span class="n">getRuntimeMXBean</span><span class="p">().</span><span class="n">getName</span><span class="p">())</span>
 </pre></div>
 </div>
 <p>This will print something like : <code class="docutils literal notranslate"><span class="pre">PID&#64;your_machine_name</span></code>.</p>
 <p>For JDK9 and newer</p>
-<div class="highlight-JDK9 notranslate"><div class="highlight"><pre><span></span>     println(&quot;Waiting for Debugger: PID - &quot;, ProcessHandle.current.pid)
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">     </span><span class="n">println</span><span class="p">(</span><span class="s">&quot;Waiting for Debugger: PID - &quot;</span><span class="p">,</span><span class="w"> </span><span class="nc">ProcessHandle</span><span class="p">.</span><span class="n">current</span><span class="p">.</span><span class="n">pid</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>==&gt; Note the PID</p>
 </li>
-<li><p>Debug-run the test in Intellij and wait for the breakpoint to be hit</p></li>
+<li><p>Debug-run the test in IntelliJ and wait for the breakpoint to be hit</p></li>
 </ol>
 </section>
 <section id="in-clion">
 <h3>In CLion<a class="headerlink" href="#in-clion" title="Link to this heading">¶</a></h3>
 <ol class="arabic simple">
-<li><p>After the breakpoint is hit in Intellij, in Clion (or LLDB from terminal or editor) -</p>
+<li><p>After the breakpoint is hit in IntelliJ, in Clion (or LLDB from terminal or editor) -</p>
 <ol class="arabic simple">
 <li><p>Attach to the jvm process (make sure the PID matches). In CLion, this is <code class="docutils literal notranslate"><span class="pre">Run</span> <span class="pre">-&gt;</span> <span class="pre">Atttach</span> <span class="pre">to</span> <span class="pre">process</span></code></p></li>
 <li><p>Put your breakpoint in the native code</p></li>
 </ol>
 </li>
-<li><p>Go back to intellij and resume the process.</p></li>
-<li><p>Most debugging in CLion is similar to Intellij. For advanced LLDB based debugging the LLDB command line can be accessed from the LLDB tab in the Debugger view. Refer to the <a class="reference external" href="https://lldb.llvm.org/use/tutorial.html">LLDB manual</a> for LLDB commands.</p></li>
+<li><p>Go back to IntelliJ and resume the process.</p></li>
+<li><p>Most debugging in CLion is similar to IntelliJ. For advanced LLDB based debugging the LLDB command line can be accessed from the LLDB tab in the Debugger view. Refer to the <a class="reference external" href="https://lldb.llvm.org/use/tutorial.html">LLDB manual</a> for LLDB commands.</p></li>
 </ol>
 </section>
 <section id="after-your-debugging-is-done">
-<h3>After your debugging is done,<a class="headerlink" href="#after-your-debugging-is-done" title="Link to this heading">¶</a></h3>
+<h3>After your debugging is done<a class="headerlink" href="#after-your-debugging-is-done" title="Link to this heading">¶</a></h3>
 <ol class="arabic simple">
 <li><p>In CLion, detach from the process if not already detached</p></li>
-<li><p>In Intellij, the debugger might have lost track of the process. If so, the debugger tab
+<li><p>In IntelliJ, the debugger might have lost track of the process. If so, the debugger tab
 will show the process as running (even if the test/job is shown as completed).</p></li>
 <li><p>Close the debugger tab, and if the IDS asks whether it should terminate the process,
 click Yes.</p></li>
@@ -387,9 +387,9 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 <section id="additional-info">
 <h3>Additional Info<a class="headerlink" href="#additional-info" title="Link to this heading">¶</a></h3>
 <p>OpenJDK mailing list on debugging the JDK on MacOS
-https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html</p>
+<a class="reference external" href="https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html">https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html</a></p>
 <p>Detecting the debugger
-https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&amp;text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).</p>
+<a class="reference external" href="https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&amp;amp;text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase">https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to let your app continue.&amp;text=I know that those are,meant with my first phrase</a>).</p>
 </section>
 </section>
 <section id="verbose-debug">
@@ -407,15 +407,15 @@ https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a
 </pre></div>
 </div>
 <p>There is a verbose exception option by leveraging DataFusion <a class="reference external" href="https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces">backtraces</a>
-This option allows to append native DataFusion stacktrace to the original error message.
+This option allows to append native DataFusion stack trace to the original error message.
 To enable this option with Comet it is needed to include <code class="docutils literal notranslate"><span class="pre">backtrace</span></code> feature in <a class="reference external" href="https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml">Cargo.toml</a> for DataFusion dependencies</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">datafusion</span><span class="o">-</span><span class="n">common</span> <span class="o">=</span> <span class="p">{</span> <span class="n">version</span> <span class="o">=</span> <span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;backtrace&quot;</span><span class="p">]</span> <span class="p">}</span>
-<span class="n">datafusion</span> <span class="o">=</span> <span class="p">{</span> <span class="n">default</span><span class="o">-</span><span class="n">features</span> <span class="o">=</span> <span class="n">false</span><span class="p">,</span> <span class="n">version</span> <span class="o">=</span> <span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;unicode_expressions&quot;</span><span class="p">,</span> <span class="s2">&quot;backtrace&quot;</span><span class="p">]</span> <span class="p">}</span>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="n">datafusion-common</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;backtrace&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<span class="n">datafusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">default-features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;unicode_expressions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;backtrace&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
 </pre></div>
 </div>
 <p>Then build the Comet as <a class="reference external" href="https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started">described</a></p>
 <p>Start Comet with <code class="docutils literal notranslate"><span class="pre">RUST_BACKTRACE=1</span></code></p>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true --conf spark.comet.exec.all.enabled=true
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true --conf spark.comet.exec.all.enabled=true</span>
 </pre></div>
 </div>
 <p>Get the expanded exception details</p>
