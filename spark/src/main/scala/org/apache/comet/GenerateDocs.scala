@@ -40,7 +40,7 @@ object GenerateDocs {
   }
 
   private def generateConfigReference(): Unit = {
-    val templateFilename = "docs/source/user-guide/configs-template.md"
+    val templateFilename = "docs/templates/configs-template.md"
     val outputFilename = "docs/source/user-guide/configs.md"
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
     for (line <- Source.fromFile(templateFilename).getLines()) {
@@ -60,7 +60,7 @@ object GenerateDocs {
   }
 
   private def generateCompatibilityGuide(): Unit = {
-    val templateFilename = "docs/source/user-guide/compatibility-template.md"
+    val templateFilename = "docs/templates/compatibility-template.md"
     val outputFilename = "docs/source/user-guide/compatibility.md"
     val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
     for (line <- Source.fromFile(templateFilename).getLines()) {
