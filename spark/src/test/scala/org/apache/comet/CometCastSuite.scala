@@ -36,7 +36,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
-  private val gen = new DataGenerator(new Random(42))
+  private val gen = DataGenerator.DEFAULT
 
   /** Number of random data items to generate in each test */
   private val dataSize = 10000

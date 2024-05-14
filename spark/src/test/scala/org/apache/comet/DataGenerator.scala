@@ -21,6 +21,13 @@ package org.apache.comet
 
 import scala.util.Random
 
+object DataGenerator {
+  // note that we use `def` rather than `val` intentionally here so that
+  // each test suite starts with a fresh data generator to help ensure
+  // that tests are deterministic
+  def DEFAULT = new DataGenerator(new Random(42))
+}
+
 class DataGenerator(r: Random) {
 
   /** Generate a random string using the specified characters */
