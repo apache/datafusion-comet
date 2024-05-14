@@ -20,7 +20,7 @@
 # Apache DataFusion Comet Documentation
 
 This folder contains the source content for the Apache DataFusion Comet documentation site. This content is published
-to https://datafusion.apache.org/comet when any changes are merged into the main branch.
+to <https://datafusion.apache.org/comet> when any changes are merged into the main branch.
 
 ## Dependencies
 
@@ -54,15 +54,15 @@ automatically updated.
 
 ## Release Process
 
-This documentation is hosted at https://datafusion.apache.org/comet/
+This documentation is hosted at <https://datafusion.apache.org/comet/>
 
 When the PR is merged to the `main` branch of the `datafusion-comet`
-repository, a [github workflow](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/docs.yaml) which:
+repository, a [GitHub workflow](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/docs.yaml) which:
 
 1. Builds the html content
 2. Pushes the html content to the [`asf-site`](https://github.com/apache/datafusion-comet/tree/asf-site) branch in this repository.
 
-The Apache Software Foundation provides https://datafusion.apache.org/,
+The Apache Software Foundation provides <https://datafusion.apache.org/>,
 which serves content based on the configuration in
 [.asf.yaml](https://github.com/apache/datafusion-comet/blob/main/.asf.yaml),
-which specifies the target as https://datafusion.apache.org/comet/.
+which specifies the target as <https://datafusion.apache.org/comet/>.
