@@ -734,6 +734,23 @@ class CometSparkSessionExtensions
       } else {
         var newPlan = transform(plan)
 
+        // if the plan cannot be run fully natively then explain why (when appropriate
+        // config is enabled)
+        if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
+          new ExtendedExplainInfo().extensionInfo(newPlan) match {
+            case reasons if reasons.size == 1 =>
+              logWarning(
+                "Comet cannot execute some parts of this plan natively " +
+                  s"because ${reasons.head}")
+            case reasons if reasons.size > 1 =>
+              logWarning(
+                "Comet cannot execute some parts of this plan natively" +
+                  s" because:\n\t- ${reasons.mkString("\n\t- ")}")
+            case _ =>
+            // no reasons recorded
+          }
+        }
+
         // Remove placeholders
         newPlan = newPlan.transform {
           case CometSinkPlaceHolder(_, _, s) => s
