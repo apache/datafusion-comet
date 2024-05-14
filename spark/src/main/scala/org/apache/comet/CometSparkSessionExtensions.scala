@@ -954,10 +954,6 @@ object CometSparkSessionExtensions extends Logging {
     COMET_EXEC_ALL_OPERATOR_ENABLED.get(conf)
   }
 
-  private[comet] def isCometAllExprEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_ALL_EXPR_ENABLED.get(conf)
-  }
-
   private[comet] def isSchemaSupported(schema: StructType): Boolean =
     schema.map(_.dataType).forall(isTypeSupported)
 
