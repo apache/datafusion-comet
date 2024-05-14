@@ -30,4 +30,8 @@ trait CometExprShim {
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
+
+    def unbase64Serde(expr: UnBase64): (Expression, Expression) = {
+        (expr.child, Literal(false))
+    }
 }
