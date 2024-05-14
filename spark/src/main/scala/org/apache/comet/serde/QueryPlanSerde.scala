@@ -2073,6 +2073,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
           }
 
+        case a: UnBase64 =>
+          val childExpr = exprToProtoInternal(a.child, inputs)
+          val encoding = exprToProtoInternal(Literal("base64"), inputs)
+          val optExpr = scalarExprToProto("decode", childExpr, encoding)
+          optExprWithInfo(optExpr, expr, a.child)
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
