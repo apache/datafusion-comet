@@ -53,6 +53,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
    */
   private val numericPattern = "0123456789deEf+-." + whitespaceChars
 
+  private val datePattern = "0123456789/" + whitespaceChars
+
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   test("all valid cast combinations covered") {
@@ -569,44 +571,47 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DateType") {
     // https://github.com/apache/datafusion-comet/issues/327
-    castTest(
-      Seq(
-        "262142-01-01",
-        "262142-01-01 ",
-        "262142-01-01T ",
-        "262142-01-01T 123123123",
-        "-262143-12-31",
-        "-262143-12-31 ",
-        "-262143-12-31T",
-        "-262143-12-31T ",
-        "-262143-12-31T 123123123",
-        "2020",
-        "2020-1",
-        "2020-1-1",
-        "2020-01",
-        "2020-01-01",
-        "2020-1-01 ",
-        "2020-01-1",
-        "02020-01-01",
-        "2020-01-01T",
-        "2020-10-01T  1221213",
-        "002020-01-01  ",
-        "0002020-01-01  123344",
-        "-3638-5",
-        /*invalid entries*/
-        "0",
-        "202",
-        "2020-010-01",
-        "2020-10-010",
-        "2020-10-010T",
-        "--262143-12-31",
-        "--262143-12-31T 1234 ",
-        "abc-def-ghi",
-        "abc-def-ghi jkl",
-        "2020-mar-20",
-        "not_a_date",
-        "T2").toDF("a"),
-      DataTypes.DateType)
+    val validDates = Seq(
+      "262142-01-01",
+      "262142-01-01 ",
+      "262142-01-01T ",
+      "262142-01-01T 123123123",
+      "-262143-12-31",
+      "-262143-12-31 ",
+      "-262143-12-31T",
+      "-262143-12-31T ",
+      "-262143-12-31T 123123123",
+      "2020",
+      "2020-1",
+      "2020-1-1",
+      "2020-01",
+      "2020-01-01",
+      "2020-1-01 ",
+      "2020-01-1",
+      "02020-01-01",
+      "2020-01-01T",
+      "2020-10-01T  1221213",
+      "002020-01-01  ",
+      "0002020-01-01  123344",
+      "-3638-5")
+    val invalidDates = Seq(
+      "0",
+      "202",
+      "3/",
+      "3/3/",
+      "3/3/2020",
+      "3#3#2020",
+      "2020-010-01",
+      "2020-10-010",
+      "2020-10-010T",
+      "--262143-12-31",
+      "--262143-12-31T 1234 ",
+      "abc-def-ghi",
+      "abc-def-ghi jkl",
+      "2020-mar-20",
+      "not_a_date",
+      "T2")
+    castTest((validDates ++ invalidDates).toDF("a"), DataTypes.DateType)
     // TODO: fuzz test
     // castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
   }
