@@ -1396,7 +1396,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       "spark.sql.extendedExplainProvider" -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
