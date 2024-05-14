@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "comet"
+name = "datafusion-comet"
 version = "0.1.0"
 edition = "2021"
 include = [
