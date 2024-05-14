@@ -39,4 +39,53 @@ class DataGenerator(r: Random) {
     Range(0, n).map(_ => generateString(chars, maxLen))
   }
 
+  def generateFloats(n: Int): Seq[Float] = {
+    Seq(
+      Float.MaxValue,
+      Float.MinPositiveValue,
+      Float.MinValue,
+      Float.NaN,
+      Float.PositiveInfinity,
+      Float.NegativeInfinity,
+      1.0f,
+      -1.0f,
+      Short.MinValue.toFloat,
+      Short.MaxValue.toFloat,
+      0.0f) ++
+      Range(0, n).map(_ => r.nextFloat())
+  }
+
+  def generateDoubles(n: Int): Seq[Double] = {
+    Seq(
+      Double.MaxValue,
+      Double.MinPositiveValue,
+      Double.MinValue,
+      Double.NaN,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity,
+      0.0d) ++
+      Range(0, n).map(_ => r.nextDouble())
+  }
+
+  def generateBytes(n: Int): Seq[Byte] = {
+    Seq(Byte.MinValue, Byte.MaxValue) ++
+      Range(0, n).map(_ => r.nextInt().toByte)
+  }
+
+  def generateShorts(n: Int): Seq[Short] = {
+    val r = new Random(0)
+    Seq(Short.MinValue, Short.MaxValue) ++
+      Range(0, n).map(_ => r.nextInt().toShort)
+  }
+
+  def generateInts(n: Int): Seq[Int] = {
+    Seq(Int.MinValue, Int.MaxValue) ++
+      Range(0, n).map(_ => r.nextInt())
+  }
+
+  def generateLongs(n: Int): Seq[Long] = {
+    Seq(Long.MinValue, Long.MaxValue) ++
+      Range(0, n).map(_ => r.nextLong())
+  }
+
 }

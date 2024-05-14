@@ -745,35 +745,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateFloats(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(
-      Float.MaxValue,
-      Float.MinPositiveValue,
-      Float.MinValue,
-      Float.NaN,
-      Float.PositiveInfinity,
-      Float.NegativeInfinity,
-      1.0f,
-      -1.0f,
-      Short.MinValue.toFloat,
-      Short.MaxValue.toFloat,
-      0.0f) ++
-      Range(0, dataSize).map(_ => r.nextFloat())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
 
   private def generateDoubles(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(
-      Double.MaxValue,
-      Double.MinPositiveValue,
-      Double.MinValue,
-      Double.NaN,
-      Double.PositiveInfinity,
-      Double.NegativeInfinity,
-      0.0d) ++
-      Range(0, dataSize).map(_ => r.nextDouble())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateDoubles(dataSize)).toDF("a")
   }
 
   private def generateBools(): DataFrame = {
@@ -781,31 +757,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateBytes(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Byte.MinValue, Byte.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt().toByte)
-    withNulls(values).toDF("a")
+    withNulls(gen.generateBytes(dataSize)).toDF("a")
   }
 
   private def generateShorts(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Short.MinValue, Short.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt().toShort)
-    withNulls(values).toDF("a")
+    withNulls(gen.generateShorts(dataSize)).toDF("a")
   }
 
   private def generateInts(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Int.MinValue, Int.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateInts(dataSize)).toDF("a")
   }
 
   private def generateLongs(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Long.MinValue, Long.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextLong())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateLongs(dataSize)).toDF("a")
   }
 
   private def generateDecimalsPrecision10Scale2(): DataFrame = {
@@ -901,28 +865,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
-
-  // TODO Commented out to work around scalafix since this is currently unused.
-  // private def castFallbackTestTimezone(
-  //     input: DataFrame,
-  //     toType: DataType,
-  //     expectedMessage: String): Unit = {
-  //   withTempPath { dir =>
-  //     val data = roundtripParquet(input, dir).coalesce(1)
-  //     data.createOrReplaceTempView("t")
-  //
-  //     withSQLConf(
-  //       (SQLConf.ANSI_ENABLED.key, "false"),
-  //       (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
-  //       (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
-  //       val df = data.withColumn("converted", col("a").cast(toType))
-  //       df.collect()
-  //       val str =
-  //         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-  //       assert(str.contains(expectedMessage))
-  //     }
-  //   }
-  // }
 
   private def castTimestampTest(input: DataFrame, toType: DataType) = {
     withTempPath { dir =>
