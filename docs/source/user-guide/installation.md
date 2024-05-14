@@ -67,7 +67,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true
+    --conf spark.comet.exec.all.enabled=true \
+    --conf spark.comet.explainFallback.enabled=true
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -93,6 +94,17 @@ INFO src/lib.rs: Comet native library initialized
           +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)],
              Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [],
              PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+```
+
+With the configuration `spark.comet.explainFallback.enabled=true`, Comet will log any reasons that prevent a plan from
+being executed natively.
+
+```scala
+scala> Seq(1,2,3,4).toDF("a").write.parquet("/tmp/test.parquet")
+WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively because:
+  - LocalTableScan is not supported
+  - WriteFiles is not supported
+  - Execute InsertIntoHadoopFsRelationCommand is not supported
 ```
 
 ### Enable Comet shuffle
