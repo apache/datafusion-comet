@@ -20,7 +20,6 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
-import scala.reflect.macros.whitebox.Context
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -619,7 +618,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             CometCast.isSupported(child.dataType, dt, timeZoneId, actualEvalModeStr)
 
           def getIncompatMessage(reason: Option[String]): String =
-            s"Comet does not guarantee correct results for cast " +
+            "Comet does not guarantee correct results for cast " +
               s"from ${child.dataType} to $dt " +
               s"with timezone $timeZoneId and evalMode $actualEvalModeStr" +
               reason.map(str => s" ($str)").getOrElse("")
@@ -664,8 +663,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
-        case TryCast(child, dt, timeZoneId) =>
-          handleCast(child, inputs, dt, timeZoneId, "TRY")
+        case UnaryExpression(child) if expr.prettyName == "trycast" =>
+          val timeZoneId = SQLConf.get.sessionLocalTimeZone
+          handleCast(child, inputs, expr.dataType, Some(timeZoneId), "TRY")
 
         case Cast(child, dt, timeZoneId, evalMode) =>
           val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
