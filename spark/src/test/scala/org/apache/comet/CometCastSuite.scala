@@ -948,11 +948,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
 
-    // we do not support the TryCast expression in Spark 3.2 and 3.3
+    // we now support the TryCast expression in Spark 3.2 and 3.3
     // https://github.com/apache/datafusion-comet/issues/374
-    // val testTryCast = CometSparkSessionExtensions.isSpark34Plus
-    val testTryCast = true
-
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -963,11 +960,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df)
 
         // try_cast() should always return null for invalid inputs
-        if (testTryCast) {
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          checkSparkAnswerAndOperator(df2)
-        }
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+        checkSparkAnswerAndOperator(df2)
       }
 
       // with ANSI enabled, we should produce the same exception as Spark
@@ -1026,11 +1021,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         // try_cast() should always return null for invalid inputs
-        if (testTryCast) {
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          checkSparkAnswerAndOperator(df2)
-        }
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+        checkSparkAnswerAndOperator(df2)
+
       }
     }
   }
