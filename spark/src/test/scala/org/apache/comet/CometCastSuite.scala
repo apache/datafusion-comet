@@ -949,7 +949,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def castTest(input: DataFrame, toType: DataType): Unit = {
 
     // we now support the TryCast expression in Spark 3.2 and 3.3
-    // https://github.com/apache/datafusion-comet/issues/374
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
