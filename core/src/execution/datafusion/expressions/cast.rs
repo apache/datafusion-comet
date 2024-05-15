@@ -1566,15 +1566,13 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
             current_segment_value = 0;
             current_segment_digits = 0;
             current_segment += 1;
+        } else if !b.is_ascii_digit() {
+            return return_result(date_str, eval_mode);
         } else {
-            if !b.is_ascii_digit() {
-                return return_result(date_str, eval_mode);
-            } else {
-                //increment value of current segment by the next digit
-                let parsed_value = (b - b'0') as i32;
-                current_segment_value = current_segment_value * 10 + parsed_value;
-                current_segment_digits += 1;
-            }
+            //increment value of current segment by the next digit
+            let parsed_value = (b - b'0') as i32;
+            current_segment_value = current_segment_value * 10 + parsed_value;
+            current_segment_digits += 1;
         }
         j += 1;
     }
