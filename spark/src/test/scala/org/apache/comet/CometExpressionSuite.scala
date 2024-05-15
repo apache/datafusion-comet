@@ -19,10 +19,8 @@
 
 package org.apache.comet
 
-import java.io.File
-
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
