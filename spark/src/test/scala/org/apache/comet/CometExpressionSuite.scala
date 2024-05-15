@@ -942,7 +942,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Chr") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col varchar(20)) using parquet")
