@@ -30,8 +30,6 @@ trait ShimCometParquetUtils {
     QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(requiredId, matchedFields)
   }
 
-  val FIELD_ID_METADATA_KEY = ParquetUtils.FIELD_ID_METADATA_KEY
-
   def hasFieldIds(schema: StructType): Boolean = ParquetUtils.hasFieldIds(schema)
 
   def hasFieldId(field: StructField): Boolean = ParquetUtils.hasFieldId(field)

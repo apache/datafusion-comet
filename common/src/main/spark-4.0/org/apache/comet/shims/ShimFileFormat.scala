@@ -23,8 +23,6 @@ import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 
 object ShimFileFormat {
-  val ROW_INDEX = ParquetFileFormat.ROW_INDEX
-
   // A name for a temporary column that holds row indexes computed by the file format reader
   // until they can be placed in the _metadata struct.
   val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
