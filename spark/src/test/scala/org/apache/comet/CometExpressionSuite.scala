@@ -20,14 +20,15 @@
 package org.apache.comet
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
+
+import java.io.File
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -1451,18 +1452,58 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
-          sql(s"""
-             |insert into $table values
-             |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-             |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-             |""".stripMargin)
-          checkSparkAnswerAndOperator("""
-               |select
-               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
-               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
-               |from test
+          sql(
+            s"""
+               |insert into $table values
+               |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+               |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
                |""".stripMargin)
+          checkSparkAnswerAndOperator(
+            """
+              |select
+              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
+              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |from test
+              |""".stripMargin)
+        }
+      }
+    }
+  }
+
+
+  test("hash functions with random input") {
+    val dataGen = DataGenerator.DEFAULT
+    // sufficient number of rows to create dictionary encoded ArrowArray.
+    val randomNumRows = 1000
+
+    val whitespaceChars = " \t\r\n"
+    val timestampPattern = "0123456789/:T" + whitespaceChars
+    Seq(true, false).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string, a int, b float) using parquet")
+          // TODO: Add a Row generator in the data gen class and replace th following code
+          val col = dataGen.generateStrings(randomNumRows, timestampPattern, 6)
+          val colA = dataGen.generateInts(randomNumRows)
+          val colB = dataGen.generateFloats(randomNumRows)
+          val data = col.zip(colA).zip(colB).map { case ((a, b), c) => (a, b, c) }
+          data.toDF("col", "a", "b").write
+            .mode("append")
+            .insertInto(table)
+          // with random generated data
+          // disable cast(b as string) for now, as it may produce incompatible result
+          checkSparkAnswerAndOperator(
+            """
+              |select
+              |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
+              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |from test
+              |""".stripMargin)
         }
       }
     }
