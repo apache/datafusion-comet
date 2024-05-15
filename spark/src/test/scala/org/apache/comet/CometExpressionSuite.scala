@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.io.File
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -26,9 +28,8 @@ import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
-import java.io.File
+import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -1452,14 +1453,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
-          sql(
-            s"""
+          sql(s"""
                |insert into $table values
                |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
                |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
                |""".stripMargin)
-          checkSparkAnswerAndOperator(
-            """
+          checkSparkAnswerAndOperator("""
               |select
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
@@ -1470,7 +1469,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
-
 
   test("hash functions with random input") {
     val dataGen = DataGenerator.DEFAULT
@@ -1491,13 +1489,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val colA = dataGen.generateInts(randomNumRows)
           val colB = dataGen.generateFloats(randomNumRows)
           val data = col.zip(colA).zip(colB).map { case ((a, b), c) => (a, b, c) }
-          data.toDF("col", "a", "b").write
+          data
+            .toDF("col", "a", "b")
+            .write
             .mode("append")
             .insertInto(table)
           // with random generated data
           // disable cast(b as string) for now, as it may produce incompatible result
-          checkSparkAnswerAndOperator(
-            """
+          checkSparkAnswerAndOperator("""
               |select
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
