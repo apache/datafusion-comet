@@ -262,8 +262,8 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#run-spark-with-comet-enabled">
-   Run Spark with Comet enabled
+  <a class="reference internal nav-link" href="#run-spark-shell-with-comet-enabled">
+   Run Spark Shell with Comet enabled
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
@@ -362,11 +362,15 @@ under the License.
 </pre></div>
 </div>
 </section>
-<section id="run-spark-with-comet-enabled">
-<h2>Run Spark with Comet enabled<a class="headerlink" href="#run-spark-with-comet-enabled" title="Link to this heading">¶</a></h2>
+<section id="run-spark-shell-with-comet-enabled">
+<h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">¶</a></h2>
 <p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>SPARK_HOME/bin/spark-shell<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--jars<span class="w"> </span>spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar<span class="w"> </span><span class="se">\</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar</span>
+
+<span class="gp">$</span>SPARK_HOME/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>

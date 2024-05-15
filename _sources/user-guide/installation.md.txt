@@ -57,13 +57,17 @@ Note that the project builds for Scala 2.12 by default but can be built for Scal
 make release PROFILES="-Pspark-3.4 -Pscala-2.13"
 ```
 
-## Run Spark with Comet enabled
+## Run Spark Shell with Comet enabled
 
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```console
+export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar
+
 $SPARK_HOME/bin/spark-shell \
-    --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar \
+    --jars $COMET_JAR \
+    --conf spark.driver.extraClassPath=$COMET_JAR \
+    --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
