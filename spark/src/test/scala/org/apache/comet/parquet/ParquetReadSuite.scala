@@ -1125,9 +1125,10 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("row group skipping doesn't overflow when reading into larger type") {
-    assume(isSpark34Plus)
-
+    // Spark 4.0 no longer fails for widening types
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
+    assume(isSpark34Plus && !isSpark34Plus)
+
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
