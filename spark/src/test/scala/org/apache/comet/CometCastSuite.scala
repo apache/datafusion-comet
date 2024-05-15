@@ -1000,7 +1000,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   .head
                   .replace(".WITH_SUGGESTION] ", "]")
                   .replace(" SQLSTATE: 22003", "")
-                  .replace(" SQLSTATE: 22018a", ""))
+                  .replace(" SQLSTATE: 22018", ""))
             } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
