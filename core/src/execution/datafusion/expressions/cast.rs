@@ -657,12 +657,12 @@ impl Cast {
                 let len = string_array.len();
                 let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
                 for i in 0..len {
-                    if string_array.is_null(i) {
-                        cast_array.append_null()
-                    } else if let Ok(Some(cast_value)) =
-                        date_parser(string_array.value(i), eval_mode)
-                    {
-                        cast_array.append_value(cast_value);
+                    if !string_array.is_null(i) {
+                        match date_parser(string_array.value(i), eval_mode) {
+                            Ok(Some(cast_value)) => cast_array.append_value(cast_value),
+                            Ok(None) => cast_array.append_null(),
+                            Err(e) => return Err(e),
+                        }
                     } else {
                         cast_array.append_null()
                     }
@@ -1742,7 +1742,6 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_date() {
-        // Create a StringArray with various date strings
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020"),
             Some("2020-01"),
@@ -1750,11 +1749,9 @@ mod tests {
             Some("2020-01-01T"),
         ]));
 
-        // Invoke cast_string_to_date
         let result =
             Cast::cast_string_to_date(&array, &DataType::Date32, EvalMode::Legacy).unwrap();
 
-        // Verify that each element of the result is 18262
         let date32_array = result
             .as_any()
             .downcast_ref::<arrow::array::Date32Array>()
@@ -1763,6 +1760,27 @@ mod tests {
         date32_array
             .iter()
             .for_each(|v| assert_eq!(v.unwrap(), 18262));
+    }
+
+    fn test_cast_string_to_invalid_dates() {
+        // basic
+
+        let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020"),
+            Some("2020-01"),
+            Some("2020-01-01"),
+            Some("2020-010-01T"),
+            Some("2020-01-01T"),
+        ]));
+        let result =
+            Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, EvalMode::Ansi);
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains(
+                    "[CAST_INVALID_INPUT] The value '2020-010-01T' of the type \"STRING\" cannot be cast to \"DATE\" because it is malformed")
+            ),
+            _ => panic!("Expected error"),
+        }
     }
 
     #[test]
