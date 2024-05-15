@@ -1762,9 +1762,8 @@ mod tests {
             .for_each(|v| assert_eq!(v.unwrap(), 18262));
     }
 
+    #[test]
     fn test_cast_string_to_invalid_dates() {
-        // basic
-
         let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020"),
             Some("2020-01"),
@@ -1772,6 +1771,22 @@ mod tests {
             Some("2020-010-01T"),
             Some("2020-01-01T"),
         ]));
+
+        for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
+            let result =
+                Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
+                    .unwrap();
+
+            let date32_array = result
+                .as_any()
+                .downcast_ref::<arrow::array::Date32Array>()
+                .unwrap();
+            assert_eq!(
+                date32_array.iter().collect::<Vec<_>>(),
+                vec![Some(18262), Some(18262), Some(18262), None, Some(18262)]
+            );
+        }
+
         let result =
             Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, EvalMode::Ansi);
         match result {
