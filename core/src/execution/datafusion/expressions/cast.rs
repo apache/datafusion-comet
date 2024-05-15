@@ -37,12 +37,11 @@ use arrow_array::{
     Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
-use chrono::{NaiveDate, TimeZone, Timelike};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
-use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::{
@@ -53,7 +52,7 @@ use crate::{
 };
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
-static EPOCH: Lazy<NaiveDate> = Lazy::new(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
     format_options: FormatOptions::new()
@@ -1598,7 +1597,9 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
         date_segments[2] as u32,
     ) {
         Some(date) => {
-            let duration_since_epoch = date.signed_duration_since(*EPOCH).num_days();
+            let duration_since_epoch = date
+                .signed_duration_since(NaiveDateTime::UNIX_EPOCH.date())
+                .num_days();
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
