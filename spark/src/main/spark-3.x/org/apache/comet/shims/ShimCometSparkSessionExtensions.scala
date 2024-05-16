@@ -38,6 +38,12 @@ trait ShimCometSparkSessionExtensions {
    */
   def getOffset(limit: LimitExec): Int = getOffsetOpt(limit).getOrElse(0)
 
+  /**
+   * TODO: delete after dropping Spark 3.x support and directly call
+   *       SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+   */
+  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
+
   private def getOffsetOpt(plan: SparkPlan): Option[Int] = plan.getClass.getDeclaredFields
     .filter(_.getName == "offset")
     .map { a => a.setAccessible(true); a.get(plan) }
@@ -59,6 +65,4 @@ trait ShimCometSparkSessionExtensions {
     }
     true
   }
-
-  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 }
