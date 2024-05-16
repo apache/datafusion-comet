@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Contributing to Apache DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Profiling Native Code &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comet Plugin Overview" href="plugin_overview.html" />
-    <link rel="prev" title="Compatibility Guide" href="../user-guide/compatibility.html" />
+    <link rel="prev" title="Comet Debugging Guide" href="debugging.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -150,8 +149,8 @@ under the License.
  </span>
 </p>
 <ul class="current nav bd-sidenav">
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+ <li class="toctree-l1">
+  <a class="reference internal" href="contributing.html">
    Getting Started
   </a>
  </li>
@@ -170,8 +169,8 @@ under the License.
    Debugging Guide
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="profiling_native_code.html">
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
    Profiling Native Code
   </a>
  </li>
@@ -247,23 +246,13 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#finding-issues-to-work-on">
-   Finding issues to work on
+  <a class="reference internal nav-link" href="#running-micro-benchmarks-with-cargo-bench">
+   Running micro benchmarks with cargo bench
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#reporting-issues">
-   Reporting issues
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#asking-for-help">
-   Asking for Help
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#regular-public-meetings">
-   Regular public meetings
+  <a class="reference internal nav-link" href="#profiling-with-cargo-flamegraph">
+   Profiling with cargo-flamegraph
   </a>
  </li>
 </ul>
@@ -275,7 +264,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/contributing.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/profiling_native_code.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -294,52 +283,82 @@ under the License.
               
               <div>
                 
-  <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+  http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
-<section id="contributing-to-apache-datafusion-comet">
-<h1>Contributing to Apache DataFusion Comet<a class="headerlink" href="#contributing-to-apache-datafusion-comet" title="Link to this heading">¶</a></h1>
-<p>We welcome contributions to Comet in many areas, and encourage new contributors to get involved.</p>
-<p>Here are some areas where you can help:</p>
-<ul class="simple">
-<li><p>Testing Comet with existing Spark jobs and reporting issues for any bugs or performance issues</p></li>
-<li><p>Contributing code to support Spark expressions, operators, and data types that are not currently supported</p></li>
-<li><p>Reviewing pull requests and helping to test new features for correctness and performance</p></li>
-<li><p>Improving documentation</p></li>
-</ul>
-<section id="finding-issues-to-work-on">
-<h2>Finding issues to work on<a class="headerlink" href="#finding-issues-to-work-on" title="Link to this heading">¶</a></h2>
-<p>We maintain a list of good first issues in GitHub <a class="reference external" href="https://github.com/apache/datafusion-comet/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22">here</a>.</p>
+<section id="profiling-native-code">
+<h1>Profiling Native Code<a class="headerlink" href="#profiling-native-code" title="Link to this heading">¶</a></h1>
+<p>We use <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">bench</span></code> to run benchmarks to measure the performance of individual operators and expressions
+and <a class="reference external" href="https://github.com/flamegraph-rs/flamegraph">cargo-flamegraph</a> for profiling.</p>
+<section id="running-micro-benchmarks-with-cargo-bench">
+<h2>Running micro benchmarks with cargo bench<a class="headerlink" href="#running-micro-benchmarks-with-cargo-bench" title="Link to this heading">¶</a></h2>
+<p>When implementing a new operator or expression, it is good practice to add a new microbenchmark under <code class="docutils literal notranslate"><span class="pre">core/benches</span></code>.</p>
+<p>It is often easiest to copy an existing benchmark and modify it for the new operator or expression. It is also
+necessary to add a new section to the <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> file, such as:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[[bench]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;shuffle_writer&quot;</span>
+<span class="n">harness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+</pre></div>
+</div>
+<p>These benchmarks are useful when for comparing performance between releases or between feature branches and the
+main branch to help prevent regressions in performance when adding new features or fixing bugs.</p>
+<p>Individual benchmarks can be run by name with the following command.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>bench<span class="w"> </span>shuffle_writer
+</pre></div>
+</div>
+<p>Here is some sample output from running this command.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>     <span class="n">Running</span> <span class="n">benches</span><span class="o">/</span><span class="n">shuffle_writer</span><span class="o">.</span><span class="n">rs</span> <span class="p">(</span><span class="n">target</span><span class="o">/</span><span class="n">release</span><span class="o">/</span><span class="n">deps</span><span class="o">/</span><span class="n">shuffle_writer</span><span class="o">-</span><span class="n">e37b59e37879cce7</span><span class="p">)</span>
+<span class="n">Gnuplot</span> <span class="ow">not</span> <span class="n">found</span><span class="p">,</span> <span class="n">using</span> <span class="n">plotters</span> <span class="n">backend</span>
+<span class="n">shuffle_writer</span><span class="o">/</span><span class="n">shuffle_writer</span>
+                        <span class="n">time</span><span class="p">:</span>   <span class="p">[</span><span class="mf">2.0880</span> <span class="n">ms</span> <span class="mf">2.0989</span> <span class="n">ms</span> <span class="mf">2.1118</span> <span class="n">ms</span><span class="p">]</span>
+<span class="n">Found</span> <span class="mi">9</span> <span class="n">outliers</span> <span class="n">among</span> <span class="mi">100</span> <span class="n">measurements</span> <span class="p">(</span><span class="mf">9.00</span><span class="o">%</span><span class="p">)</span>
+  <span class="mi">3</span> <span class="p">(</span><span class="mf">3.00</span><span class="o">%</span><span class="p">)</span> <span class="n">high</span> <span class="n">mild</span>
+  <span class="mi">6</span> <span class="p">(</span><span class="mf">6.00</span><span class="o">%</span><span class="p">)</span> <span class="n">high</span> <span class="n">severe</span>
+</pre></div>
+</div>
 </section>
-<section id="reporting-issues">
-<h2>Reporting issues<a class="headerlink" href="#reporting-issues" title="Link to this heading">¶</a></h2>
-<p>We use <a class="reference external" href="https://github.com/apache/datafusion-comet/issues">GitHub issues</a> for bug reports and feature requests.</p>
-</section>
-<section id="asking-for-help">
-<h2>Asking for Help<a class="headerlink" href="#asking-for-help" title="Link to this heading">¶</a></h2>
-<p>The Comet project uses the same Slack and Discord channels as the main Apache DataFusion project. See details at
-<a class="reference external" href="https://datafusion.apache.org/contributor-guide/communication.html">Apache DataFusion Communications</a>. There are dedicated Comet channels in both Slack and Discord.</p>
-</section>
-<section id="regular-public-meetings">
-<h2>Regular public meetings<a class="headerlink" href="#regular-public-meetings" title="Link to this heading">¶</a></h2>
-<p>The Comet contributors hold regular video calls where new and current contributors are welcome to ask questions and
-coordinate on issues that they are working on.</p>
-<p>See the <a class="reference external" href="https://docs.google.com/document/d/1NBpkIAuU7O9h8Br5CbFksDhX-L9TyO9wmGLPMe0Plc8/edit?usp=sharing">Apache DataFusion Comet community meeting</a> Google document for more information.</p>
+<section id="profiling-with-cargo-flamegraph">
+<h2>Profiling with cargo-flamegraph<a class="headerlink" href="#profiling-with-cargo-flamegraph" title="Link to this heading">¶</a></h2>
+<p>Install cargo-flamegraph:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>flamegraph
+</pre></div>
+</div>
+<p>Follow the instructions in <a class="reference external" href="https://github.com/flamegraph-rs/flamegraph">cargo-flamegraph</a> for your platform for
+running flamegraph.</p>
+<p>Here is a sample command for running <code class="docutils literal notranslate"><span class="pre">cargo-flamegraph</span></code> on MacOS.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>flamegraph<span class="w"> </span>--root<span class="w"> </span>--bench<span class="w"> </span>shuffle_writer
+</pre></div>
+</div>
+<p>This will produce output similar to the following.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">dtrace</span><span class="p">:</span> <span class="n">system</span> <span class="n">integrity</span> <span class="n">protection</span> <span class="ow">is</span> <span class="n">on</span><span class="p">,</span> <span class="n">some</span> <span class="n">features</span> <span class="n">will</span> <span class="ow">not</span> <span class="n">be</span> <span class="n">available</span>
+
+<span class="n">dtrace</span><span class="p">:</span> <span class="n">description</span> <span class="s1">&#39;profile-997 &#39;</span> <span class="n">matched</span> <span class="mi">1</span> <span class="n">probe</span>
+<span class="n">Gnuplot</span> <span class="ow">not</span> <span class="n">found</span><span class="p">,</span> <span class="n">using</span> <span class="n">plotters</span> <span class="n">backend</span>
+<span class="n">Testing</span> <span class="n">shuffle_writer</span><span class="o">/</span><span class="n">shuffle_writer</span>
+<span class="n">Success</span>
+
+<span class="n">dtrace</span><span class="p">:</span> <span class="n">pid</span> <span class="mi">66402</span> <span class="n">has</span> <span class="n">exited</span>
+<span class="n">writing</span> <span class="n">flamegraph</span> <span class="n">to</span> <span class="s2">&quot;flamegraph.svg&quot;</span>
+</pre></div>
+</div>
+<p>The generated flamegraph can now be opened in a browser that supports svg format.</p>
+<p>Here is the flamegraph for this example:</p>
+<p><img alt="flamegraph" src="../_images/flamegraph.png" /></p>
 </section>
 </section>
 
@@ -349,19 +368,12 @@ coordinate on issues that they are working on.</p>
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="../user-guide/compatibility.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="debugging.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Compatibility Guide</p>
+            <p class="prev-next-title">Comet Debugging Guide</p>
         </div>
-    </a>
-    <a class='right-next' id="next-link" href="plugin_overview.html" title="next page">
-    <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Plugin Overview</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
     </a>
 </div>
               
