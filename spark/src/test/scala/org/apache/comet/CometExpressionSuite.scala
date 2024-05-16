@@ -1398,7 +1398,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-      "spark.sql.extendedExplainProviders" -> "org.apache.comet.ExtendedExplainInfo") {
+      EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
