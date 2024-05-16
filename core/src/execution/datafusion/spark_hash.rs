@@ -208,10 +208,10 @@ macro_rules! hash_array_decimal {
 fn create_hashes_dictionary<K: ArrowDictionaryKeyType>(
     array: &ArrayRef,
     hashes_buffer: &mut [u32],
-    multi_col: bool,
+    first_col: bool,
 ) -> Result<()> {
     let dict_array = array.as_any().downcast_ref::<DictionaryArray<K>>().unwrap();
-    if multi_col {
+    if !first_col {
         // unpack the dictionary array as each row may have a different hash input
         let unpacked = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
         create_hashes(&[unpacked], hashes_buffer)?;
@@ -249,7 +249,7 @@ pub fn create_hashes<'a>(
     hashes_buffer: &'a mut [u32],
 ) -> Result<&'a mut [u32]> {
     for (i, col) in arrays.iter().enumerate() {
-        let multi_col = i >= 1;
+        let first_col = i == 0;
         match col.data_type() {
             DataType::Boolean => {
                 hash_array_boolean!(BooleanArray, col, i32, hashes_buffer);
@@ -310,28 +310,28 @@ pub fn create_hashes<'a>(
             }
             DataType::Dictionary(index_type, _) => match **index_type {
                 DataType::Int8 => {
-                    create_hashes_dictionary::<Int8Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<Int8Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::Int16 => {
-                    create_hashes_dictionary::<Int16Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<Int16Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::Int32 => {
-                    create_hashes_dictionary::<Int32Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<Int32Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::Int64 => {
-                    create_hashes_dictionary::<Int64Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<Int64Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::UInt8 => {
-                    create_hashes_dictionary::<UInt8Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<UInt8Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::UInt16 => {
-                    create_hashes_dictionary::<UInt16Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<UInt16Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::UInt32 => {
-                    create_hashes_dictionary::<UInt32Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<UInt32Type>(col, hashes_buffer, first_col)?;
                 }
                 DataType::UInt64 => {
-                    create_hashes_dictionary::<UInt64Type>(col, hashes_buffer, multi_col)?;
+                    create_hashes_dictionary::<UInt64Type>(col, hashes_buffer, first_col)?;
                 }
                 _ => {
                     return Err(DataFusionError::Internal(format!(
