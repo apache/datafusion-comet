@@ -25,7 +25,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
@@ -46,7 +46,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isC
 import org.apache.comet.expressions.{CometCast, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.shims.CometExprShim
 import org.apache.comet.shims.ShimQueryPlanSerde
 
@@ -2417,13 +2417,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        if (join.buildSide == BuildRight) {
-          // DataFusion HashJoin assumes build side is always left.
-          // TODO: support BuildRight
-          withInfo(join, "BuildRight is not supported")
-          return None
-        }
-
         val condition = join.condition.map { cond =>
           val condProto = exprToProto(cond, join.left.output ++ join.right.output)
           if (condProto.isEmpty) {
@@ -2457,6 +2450,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .setJoinType(joinType)
             .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+            .setBuildSide(
+              if (join.buildSide == BuildLeft) BuildSide.BuildLeft else BuildSide.BuildRight)
           condition.foreach(joinBuilder.setCondition)
           Some(result.setHashJoin(joinBuilder).build())
         } else {

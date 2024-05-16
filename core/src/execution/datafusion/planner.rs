@@ -37,6 +37,7 @@ use datafusion::{
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
+    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
@@ -964,7 +965,7 @@ impl PhysicalPlanner {
                     join.join_type,
                     &join.condition,
                 )?;
-                let join = Arc::new(HashJoinExec::try_new(
+                let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
                     join_params.right,
                     join_params.join_on,
@@ -976,7 +977,15 @@ impl PhysicalPlanner {
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     false,
                 )?);
-                Ok((scans, join))
+
+                // If the hash join is build right, we need to swap the left and right
+                let hash_join = if join.build_side == 0 {
+                    hash_join
+                } else {
+                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
+                };
+
+                Ok((scans, hash_join))
             }
         }
     }
