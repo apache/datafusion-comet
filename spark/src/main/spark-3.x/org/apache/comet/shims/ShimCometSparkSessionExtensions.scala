@@ -64,4 +64,6 @@ object ShimCometSparkSessionExtensions {
     }
     true
   }
+
+  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 }

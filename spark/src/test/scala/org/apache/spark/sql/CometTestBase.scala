@@ -249,7 +249,7 @@ abstract class CometTestBase
     var dfSpark: Dataset[Row] = null
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
-      "spark.sql.extendedExplainProviders" -> "") {
+      EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
       dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
@@ -259,7 +259,7 @@ abstract class CometTestBase
       dfSpark.queryExecution.explainString(ExtendedMode),
       dfComet.queryExecution.explainString(ExtendedMode))
     if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
-      assert(expectedInfo.exists(s => diff.contains(s)))
+      assert(expectedInfo.forall(s => diff.contains(s)))
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
