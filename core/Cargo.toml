@@ -125,3 +125,7 @@ harness = false
 [[bench]]
 name = "cast_numeric"
 harness = false
+
+[[bench]]
+name = "shuffle_writer"
+harness = false
