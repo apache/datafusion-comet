@@ -1452,10 +1452,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
           sql(s"""
-               |insert into $table values
-               |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-               |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-               |""".stripMargin)
+              |insert into $table values
+              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |""".stripMargin)
           checkSparkAnswerAndOperator("""
               |select
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
