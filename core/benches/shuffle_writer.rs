@@ -37,8 +37,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let exec = ShuffleWriterExec::try_new(
         Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
         Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-        "data.out".to_string(),
-        "index.out".to_string(),
+        "/tmp/data.out".to_string(),
+        "/tmp/index.out".to_string(),
     )
     .unwrap();
 
@@ -57,8 +57,6 @@ fn criterion_benchmark(c: &mut Criterion) {
 fn create_batch() -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
     let mut b = StringBuilder::new();
-    // TODO test with 81920 to trigger
-    // range end index 81920 out of range for slice of length 8192
     for i in 0..8192 {
         if i % 10 == 0 {
             b.append_null();
