@@ -571,6 +571,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to DateType") {
+    assume(CometSparkSessionExtensions.isSpark33Plus)
     val validDates = Seq(
       "262142-01-01",
       "262142-01-01 ",
@@ -611,14 +612,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "2020-mar-20",
       "not_a_date",
       "T2")
-    castTest((validDates ++ invalidDates).toDF("a"), DataTypes.DateType)
-    // TODO: fuzz test
-    // castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
-  }
 
     // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
     val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
-    val fuzzDates = generateStrings(datePattern, 8)
+    val fuzzDates = gen
+      .generateStrings(dataSize, datePattern, 8)
       .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
     castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
