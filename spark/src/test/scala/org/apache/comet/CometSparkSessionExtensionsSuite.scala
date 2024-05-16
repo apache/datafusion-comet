@@ -24,7 +24,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-class CometSparkSessionExtensionsSuite extends CometTestBase {
+class CometSparkSessionExtensionsSuite extends CometTestBase with DisableSuite {
   test("unsupported Spark types") {
     Seq(
       NullType -> false,

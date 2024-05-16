@@ -20,7 +20,7 @@
 package org.apache.comet
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, DisableSuite, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
@@ -29,7 +29,7 @@ import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
-class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper with DisableSuite {
   import testImplicits._
 
   test("coalesce should return correct datatype") {

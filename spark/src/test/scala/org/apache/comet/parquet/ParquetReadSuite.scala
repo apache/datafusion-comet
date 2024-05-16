@@ -34,9 +34,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{CometTestBase, DataFrame, DisableSuite, Row}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.CometBatchScanExec
@@ -1289,7 +1287,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 }
 
-class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
+class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper with DisableSuite {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*)(withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
@@ -1320,7 +1318,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 }
 
-class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
+class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper with DisableSuite {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*)(withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {

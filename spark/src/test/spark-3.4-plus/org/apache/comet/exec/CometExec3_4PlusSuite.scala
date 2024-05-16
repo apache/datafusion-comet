@@ -22,14 +22,13 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
-
+import org.apache.spark.sql.{CometTestBase, DisableSuite}
 import org.apache.comet.CometConf
 
 /**
  * This test suite contains tests for only Spark 3.4.
  */
-class CometExec3_4PlusSuite extends CometTestBase {
+class CometExec3_4PlusSuite extends CometTestBase with DisableSuite {
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit

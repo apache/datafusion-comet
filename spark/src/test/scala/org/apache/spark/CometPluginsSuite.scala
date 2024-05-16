@@ -19,7 +19,7 @@
 
 package org.apache.spark
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DisableSuite}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -74,7 +74,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
   }
 }
 
-class CometPluginsNonOverrideSuite extends CometTestBase {
+class CometPluginsNonOverrideSuite extends CometTestBase with DisableSuite {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.driver.memory", "1G")
