@@ -247,9 +247,7 @@ abstract class CometTestBase
       expectedInfo: Set[String]): Unit = {
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "false",
-      EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
       dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
