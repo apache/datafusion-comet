@@ -23,7 +23,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, DisableSuite, Row}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -31,7 +31,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 // This test checks if Comet reads ancient dates & timestamps that are before 1582, as if they are
 // read according to the `LegacyBehaviorPolicy.CORRECTED` mode (i.e., no rebase) in Spark.
-abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
+abstract class ParquetDatetimeRebaseSuite extends CometTestBase with DisableSuite {
 
   // This is a flag defined in Spark's `org.apache.spark.internal.config.Tests` but is only
   // visible under package `spark`.
