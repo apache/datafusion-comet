@@ -734,6 +734,23 @@ class CometSparkSessionExtensions
       } else {
         var newPlan = transform(plan)
 
+        // if the plan cannot be run fully natively then explain why (when appropriate
+        // config is enabled)
+        if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
+          new ExtendedExplainInfo().extensionInfo(newPlan) match {
+            case reasons if reasons.size == 1 =>
+              logWarning(
+                "Comet cannot execute some parts of this plan natively " +
+                  s"because ${reasons.head}")
+            case reasons if reasons.size > 1 =>
+              logWarning(
+                "Comet cannot execute some parts of this plan natively" +
+                  s" because:\n\t- ${reasons.mkString("\n\t- ")}")
+            case _ =>
+            // no reasons recorded
+          }
+        }
+
         // Remove placeholders
         newPlan = newPlan.transform {
           case CometSinkPlaceHolder(_, _, s) => s
@@ -935,10 +952,6 @@ object CometSparkSessionExtensions extends Logging {
 
   private[comet] def isCometAllOperatorEnabled(conf: SQLConf): Boolean = {
     COMET_EXEC_ALL_OPERATOR_ENABLED.get(conf)
-  }
-
-  private[comet] def isCometAllExprEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_ALL_EXPR_ENABLED.get(conf)
   }
 
   private[comet] def isSchemaSupported(schema: StructType): Boolean =

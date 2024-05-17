@@ -64,7 +64,7 @@ TakeOrderedAndProject (63)
                            +- ReusedExchange (53)
 
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(1) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -92,7 +92,7 @@ Join condition: None
 Output [3]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3]
 Input [5]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4, d_date_sk#6]
 
-(unknown) Scan parquet spark_catalog.default.customer_address
+(7) Scan parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#7, ca_gmt_offset#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -124,7 +124,7 @@ Join condition: None
 Output [2]: [ss_item_sk#1, ss_ext_sales_price#3]
 Input [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ca_address_sk#7]
 
-(unknown) Scan parquet spark_catalog.default.item
+(14) Scan parquet spark_catalog.default.item
 Output [2]: [i_item_sk#9, i_item_id#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -138,7 +138,7 @@ Condition : isnotnull(i_item_sk#9)
 (16) ColumnarToRow [codegen id : 4]
 Input [2]: [i_item_sk#9, i_item_id#10]
 
-(unknown) Scan parquet spark_catalog.default.item
+(17) Scan parquet spark_catalog.default.item
 Output [2]: [i_item_id#11, i_color#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -198,7 +198,7 @@ Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#3))]
 Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#3))#15]
 Results [2]: [i_item_id#10, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#15,17,2) AS total_sales#16]
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(29) Scan parquet spark_catalog.default.catalog_sales
 Output [4]: [cs_bill_addr_sk#17, cs_item_sk#18, cs_ext_sales_price#19, cs_sold_date_sk#20]
 Batched: true
 Location: InMemoryFileIndex []
@@ -270,7 +270,7 @@ Functions [1]: [sum(UnscaledValue(cs_ext_sales_price#19))]
 Aggregate Attributes [1]: [sum(UnscaledValue(cs_ext_sales_price#19))#28]
 Results [2]: [i_item_id#25, MakeDecimal(sum(UnscaledValue(cs_ext_sales_price#19))#28,17,2) AS total_sales#29]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(44) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_item_sk#30, ws_bill_addr_sk#31, ws_ext_sales_price#32, ws_sold_date_sk#33]
 Batched: true
 Location: InMemoryFileIndex []
@@ -376,7 +376,7 @@ BroadcastExchange (68)
          +- CometScan parquet spark_catalog.default.date_dim (64)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(64) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#6, d_year#49, d_moy#50]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

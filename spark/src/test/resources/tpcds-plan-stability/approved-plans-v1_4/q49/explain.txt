@@ -75,7 +75,7 @@ TakeOrderedAndProject (74)
                                                 +- ReusedExchange (57)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [6]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_net_profit#5, ws_sold_date_sk#6]
 Batched: true
 Location: InMemoryFileIndex []
@@ -95,7 +95,7 @@ Arguments: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_so
 Input [5]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
 Arguments: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
 
-(unknown) Scan parquet spark_catalog.default.web_returns
+(5) Scan parquet spark_catalog.default.web_returns
 Output [5]: [wr_item_sk#8, wr_order_number#9, wr_return_quantity#10, wr_return_amt#11, wr_returned_date_sk#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
@@ -181,7 +181,7 @@ Condition : ((return_rank#33 <= 10) OR (currency_rank#34 <= 10))
 Output [5]: [web AS channel#35, item#30, return_ratio#31, return_rank#33, currency_rank#34]
 Input [5]: [item#30, return_ratio#31, currency_ratio#32, return_rank#33, currency_rank#34]
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(24) Scan parquet spark_catalog.default.catalog_sales
 Output [6]: [cs_item_sk#36, cs_order_number#37, cs_quantity#38, cs_net_paid#39, cs_net_profit#40, cs_sold_date_sk#41]
 Batched: true
 Location: InMemoryFileIndex []
@@ -201,7 +201,7 @@ Arguments: [cs_item_sk#36, cs_order_number#37, cs_quantity#38, cs_net_paid#39, c
 Input [5]: [cs_item_sk#36, cs_order_number#37, cs_quantity#38, cs_net_paid#39, cs_sold_date_sk#41]
 Arguments: [cs_item_sk#36, cs_order_number#37, cs_quantity#38, cs_net_paid#39, cs_sold_date_sk#41]
 
-(unknown) Scan parquet spark_catalog.default.catalog_returns
+(28) Scan parquet spark_catalog.default.catalog_returns
 Output [5]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46, cr_returned_date_sk#47]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
@@ -287,7 +287,7 @@ Condition : ((return_rank#68 <= 10) OR (currency_rank#69 <= 10))
 Output [5]: [catalog AS channel#70, item#65, return_ratio#66, return_rank#68, currency_rank#69]
 Input [5]: [item#65, return_ratio#66, currency_ratio#67, return_rank#68, currency_rank#69]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(47) Scan parquet spark_catalog.default.store_sales
 Output [6]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_net_profit#75, ss_sold_date_sk#76]
 Batched: true
 Location: InMemoryFileIndex []
@@ -307,7 +307,7 @@ Arguments: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, 
 Input [5]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76]
 Arguments: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76]
 
-(unknown) Scan parquet spark_catalog.default.store_returns
+(51) Scan parquet spark_catalog.default.store_returns
 Output [5]: [sr_item_sk#78, sr_ticket_number#79, sr_return_quantity#80, sr_return_amt#81, sr_returned_date_sk#82]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
@@ -427,7 +427,7 @@ BroadcastExchange (79)
          +- CometScan parquet spark_catalog.default.date_dim (75)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(75) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#13, d_year#106, d_moy#107]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

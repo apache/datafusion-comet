@@ -52,7 +52,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
-        CometConf.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
+        CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "false",
         CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -634,7 +634,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         CometConf.COMET_BATCH_SIZE.key -> "10",
         CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.1",
-        CometConf.COMET_EXEC_SHUFFLE_SPILL_THRESHOLD.key -> "1000000000") {
+        CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> "1000000000") {
         val table1 = (0 until 1000)
           .map(i => (111111.toString, 2222222.toString, 3333333.toString, i.toLong))
           .toDF("a", "b", "c", "d")
@@ -1081,7 +1081,7 @@ class CometShuffleEncryptionSuite extends CometTestBase with DisableSuite {
 class CometShuffleManagerSuite extends CometTestBase with DisableSuite {
 
   test("should not bypass merge sort if executor cores are too high") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ASYNC_MAX_THREAD_NUM.key -> "100") {
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.key -> "100") {
       val conf = new SparkConf()
       conf.set("spark.executor.cores", "1")
 

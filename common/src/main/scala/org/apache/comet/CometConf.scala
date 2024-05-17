@@ -120,15 +120,6 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_ALL_EXPR_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.all.expr.enabled")
-      .doc(
-        "Whether to enable all Comet exprs. By default, this config is false. Note that " +
-          "this config precedes all separate config 'spark.comet.exec.<expr_name>.enabled'. " +
-          "That being said, if this config is enabled, separate configs are ignored.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .doc(
@@ -167,6 +158,7 @@ object CometConf {
           "this config is false. Comet broadcast feature will be enabled automatically by " +
           "Comet extension. But for unit tests, we need this feature to force enabling it " +
           "for invalid cases. So this config is only used for unit test.")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 
@@ -185,7 +177,7 @@ object CometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
+  val COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.async.thread.num")
       .doc("Number of threads used for Comet async columnar shuffle per shuffle task. " +
         "By default, this config is 3. Note that more threads means more memory requirement to " +
@@ -194,7 +186,7 @@ object CometConf {
       .intConf
       .createWithDefault(3)
 
-  val COMET_EXEC_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
+  val COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
     conf("spark.comet.columnar.shuffle.async.max.thread.num")
       .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
         "By default, this config is 100. This is the upper bound of total number of shuffle " +
@@ -206,7 +198,7 @@ object CometConf {
       .createWithDefault(100)
   }
 
-  val COMET_EXEC_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
+  val COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.spill.threshold")
       .doc(
         "Number of rows to be spilled used for Comet columnar shuffle. " +
@@ -273,6 +265,14 @@ object CometConf {
           "validating array when importing arrays from JVM at native side. Note that these " +
           "checks may be expensive in performance and should only be enabled for debugging " +
           "purpose.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainFallback.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
+          "why a query stage cannot be executed natively.")
       .booleanConf
       .createWithDefault(false)
 

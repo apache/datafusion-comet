@@ -30,7 +30,7 @@
             +- ReusedExchange (24)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [3]: [ws_item_sk#1, ws_ext_discount_amt#2, ws_sold_date_sk#3]
 Batched: true
 Location: InMemoryFileIndex []
@@ -45,7 +45,7 @@ Condition : (isnotnull(ws_item_sk#1) AND isnotnull(ws_ext_discount_amt#2))
 (3) ColumnarToRow [codegen id : 6]
 Input [3]: [ws_item_sk#1, ws_ext_discount_amt#2, ws_sold_date_sk#3]
 
-(unknown) Scan parquet spark_catalog.default.item
+(4) Scan parquet spark_catalog.default.item
 Output [2]: [i_item_sk#5, i_manufact_id#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -77,7 +77,7 @@ Join condition: None
 Output [3]: [ws_ext_discount_amt#2, ws_sold_date_sk#3, i_item_sk#5]
 Input [4]: [ws_item_sk#1, ws_ext_discount_amt#2, ws_sold_date_sk#3, i_item_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(11) Scan parquet spark_catalog.default.web_sales
 Output [3]: [ws_item_sk#7, ws_ext_discount_amt#8, ws_sold_date_sk#9]
 Batched: true
 Location: InMemoryFileIndex []
@@ -182,7 +182,7 @@ BroadcastExchange (34)
          +- CometScan parquet spark_catalog.default.date_dim (30)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(30) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#18, d_date#23]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

@@ -143,7 +143,10 @@ case class CometScanExec(
   override lazy val metadata: Map[String, String] =
     if (wrapped == null) Map.empty else wrapped.metadata
 
-  override def verboseStringWithOperatorId(): String = wrapped.verboseStringWithOperatorId()
+  override def verboseStringWithOperatorId(): String = {
+    getTagValue(QueryPlan.OP_ID_TAG).foreach(id => wrapped.setTagValue(QueryPlan.OP_ID_TAG, id))
+    wrapped.verboseStringWithOperatorId()
+  }
 
   lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +

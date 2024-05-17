@@ -23,7 +23,7 @@ TakeOrderedAndProject (22)
                         +- CometScan parquet spark_catalog.default.warehouse (13)
 
 
-(unknown) Scan parquet spark_catalog.default.inventory
+(1) Scan parquet spark_catalog.default.inventory
 Output [3]: [inv_item_sk#1, inv_quantity_on_hand#2, inv_date_sk#3]
 Batched: true
 Location: InMemoryFileIndex []
@@ -51,7 +51,7 @@ Join condition: None
 Output [2]: [inv_item_sk#1, inv_quantity_on_hand#2]
 Input [4]: [inv_item_sk#1, inv_quantity_on_hand#2, inv_date_sk#3, d_date_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.item
+(7) Scan parquet spark_catalog.default.item
 Output [5]: [i_item_sk#6, i_brand#7, i_class#8, i_category#9, i_product_name#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -79,7 +79,7 @@ Join condition: None
 Output [5]: [inv_quantity_on_hand#2, i_brand#7, i_class#8, i_category#9, i_product_name#10]
 Input [7]: [inv_item_sk#1, inv_quantity_on_hand#2, i_item_sk#6, i_brand#7, i_class#8, i_category#9, i_product_name#10]
 
-(unknown) Scan parquet spark_catalog.default.warehouse
+(13) Scan parquet spark_catalog.default.warehouse
 Output: []
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
@@ -136,7 +136,7 @@ BroadcastExchange (27)
          +- CometScan parquet spark_catalog.default.date_dim (23)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(23) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
