@@ -35,7 +35,7 @@ Apache DataFusion Comet
 Apache DataFusion Comet is an Apache Spark plugin that uses Apache DataFusion
 as a native runtime to achieve improvement in terms of query efficiency and query runtime.
 
-.. _toc.links:
+.. _toc.user-guide-links:
 .. toctree::
    :maxdepth: 1
    :caption: User Guide
@@ -48,7 +48,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Configuration Settings <user-guide/configs>
    Compatibility Guide <user-guide/compatibility>
 
-.. _toc.links:
+.. _toc.contributor-guide-links:
 .. toctree::
    :maxdepth: 1
    :caption: Contributor Guide
@@ -57,6 +57,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Comet Plugin Overview <contributor-guide/plugin_overview>
    Development Guide <contributor-guide/development>
    Debugging Guide <contributor-guide/debugging>
+   Profiling Native Code <contributor-guide/profiling_native_code>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 
 .. _toc.asf-links:

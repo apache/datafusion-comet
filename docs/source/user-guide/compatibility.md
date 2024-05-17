@@ -110,10 +110,6 @@ The following cast operations are generally compatible with Spark except for the
 | decimal | float |  |
 | decimal | double |  |
 | string | boolean |  |
-| string | byte |  |
-| string | short |  |
-| string | integer |  |
-| string | long |  |
 | string | binary |  |
 | date | string |  |
 | timestamp | long |  |
@@ -129,6 +125,10 @@ The following cast operations are not compatible with Spark for all inputs and a
 |-|-|-|
 | integer | decimal  | No overflow check |
 | long | decimal  | No overflow check |
+| string | byte  | Not all invalid inputs are detected |
+| string | short  | Not all invalid inputs are detected |
+| string | integer  | Not all invalid inputs are detected |
+| string | long  | Not all invalid inputs are detected |
 | string | timestamp  | Not all valid formats are supported |
 | binary | string  | Only works for binary data representing valid UTF-8 strings |
 

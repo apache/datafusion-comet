@@ -45,7 +45,7 @@
                               +- ReusedExchange (33)
 
 
-(unknown) Scan parquet spark_catalog.default.inventory
+(1) Scan parquet spark_catalog.default.inventory
 Output [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -60,7 +60,7 @@ Condition : (isnotnull(inv_item_sk#1) AND isnotnull(inv_warehouse_sk#2))
 (3) ColumnarToRow [codegen id : 4]
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 
-(unknown) Scan parquet spark_catalog.default.item
+(4) Scan parquet spark_catalog.default.item
 Output [1]: [i_item_sk#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -88,7 +88,7 @@ Join condition: None
 Output [4]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6]
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6]
 
-(unknown) Scan parquet spark_catalog.default.warehouse
+(10) Scan parquet spark_catalog.default.warehouse
 Output [2]: [w_warehouse_sk#7, w_warehouse_name#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
@@ -155,7 +155,7 @@ Condition : CASE WHEN (mean#24 = 0.0) THEN false ELSE ((stdev#23 / mean#24) > 1.
 Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, CASE WHEN (mean#24 = 0.0) THEN null ELSE (stdev#23 / mean#24) END AS cov#25]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, stdev#23, mean#24]
 
-(unknown) Scan parquet spark_catalog.default.inventory
+(24) Scan parquet spark_catalog.default.inventory
 Output [4]: [inv_item_sk#26, inv_warehouse_sk#27, inv_quantity_on_hand#28, inv_date_sk#29]
 Batched: true
 Location: InMemoryFileIndex []
@@ -263,7 +263,7 @@ BroadcastExchange (49)
          +- CometScan parquet spark_catalog.default.date_dim (45)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(45) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#9, d_year#48, d_moy#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -293,7 +293,7 @@ BroadcastExchange (54)
          +- CometScan parquet spark_catalog.default.date_dim (50)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(50) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#34, d_year#49, d_moy#35]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

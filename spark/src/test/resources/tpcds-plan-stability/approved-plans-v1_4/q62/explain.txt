@@ -33,7 +33,7 @@ TakeOrderedAndProject (32)
                            +- CometScan parquet spark_catalog.default.date_dim (22)
 
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_warehouse_sk#4, ws_sold_date_sk#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -47,7 +47,7 @@ Condition : (((isnotnull(ws_warehouse_sk#4) AND isnotnull(ws_ship_mode_sk#3)) AN
 (3) ColumnarToRow [codegen id : 5]
 Input [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_warehouse_sk#4, ws_sold_date_sk#5]
 
-(unknown) Scan parquet spark_catalog.default.warehouse
+(4) Scan parquet spark_catalog.default.warehouse
 Output [2]: [w_warehouse_sk#6, w_warehouse_name#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
@@ -75,7 +75,7 @@ Join condition: None
 Output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_sold_date_sk#5, w_warehouse_name#7]
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_warehouse_sk#4, ws_sold_date_sk#5, w_warehouse_sk#6, w_warehouse_name#7]
 
-(unknown) Scan parquet spark_catalog.default.ship_mode
+(10) Scan parquet spark_catalog.default.ship_mode
 Output [2]: [sm_ship_mode_sk#8, sm_type#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/ship_mode]
@@ -103,7 +103,7 @@ Join condition: None
 Output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9]
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_sold_date_sk#5, w_warehouse_name#7, sm_ship_mode_sk#8, sm_type#9]
 
-(unknown) Scan parquet spark_catalog.default.web_site
+(16) Scan parquet spark_catalog.default.web_site
 Output [2]: [web_site_sk#10, web_name#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_site]
@@ -131,7 +131,7 @@ Join condition: None
 Output [5]: [ws_ship_date_sk#1, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_name#11]
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_site_sk#10, web_name#11]
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(22) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#12, d_month_seq#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

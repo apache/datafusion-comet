@@ -39,7 +39,7 @@
                               +- CometScan parquet spark_catalog.default.time_dim (27)
 
 
-(unknown) Scan parquet spark_catalog.default.item
+(1) Scan parquet spark_catalog.default.item
 Output [4]: [i_item_sk#1, i_brand_id#2, i_brand#3, i_manager_id#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -61,7 +61,7 @@ Input [3]: [i_item_sk#1, i_brand_id#2, i_brand#3]
 Input [3]: [i_item_sk#1, i_brand_id#2, i_brand#3]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(unknown) Scan parquet spark_catalog.default.web_sales
+(6) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_sold_time_sk#5, ws_item_sk#6, ws_ext_sales_price#7, ws_sold_date_sk#8]
 Batched: true
 Location: InMemoryFileIndex []
@@ -89,7 +89,7 @@ Join condition: None
 Output [3]: [ws_ext_sales_price#7 AS ext_price#11, ws_item_sk#6 AS sold_item_sk#12, ws_sold_time_sk#5 AS time_sk#13]
 Input [5]: [ws_sold_time_sk#5, ws_item_sk#6, ws_ext_sales_price#7, ws_sold_date_sk#8, d_date_sk#10]
 
-(unknown) Scan parquet spark_catalog.default.catalog_sales
+(12) Scan parquet spark_catalog.default.catalog_sales
 Output [4]: [cs_sold_time_sk#14, cs_item_sk#15, cs_ext_sales_price#16, cs_sold_date_sk#17]
 Batched: true
 Location: InMemoryFileIndex []
@@ -117,7 +117,7 @@ Join condition: None
 Output [3]: [cs_ext_sales_price#16 AS ext_price#20, cs_item_sk#15 AS sold_item_sk#21, cs_sold_time_sk#14 AS time_sk#22]
 Input [5]: [cs_sold_time_sk#14, cs_item_sk#15, cs_ext_sales_price#16, cs_sold_date_sk#17, d_date_sk#19]
 
-(unknown) Scan parquet spark_catalog.default.store_sales
+(18) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_sold_time_sk#23, ss_item_sk#24, ss_ext_sales_price#25, ss_sold_date_sk#26]
 Batched: true
 Location: InMemoryFileIndex []
@@ -157,7 +157,7 @@ Join condition: None
 Output [4]: [i_brand_id#2, i_brand#3, ext_price#11, time_sk#13]
 Input [6]: [i_item_sk#1, i_brand_id#2, i_brand#3, ext_price#11, sold_item_sk#12, time_sk#13]
 
-(unknown) Scan parquet spark_catalog.default.time_dim
+(27) Scan parquet spark_catalog.default.time_dim
 Output [4]: [t_time_sk#32, t_hour#33, t_minute#34, t_meal_time#35]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
@@ -225,7 +225,7 @@ BroadcastExchange (43)
          +- CometScan parquet spark_catalog.default.date_dim (39)
 
 
-(unknown) Scan parquet spark_catalog.default.date_dim
+(39) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#10, d_year#42, d_moy#43]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
