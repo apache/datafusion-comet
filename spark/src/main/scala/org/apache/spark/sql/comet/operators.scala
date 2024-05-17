@@ -950,6 +950,7 @@ case class CometCartesianProductExec(
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext)
 }
+
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
