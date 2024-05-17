@@ -17,11 +17,11 @@
   under the License.
 -->
 
-# Adding a New Scalar Expression
+# Adding a Expression
 
 There are a number of Spark expression that are not supported by DataFusion Comet yet, and implementing them is a good way to contribute to the project.
 
-This document will guide you through the process of adding a new expression to DataFusion Comet.
+Before you start, have a look through [these slides](https://docs.google.com/presentation/d/1H0fF2MOkkBK8fPBlnqK6LejUeLcVD917JhVWfp3mb8A/edit#slide=id.p) as they provide a conceptual overview. And a video of a presentation on those slides is available [here](https://drive.google.com/file/d/1POU4lFAZfYwZR8zV1X2eoLiAmc1GDtSP/view?usp=sharing).
 
 ## Finding an Expression to Add
 
@@ -32,8 +32,8 @@ You may have a specific expression in mind that you'd like to add, but if not, y
 Once you have the expression you'd like to add, you should take inventory of the following:
 
 1. What is the Spark expressions behavior across different Spark versions? These make good test cases, and will inform you of any compatibility issues such as an API change that will have to be addressed.
-2. Check if the expression is already implemented in DataFusion and if the is compatible with the Spark expression. If it is, you can potentially reuse the existing implementation.
-3. Test cases for the expression. As mentioned, you can refer to Spark's test cases for a good idea of what to test. Moreover, if you're adding a new cast expression, you can refer to the TODO.
+2. Check if the expression is already implemented in DataFusion and if the is compatible with the Spark expression. If it is, you can potentially reuse the existing implementation. If it's not, consider an initial version in DataFusion Comet and potentially backport it into DataFusion if the expression would be supported by it.
+3. Test cases for the expression. As mentioned, you can refer to Spark's test cases for a good idea of what to test.
 
 Once you know what you want to add, you'll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation `core/` in Rust.
 
@@ -55,7 +55,11 @@ case e: Unhex if !isSpark32 =>
   optExprWithInfo(optExpr, expr, unHex._1)
 ```
 
-> **_NOTE:_**  `!isSpark32` limits this match to non-Spark 3.2 versions. See the section on API differences between Spark versions for more information.
+A few things to note here:
+
+* The `isSpark32` check is used to fall back to Spark's implementation of `unhex` in Spark 3.2, as only versions after that have the `failOnError` parameter.
+* The function is recursively called on child expressions, so you'll need to make sure that the child expressions are also converted to protobuf.
+* `scalarExprToProtoWithReturnType` is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.
 
 #### Adding Spark-side Tests for the New Expression
 
@@ -87,15 +91,54 @@ test("unhex") {
 }
 ```
 
+### Adding the Expression To the Protobuf Definition
+
+Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you're adding a new scalar function).
+
+You can find the protobuf definition in `expr.proto`, and in particular the `Expr` or potentially the `AggExpr`. These are similar in theory to the large case statement in `QueryPlanSerde`, but in protobuf format. So if you were to add a new expression called `Add2`, you would add a new case to the `Expr` message like so:
+
+```proto
+message Expr {
+  oneof expr_struct {
+    ...
+    Add2 add2 = 100;  // Choose the next available number
+  }
+}
+```
+
+Then you would define the `Add2` message like so:
+
+```proto
+message Add2 {
+  Expr left = 1;
+  Expr right = 2;
+}
+```
+
 ### Adding the Expression in Rust
 
 With the serialization complete, the next step is to implement the expression in Rust and ensure that the incoming plan can make use of it.
 
 How this works, is somewhat dependent on the type of expression you're adding, so see the `core/src/execution/datafusion/expressions` directory for examples of how to implement different types of expressions.
 
+#### Generally Adding a New Expression
+
+If you're adding a new expression, you'll need to review `create_plan` and `create_expr`. `create_plan` is responsible for translating the incoming plan into a DataFusion plan, and may delegate to `create_expr` to create the physical expressions for the plan.
+
+If you added a new message to the protobuf definition, you'll add a new match case to the `create_expr` method to handle the new expression. For example, if you added an `Add2` expression, you would add a new case like so:
+
+```rust
+match spark_expr.expr_struct.as_ref().unwrap() {
+  ...
+  ExprStruct::Add2(add2) => self.create_binary_expr(...)
+}
+```
+
+`self.create_binary_expr` is for a binary expression, but if something out of the box is needed, you can create a new `PhysicalExpr` implementation. For example, see `if_expr.rs` for an example of an implementation that doesn't fit the `create_binary_expr` mold.
+
 #### Adding a New Scalar Function Expression
 
-For a new scalar function, you can update the `create_comet_physical_fun` method to match on the function name and make the scalar UDF to be called. For example, the diff to add the `unhex` function is:
+For a new scalar function, you can reuse a lot of code by updating the `create_comet_physical_fun` method to match on the function name and make the scalar UDF to be called. For example, the diff to add the `unhex` function is:
 
 ```diff
 macro_rules! make_comet_scalar_udf {
@@ -122,9 +165,7 @@ pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
 
 > **_NOTE:_**  If you call the `make_comet_scalar_udf` macro with the data type, the function signature will look include the data type as a second argument.
 
-## Special Topics
-
-### API Differences Between Spark Versions
+## API Differences Between Spark Versions
 
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
 
@@ -163,9 +204,7 @@ Then when `unhexSerde` is called in the `QueryPlanSerde` object, it will use the
 
 ## Resources
 
-TODO: resources for previously implemented expressions, cast ext
-
-- [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
-  - Aggregation function
-- [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
-  - Basic scalar function with shims for different Spark versions
+* [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
+  * Aggregation function
+* [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
+  * Basic scalar function with shims for different Spark versions
