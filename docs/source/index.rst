@@ -47,6 +47,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Supported Data Types <user-guide/datatypes>
    Configuration Settings <user-guide/configs>
    Compatibility Guide <user-guide/compatibility>
+   Tuning Guide <user-guide/tuning>
 
 .. _toc.contributor-guide-links:
 .. toctree::
