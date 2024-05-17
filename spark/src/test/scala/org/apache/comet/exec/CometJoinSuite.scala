@@ -266,10 +266,14 @@ class CometJoinSuite extends CometTestBase {
 
   // TODO: Add a test for CartesianProductExec with join filter after new DataFusion release
   test("CartesianProductExec without join filter") {
-    withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
-      withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
-        val df1 = sql("SELECT * FROM tbl_a CROSS JOIN tbl_b")
-        checkSparkAnswerAndOperator(df1)
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          val df1 = sql("SELECT * FROM tbl_a CROSS JOIN tbl_b")
+          checkSparkAnswerAndOperator(df1)
+        }
       }
     }
   }
