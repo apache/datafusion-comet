@@ -571,6 +571,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to DateType") {
+    // error message for invalid dates in Spark 3.2 not supported by Comet see below issue.
+    // https://github.com/apache/datafusion-comet/issues/440
     assume(CometSparkSessionExtensions.isSpark33Plus)
     val validDates = Seq(
       "262142-01-01",
