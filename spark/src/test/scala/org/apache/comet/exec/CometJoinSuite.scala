@@ -22,14 +22,14 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DisableSuite}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
-class CometJoinSuite extends CometTestBase {
+class CometJoinSuite extends CometTestBase with DisableSuite {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {

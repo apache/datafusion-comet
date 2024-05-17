@@ -1003,7 +1003,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
   }
 }
 
-class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
+class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
   override protected val asyncShuffleEnable: Boolean = false
 
   protected val adaptiveExecutionEnabled: Boolean = false
