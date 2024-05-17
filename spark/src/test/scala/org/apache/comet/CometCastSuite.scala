@@ -992,7 +992,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper with Dis
             // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
             // removing the "Execution error: " error message prefix that is added by DataFusion
             val cometMessage = cometException.getCause.getMessage.replace("Execution error: ", "")
-            if (CometSparkSessionExtensions.isSpark4Plus) {
+            if (CometSparkSessionExtensions.isSpark40Plus) {
               // for Spark 4 we expect to sparkException carries the message
               assert(
                 cometMessage == sparkException.getMessage
