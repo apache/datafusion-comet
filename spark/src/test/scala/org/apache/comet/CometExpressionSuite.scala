@@ -1493,7 +1493,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .mode("append")
             .insertInto(table)
           // with random generated data
-          // disable cast(b as string) for now, as it may produce incompatible result
+          // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
           checkSparkAnswerAndOperator("""
               |select
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
