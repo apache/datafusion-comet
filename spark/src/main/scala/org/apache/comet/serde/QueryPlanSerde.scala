@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, CartesianProductExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -2602,6 +2602,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case join: SortMergeJoinExec if !isCometOperatorEnabled(op.conf, "sort_merge_join") =>
         withInfo(join, "SortMergeJoin is not enabled")
+        None
+
+      case join: CartesianProductExec if isCometOperatorEnabled(op.conf, "cross_join") =>
+        // TODO: Support CartesianProductExec with join condition after new DataFusion release
+        if (join.condition.isDefined) {
+          withInfo(op, "cross_join with a join condition is not supported")
+          return None
+        }
+        None
+
+      case join: CartesianProductExec if !isCometOperatorEnabled(op.conf, "cross_join") =>
+        withInfo(join, "cross_join is not enabled")
         None
 
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType)) =>

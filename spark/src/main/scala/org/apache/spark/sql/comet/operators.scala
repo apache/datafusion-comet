@@ -917,6 +917,39 @@ case class CometSortMergeJoinExec(
       "join_time" -> SQLMetrics.createNanoTimingMetric(sparkContext, "Total time for joining"))
 }
 
+case class CometCartesianProductExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    condition: Option[Expression],
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  override protected def withNewChildrenInternal(
+      newLeft: SparkPlan,
+      newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] = Iterator(condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometCartesianProductExec =>
+        this.condition == other.condition &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(condition, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext)
+}
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {

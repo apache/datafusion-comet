@@ -38,7 +38,7 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
-        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
+        joins::{utils::JoinFilter, CrossJoinExec, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
@@ -979,6 +979,15 @@ impl PhysicalPlanner {
                 };
 
                 Ok((scans, hash_join))
+            }
+            OpStruct::CrossJoin(_) => {
+                assert!(children.len() == 2);
+                let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
+                let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+
+                left_scans.append(&mut right_scans);
+                let join = Arc::new(CrossJoinExec::new(left, right));
+                Ok((left_scans, join))
             }
         }
     }
