@@ -45,7 +45,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, shouldApplyRowToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometColumnarShuffleEnabled, isCometEnabled, isCometExecEnabled, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -575,11 +575,13 @@ class CometSparkSessionExtensions
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
         // broadcast exchange is forced to be enabled by Comet config.
+        // Note that `CometBroadcastExchangeExec` is only supported for Spark 3.4+.
         case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
-                  isCometOperatorEnabled(conf, "broadcastExchangeExec") =>
+                  isCometOperatorEnabled(conf, "broadcastExchangeExec") &&
+                  isSpark34Plus => // Spark 3.4+ only
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
                   val cometOp = CometBroadcastExchangeExec(b, b.child)

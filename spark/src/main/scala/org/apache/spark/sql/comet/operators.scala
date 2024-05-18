@@ -406,14 +406,14 @@ case class CometProjectExec(
     obj match {
       case other: CometProjectExec =>
         this.projectList == other.projectList &&
-        this.output == other.output && this.child == other.child &&
+        this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(projectList, output, child)
+  override def hashCode(): Int = Objects.hashCode(projectList, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = projectList
 }
