@@ -34,7 +34,7 @@ Once you have the expression you'd like to add, you should take inventory of the
 1. What is the Spark expression's behavior across different Spark versions? These make good test cases and will inform you of any compatibility issues, such as an API change that will have to be addressed.
 2. Check if the expression is already implemented in DataFusion and if it is compatible with the Spark expression.
    1. If it is, you can potentially reuse the existing implementation though you'll need to add tests to verify compatibility.
-   2. If it's not, consider an initial version in DataFusion Comet and potentially backport it into DataFusion if the expression would be supported by it.
+   2. If it's not, consider an initial version in DataFusion for expressions that are common across different engines. For expressions that are specific to Spark, consider an initial version in DataFusion Comet.
 3. Test cases for the expression. As mentioned, you can refer to Spark's test cases for a good idea of what to test.
 
 Once you know what you want to add, you'll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation in the Rust package.
