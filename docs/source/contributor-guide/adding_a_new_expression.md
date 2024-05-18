@@ -17,7 +17,7 @@
   under the License.
 -->
 
-# Adding a Expression
+# Adding a New Expression
 
 There are a number of Spark expression that are not supported by DataFusion Comet yet, and implementing them is a good way to contribute to the project.
 
@@ -27,17 +27,17 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt) to see which expressions are not yet supported.
 
-## Adding the Expression
+## Implementing the Expression
 
 Once you have the expression you'd like to add, you should take inventory of the following:
 
-1. What is the Spark expressions behavior across different Spark versions? These make good test cases, and will inform you of any compatibility issues such as an API change that will have to be addressed.
-2. Check if the expression is already implemented in DataFusion and if the is compatible with the Spark expression.
+1. What is the Spark expression's behavior across different Spark versions? These make good test cases and will inform you of any compatibility issues, such as an API change that will have to be addressed.
+2. Check if the expression is already implemented in DataFusion and if it is compatible with the Spark expression.
    1. If it is, you can potentially reuse the existing implementation though you'll need to add tests to verify compatibility.
    2. If it's not, consider an initial version in DataFusion Comet and potentially backport it into DataFusion if the expression would be supported by it.
 3. Test cases for the expression. As mentioned, you can refer to Spark's test cases for a good idea of what to test.
 
-Once you know what you want to add, you'll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation `core/` in Rust.
+Once you know what you want to add, you'll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation in the Rust package.
 
 ### Adding the Expression in Scala
 
