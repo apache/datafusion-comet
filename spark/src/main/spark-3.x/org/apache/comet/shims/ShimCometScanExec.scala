@@ -70,7 +70,7 @@ trait ShimCometScanExec {
       options: ParquetOptions): FileScanRDD =
     classOf[FileScanRDD].getDeclaredConstructors
       // Prevent to pick up incorrect constructors from any custom Spark forks.
-      .filter(c => List(3,5,6).contains(c.getParameterCount()) )
+      .filter(c => List(3, 5, 6).contains(c.getParameterCount()) )
       .map { c =>
         c.getParameterCount match {
           case 3 => c.newInstance(sparkSession, readFunction, filePartitions)
