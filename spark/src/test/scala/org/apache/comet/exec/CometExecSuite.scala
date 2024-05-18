@@ -38,8 +38,9 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{col, date_add, expr, lead, sum}
@@ -58,6 +59,40 @@ class CometExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      withTempPath { path =>
+        spark
+          .range(5)
+          .withColumn("p", $"id" % 2)
+          .write
+          .mode("overwrite")
+          .partitionBy("p")
+          .parquet(path.toString)
+        withTempView("t") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("t")
+          val df = sql("""
+              |SELECT t1.id, t2.id, t3.id
+              |FROM t AS t1
+              |JOIN t AS t2 ON t2.id = t1.id
+              |JOIN t AS t3 ON t3.id = t2.id
+              |WHERE t1.p = 1 AND t2.p = 1 AND t3.p = 1
+              |""".stripMargin)
+          val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
+          val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
+            r
+          }
+          assert(reusedExchanges.size == 1)
+          assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
+        }
       }
     }
   }
