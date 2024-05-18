@@ -69,7 +69,7 @@ trait ShimCometScanExec {
       readSchema: StructType,
       options: ParquetOptions): FileScanRDD =
     classOf[FileScanRDD].getDeclaredConstructors
-      // workaround for aws spark 3.4 implementation
+      // Prevent to pick up incorrect constructors from any custom Spark forks.
       .filter(c => List(3,5,6).contains(c.getParameterCount()) )
       .map { c =>
         c.getParameterCount match {
