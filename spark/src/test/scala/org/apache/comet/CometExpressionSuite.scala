@@ -1038,6 +1038,46 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("hex") {
+    val str_table = "string_hex_table"
+    withTable(str_table) {
+      sql(s"create table $str_table(col string) using parquet")
+
+      sql(s"""INSERT INTO $str_table VALUES
+        |('Spark SQL'),
+        |('string'),
+        |(''),
+        |('###'),
+        |('G123'),
+        |(NULL),
+        |('hello'),
+        |('A1B'),
+        |('0A1B')""".stripMargin)
+
+      checkSparkAnswerAndOperator(s"SELECT hex(col) FROM $str_table")
+      checkSparkAnswerAndOperator(s"SELECT hex(CAST(col AS BINARY)) FROM $str_table")
+    }
+
+    val int_table = "int_hex_table"
+    withTable(int_table) {
+      sql(s"create table $int_table(col int) using parquet")
+
+      sql(s"""INSERT INTO $int_table VALUES
+        |(-1),
+        |(0),
+        |(1),
+        |(2),
+        |(3),
+        |(4),
+        |(NULL),
+        |(5),
+        |(6),
+        |(7),
+        |(8)""".stripMargin)
+
+      checkSparkAnswerAndOperator(s"SELECT hex(col) FROM $int_table")
+    }
+  }
   test("unhex") {
     // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
     // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
