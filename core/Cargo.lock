@@ -825,7 +825,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "ahash",
  "arrow",
@@ -867,7 +867,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "ahash",
  "arrow",
@@ -886,7 +886,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "tokio",
 ]
@@ -894,7 +894,7 @@ dependencies = [
 [[package]]
 name = "datafusion-execution"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "arrow",
  "chrono",
@@ -914,7 +914,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "ahash",
  "arrow",
@@ -930,7 +930,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "arrow",
  "base64",
@@ -954,7 +954,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -971,7 +971,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1005,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1035,7 +1035,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "36.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=57b3be4#57b3be4297a47aa45094c16e37ddf0141d723bf0"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=debb2f2#debb2f2366bbc0fde4de4b7779c1886484a3d73f"
 dependencies = [
  "arrow",
  "arrow-array",
