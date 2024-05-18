@@ -59,7 +59,7 @@ case e: Unhex if !isSpark32 =>
 
 A few things to note here:
 
-* The `isSpark32` check is used to fall back to Spark's implementation of `unhex` in Spark 3.2, as only versions after that have the `failOnError` parameter.
+* The `isSpark32` check is used to fall back to Spark's implementation of `unhex` in Spark 3.2. This is somewhat context specific, because in this case, due to a bug in Spark 3.2 for `unhex`, we want to use the Spark implementation and not a Comet implementation that would behave differently if correct.
 * The function is recursively called on child expressions, so you'll need to make sure that the child expressions are also converted to protobuf.
 * `scalarExprToProtoWithReturnType` is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.
 
