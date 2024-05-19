@@ -104,10 +104,9 @@ object CometCast {
       timeZoneId: Option[String],
       evalMode: String): SupportLevel = {
     toType match {
-      case DataTypes.BooleanType =>
+      case DataTypes.BooleanType | DataTypes.IntegerType =>
         Compatible()
-      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-          DataTypes.LongType =>
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.LongType =>
         Incompatible(Some("Not all invalid inputs are detected"))
       case DataTypes.BinaryType =>
         Compatible()

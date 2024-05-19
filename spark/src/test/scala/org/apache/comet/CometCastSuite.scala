@@ -23,7 +23,7 @@ import java.io.File
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
+import org.apache.spark.sql.{functions, CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
@@ -533,11 +533,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
-  ignore("cast StringType to IntegerType") {
+  test("cast StringType to IntegerType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.IntegerType)
+    castTest(
+      gen
+        .generateStrings(dataSize, numericPattern, 8)
+        .toDF("a")
+        .withColumn("a", functions.trim($"a")),
+      DataTypes.IntegerType)
   }
 
   ignore("cast StringType to LongType") {
