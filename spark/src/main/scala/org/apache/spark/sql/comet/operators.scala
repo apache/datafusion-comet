@@ -836,7 +836,7 @@ case class CometBroadcastHashJoinExec(
     this.copy(left = newLeft, right = newRight)
 
   override def stringArgs: Iterator[Any] =
-    Iterator(leftKeys, rightKeys, joinType, condition, left, right)
+    Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override def equals(obj: Any): Boolean = {
     obj match {

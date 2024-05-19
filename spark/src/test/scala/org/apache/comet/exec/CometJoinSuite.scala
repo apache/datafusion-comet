@@ -121,6 +121,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("HashJoin without join filter") {
     withSQLConf(
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -170,12 +171,14 @@ class CometJoinSuite extends CometTestBase {
             sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
           checkSparkAnswerAndOperator(df7)
 
-          //
-          // val left = sql("SELECT * FROM tbl_a")
-          // val right = sql("SELECT * FROM tbl_b")
-          //
           // Left semi and anti joins are only supported with build right in Spark.
-          // left.join(right, left("_2") === right("_1"), "leftsemi")
+          val left = sql("SELECT * FROM tbl_a")
+          val right = sql("SELECT * FROM tbl_b")
+
+          val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
+          checkSparkAnswerAndOperator(df8)
+
+          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
           // left.join(right, left("_2") === right("_1"), "leftanti")
         }
       }

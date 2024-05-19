@@ -25,7 +25,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
@@ -2414,6 +2414,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
+          return None
+        }
+
+        if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+          // DataFusion HashJoin LeftAnti has bugs on null keys.
+          withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
         }
 
