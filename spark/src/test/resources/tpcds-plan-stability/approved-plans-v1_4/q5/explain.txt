@@ -129,7 +129,7 @@ Arguments: [d_date_sk#22]
 (12) CometBroadcastHashJoin
 Left output [6]: [store_sk#6, date_sk#7, sales_price#8, profit#9, return_amt#10, net_loss#11]
 Right output [1]: [d_date_sk#22]
-Arguments: [date_sk#7], [d_date_sk#22], Inner
+Arguments: [date_sk#7], [d_date_sk#22], Inner, BuildRight
 
 (13) CometProject
 Input [7]: [store_sk#6, date_sk#7, sales_price#8, profit#9, return_amt#10, net_loss#11, d_date_sk#22]
@@ -153,7 +153,7 @@ Arguments: [s_store_sk#24, s_store_id#25]
 (17) CometBroadcastHashJoin
 Left output [5]: [store_sk#6, sales_price#8, profit#9, return_amt#10, net_loss#11]
 Right output [2]: [s_store_sk#24, s_store_id#25]
-Arguments: [store_sk#6], [s_store_sk#24], Inner
+Arguments: [store_sk#6], [s_store_sk#24], Inner, BuildRight
 
 (18) CometProject
 Input [7]: [store_sk#6, sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_sk#24, s_store_id#25]
@@ -220,7 +220,7 @@ Output [1]: [d_date_sk#60]
 (31) CometBroadcastHashJoin
 Left output [6]: [page_sk#44, date_sk#45, sales_price#46, profit#47, return_amt#48, net_loss#49]
 Right output [1]: [d_date_sk#60]
-Arguments: [date_sk#45], [d_date_sk#60], Inner
+Arguments: [date_sk#45], [d_date_sk#60], Inner, BuildRight
 
 (32) CometProject
 Input [7]: [page_sk#44, date_sk#45, sales_price#46, profit#47, return_amt#48, net_loss#49, d_date_sk#60]
@@ -244,7 +244,7 @@ Arguments: [cp_catalog_page_sk#61, cp_catalog_page_id#62]
 (36) CometBroadcastHashJoin
 Left output [5]: [page_sk#44, sales_price#46, profit#47, return_amt#48, net_loss#49]
 Right output [2]: [cp_catalog_page_sk#61, cp_catalog_page_id#62]
-Arguments: [page_sk#44], [cp_catalog_page_sk#61], Inner
+Arguments: [page_sk#44], [cp_catalog_page_sk#61], Inner, BuildRight
 
 (37) CometProject
 Input [7]: [page_sk#44, sales_price#46, profit#47, return_amt#48, net_loss#49, cp_catalog_page_sk#61, cp_catalog_page_id#62]
@@ -314,7 +314,7 @@ Arguments: [ws_item_sk#92, ws_web_site_sk#93, ws_order_number#94], [ws_item_sk#9
 (50) CometBroadcastHashJoin
 Left output [5]: [wr_item_sk#87, wr_order_number#88, wr_return_amt#89, wr_net_loss#90, wr_returned_date_sk#91]
 Right output [3]: [ws_item_sk#92, ws_web_site_sk#93, ws_order_number#94]
-Arguments: [wr_item_sk#87, wr_order_number#88], [ws_item_sk#92, ws_order_number#94], Inner
+Arguments: [wr_item_sk#87, wr_order_number#88], [ws_item_sk#92, ws_order_number#94], Inner, BuildLeft
 
 (51) CometProject
 Input [8]: [wr_item_sk#87, wr_order_number#88, wr_return_amt#89, wr_net_loss#90, wr_returned_date_sk#91, ws_item_sk#92, ws_web_site_sk#93, ws_order_number#94]
@@ -330,7 +330,7 @@ Output [1]: [d_date_sk#102]
 (54) CometBroadcastHashJoin
 Left output [6]: [wsr_web_site_sk#81, date_sk#82, sales_price#83, profit#84, return_amt#85, net_loss#86]
 Right output [1]: [d_date_sk#102]
-Arguments: [date_sk#82], [d_date_sk#102], Inner
+Arguments: [date_sk#82], [d_date_sk#102], Inner, BuildRight
 
 (55) CometProject
 Input [7]: [wsr_web_site_sk#81, date_sk#82, sales_price#83, profit#84, return_amt#85, net_loss#86, d_date_sk#102]
@@ -354,7 +354,7 @@ Arguments: [web_site_sk#103, web_site_id#104]
 (59) CometBroadcastHashJoin
 Left output [5]: [wsr_web_site_sk#81, sales_price#83, profit#84, return_amt#85, net_loss#86]
 Right output [2]: [web_site_sk#103, web_site_id#104]
-Arguments: [wsr_web_site_sk#81], [web_site_sk#103], Inner
+Arguments: [wsr_web_site_sk#81], [web_site_sk#103], Inner, BuildRight
 
 (60) CometProject
 Input [7]: [wsr_web_site_sk#81, sales_price#83, profit#84, return_amt#85, net_loss#86, web_site_sk#103, web_site_id#104]

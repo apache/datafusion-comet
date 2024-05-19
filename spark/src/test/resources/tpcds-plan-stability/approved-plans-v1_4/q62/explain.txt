@@ -58,7 +58,7 @@ Arguments: [w_warehouse_sk#6, w_warehouse_name#7]
 (6) CometBroadcastHashJoin
 Left output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_warehouse_sk#4, ws_sold_date_sk#5]
 Right output [2]: [w_warehouse_sk#6, w_warehouse_name#7]
-Arguments: [ws_warehouse_sk#4], [w_warehouse_sk#6], Inner
+Arguments: [ws_warehouse_sk#4], [w_warehouse_sk#6], Inner, BuildRight
 
 (7) CometProject
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_warehouse_sk#4, ws_sold_date_sk#5, w_warehouse_sk#6, w_warehouse_name#7]
@@ -82,7 +82,7 @@ Arguments: [sm_ship_mode_sk#8, sm_type#9]
 (11) CometBroadcastHashJoin
 Left output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_sold_date_sk#5, w_warehouse_name#7]
 Right output [2]: [sm_ship_mode_sk#8, sm_type#9]
-Arguments: [ws_ship_mode_sk#3], [sm_ship_mode_sk#8], Inner
+Arguments: [ws_ship_mode_sk#3], [sm_ship_mode_sk#8], Inner, BuildRight
 
 (12) CometProject
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_ship_mode_sk#3, ws_sold_date_sk#5, w_warehouse_name#7, sm_ship_mode_sk#8, sm_type#9]
@@ -106,7 +106,7 @@ Arguments: [web_site_sk#10, web_name#11]
 (16) CometBroadcastHashJoin
 Left output [5]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9]
 Right output [2]: [web_site_sk#10, web_name#11]
-Arguments: [ws_web_site_sk#2], [web_site_sk#10], Inner
+Arguments: [ws_web_site_sk#2], [web_site_sk#10], Inner, BuildRight
 
 (17) CometProject
 Input [7]: [ws_ship_date_sk#1, ws_web_site_sk#2, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_site_sk#10, web_name#11]
@@ -134,7 +134,7 @@ Arguments: [d_date_sk#12]
 (22) CometBroadcastHashJoin
 Left output [5]: [ws_ship_date_sk#1, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_name#11]
 Right output [1]: [d_date_sk#12]
-Arguments: [ws_ship_date_sk#1], [d_date_sk#12], Inner
+Arguments: [ws_ship_date_sk#1], [d_date_sk#12], Inner, BuildRight
 
 (23) CometProject
 Input [6]: [ws_ship_date_sk#1, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_name#11, d_date_sk#12]

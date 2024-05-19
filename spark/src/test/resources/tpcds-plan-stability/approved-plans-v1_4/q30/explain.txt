@@ -86,7 +86,7 @@ Arguments: [d_date_sk#6]
 (7) CometBroadcastHashJoin
 Left output [4]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, wr_returned_date_sk#4]
 Right output [1]: [d_date_sk#6]
-Arguments: [wr_returned_date_sk#4], [d_date_sk#6], Inner
+Arguments: [wr_returned_date_sk#4], [d_date_sk#6], Inner, BuildRight
 
 (8) CometProject
 Input [5]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, wr_returned_date_sk#4, d_date_sk#6]
@@ -110,7 +110,7 @@ Arguments: [ca_address_sk#8, ca_state#9]
 (12) CometBroadcastHashJoin
 Left output [3]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3]
 Right output [2]: [ca_address_sk#8, ca_state#9]
-Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner
+Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner, BuildRight
 
 (13) CometProject
 Input [5]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, ca_address_sk#8, ca_state#9]
@@ -157,7 +157,7 @@ Output [1]: [d_date_sk#6]
 (22) CometBroadcastHashJoin
 Left output [4]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, wr_returned_date_sk#4]
 Right output [1]: [d_date_sk#6]
-Arguments: [wr_returned_date_sk#4], [d_date_sk#6], Inner
+Arguments: [wr_returned_date_sk#4], [d_date_sk#6], Inner, BuildRight
 
 (23) CometProject
 Input [5]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, wr_returned_date_sk#4, d_date_sk#6]
@@ -169,7 +169,7 @@ Output [2]: [ca_address_sk#8, ca_state#9]
 (25) CometBroadcastHashJoin
 Left output [3]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3]
 Right output [2]: [ca_address_sk#8, ca_state#9]
-Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner
+Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner, BuildRight
 
 (26) CometProject
 Input [5]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, ca_address_sk#8, ca_state#9]

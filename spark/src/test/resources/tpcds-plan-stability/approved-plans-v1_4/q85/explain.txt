@@ -80,7 +80,7 @@ Arguments: [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_re
 (7) CometBroadcastHashJoin
 Left output [7]: [ws_item_sk#1, ws_web_page_sk#2, ws_order_number#3, ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7]
 Right output [8]: [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16]
-Arguments: [ws_item_sk#1, ws_order_number#3], [wr_item_sk#9, wr_order_number#14], Inner
+Arguments: [ws_item_sk#1, ws_order_number#3], [wr_item_sk#9, wr_order_number#14], Inner, BuildLeft
 
 (8) CometProject
 Input [15]: [ws_item_sk#1, ws_web_page_sk#2, ws_order_number#3, ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7, wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16]
@@ -104,7 +104,7 @@ Arguments: [wp_web_page_sk#18]
 (12) CometBroadcastHashJoin
 Left output [11]: [ws_web_page_sk#2, ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16]
 Right output [1]: [wp_web_page_sk#18]
-Arguments: [ws_web_page_sk#2], [wp_web_page_sk#18], Inner
+Arguments: [ws_web_page_sk#2], [wp_web_page_sk#18], Inner, BuildRight
 
 (13) CometProject
 Input [12]: [ws_web_page_sk#2, ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, wp_web_page_sk#18]
@@ -128,7 +128,7 @@ Arguments: [cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
 (17) CometBroadcastHashJoin
 Left output [10]: [ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16]
 Right output [3]: [cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
-Arguments: [wr_refunded_cdemo_sk#10], [cd_demo_sk#19], Inner, ((((((cd_marital_status#20 = M) AND (cd_education_status#21 = Advanced Degree     )) AND (ws_sales_price#5 >= 100.00)) AND (ws_sales_price#5 <= 150.00)) OR ((((cd_marital_status#20 = S) AND (cd_education_status#21 = College             )) AND (ws_sales_price#5 >= 50.00)) AND (ws_sales_price#5 <= 100.00))) OR ((((cd_marital_status#20 = W) AND (cd_education_status#21 = 2 yr Degree         )) AND (ws_sales_price#5 >= 150.00)) AND (ws_sales_price#5 <= 200.00)))
+Arguments: [wr_refunded_cdemo_sk#10], [cd_demo_sk#19], Inner, ((((((cd_marital_status#20 = M) AND (cd_education_status#21 = Advanced Degree     )) AND (ws_sales_price#5 >= 100.00)) AND (ws_sales_price#5 <= 150.00)) OR ((((cd_marital_status#20 = S) AND (cd_education_status#21 = College             )) AND (ws_sales_price#5 >= 50.00)) AND (ws_sales_price#5 <= 100.00))) OR ((((cd_marital_status#20 = W) AND (cd_education_status#21 = 2 yr Degree         )) AND (ws_sales_price#5 >= 150.00)) AND (ws_sales_price#5 <= 200.00))), BuildRight
 
 (18) CometProject
 Input [13]: [ws_quantity#4, ws_sales_price#5, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
@@ -152,7 +152,7 @@ Arguments: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
 (22) CometBroadcastHashJoin
 Left output [10]: [ws_quantity#4, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, cd_marital_status#20, cd_education_status#21]
 Right output [3]: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
-Arguments: [wr_returning_cdemo_sk#12, cd_marital_status#20, cd_education_status#21], [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24], Inner
+Arguments: [wr_returning_cdemo_sk#12, cd_marital_status#20, cd_education_status#21], [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24], Inner, BuildRight
 
 (23) CometProject
 Input [13]: [ws_quantity#4, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, cd_marital_status#20, cd_education_status#21, cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
@@ -180,7 +180,7 @@ Arguments: [ca_address_sk#25, ca_state#26]
 (28) CometBroadcastHashJoin
 Left output [7]: [ws_quantity#4, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_addr_sk#11, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16]
 Right output [2]: [ca_address_sk#25, ca_state#26]
-Arguments: [wr_refunded_addr_sk#11], [ca_address_sk#25], Inner, ((((ca_state#26 IN (IN,OH,NJ) AND (ws_net_profit#6 >= 100.00)) AND (ws_net_profit#6 <= 200.00)) OR ((ca_state#26 IN (WI,CT,KY) AND (ws_net_profit#6 >= 150.00)) AND (ws_net_profit#6 <= 300.00))) OR ((ca_state#26 IN (LA,IA,AR) AND (ws_net_profit#6 >= 50.00)) AND (ws_net_profit#6 <= 250.00)))
+Arguments: [wr_refunded_addr_sk#11], [ca_address_sk#25], Inner, ((((ca_state#26 IN (IN,OH,NJ) AND (ws_net_profit#6 >= 100.00)) AND (ws_net_profit#6 <= 200.00)) OR ((ca_state#26 IN (WI,CT,KY) AND (ws_net_profit#6 >= 150.00)) AND (ws_net_profit#6 <= 300.00))) OR ((ca_state#26 IN (LA,IA,AR) AND (ws_net_profit#6 >= 50.00)) AND (ws_net_profit#6 <= 250.00))), BuildRight
 
 (29) CometProject
 Input [9]: [ws_quantity#4, ws_net_profit#6, ws_sold_date_sk#7, wr_refunded_addr_sk#11, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, ca_address_sk#25, ca_state#26]
@@ -208,7 +208,7 @@ Arguments: [d_date_sk#28]
 (34) CometBroadcastHashJoin
 Left output [5]: [ws_quantity#4, ws_sold_date_sk#7, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16]
 Right output [1]: [d_date_sk#28]
-Arguments: [ws_sold_date_sk#7], [d_date_sk#28], Inner
+Arguments: [ws_sold_date_sk#7], [d_date_sk#28], Inner, BuildRight
 
 (35) CometProject
 Input [6]: [ws_quantity#4, ws_sold_date_sk#7, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, d_date_sk#28]
@@ -232,7 +232,7 @@ Arguments: [r_reason_sk#30, r_reason_desc#31]
 (39) CometBroadcastHashJoin
 Left output [4]: [ws_quantity#4, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16]
 Right output [2]: [r_reason_sk#30, r_reason_desc#31]
-Arguments: [wr_reason_sk#13], [r_reason_sk#30], Inner
+Arguments: [wr_reason_sk#13], [r_reason_sk#30], Inner, BuildRight
 
 (40) CometProject
 Input [6]: [ws_quantity#4, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, r_reason_sk#30, r_reason_desc#31]

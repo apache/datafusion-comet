@@ -98,7 +98,7 @@ Arguments: [d_date_sk#6]
 (7) CometBroadcastHashJoin
 Left output [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 Right output [1]: [d_date_sk#6]
-Arguments: [ss_sold_date_sk#4], [d_date_sk#6], Inner
+Arguments: [ss_sold_date_sk#4], [d_date_sk#6], Inner, BuildRight
 
 (8) CometProject
 Input [5]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4, d_date_sk#6]
@@ -126,7 +126,7 @@ Arguments: [ca_address_sk#9]
 (13) CometBroadcastHashJoin
 Left output [3]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3]
 Right output [1]: [ca_address_sk#9]
-Arguments: [ss_addr_sk#2], [ca_address_sk#9], Inner
+Arguments: [ss_addr_sk#2], [ca_address_sk#9], Inner, BuildRight
 
 (14) CometProject
 Input [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ca_address_sk#9]
@@ -165,7 +165,7 @@ Arguments: [i_manufact_id#14]
 (21) CometBroadcastHashJoin
 Left output [2]: [i_item_sk#11, i_manufact_id#12]
 Right output [1]: [i_manufact_id#14]
-Arguments: [i_manufact_id#12], [i_manufact_id#14], LeftSemi
+Arguments: [i_manufact_id#12], [i_manufact_id#14], LeftSemi, BuildRight
 
 (22) CometBroadcastExchange
 Input [2]: [i_item_sk#11, i_manufact_id#12]
@@ -174,7 +174,7 @@ Arguments: [i_item_sk#11, i_manufact_id#12]
 (23) CometBroadcastHashJoin
 Left output [2]: [ss_item_sk#1, ss_ext_sales_price#3]
 Right output [2]: [i_item_sk#11, i_manufact_id#12]
-Arguments: [ss_item_sk#1], [i_item_sk#11], Inner
+Arguments: [ss_item_sk#1], [i_item_sk#11], Inner, BuildRight
 
 (24) CometProject
 Input [4]: [ss_item_sk#1, ss_ext_sales_price#3, i_item_sk#11, i_manufact_id#12]
@@ -217,7 +217,7 @@ Output [1]: [d_date_sk#23]
 (32) CometBroadcastHashJoin
 Left output [4]: [cs_bill_addr_sk#18, cs_item_sk#19, cs_ext_sales_price#20, cs_sold_date_sk#21]
 Right output [1]: [d_date_sk#23]
-Arguments: [cs_sold_date_sk#21], [d_date_sk#23], Inner
+Arguments: [cs_sold_date_sk#21], [d_date_sk#23], Inner, BuildRight
 
 (33) CometProject
 Input [5]: [cs_bill_addr_sk#18, cs_item_sk#19, cs_ext_sales_price#20, cs_sold_date_sk#21, d_date_sk#23]
@@ -229,7 +229,7 @@ Output [1]: [ca_address_sk#24]
 (35) CometBroadcastHashJoin
 Left output [3]: [cs_bill_addr_sk#18, cs_item_sk#19, cs_ext_sales_price#20]
 Right output [1]: [ca_address_sk#24]
-Arguments: [cs_bill_addr_sk#18], [ca_address_sk#24], Inner
+Arguments: [cs_bill_addr_sk#18], [ca_address_sk#24], Inner, BuildRight
 
 (36) CometProject
 Input [4]: [cs_bill_addr_sk#18, cs_item_sk#19, cs_ext_sales_price#20, ca_address_sk#24]
@@ -241,7 +241,7 @@ Output [2]: [i_item_sk#25, i_manufact_id#26]
 (38) CometBroadcastHashJoin
 Left output [2]: [cs_item_sk#19, cs_ext_sales_price#20]
 Right output [2]: [i_item_sk#25, i_manufact_id#26]
-Arguments: [cs_item_sk#19], [i_item_sk#25], Inner
+Arguments: [cs_item_sk#19], [i_item_sk#25], Inner, BuildRight
 
 (39) CometProject
 Input [4]: [cs_item_sk#19, cs_ext_sales_price#20, i_item_sk#25, i_manufact_id#26]
@@ -284,7 +284,7 @@ Output [1]: [d_date_sk#35]
 (47) CometBroadcastHashJoin
 Left output [4]: [ws_item_sk#30, ws_bill_addr_sk#31, ws_ext_sales_price#32, ws_sold_date_sk#33]
 Right output [1]: [d_date_sk#35]
-Arguments: [ws_sold_date_sk#33], [d_date_sk#35], Inner
+Arguments: [ws_sold_date_sk#33], [d_date_sk#35], Inner, BuildRight
 
 (48) CometProject
 Input [5]: [ws_item_sk#30, ws_bill_addr_sk#31, ws_ext_sales_price#32, ws_sold_date_sk#33, d_date_sk#35]
@@ -296,7 +296,7 @@ Output [1]: [ca_address_sk#36]
 (50) CometBroadcastHashJoin
 Left output [3]: [ws_item_sk#30, ws_bill_addr_sk#31, ws_ext_sales_price#32]
 Right output [1]: [ca_address_sk#36]
-Arguments: [ws_bill_addr_sk#31], [ca_address_sk#36], Inner
+Arguments: [ws_bill_addr_sk#31], [ca_address_sk#36], Inner, BuildRight
 
 (51) CometProject
 Input [4]: [ws_item_sk#30, ws_bill_addr_sk#31, ws_ext_sales_price#32, ca_address_sk#36]
@@ -308,7 +308,7 @@ Output [2]: [i_item_sk#37, i_manufact_id#38]
 (53) CometBroadcastHashJoin
 Left output [2]: [ws_item_sk#30, ws_ext_sales_price#32]
 Right output [2]: [i_item_sk#37, i_manufact_id#38]
-Arguments: [ws_item_sk#30], [i_item_sk#37], Inner
+Arguments: [ws_item_sk#30], [i_item_sk#37], Inner, BuildRight
 
 (54) CometProject
 Input [4]: [ws_item_sk#30, ws_ext_sales_price#32, i_item_sk#37, i_manufact_id#38]

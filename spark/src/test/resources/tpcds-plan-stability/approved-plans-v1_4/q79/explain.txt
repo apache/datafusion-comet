@@ -66,7 +66,7 @@ Arguments: [d_date_sk#10]
 (7) CometBroadcastHashJoin
 Left output [8]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7, ss_sold_date_sk#8]
 Right output [1]: [d_date_sk#10]
-Arguments: [ss_sold_date_sk#8], [d_date_sk#10], Inner
+Arguments: [ss_sold_date_sk#8], [d_date_sk#10], Inner, BuildRight
 
 (8) CometProject
 Input [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7, ss_sold_date_sk#8, d_date_sk#10]
@@ -94,7 +94,7 @@ Arguments: [s_store_sk#13, s_city#15]
 (13) CometBroadcastHashJoin
 Left output [7]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7]
 Right output [2]: [s_store_sk#13, s_city#15]
-Arguments: [ss_store_sk#4], [s_store_sk#13], Inner
+Arguments: [ss_store_sk#4], [s_store_sk#13], Inner, BuildRight
 
 (14) CometProject
 Input [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7, s_store_sk#13, s_city#15]
@@ -122,7 +122,7 @@ Arguments: [hd_demo_sk#16]
 (19) CometBroadcastHashJoin
 Left output [7]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7, s_city#15]
 Right output [1]: [hd_demo_sk#16]
-Arguments: [ss_hdemo_sk#2], [hd_demo_sk#16], Inner
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#16], Inner, BuildRight
 
 (20) CometProject
 Input [8]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_coupon_amt#6, ss_net_profit#7, s_city#15, hd_demo_sk#16]

@@ -82,7 +82,7 @@ Arguments: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#
 (6) CometBroadcastHashJoin
 Left output [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Right output [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
-Arguments: [ws_warehouse_sk#3], [w_warehouse_sk#9], Inner
+Arguments: [ws_warehouse_sk#3], [w_warehouse_sk#9], Inner, BuildRight
 
 (7) CometProject
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
@@ -106,7 +106,7 @@ Arguments: [d_date_sk#16, d_year#17, d_moy#18]
 (11) CometBroadcastHashJoin
 Left output [12]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
 Right output [3]: [d_date_sk#16, d_year#17, d_moy#18]
-Arguments: [ws_sold_date_sk#7], [d_date_sk#16], Inner
+Arguments: [ws_sold_date_sk#7], [d_date_sk#16], Inner, BuildRight
 
 (12) CometProject
 Input [15]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_date_sk#16, d_year#17, d_moy#18]
@@ -134,7 +134,7 @@ Arguments: [t_time_sk#19]
 (17) CometBroadcastHashJoin
 Left output [13]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18]
 Right output [1]: [t_time_sk#19]
-Arguments: [ws_sold_time_sk#1], [t_time_sk#19], Inner
+Arguments: [ws_sold_time_sk#1], [t_time_sk#19], Inner, BuildRight
 
 (18) CometProject
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18, t_time_sk#19]
@@ -162,7 +162,7 @@ Arguments: [sm_ship_mode_sk#21]
 (23) CometBroadcastHashJoin
 Left output [12]: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18]
 Right output [1]: [sm_ship_mode_sk#21]
-Arguments: [ws_ship_mode_sk#2], [sm_ship_mode_sk#21], Inner
+Arguments: [ws_ship_mode_sk#2], [sm_ship_mode_sk#21], Inner, BuildRight
 
 (24) CometProject
 Input [13]: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18, sm_ship_mode_sk#21]
@@ -205,7 +205,7 @@ Output [7]: [w_warehouse_sk#129, w_warehouse_name#130, w_warehouse_sq_ft#131, w_
 (32) CometBroadcastHashJoin
 Left output [7]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_warehouse_sk#123, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, cs_sold_date_sk#127]
 Right output [7]: [w_warehouse_sk#129, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135]
-Arguments: [cs_warehouse_sk#123], [w_warehouse_sk#129], Inner
+Arguments: [cs_warehouse_sk#123], [w_warehouse_sk#129], Inner, BuildRight
 
 (33) CometProject
 Input [14]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_warehouse_sk#123, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, cs_sold_date_sk#127, w_warehouse_sk#129, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135]
@@ -217,7 +217,7 @@ Output [3]: [d_date_sk#136, d_year#137, d_moy#138]
 (35) CometBroadcastHashJoin
 Left output [12]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, cs_sold_date_sk#127, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135]
 Right output [3]: [d_date_sk#136, d_year#137, d_moy#138]
-Arguments: [cs_sold_date_sk#127], [d_date_sk#136], Inner
+Arguments: [cs_sold_date_sk#127], [d_date_sk#136], Inner, BuildRight
 
 (36) CometProject
 Input [15]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, cs_sold_date_sk#127, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135, d_date_sk#136, d_year#137, d_moy#138]
@@ -229,7 +229,7 @@ Output [1]: [t_time_sk#139]
 (38) CometBroadcastHashJoin
 Left output [13]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135, d_year#137, d_moy#138]
 Right output [1]: [t_time_sk#139]
-Arguments: [cs_sold_time_sk#121], [t_time_sk#139], Inner
+Arguments: [cs_sold_time_sk#121], [t_time_sk#139], Inner, BuildRight
 
 (39) CometProject
 Input [14]: [cs_sold_time_sk#121, cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135, d_year#137, d_moy#138, t_time_sk#139]
@@ -241,7 +241,7 @@ Output [1]: [sm_ship_mode_sk#140]
 (41) CometBroadcastHashJoin
 Left output [12]: [cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135, d_year#137, d_moy#138]
 Right output [1]: [sm_ship_mode_sk#140]
-Arguments: [cs_ship_mode_sk#122], [sm_ship_mode_sk#140], Inner
+Arguments: [cs_ship_mode_sk#122], [sm_ship_mode_sk#140], Inner, BuildRight
 
 (42) CometProject
 Input [13]: [cs_ship_mode_sk#122, cs_quantity#124, cs_sales_price#125, cs_net_paid_inc_tax#126, w_warehouse_name#130, w_warehouse_sq_ft#131, w_city#132, w_county#133, w_state#134, w_country#135, d_year#137, d_moy#138, sm_ship_mode_sk#140]

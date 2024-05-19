@@ -99,7 +99,7 @@ Arguments: [inv_item_sk#10, inv_warehouse_sk#11, inv_quantity_on_hand#12, inv_da
 (6) CometBroadcastHashJoin
 Left output [8]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_quantity#7, cs_sold_date_sk#8]
 Right output [4]: [inv_item_sk#10, inv_warehouse_sk#11, inv_quantity_on_hand#12, inv_date_sk#13]
-Arguments: [cs_item_sk#4], [inv_item_sk#10], Inner, (inv_quantity_on_hand#12 < cs_quantity#7)
+Arguments: [cs_item_sk#4], [inv_item_sk#10], Inner, (inv_quantity_on_hand#12 < cs_quantity#7), BuildRight
 
 (7) CometProject
 Input [12]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_quantity#7, cs_sold_date_sk#8, inv_item_sk#10, inv_warehouse_sk#11, inv_quantity_on_hand#12, inv_date_sk#13]
@@ -123,7 +123,7 @@ Arguments: [w_warehouse_sk#14, w_warehouse_name#15]
 (11) CometBroadcastHashJoin
 Left output [9]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_warehouse_sk#11, inv_date_sk#13]
 Right output [2]: [w_warehouse_sk#14, w_warehouse_name#15]
-Arguments: [inv_warehouse_sk#11], [w_warehouse_sk#14], Inner
+Arguments: [inv_warehouse_sk#11], [w_warehouse_sk#14], Inner, BuildRight
 
 (12) CometProject
 Input [11]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_warehouse_sk#11, inv_date_sk#13, w_warehouse_sk#14, w_warehouse_name#15]
@@ -147,7 +147,7 @@ Arguments: [i_item_sk#16, i_item_desc#17]
 (16) CometBroadcastHashJoin
 Left output [9]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15]
 Right output [2]: [i_item_sk#16, i_item_desc#17]
-Arguments: [cs_item_sk#4], [i_item_sk#16], Inner
+Arguments: [cs_item_sk#4], [i_item_sk#16], Inner, BuildRight
 
 (17) CometProject
 Input [11]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_sk#16, i_item_desc#17]
@@ -175,7 +175,7 @@ Arguments: [cd_demo_sk#18]
 (22) CometBroadcastHashJoin
 Left output [10]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17]
 Right output [1]: [cd_demo_sk#18]
-Arguments: [cs_bill_cdemo_sk#2], [cd_demo_sk#18], Inner
+Arguments: [cs_bill_cdemo_sk#2], [cd_demo_sk#18], Inner, BuildRight
 
 (23) CometProject
 Input [11]: [cs_ship_date_sk#1, cs_bill_cdemo_sk#2, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, cd_demo_sk#18]
@@ -203,7 +203,7 @@ Arguments: [hd_demo_sk#20]
 (28) CometBroadcastHashJoin
 Left output [9]: [cs_ship_date_sk#1, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17]
 Right output [1]: [hd_demo_sk#20]
-Arguments: [cs_bill_hdemo_sk#3], [hd_demo_sk#20], Inner
+Arguments: [cs_bill_hdemo_sk#3], [hd_demo_sk#20], Inner, BuildRight
 
 (29) CometProject
 Input [10]: [cs_ship_date_sk#1, cs_bill_hdemo_sk#3, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, hd_demo_sk#20]
@@ -231,7 +231,7 @@ Arguments: [d_date_sk#22, d_date#23, d_week_seq#24]
 (34) CometBroadcastHashJoin
 Left output [8]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17]
 Right output [3]: [d_date_sk#22, d_date#23, d_week_seq#24]
-Arguments: [cs_sold_date_sk#8], [d_date_sk#22], Inner
+Arguments: [cs_sold_date_sk#8], [d_date_sk#22], Inner, BuildRight
 
 (35) CometProject
 Input [11]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, cs_sold_date_sk#8, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, d_date_sk#22, d_date#23, d_week_seq#24]
@@ -255,7 +255,7 @@ Arguments: [d_date_sk#26, d_week_seq#27]
 (39) CometBroadcastHashJoin
 Left output [9]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24]
 Right output [2]: [d_date_sk#26, d_week_seq#27]
-Arguments: [d_week_seq#24, inv_date_sk#13], [d_week_seq#27, d_date_sk#26], Inner
+Arguments: [d_week_seq#24, inv_date_sk#13], [d_week_seq#27, d_date_sk#26], Inner, BuildRight
 
 (40) CometProject
 Input [11]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24, d_date_sk#26, d_week_seq#27]

@@ -65,7 +65,7 @@ Arguments: [cd_demo_sk#10]
 (7) CometBroadcastHashJoin
 Left output [8]: [ss_item_sk#1, ss_cdemo_sk#2, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 Right output [1]: [cd_demo_sk#10]
-Arguments: [ss_cdemo_sk#2], [cd_demo_sk#10], Inner
+Arguments: [ss_cdemo_sk#2], [cd_demo_sk#10], Inner, BuildRight
 
 (8) CometProject
 Input [9]: [ss_item_sk#1, ss_cdemo_sk#2, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8, cd_demo_sk#10]
@@ -93,7 +93,7 @@ Arguments: [d_date_sk#14]
 (13) CometBroadcastHashJoin
 Left output [7]: [ss_item_sk#1, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8]
 Right output [1]: [d_date_sk#14]
-Arguments: [ss_sold_date_sk#8], [d_date_sk#14], Inner
+Arguments: [ss_sold_date_sk#8], [d_date_sk#14], Inner, BuildRight
 
 (14) CometProject
 Input [8]: [ss_item_sk#1, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, ss_sold_date_sk#8, d_date_sk#14]
@@ -117,7 +117,7 @@ Arguments: [i_item_sk#16, i_item_id#17]
 (18) CometBroadcastHashJoin
 Left output [6]: [ss_item_sk#1, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7]
 Right output [2]: [i_item_sk#16, i_item_id#17]
-Arguments: [ss_item_sk#1], [i_item_sk#16], Inner
+Arguments: [ss_item_sk#1], [i_item_sk#16], Inner, BuildRight
 
 (19) CometProject
 Input [8]: [ss_item_sk#1, ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_sk#16, i_item_id#17]
@@ -145,7 +145,7 @@ Arguments: [p_promo_sk#18]
 (24) CometBroadcastHashJoin
 Left output [6]: [ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#17]
 Right output [1]: [p_promo_sk#18]
-Arguments: [ss_promo_sk#3], [p_promo_sk#18], Inner
+Arguments: [ss_promo_sk#3], [p_promo_sk#18], Inner, BuildRight
 
 (25) CometProject
 Input [7]: [ss_promo_sk#3, ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#17, p_promo_sk#18]

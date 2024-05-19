@@ -81,7 +81,7 @@ Arguments: [d_date_sk#6]
 (7) CometBroadcastHashJoin
 Left output [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Right output [1]: [d_date_sk#6]
-Arguments: [inv_date_sk#4], [d_date_sk#6], Inner
+Arguments: [inv_date_sk#4], [d_date_sk#6], Inner, BuildRight
 
 (8) CometProject
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, d_date_sk#6]
@@ -105,7 +105,7 @@ Arguments: [i_item_sk#8, i_brand#9, i_class#10, i_category#11, i_product_name#12
 (12) CometBroadcastHashJoin
 Left output [3]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3]
 Right output [5]: [i_item_sk#8, i_brand#9, i_class#10, i_category#11, i_product_name#12]
-Arguments: [inv_item_sk#1], [i_item_sk#8], Inner
+Arguments: [inv_item_sk#1], [i_item_sk#8], Inner, BuildRight
 
 (13) CometProject
 Input [8]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, i_item_sk#8, i_brand#9, i_class#10, i_category#11, i_product_name#12]
@@ -129,7 +129,7 @@ Arguments: [w_warehouse_sk#13]
 (17) CometBroadcastHashJoin
 Left output [6]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#9, i_class#10, i_category#11, i_product_name#12]
 Right output [1]: [w_warehouse_sk#13]
-Arguments: [inv_warehouse_sk#2], [w_warehouse_sk#13], Inner
+Arguments: [inv_warehouse_sk#2], [w_warehouse_sk#13], Inner, BuildRight
 
 (18) CometProject
 Input [7]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#9, i_class#10, i_category#11, i_product_name#12, w_warehouse_sk#13]

@@ -134,7 +134,7 @@ Arguments: [d_date_sk#6]
 (7) CometBroadcastHashJoin
 Left output [4]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4]
 Right output [1]: [d_date_sk#6]
-Arguments: [ss_sold_date_sk#4], [d_date_sk#6], Inner
+Arguments: [ss_sold_date_sk#4], [d_date_sk#6], Inner, BuildRight
 
 (8) CometProject
 Input [5]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4, d_date_sk#6]
@@ -158,7 +158,7 @@ Arguments: [s_store_sk#8]
 (12) CometBroadcastHashJoin
 Left output [3]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3]
 Right output [1]: [s_store_sk#8]
-Arguments: [ss_store_sk#1], [s_store_sk#8], Inner
+Arguments: [ss_store_sk#1], [s_store_sk#8], Inner, BuildRight
 
 (13) CometProject
 Input [4]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, s_store_sk#8]
@@ -201,7 +201,7 @@ Output [1]: [d_date_sk#20]
 (21) CometBroadcastHashJoin
 Left output [4]: [sr_store_sk#15, sr_return_amt#16, sr_net_loss#17, sr_returned_date_sk#18]
 Right output [1]: [d_date_sk#20]
-Arguments: [sr_returned_date_sk#18], [d_date_sk#20], Inner
+Arguments: [sr_returned_date_sk#18], [d_date_sk#20], Inner, BuildRight
 
 (22) CometProject
 Input [5]: [sr_store_sk#15, sr_return_amt#16, sr_net_loss#17, sr_returned_date_sk#18, d_date_sk#20]
@@ -213,7 +213,7 @@ Output [1]: [s_store_sk#21]
 (24) CometBroadcastHashJoin
 Left output [3]: [sr_store_sk#15, sr_return_amt#16, sr_net_loss#17]
 Right output [1]: [s_store_sk#21]
-Arguments: [sr_store_sk#15], [s_store_sk#21], Inner
+Arguments: [sr_store_sk#15], [s_store_sk#21], Inner, BuildRight
 
 (25) CometProject
 Input [4]: [sr_store_sk#15, sr_return_amt#16, sr_net_loss#17, s_store_sk#21]
@@ -265,7 +265,7 @@ Output [1]: [d_date_sk#37]
 (35) CometBroadcastHashJoin
 Left output [4]: [cs_call_center_sk#32, cs_ext_sales_price#33, cs_net_profit#34, cs_sold_date_sk#35]
 Right output [1]: [d_date_sk#37]
-Arguments: [cs_sold_date_sk#35], [d_date_sk#37], Inner
+Arguments: [cs_sold_date_sk#35], [d_date_sk#37], Inner, BuildRight
 
 (36) CometProject
 Input [5]: [cs_call_center_sk#32, cs_ext_sales_price#33, cs_net_profit#34, cs_sold_date_sk#35, d_date_sk#37]
@@ -307,7 +307,7 @@ Output [1]: [d_date_sk#48]
 (44) CometBroadcastHashJoin
 Left output [3]: [cr_return_amount#44, cr_net_loss#45, cr_returned_date_sk#46]
 Right output [1]: [d_date_sk#48]
-Arguments: [cr_returned_date_sk#46], [d_date_sk#48], Inner
+Arguments: [cr_returned_date_sk#46], [d_date_sk#48], Inner, BuildRight
 
 (45) CometProject
 Input [4]: [cr_return_amount#44, cr_net_loss#45, cr_returned_date_sk#46, d_date_sk#48]
@@ -358,7 +358,7 @@ Output [1]: [d_date_sk#63]
 (55) CometBroadcastHashJoin
 Left output [4]: [ws_web_page_sk#58, ws_ext_sales_price#59, ws_net_profit#60, ws_sold_date_sk#61]
 Right output [1]: [d_date_sk#63]
-Arguments: [ws_sold_date_sk#61], [d_date_sk#63], Inner
+Arguments: [ws_sold_date_sk#61], [d_date_sk#63], Inner, BuildRight
 
 (56) CometProject
 Input [5]: [ws_web_page_sk#58, ws_ext_sales_price#59, ws_net_profit#60, ws_sold_date_sk#61, d_date_sk#63]
@@ -382,7 +382,7 @@ Arguments: [wp_web_page_sk#64]
 (60) CometBroadcastHashJoin
 Left output [3]: [ws_web_page_sk#58, ws_ext_sales_price#59, ws_net_profit#60]
 Right output [1]: [wp_web_page_sk#64]
-Arguments: [ws_web_page_sk#58], [wp_web_page_sk#64], Inner
+Arguments: [ws_web_page_sk#58], [wp_web_page_sk#64], Inner, BuildRight
 
 (61) CometProject
 Input [4]: [ws_web_page_sk#58, ws_ext_sales_price#59, ws_net_profit#60, wp_web_page_sk#64]
@@ -425,7 +425,7 @@ Output [1]: [d_date_sk#76]
 (69) CometBroadcastHashJoin
 Left output [4]: [wr_web_page_sk#71, wr_return_amt#72, wr_net_loss#73, wr_returned_date_sk#74]
 Right output [1]: [d_date_sk#76]
-Arguments: [wr_returned_date_sk#74], [d_date_sk#76], Inner
+Arguments: [wr_returned_date_sk#74], [d_date_sk#76], Inner, BuildRight
 
 (70) CometProject
 Input [5]: [wr_web_page_sk#71, wr_return_amt#72, wr_net_loss#73, wr_returned_date_sk#74, d_date_sk#76]
@@ -437,7 +437,7 @@ Output [1]: [wp_web_page_sk#77]
 (72) CometBroadcastHashJoin
 Left output [3]: [wr_web_page_sk#71, wr_return_amt#72, wr_net_loss#73]
 Right output [1]: [wp_web_page_sk#77]
-Arguments: [wr_web_page_sk#71], [wp_web_page_sk#77], Inner
+Arguments: [wr_web_page_sk#71], [wp_web_page_sk#77], Inner, BuildRight
 
 (73) CometProject
 Input [4]: [wr_web_page_sk#71, wr_return_amt#72, wr_net_loss#73, wp_web_page_sk#77]

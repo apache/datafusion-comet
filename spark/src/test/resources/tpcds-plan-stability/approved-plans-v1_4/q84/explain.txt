@@ -66,7 +66,7 @@ Arguments: [ca_address_sk#7]
 (7) CometBroadcastHashJoin
 Left output [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
 Right output [1]: [ca_address_sk#7]
-Arguments: [c_current_addr_sk#4], [ca_address_sk#7], Inner
+Arguments: [c_current_addr_sk#4], [ca_address_sk#7], Inner, BuildRight
 
 (8) CometProject
 Input [7]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6, ca_address_sk#7]
@@ -90,7 +90,7 @@ Arguments: [cd_demo_sk#9]
 (12) CometBroadcastHashJoin
 Left output [5]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6]
 Right output [1]: [cd_demo_sk#9]
-Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#9], Inner
+Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#9], Inner, BuildRight
 
 (13) CometProject
 Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
@@ -114,7 +114,7 @@ Arguments: [hd_demo_sk#10, hd_income_band_sk#11]
 (17) CometBroadcastHashJoin
 Left output [5]: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 Right output [2]: [hd_demo_sk#10, hd_income_band_sk#11]
-Arguments: [c_current_hdemo_sk#3], [hd_demo_sk#10], Inner
+Arguments: [c_current_hdemo_sk#3], [hd_demo_sk#10], Inner, BuildRight
 
 (18) CometProject
 Input [7]: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_demo_sk#10, hd_income_band_sk#11]
@@ -142,7 +142,7 @@ Arguments: [ib_income_band_sk#12]
 (23) CometBroadcastHashJoin
 Left output [5]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11]
 Right output [1]: [ib_income_band_sk#12]
-Arguments: [hd_income_band_sk#11], [ib_income_band_sk#12], Inner
+Arguments: [hd_income_band_sk#11], [ib_income_band_sk#12], Inner, BuildRight
 
 (24) CometProject
 Input [6]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11, ib_income_band_sk#12]
@@ -170,7 +170,7 @@ Arguments: [sr_cdemo_sk#15], [sr_cdemo_sk#15]
 (29) CometBroadcastHashJoin
 Left output [4]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 Right output [1]: [sr_cdemo_sk#15]
-Arguments: [cd_demo_sk#9], [sr_cdemo_sk#15], Inner
+Arguments: [cd_demo_sk#9], [sr_cdemo_sk#15], Inner, BuildLeft
 
 (30) ColumnarToRow [codegen id : 1]
 Input [5]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, sr_cdemo_sk#15]

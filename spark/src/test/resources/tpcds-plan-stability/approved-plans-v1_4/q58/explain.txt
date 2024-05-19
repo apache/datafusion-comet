@@ -84,7 +84,7 @@ Arguments: [i_item_sk#5, i_item_id#6]
 (6) CometBroadcastHashJoin
 Left output [3]: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3]
 Right output [2]: [i_item_sk#5, i_item_id#6]
-Arguments: [ss_item_sk#1], [i_item_sk#5], Inner
+Arguments: [ss_item_sk#1], [i_item_sk#5], Inner, BuildRight
 
 (7) CometProject
 Input [5]: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_sk#5, i_item_id#6]
@@ -107,7 +107,7 @@ Output [1]: [d_date#9]
 (11) CometBroadcastHashJoin
 Left output [2]: [d_date_sk#7, d_date#8]
 Right output [1]: [d_date#9]
-Arguments: [d_date#8], [d_date#9], LeftSemi
+Arguments: [d_date#8], [d_date#9], LeftSemi, BuildRight
 
 (12) CometProject
 Input [2]: [d_date_sk#7, d_date#8]
@@ -120,7 +120,7 @@ Arguments: [d_date_sk#7]
 (14) CometBroadcastHashJoin
 Left output [3]: [ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_id#6]
 Right output [1]: [d_date_sk#7]
-Arguments: [ss_sold_date_sk#3], [d_date_sk#7], Inner
+Arguments: [ss_sold_date_sk#3], [d_date_sk#7], Inner, BuildRight
 
 (15) CometProject
 Input [4]: [ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_id#6, d_date_sk#7]
@@ -167,7 +167,7 @@ Output [2]: [i_item_sk#18, i_item_id#19]
 (24) CometBroadcastHashJoin
 Left output [3]: [cs_item_sk#14, cs_ext_sales_price#15, cs_sold_date_sk#16]
 Right output [2]: [i_item_sk#18, i_item_id#19]
-Arguments: [cs_item_sk#14], [i_item_sk#18], Inner
+Arguments: [cs_item_sk#14], [i_item_sk#18], Inner, BuildRight
 
 (25) CometProject
 Input [5]: [cs_item_sk#14, cs_ext_sales_price#15, cs_sold_date_sk#16, i_item_sk#18, i_item_id#19]
@@ -179,7 +179,7 @@ Output [1]: [d_date_sk#20]
 (27) CometBroadcastHashJoin
 Left output [3]: [cs_ext_sales_price#15, cs_sold_date_sk#16, i_item_id#19]
 Right output [1]: [d_date_sk#20]
-Arguments: [cs_sold_date_sk#16], [d_date_sk#20], Inner
+Arguments: [cs_sold_date_sk#16], [d_date_sk#20], Inner, BuildRight
 
 (28) CometProject
 Input [4]: [cs_ext_sales_price#15, cs_sold_date_sk#16, i_item_id#19, d_date_sk#20]
@@ -240,7 +240,7 @@ Output [2]: [i_item_sk#29, i_item_id#30]
 (40) CometBroadcastHashJoin
 Left output [3]: [ws_item_sk#25, ws_ext_sales_price#26, ws_sold_date_sk#27]
 Right output [2]: [i_item_sk#29, i_item_id#30]
-Arguments: [ws_item_sk#25], [i_item_sk#29], Inner
+Arguments: [ws_item_sk#25], [i_item_sk#29], Inner, BuildRight
 
 (41) CometProject
 Input [5]: [ws_item_sk#25, ws_ext_sales_price#26, ws_sold_date_sk#27, i_item_sk#29, i_item_id#30]
@@ -252,7 +252,7 @@ Output [1]: [d_date_sk#31]
 (43) CometBroadcastHashJoin
 Left output [3]: [ws_ext_sales_price#26, ws_sold_date_sk#27, i_item_id#30]
 Right output [1]: [d_date_sk#31]
-Arguments: [ws_sold_date_sk#27], [d_date_sk#31], Inner
+Arguments: [ws_sold_date_sk#27], [d_date_sk#31], Inner, BuildRight
 
 (44) CometProject
 Input [4]: [ws_ext_sales_price#26, ws_sold_date_sk#27, i_item_id#30, d_date_sk#31]
@@ -347,7 +347,7 @@ Arguments: [d_date#9]
 (60) CometBroadcastHashJoin
 Left output [2]: [d_date_sk#7, d_date#8]
 Right output [1]: [d_date#9]
-Arguments: [d_date#8], [d_date#9], LeftSemi
+Arguments: [d_date#8], [d_date#9], LeftSemi, BuildRight
 
 (61) CometProject
 Input [2]: [d_date_sk#7, d_date#8]

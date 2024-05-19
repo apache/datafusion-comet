@@ -79,7 +79,7 @@ Arguments: [d_date_sk#5]
 (7) CometBroadcastHashJoin
 Left output [3]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3]
 Right output [1]: [d_date_sk#5]
-Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner
+Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner, BuildRight
 
 (8) CometProject
 Input [4]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3, d_date_sk#5]
@@ -103,7 +103,7 @@ Arguments: [s_store_sk#8, s_store_name#9, s_zip#10]
 (12) CometBroadcastHashJoin
 Left output [2]: [ss_store_sk#1, ss_net_profit#2]
 Right output [3]: [s_store_sk#8, s_store_name#9, s_zip#10]
-Arguments: [ss_store_sk#1], [s_store_sk#8], Inner
+Arguments: [ss_store_sk#1], [s_store_sk#8], Inner, BuildRight
 
 (13) CometProject
 Input [5]: [ss_store_sk#1, ss_net_profit#2, s_store_sk#8, s_store_name#9, s_zip#10]
@@ -162,7 +162,7 @@ Arguments: [c_current_addr_sk#15]
 (25) CometBroadcastHashJoin
 Left output [2]: [ca_address_sk#13, ca_zip#14]
 Right output [1]: [c_current_addr_sk#15]
-Arguments: [ca_address_sk#13], [c_current_addr_sk#15], Inner
+Arguments: [ca_address_sk#13], [c_current_addr_sk#15], Inner, BuildRight
 
 (26) CometProject
 Input [3]: [ca_address_sk#13, ca_zip#14, c_current_addr_sk#15]

@@ -210,7 +210,7 @@ Arguments: [hd_demo_sk#5]
 (8) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
 Right output [1]: [hd_demo_sk#5]
-Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
 
 (9) CometProject
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
@@ -238,7 +238,7 @@ Arguments: [t_time_sk#8]
 (14) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#1, ss_store_sk#3]
 Right output [1]: [t_time_sk#8]
-Arguments: [ss_sold_time_sk#1], [t_time_sk#8], Inner
+Arguments: [ss_sold_time_sk#1], [t_time_sk#8], Inner, BuildRight
 
 (15) CometProject
 Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#8]
@@ -266,7 +266,7 @@ Arguments: [s_store_sk#11]
 (20) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#3]
 Right output [1]: [s_store_sk#11]
-Arguments: [ss_store_sk#3], [s_store_sk#11], Inner
+Arguments: [ss_store_sk#3], [s_store_sk#11], Inner, BuildRight
 
 (21) CometProject
 Input [2]: [ss_store_sk#3, s_store_sk#11]
@@ -311,7 +311,7 @@ Output [1]: [hd_demo_sk#20]
 (30) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#16, ss_hdemo_sk#17, ss_store_sk#18]
 Right output [1]: [hd_demo_sk#20]
-Arguments: [ss_hdemo_sk#17], [hd_demo_sk#20], Inner
+Arguments: [ss_hdemo_sk#17], [hd_demo_sk#20], Inner, BuildRight
 
 (31) CometProject
 Input [4]: [ss_sold_time_sk#16, ss_hdemo_sk#17, ss_store_sk#18, hd_demo_sk#20]
@@ -339,7 +339,7 @@ Arguments: [t_time_sk#21]
 (36) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#16, ss_store_sk#18]
 Right output [1]: [t_time_sk#21]
-Arguments: [ss_sold_time_sk#16], [t_time_sk#21], Inner
+Arguments: [ss_sold_time_sk#16], [t_time_sk#21], Inner, BuildRight
 
 (37) CometProject
 Input [3]: [ss_sold_time_sk#16, ss_store_sk#18, t_time_sk#21]
@@ -351,7 +351,7 @@ Output [1]: [s_store_sk#24]
 (39) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#18]
 Right output [1]: [s_store_sk#24]
-Arguments: [ss_store_sk#18], [s_store_sk#24], Inner
+Arguments: [ss_store_sk#18], [s_store_sk#24], Inner, BuildRight
 
 (40) CometProject
 Input [2]: [ss_store_sk#18, s_store_sk#24]
@@ -404,7 +404,7 @@ Output [1]: [hd_demo_sk#32]
 (51) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#28, ss_hdemo_sk#29, ss_store_sk#30]
 Right output [1]: [hd_demo_sk#32]
-Arguments: [ss_hdemo_sk#29], [hd_demo_sk#32], Inner
+Arguments: [ss_hdemo_sk#29], [hd_demo_sk#32], Inner, BuildRight
 
 (52) CometProject
 Input [4]: [ss_sold_time_sk#28, ss_hdemo_sk#29, ss_store_sk#30, hd_demo_sk#32]
@@ -432,7 +432,7 @@ Arguments: [t_time_sk#33]
 (57) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#28, ss_store_sk#30]
 Right output [1]: [t_time_sk#33]
-Arguments: [ss_sold_time_sk#28], [t_time_sk#33], Inner
+Arguments: [ss_sold_time_sk#28], [t_time_sk#33], Inner, BuildRight
 
 (58) CometProject
 Input [3]: [ss_sold_time_sk#28, ss_store_sk#30, t_time_sk#33]
@@ -444,7 +444,7 @@ Output [1]: [s_store_sk#36]
 (60) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#30]
 Right output [1]: [s_store_sk#36]
-Arguments: [ss_store_sk#30], [s_store_sk#36], Inner
+Arguments: [ss_store_sk#30], [s_store_sk#36], Inner, BuildRight
 
 (61) CometProject
 Input [2]: [ss_store_sk#30, s_store_sk#36]
@@ -497,7 +497,7 @@ Output [1]: [hd_demo_sk#44]
 (72) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#40, ss_hdemo_sk#41, ss_store_sk#42]
 Right output [1]: [hd_demo_sk#44]
-Arguments: [ss_hdemo_sk#41], [hd_demo_sk#44], Inner
+Arguments: [ss_hdemo_sk#41], [hd_demo_sk#44], Inner, BuildRight
 
 (73) CometProject
 Input [4]: [ss_sold_time_sk#40, ss_hdemo_sk#41, ss_store_sk#42, hd_demo_sk#44]
@@ -525,7 +525,7 @@ Arguments: [t_time_sk#45]
 (78) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#40, ss_store_sk#42]
 Right output [1]: [t_time_sk#45]
-Arguments: [ss_sold_time_sk#40], [t_time_sk#45], Inner
+Arguments: [ss_sold_time_sk#40], [t_time_sk#45], Inner, BuildRight
 
 (79) CometProject
 Input [3]: [ss_sold_time_sk#40, ss_store_sk#42, t_time_sk#45]
@@ -537,7 +537,7 @@ Output [1]: [s_store_sk#48]
 (81) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#42]
 Right output [1]: [s_store_sk#48]
-Arguments: [ss_store_sk#42], [s_store_sk#48], Inner
+Arguments: [ss_store_sk#42], [s_store_sk#48], Inner, BuildRight
 
 (82) CometProject
 Input [2]: [ss_store_sk#42, s_store_sk#48]
@@ -590,7 +590,7 @@ Output [1]: [hd_demo_sk#56]
 (93) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#52, ss_hdemo_sk#53, ss_store_sk#54]
 Right output [1]: [hd_demo_sk#56]
-Arguments: [ss_hdemo_sk#53], [hd_demo_sk#56], Inner
+Arguments: [ss_hdemo_sk#53], [hd_demo_sk#56], Inner, BuildRight
 
 (94) CometProject
 Input [4]: [ss_sold_time_sk#52, ss_hdemo_sk#53, ss_store_sk#54, hd_demo_sk#56]
@@ -618,7 +618,7 @@ Arguments: [t_time_sk#57]
 (99) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#52, ss_store_sk#54]
 Right output [1]: [t_time_sk#57]
-Arguments: [ss_sold_time_sk#52], [t_time_sk#57], Inner
+Arguments: [ss_sold_time_sk#52], [t_time_sk#57], Inner, BuildRight
 
 (100) CometProject
 Input [3]: [ss_sold_time_sk#52, ss_store_sk#54, t_time_sk#57]
@@ -630,7 +630,7 @@ Output [1]: [s_store_sk#60]
 (102) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#54]
 Right output [1]: [s_store_sk#60]
-Arguments: [ss_store_sk#54], [s_store_sk#60], Inner
+Arguments: [ss_store_sk#54], [s_store_sk#60], Inner, BuildRight
 
 (103) CometProject
 Input [2]: [ss_store_sk#54, s_store_sk#60]
@@ -683,7 +683,7 @@ Output [1]: [hd_demo_sk#68]
 (114) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#64, ss_hdemo_sk#65, ss_store_sk#66]
 Right output [1]: [hd_demo_sk#68]
-Arguments: [ss_hdemo_sk#65], [hd_demo_sk#68], Inner
+Arguments: [ss_hdemo_sk#65], [hd_demo_sk#68], Inner, BuildRight
 
 (115) CometProject
 Input [4]: [ss_sold_time_sk#64, ss_hdemo_sk#65, ss_store_sk#66, hd_demo_sk#68]
@@ -711,7 +711,7 @@ Arguments: [t_time_sk#69]
 (120) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#64, ss_store_sk#66]
 Right output [1]: [t_time_sk#69]
-Arguments: [ss_sold_time_sk#64], [t_time_sk#69], Inner
+Arguments: [ss_sold_time_sk#64], [t_time_sk#69], Inner, BuildRight
 
 (121) CometProject
 Input [3]: [ss_sold_time_sk#64, ss_store_sk#66, t_time_sk#69]
@@ -723,7 +723,7 @@ Output [1]: [s_store_sk#72]
 (123) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#66]
 Right output [1]: [s_store_sk#72]
-Arguments: [ss_store_sk#66], [s_store_sk#72], Inner
+Arguments: [ss_store_sk#66], [s_store_sk#72], Inner, BuildRight
 
 (124) CometProject
 Input [2]: [ss_store_sk#66, s_store_sk#72]
@@ -776,7 +776,7 @@ Output [1]: [hd_demo_sk#80]
 (135) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#76, ss_hdemo_sk#77, ss_store_sk#78]
 Right output [1]: [hd_demo_sk#80]
-Arguments: [ss_hdemo_sk#77], [hd_demo_sk#80], Inner
+Arguments: [ss_hdemo_sk#77], [hd_demo_sk#80], Inner, BuildRight
 
 (136) CometProject
 Input [4]: [ss_sold_time_sk#76, ss_hdemo_sk#77, ss_store_sk#78, hd_demo_sk#80]
@@ -804,7 +804,7 @@ Arguments: [t_time_sk#81]
 (141) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#76, ss_store_sk#78]
 Right output [1]: [t_time_sk#81]
-Arguments: [ss_sold_time_sk#76], [t_time_sk#81], Inner
+Arguments: [ss_sold_time_sk#76], [t_time_sk#81], Inner, BuildRight
 
 (142) CometProject
 Input [3]: [ss_sold_time_sk#76, ss_store_sk#78, t_time_sk#81]
@@ -816,7 +816,7 @@ Output [1]: [s_store_sk#84]
 (144) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#78]
 Right output [1]: [s_store_sk#84]
-Arguments: [ss_store_sk#78], [s_store_sk#84], Inner
+Arguments: [ss_store_sk#78], [s_store_sk#84], Inner, BuildRight
 
 (145) CometProject
 Input [2]: [ss_store_sk#78, s_store_sk#84]
@@ -869,7 +869,7 @@ Output [1]: [hd_demo_sk#92]
 (156) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#88, ss_hdemo_sk#89, ss_store_sk#90]
 Right output [1]: [hd_demo_sk#92]
-Arguments: [ss_hdemo_sk#89], [hd_demo_sk#92], Inner
+Arguments: [ss_hdemo_sk#89], [hd_demo_sk#92], Inner, BuildRight
 
 (157) CometProject
 Input [4]: [ss_sold_time_sk#88, ss_hdemo_sk#89, ss_store_sk#90, hd_demo_sk#92]
@@ -897,7 +897,7 @@ Arguments: [t_time_sk#93]
 (162) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#88, ss_store_sk#90]
 Right output [1]: [t_time_sk#93]
-Arguments: [ss_sold_time_sk#88], [t_time_sk#93], Inner
+Arguments: [ss_sold_time_sk#88], [t_time_sk#93], Inner, BuildRight
 
 (163) CometProject
 Input [3]: [ss_sold_time_sk#88, ss_store_sk#90, t_time_sk#93]
@@ -909,7 +909,7 @@ Output [1]: [s_store_sk#96]
 (165) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#90]
 Right output [1]: [s_store_sk#96]
-Arguments: [ss_store_sk#90], [s_store_sk#96], Inner
+Arguments: [ss_store_sk#90], [s_store_sk#96], Inner, BuildRight
 
 (166) CometProject
 Input [2]: [ss_store_sk#90, s_store_sk#96]

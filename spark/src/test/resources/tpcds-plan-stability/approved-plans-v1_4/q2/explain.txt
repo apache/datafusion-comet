@@ -80,7 +80,7 @@ Arguments: [d_date_sk#9, d_week_seq#10, d_day_name#11]
 (9) CometBroadcastHashJoin
 Left output [2]: [sold_date_sk#3, sales_price#4]
 Right output [3]: [d_date_sk#9, d_week_seq#10, d_day_name#11]
-Arguments: [sold_date_sk#3], [d_date_sk#9], Inner
+Arguments: [sold_date_sk#3], [d_date_sk#9], Inner, BuildRight
 
 (10) CometProject
 Input [5]: [sold_date_sk#3, sales_price#4, d_date_sk#9, d_week_seq#10, d_day_name#11]

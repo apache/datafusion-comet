@@ -85,7 +85,7 @@ Arguments: [hd_demo_sk#5]
 (8) CometBroadcastHashJoin
 Left output [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 Right output [1]: [hd_demo_sk#5]
-Arguments: [ws_ship_hdemo_sk#2], [hd_demo_sk#5], Inner
+Arguments: [ws_ship_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
 
 (9) CometProject
 Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, hd_demo_sk#5]
@@ -113,7 +113,7 @@ Arguments: [t_time_sk#7]
 (14) CometBroadcastHashJoin
 Left output [2]: [ws_sold_time_sk#1, ws_web_page_sk#3]
 Right output [1]: [t_time_sk#7]
-Arguments: [ws_sold_time_sk#1], [t_time_sk#7], Inner
+Arguments: [ws_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
 
 (15) CometProject
 Input [3]: [ws_sold_time_sk#1, ws_web_page_sk#3, t_time_sk#7]
@@ -141,7 +141,7 @@ Arguments: [wp_web_page_sk#9]
 (20) CometBroadcastHashJoin
 Left output [1]: [ws_web_page_sk#3]
 Right output [1]: [wp_web_page_sk#9]
-Arguments: [ws_web_page_sk#3], [wp_web_page_sk#9], Inner
+Arguments: [ws_web_page_sk#3], [wp_web_page_sk#9], Inner, BuildRight
 
 (21) CometProject
 Input [2]: [ws_web_page_sk#3, wp_web_page_sk#9]
@@ -186,7 +186,7 @@ Output [1]: [hd_demo_sk#18]
 (30) CometBroadcastHashJoin
 Left output [3]: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16]
 Right output [1]: [hd_demo_sk#18]
-Arguments: [ws_ship_hdemo_sk#15], [hd_demo_sk#18], Inner
+Arguments: [ws_ship_hdemo_sk#15], [hd_demo_sk#18], Inner, BuildRight
 
 (31) CometProject
 Input [4]: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16, hd_demo_sk#18]
@@ -214,7 +214,7 @@ Arguments: [t_time_sk#19]
 (36) CometBroadcastHashJoin
 Left output [2]: [ws_sold_time_sk#14, ws_web_page_sk#16]
 Right output [1]: [t_time_sk#19]
-Arguments: [ws_sold_time_sk#14], [t_time_sk#19], Inner
+Arguments: [ws_sold_time_sk#14], [t_time_sk#19], Inner, BuildRight
 
 (37) CometProject
 Input [3]: [ws_sold_time_sk#14, ws_web_page_sk#16, t_time_sk#19]
@@ -226,7 +226,7 @@ Output [1]: [wp_web_page_sk#21]
 (39) CometBroadcastHashJoin
 Left output [1]: [ws_web_page_sk#16]
 Right output [1]: [wp_web_page_sk#21]
-Arguments: [ws_web_page_sk#16], [wp_web_page_sk#21], Inner
+Arguments: [ws_web_page_sk#16], [wp_web_page_sk#21], Inner, BuildRight
 
 (40) CometProject
 Input [2]: [ws_web_page_sk#16, wp_web_page_sk#21]

@@ -64,7 +64,7 @@ Arguments: [s_store_sk#12]
 (6) CometBroadcastHashJoin
 Left output [10]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 Right output [1]: [s_store_sk#12]
-Arguments: [ss_store_sk#4], [s_store_sk#12], Inner
+Arguments: [ss_store_sk#4], [s_store_sk#12], Inner, BuildRight
 
 (7) CometProject
 Input [11]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10, s_store_sk#12]
@@ -92,7 +92,7 @@ Arguments: [ca_address_sk#13, ca_state#14]
 (12) CometBroadcastHashJoin
 Left output [9]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 Right output [2]: [ca_address_sk#13, ca_state#14]
-Arguments: [ss_addr_sk#3], [ca_address_sk#13], Inner, ((((ca_state#14 IN (TX,OH) AND (ss_net_profit#9 >= 100.00)) AND (ss_net_profit#9 <= 200.00)) OR ((ca_state#14 IN (OR,NM,KY) AND (ss_net_profit#9 >= 150.00)) AND (ss_net_profit#9 <= 300.00))) OR ((ca_state#14 IN (VA,TX,MS) AND (ss_net_profit#9 >= 50.00)) AND (ss_net_profit#9 <= 250.00)))
+Arguments: [ss_addr_sk#3], [ca_address_sk#13], Inner, ((((ca_state#14 IN (TX,OH) AND (ss_net_profit#9 >= 100.00)) AND (ss_net_profit#9 <= 200.00)) OR ((ca_state#14 IN (OR,NM,KY) AND (ss_net_profit#9 >= 150.00)) AND (ss_net_profit#9 <= 300.00))) OR ((ca_state#14 IN (VA,TX,MS) AND (ss_net_profit#9 >= 50.00)) AND (ss_net_profit#9 <= 250.00))), BuildRight
 
 (13) CometProject
 Input [11]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10, ca_address_sk#13, ca_state#14]
@@ -120,7 +120,7 @@ Arguments: [d_date_sk#16]
 (18) CometBroadcastHashJoin
 Left output [7]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_sold_date_sk#10]
 Right output [1]: [d_date_sk#16]
-Arguments: [ss_sold_date_sk#10], [d_date_sk#16], Inner
+Arguments: [ss_sold_date_sk#10], [d_date_sk#16], Inner, BuildRight
 
 (19) CometProject
 Input [8]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_sold_date_sk#10, d_date_sk#16]
@@ -144,7 +144,7 @@ Arguments: [cd_demo_sk#18, cd_marital_status#19, cd_education_status#20]
 (23) CometBroadcastHashJoin
 Left output [6]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 Right output [3]: [cd_demo_sk#18, cd_marital_status#19, cd_education_status#20]
-Arguments: [ss_cdemo_sk#1], [cd_demo_sk#18], Inner, ((((((cd_marital_status#19 = M) AND (cd_education_status#20 = Advanced Degree     )) AND (ss_sales_price#6 >= 100.00)) AND (ss_sales_price#6 <= 150.00)) OR ((((cd_marital_status#19 = S) AND (cd_education_status#20 = College             )) AND (ss_sales_price#6 >= 50.00)) AND (ss_sales_price#6 <= 100.00))) OR ((((cd_marital_status#19 = W) AND (cd_education_status#20 = 2 yr Degree         )) AND (ss_sales_price#6 >= 150.00)) AND (ss_sales_price#6 <= 200.00)))
+Arguments: [ss_cdemo_sk#1], [cd_demo_sk#18], Inner, ((((((cd_marital_status#19 = M) AND (cd_education_status#20 = Advanced Degree     )) AND (ss_sales_price#6 >= 100.00)) AND (ss_sales_price#6 <= 150.00)) OR ((((cd_marital_status#19 = S) AND (cd_education_status#20 = College             )) AND (ss_sales_price#6 >= 50.00)) AND (ss_sales_price#6 <= 100.00))) OR ((((cd_marital_status#19 = W) AND (cd_education_status#20 = 2 yr Degree         )) AND (ss_sales_price#6 >= 150.00)) AND (ss_sales_price#6 <= 200.00))), BuildRight
 
 (24) CometProject
 Input [9]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_demo_sk#18, cd_marital_status#19, cd_education_status#20]
@@ -168,7 +168,7 @@ Arguments: [hd_demo_sk#21, hd_dep_count#22]
 (28) CometBroadcastHashJoin
 Left output [7]: [ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_marital_status#19, cd_education_status#20]
 Right output [2]: [hd_demo_sk#21, hd_dep_count#22]
-Arguments: [ss_hdemo_sk#2], [hd_demo_sk#21], Inner, (((((((cd_marital_status#19 = M) AND (cd_education_status#20 = Advanced Degree     )) AND (ss_sales_price#6 >= 100.00)) AND (ss_sales_price#6 <= 150.00)) AND (hd_dep_count#22 = 3)) OR (((((cd_marital_status#19 = S) AND (cd_education_status#20 = College             )) AND (ss_sales_price#6 >= 50.00)) AND (ss_sales_price#6 <= 100.00)) AND (hd_dep_count#22 = 1))) OR (((((cd_marital_status#19 = W) AND (cd_education_status#20 = 2 yr Degree         )) AND (ss_sales_price#6 >= 150.00)) AND (ss_sales_price#6 <= 200.00)) AND (hd_dep_count#22 = 1)))
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#21], Inner, (((((((cd_marital_status#19 = M) AND (cd_education_status#20 = Advanced Degree     )) AND (ss_sales_price#6 >= 100.00)) AND (ss_sales_price#6 <= 150.00)) AND (hd_dep_count#22 = 3)) OR (((((cd_marital_status#19 = S) AND (cd_education_status#20 = College             )) AND (ss_sales_price#6 >= 50.00)) AND (ss_sales_price#6 <= 100.00)) AND (hd_dep_count#22 = 1))) OR (((((cd_marital_status#19 = W) AND (cd_education_status#20 = 2 yr Degree         )) AND (ss_sales_price#6 >= 150.00)) AND (ss_sales_price#6 <= 200.00)) AND (hd_dep_count#22 = 1))), BuildRight
 
 (29) CometProject
 Input [9]: [ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_marital_status#19, cd_education_status#20, hd_demo_sk#21, hd_dep_count#22]

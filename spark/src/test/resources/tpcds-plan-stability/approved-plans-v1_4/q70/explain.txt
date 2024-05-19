@@ -79,7 +79,7 @@ Arguments: [d_date_sk#5]
 (7) CometBroadcastHashJoin
 Left output [3]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3]
 Right output [1]: [d_date_sk#5]
-Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner
+Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner, BuildRight
 
 (8) CometProject
 Input [4]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3, d_date_sk#5]
@@ -132,7 +132,7 @@ Arguments: [s_store_sk#14, s_state#15]
 (18) CometBroadcastHashJoin
 Left output [3]: [ss_store_sk#10, ss_net_profit#11, ss_sold_date_sk#12]
 Right output [2]: [s_store_sk#14, s_state#15]
-Arguments: [ss_store_sk#10], [s_store_sk#14], Inner
+Arguments: [ss_store_sk#10], [s_store_sk#14], Inner, BuildRight
 
 (19) CometProject
 Input [5]: [ss_store_sk#10, ss_net_profit#11, ss_sold_date_sk#12, s_store_sk#14, s_state#15]
@@ -144,7 +144,7 @@ Output [1]: [d_date_sk#16]
 (21) CometBroadcastHashJoin
 Left output [3]: [ss_net_profit#11, ss_sold_date_sk#12, s_state#15]
 Right output [1]: [d_date_sk#16]
-Arguments: [ss_sold_date_sk#12], [d_date_sk#16], Inner
+Arguments: [ss_sold_date_sk#12], [d_date_sk#16], Inner, BuildRight
 
 (22) CometProject
 Input [4]: [ss_net_profit#11, ss_sold_date_sk#12, s_state#15, d_date_sk#16]

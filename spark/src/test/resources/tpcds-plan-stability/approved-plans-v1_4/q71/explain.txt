@@ -91,7 +91,7 @@ Arguments: [d_date_sk#10]
 (11) CometBroadcastHashJoin
 Left output [4]: [ws_sold_time_sk#5, ws_item_sk#6, ws_ext_sales_price#7, ws_sold_date_sk#8]
 Right output [1]: [d_date_sk#10]
-Arguments: [ws_sold_date_sk#8], [d_date_sk#10], Inner
+Arguments: [ws_sold_date_sk#8], [d_date_sk#10], Inner, BuildRight
 
 (12) CometProject
 Input [5]: [ws_sold_time_sk#5, ws_item_sk#6, ws_ext_sales_price#7, ws_sold_date_sk#8, d_date_sk#10]
@@ -115,7 +115,7 @@ Output [1]: [d_date_sk#21]
 (16) CometBroadcastHashJoin
 Left output [4]: [cs_sold_time_sk#16, cs_item_sk#17, cs_ext_sales_price#18, cs_sold_date_sk#19]
 Right output [1]: [d_date_sk#21]
-Arguments: [cs_sold_date_sk#19], [d_date_sk#21], Inner
+Arguments: [cs_sold_date_sk#19], [d_date_sk#21], Inner, BuildRight
 
 (17) CometProject
 Input [5]: [cs_sold_time_sk#16, cs_item_sk#17, cs_ext_sales_price#18, cs_sold_date_sk#19, d_date_sk#21]
@@ -139,7 +139,7 @@ Output [1]: [d_date_sk#30]
 (21) CometBroadcastHashJoin
 Left output [4]: [ss_sold_time_sk#25, ss_item_sk#26, ss_ext_sales_price#27, ss_sold_date_sk#28]
 Right output [1]: [d_date_sk#30]
-Arguments: [ss_sold_date_sk#28], [d_date_sk#30], Inner
+Arguments: [ss_sold_date_sk#28], [d_date_sk#30], Inner, BuildRight
 
 (22) CometProject
 Input [5]: [ss_sold_time_sk#25, ss_item_sk#26, ss_ext_sales_price#27, ss_sold_date_sk#28, d_date_sk#30]
@@ -153,7 +153,7 @@ Child 2 Input [3]: [ext_price#31, sold_item_sk#32, time_sk#33]
 (24) CometBroadcastHashJoin
 Left output [3]: [i_item_sk#1, i_brand_id#2, i_brand#3]
 Right output [3]: [ext_price#13, sold_item_sk#14, time_sk#15]
-Arguments: [i_item_sk#1], [sold_item_sk#14], Inner
+Arguments: [i_item_sk#1], [sold_item_sk#14], Inner, BuildLeft
 
 (25) CometProject
 Input [6]: [i_item_sk#1, i_brand_id#2, i_brand#3, ext_price#13, sold_item_sk#14, time_sk#15]
@@ -181,7 +181,7 @@ Arguments: [t_time_sk#34, t_hour#35, t_minute#36]
 (30) CometBroadcastHashJoin
 Left output [4]: [i_brand_id#2, i_brand#3, ext_price#13, time_sk#15]
 Right output [3]: [t_time_sk#34, t_hour#35, t_minute#36]
-Arguments: [time_sk#15], [t_time_sk#34], Inner
+Arguments: [time_sk#15], [t_time_sk#34], Inner, BuildRight
 
 (31) CometProject
 Input [7]: [i_brand_id#2, i_brand#3, ext_price#13, time_sk#15, t_time_sk#34, t_hour#35, t_minute#36]

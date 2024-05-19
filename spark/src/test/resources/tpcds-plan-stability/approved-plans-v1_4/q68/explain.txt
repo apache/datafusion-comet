@@ -77,7 +77,7 @@ Arguments: [d_date_sk#11]
 (7) CometBroadcastHashJoin
 Left output [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ss_sold_date_sk#9]
 Right output [1]: [d_date_sk#11]
-Arguments: [ss_sold_date_sk#9], [d_date_sk#11], Inner
+Arguments: [ss_sold_date_sk#9], [d_date_sk#11], Inner, BuildRight
 
 (8) CometProject
 Input [10]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ss_sold_date_sk#9, d_date_sk#11]
@@ -105,7 +105,7 @@ Arguments: [s_store_sk#14]
 (13) CometBroadcastHashJoin
 Left output [8]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 Right output [1]: [s_store_sk#14]
-Arguments: [ss_store_sk#4], [s_store_sk#14], Inner
+Arguments: [ss_store_sk#4], [s_store_sk#14], Inner, BuildRight
 
 (14) CometProject
 Input [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, s_store_sk#14]
@@ -133,7 +133,7 @@ Arguments: [hd_demo_sk#16]
 (19) CometBroadcastHashJoin
 Left output [7]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 Right output [1]: [hd_demo_sk#16]
-Arguments: [ss_hdemo_sk#2], [hd_demo_sk#16], Inner
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#16], Inner, BuildRight
 
 (20) CometProject
 Input [8]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, hd_demo_sk#16]
@@ -157,7 +157,7 @@ Arguments: [ca_address_sk#19, ca_city#20]
 (24) CometBroadcastHashJoin
 Left output [6]: [ss_customer_sk#1, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 Right output [2]: [ca_address_sk#19, ca_city#20]
-Arguments: [ss_addr_sk#3], [ca_address_sk#19], Inner
+Arguments: [ss_addr_sk#3], [ca_address_sk#19], Inner, BuildRight
 
 (25) CometProject
 Input [8]: [ss_customer_sk#1, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ca_address_sk#19, ca_city#20]

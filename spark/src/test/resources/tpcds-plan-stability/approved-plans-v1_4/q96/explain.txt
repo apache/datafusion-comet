@@ -63,7 +63,7 @@ Arguments: [hd_demo_sk#5]
 (8) CometBroadcastHashJoin
 Left output [3]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
 Right output [1]: [hd_demo_sk#5]
-Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
 
 (9) CometProject
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
@@ -91,7 +91,7 @@ Arguments: [t_time_sk#7]
 (14) CometBroadcastHashJoin
 Left output [2]: [ss_sold_time_sk#1, ss_store_sk#3]
 Right output [1]: [t_time_sk#7]
-Arguments: [ss_sold_time_sk#1], [t_time_sk#7], Inner
+Arguments: [ss_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
 
 (15) CometProject
 Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#7]
@@ -119,7 +119,7 @@ Arguments: [s_store_sk#10]
 (20) CometBroadcastHashJoin
 Left output [1]: [ss_store_sk#3]
 Right output [1]: [s_store_sk#10]
-Arguments: [ss_store_sk#3], [s_store_sk#10], Inner
+Arguments: [ss_store_sk#3], [s_store_sk#10], Inner, BuildRight
 
 (21) CometProject
 Input [2]: [ss_store_sk#3, s_store_sk#10]

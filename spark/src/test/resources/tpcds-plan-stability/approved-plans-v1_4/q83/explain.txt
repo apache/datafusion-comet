@@ -81,7 +81,7 @@ Arguments: [i_item_sk#5, i_item_id#6]
 (6) CometBroadcastHashJoin
 Left output [3]: [sr_item_sk#1, sr_return_quantity#2, sr_returned_date_sk#3]
 Right output [2]: [i_item_sk#5, i_item_id#6]
-Arguments: [sr_item_sk#1], [i_item_sk#5], Inner
+Arguments: [sr_item_sk#1], [i_item_sk#5], Inner, BuildRight
 
 (7) CometProject
 Input [5]: [sr_item_sk#1, sr_return_quantity#2, sr_returned_date_sk#3, i_item_sk#5, i_item_id#6]
@@ -104,7 +104,7 @@ Output [1]: [d_date#9]
 (11) CometBroadcastHashJoin
 Left output [2]: [d_date_sk#7, d_date#8]
 Right output [1]: [d_date#9]
-Arguments: [d_date#8], [d_date#9], LeftSemi
+Arguments: [d_date#8], [d_date#9], LeftSemi, BuildRight
 
 (12) CometProject
 Input [2]: [d_date_sk#7, d_date#8]
@@ -117,7 +117,7 @@ Arguments: [d_date_sk#7]
 (14) CometBroadcastHashJoin
 Left output [3]: [sr_return_quantity#2, sr_returned_date_sk#3, i_item_id#6]
 Right output [1]: [d_date_sk#7]
-Arguments: [sr_returned_date_sk#3], [d_date_sk#7], Inner
+Arguments: [sr_returned_date_sk#3], [d_date_sk#7], Inner, BuildRight
 
 (15) CometProject
 Input [4]: [sr_return_quantity#2, sr_returned_date_sk#3, i_item_id#6, d_date_sk#7]
@@ -160,7 +160,7 @@ Output [2]: [i_item_sk#18, i_item_id#19]
 (23) CometBroadcastHashJoin
 Left output [3]: [cr_item_sk#14, cr_return_quantity#15, cr_returned_date_sk#16]
 Right output [2]: [i_item_sk#18, i_item_id#19]
-Arguments: [cr_item_sk#14], [i_item_sk#18], Inner
+Arguments: [cr_item_sk#14], [i_item_sk#18], Inner, BuildRight
 
 (24) CometProject
 Input [5]: [cr_item_sk#14, cr_return_quantity#15, cr_returned_date_sk#16, i_item_sk#18, i_item_id#19]
@@ -172,7 +172,7 @@ Output [1]: [d_date_sk#20]
 (26) CometBroadcastHashJoin
 Left output [3]: [cr_return_quantity#15, cr_returned_date_sk#16, i_item_id#19]
 Right output [1]: [d_date_sk#20]
-Arguments: [cr_returned_date_sk#16], [d_date_sk#20], Inner
+Arguments: [cr_returned_date_sk#16], [d_date_sk#20], Inner, BuildRight
 
 (27) CometProject
 Input [4]: [cr_return_quantity#15, cr_returned_date_sk#16, i_item_id#19, d_date_sk#20]
@@ -229,7 +229,7 @@ Output [2]: [i_item_sk#29, i_item_id#30]
 (38) CometBroadcastHashJoin
 Left output [3]: [wr_item_sk#25, wr_return_quantity#26, wr_returned_date_sk#27]
 Right output [2]: [i_item_sk#29, i_item_id#30]
-Arguments: [wr_item_sk#25], [i_item_sk#29], Inner
+Arguments: [wr_item_sk#25], [i_item_sk#29], Inner, BuildRight
 
 (39) CometProject
 Input [5]: [wr_item_sk#25, wr_return_quantity#26, wr_returned_date_sk#27, i_item_sk#29, i_item_id#30]
@@ -241,7 +241,7 @@ Output [1]: [d_date_sk#31]
 (41) CometBroadcastHashJoin
 Left output [3]: [wr_return_quantity#26, wr_returned_date_sk#27, i_item_id#30]
 Right output [1]: [d_date_sk#31]
-Arguments: [wr_returned_date_sk#27], [d_date_sk#31], Inner
+Arguments: [wr_returned_date_sk#27], [d_date_sk#31], Inner, BuildRight
 
 (42) CometProject
 Input [4]: [wr_return_quantity#26, wr_returned_date_sk#27, i_item_id#30, d_date_sk#31]
@@ -341,7 +341,7 @@ Arguments: [d_week_seq#42]
 (58) CometBroadcastHashJoin
 Left output [2]: [d_date#9, d_week_seq#40]
 Right output [1]: [d_week_seq#42]
-Arguments: [d_week_seq#40], [d_week_seq#42], LeftSemi
+Arguments: [d_week_seq#40], [d_week_seq#42], LeftSemi, BuildRight
 
 (59) CometProject
 Input [2]: [d_date#9, d_week_seq#40]
@@ -354,7 +354,7 @@ Arguments: [d_date#9]
 (61) CometBroadcastHashJoin
 Left output [2]: [d_date_sk#7, d_date#8]
 Right output [1]: [d_date#9]
-Arguments: [d_date#8], [d_date#9], LeftSemi
+Arguments: [d_date#8], [d_date#9], LeftSemi, BuildRight
 
 (62) CometProject
 Input [2]: [d_date_sk#7, d_date#8]

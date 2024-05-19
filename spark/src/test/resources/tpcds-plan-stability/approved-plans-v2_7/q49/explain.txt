@@ -116,7 +116,7 @@ Arguments: [wr_item_sk#8, wr_order_number#9, wr_return_quantity#10, wr_return_am
 (8) CometBroadcastHashJoin
 Left output [5]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
 Right output [4]: [wr_item_sk#8, wr_order_number#9, wr_return_quantity#10, wr_return_amt#11]
-Arguments: [ws_order_number#2, ws_item_sk#1], [wr_order_number#9, wr_item_sk#8], Inner
+Arguments: [ws_order_number#2, ws_item_sk#1], [wr_order_number#9, wr_item_sk#8], Inner, BuildLeft
 
 (9) CometProject
 Input [9]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_item_sk#8, wr_order_number#9, wr_return_quantity#10, wr_return_amt#11]
@@ -144,7 +144,7 @@ Arguments: [d_date_sk#13]
 (14) CometBroadcastHashJoin
 Left output [6]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#10, wr_return_amt#11]
 Right output [1]: [d_date_sk#13]
-Arguments: [ws_sold_date_sk#6], [d_date_sk#13], Inner
+Arguments: [ws_sold_date_sk#6], [d_date_sk#13], Inner, BuildRight
 
 (15) CometProject
 Input [7]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#10, wr_return_amt#11, d_date_sk#13]
@@ -235,7 +235,7 @@ Arguments: [cr_item_sk#39, cr_order_number#40, cr_return_quantity#41, cr_return_
 (34) CometBroadcastHashJoin
 Left output [5]: [cs_item_sk#32, cs_order_number#33, cs_quantity#34, cs_net_paid#35, cs_sold_date_sk#37]
 Right output [4]: [cr_item_sk#39, cr_order_number#40, cr_return_quantity#41, cr_return_amount#42]
-Arguments: [cs_order_number#33, cs_item_sk#32], [cr_order_number#40, cr_item_sk#39], Inner
+Arguments: [cs_order_number#33, cs_item_sk#32], [cr_order_number#40, cr_item_sk#39], Inner, BuildLeft
 
 (35) CometProject
 Input [9]: [cs_item_sk#32, cs_order_number#33, cs_quantity#34, cs_net_paid#35, cs_sold_date_sk#37, cr_item_sk#39, cr_order_number#40, cr_return_quantity#41, cr_return_amount#42]
@@ -247,7 +247,7 @@ Output [1]: [d_date_sk#44]
 (37) CometBroadcastHashJoin
 Left output [6]: [cs_item_sk#32, cs_quantity#34, cs_net_paid#35, cs_sold_date_sk#37, cr_return_quantity#41, cr_return_amount#42]
 Right output [1]: [d_date_sk#44]
-Arguments: [cs_sold_date_sk#37], [d_date_sk#44], Inner
+Arguments: [cs_sold_date_sk#37], [d_date_sk#44], Inner, BuildRight
 
 (38) CometProject
 Input [7]: [cs_item_sk#32, cs_quantity#34, cs_net_paid#35, cs_sold_date_sk#37, cr_return_quantity#41, cr_return_amount#42, d_date_sk#44]
@@ -338,7 +338,7 @@ Arguments: [sr_item_sk#68, sr_ticket_number#69, sr_return_quantity#70, sr_return
 (57) CometBroadcastHashJoin
 Left output [5]: [ss_item_sk#61, ss_ticket_number#62, ss_quantity#63, ss_net_paid#64, ss_sold_date_sk#66]
 Right output [4]: [sr_item_sk#68, sr_ticket_number#69, sr_return_quantity#70, sr_return_amt#71]
-Arguments: [ss_ticket_number#62, ss_item_sk#61], [sr_ticket_number#69, sr_item_sk#68], Inner
+Arguments: [ss_ticket_number#62, ss_item_sk#61], [sr_ticket_number#69, sr_item_sk#68], Inner, BuildLeft
 
 (58) CometProject
 Input [9]: [ss_item_sk#61, ss_ticket_number#62, ss_quantity#63, ss_net_paid#64, ss_sold_date_sk#66, sr_item_sk#68, sr_ticket_number#69, sr_return_quantity#70, sr_return_amt#71]
@@ -350,7 +350,7 @@ Output [1]: [d_date_sk#73]
 (60) CometBroadcastHashJoin
 Left output [6]: [ss_item_sk#61, ss_quantity#63, ss_net_paid#64, ss_sold_date_sk#66, sr_return_quantity#70, sr_return_amt#71]
 Right output [1]: [d_date_sk#73]
-Arguments: [ss_sold_date_sk#66], [d_date_sk#73], Inner
+Arguments: [ss_sold_date_sk#66], [d_date_sk#73], Inner, BuildRight
 
 (61) CometProject
 Input [7]: [ss_item_sk#61, ss_quantity#63, ss_net_paid#64, ss_sold_date_sk#66, sr_return_quantity#70, sr_return_amt#71, d_date_sk#73]

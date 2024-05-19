@@ -76,7 +76,7 @@ Arguments: [cs_call_center_sk#4, cs_item_sk#5, cs_sales_price#6, cs_sold_date_sk
 (6) CometBroadcastHashJoin
 Left output [3]: [i_item_sk#1, i_brand#2, i_category#3]
 Right output [4]: [cs_call_center_sk#4, cs_item_sk#5, cs_sales_price#6, cs_sold_date_sk#7]
-Arguments: [i_item_sk#1], [cs_item_sk#5], Inner
+Arguments: [i_item_sk#1], [cs_item_sk#5], Inner, BuildRight
 
 (7) CometProject
 Input [7]: [i_item_sk#1, i_brand#2, i_category#3, cs_call_center_sk#4, cs_item_sk#5, cs_sales_price#6, cs_sold_date_sk#7]
@@ -100,7 +100,7 @@ Arguments: [d_date_sk#9, d_year#10, d_moy#11]
 (11) CometBroadcastHashJoin
 Left output [5]: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, cs_sold_date_sk#7]
 Right output [3]: [d_date_sk#9, d_year#10, d_moy#11]
-Arguments: [cs_sold_date_sk#7], [d_date_sk#9], Inner
+Arguments: [cs_sold_date_sk#7], [d_date_sk#9], Inner, BuildRight
 
 (12) CometProject
 Input [8]: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, cs_sold_date_sk#7, d_date_sk#9, d_year#10, d_moy#11]
@@ -124,7 +124,7 @@ Arguments: [cc_call_center_sk#12, cc_name#13]
 (16) CometBroadcastHashJoin
 Left output [6]: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, d_year#10, d_moy#11]
 Right output [2]: [cc_call_center_sk#12, cc_name#13]
-Arguments: [cs_call_center_sk#4], [cc_call_center_sk#12], Inner
+Arguments: [cs_call_center_sk#4], [cc_call_center_sk#12], Inner, BuildRight
 
 (17) CometProject
 Input [8]: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, d_year#10, d_moy#11, cc_call_center_sk#12, cc_name#13]
