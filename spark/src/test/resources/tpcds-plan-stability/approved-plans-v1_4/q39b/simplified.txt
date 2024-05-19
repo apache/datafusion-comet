@@ -67,13 +67,9 @@ WholeStageCodegen (5)
                                                               CometProject [d_date_sk,d_moy]
                                                                 CometFilter [d_year,d_moy,d_date_sk]
                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                CometBroadcastExchange #10
-                                                  CometFilter [i_item_sk]
-                                                    CometScan parquet spark_catalog.default.item [i_item_sk]
-                                            CometBroadcastExchange #11
-                                              CometFilter [w_warehouse_sk]
-                                                CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
-                                        CometBroadcastExchange #12
+                                                ReusedExchange [i_item_sk] #4
+                                            ReusedExchange [w_warehouse_sk,w_warehouse_name] #5
+                                        CometBroadcastExchange #10
                                           CometProject [d_date_sk,d_moy]
                                             CometFilter [d_year,d_moy,d_date_sk]
                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

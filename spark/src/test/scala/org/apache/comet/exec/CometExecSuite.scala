@@ -63,6 +63,36 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTable("td") {
+        testData
+          .withColumn("bucket", $"key" % 3)
+          .write
+          .mode(SaveMode.Overwrite)
+          .bucketBy(2, "bucket")
+          .format("parquet")
+          .saveAsTable("td")
+        val df = sql("""
+            |SELECT t1.key, t2.key, t3.key
+            |FROM td AS t1
+            |JOIN td AS t2 ON t2.key = t1.key
+            |JOIN td AS t3 ON t3.key = t2.key
+            |WHERE t1.bucket = 1 AND t2.bucket = 1 AND t3.bucket = 1
+            |""".stripMargin)
+        val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
+        val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
+          r
+        }
+        assert(reusedExchanges.size == 1)
+        assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
+      }
+    }
+  }
+
   test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
     assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(

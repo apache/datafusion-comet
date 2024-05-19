@@ -64,17 +64,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                 CometFilter [cr_catalog_page_sk]
                                                   CometScan parquet spark_catalog.default.catalog_returns [cr_catalog_page_sk,cr_return_amount,cr_net_loss,cr_returned_date_sk]
                                                     ReusedSubquery [d_date_sk] #1
-                                            CometBroadcastExchange #7
-                                              CometProject [d_date_sk]
-                                                CometFilter [d_date,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                        CometBroadcastExchange #8
+                                            ReusedExchange [d_date_sk] #4
+                                        CometBroadcastExchange #7
                                           CometFilter [cp_catalog_page_sk]
                                             CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                     WholeStageCodegen (6)
                       HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
-                          Exchange [web_site_id] #9
+                          Exchange [web_site_id] #8
                             WholeStageCodegen (5)
                               ColumnarToRow
                                 InputAdapter
@@ -90,16 +87,13 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                     ReusedSubquery [d_date_sk] #1
                                               CometProject [ws_web_site_sk,wr_returned_date_sk,wr_return_amt,wr_net_loss] [wsr_web_site_sk,date_sk,sales_price,profit,return_amt,net_loss]
                                                 CometBroadcastHashJoin [wr_item_sk,wr_order_number,ws_item_sk,ws_order_number]
-                                                  CometBroadcastExchange #10
+                                                  CometBroadcastExchange #9
                                                     CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
                                                       ReusedSubquery [d_date_sk] #1
                                                   CometProject [ws_item_sk,ws_web_site_sk,ws_order_number]
                                                     CometFilter [ws_item_sk,ws_order_number,ws_web_site_sk]
                                                       CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
-                                            CometBroadcastExchange #11
-                                              CometProject [d_date_sk]
-                                                CometFilter [d_date,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                        CometBroadcastExchange #12
+                                            ReusedExchange [d_date_sk] #4
+                                        CometBroadcastExchange #10
                                           CometFilter [web_site_sk]
                                             CometScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]

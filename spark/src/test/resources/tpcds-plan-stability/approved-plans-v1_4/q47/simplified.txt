@@ -61,31 +61,9 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                 WholeStageCodegen (6)
                                   HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] [sum(UnscaledValue(ss_sales_price)),sum_sales,sum]
                                     InputAdapter
-                                      Exchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy] #9
-                                        WholeStageCodegen (5)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometHashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,ss_sales_price]
-                                                CometProject [i_brand,i_category,ss_sales_price,d_year,d_moy,s_store_name,s_company_name]
-                                                  CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                                                    CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy]
-                                                      CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                        CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                          CometBroadcastHashJoin [i_item_sk,ss_item_sk]
-                                                            CometFilter [i_item_sk,i_category,i_brand]
-                                                              CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_category]
-                                                            CometBroadcastExchange #10
-                                                              CometFilter [ss_item_sk,ss_store_sk]
-                                                                CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                                  ReusedSubquery [d_date_sk] #1
-                                                        CometBroadcastExchange #11
-                                                          CometFilter [d_year,d_moy,d_date_sk]
-                                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                    CometBroadcastExchange #12
-                                                      CometFilter [s_store_sk,s_store_name,s_company_name]
-                                                        CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_name]
+                                      ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] #2
         InputAdapter
-          BroadcastExchange #13
+          BroadcastExchange #9
             WholeStageCodegen (12)
               Project [i_category,i_brand,s_store_name,s_company_name,sum_sales,rn]
                 InputAdapter
@@ -93,30 +71,4 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                     WholeStageCodegen (11)
                       Sort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy]
                         InputAdapter
-                          Exchange [i_category,i_brand,s_store_name,s_company_name] #14
-                            WholeStageCodegen (10)
-                              HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] [sum(UnscaledValue(ss_sales_price)),sum_sales,sum]
-                                InputAdapter
-                                  Exchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy] #15
-                                    WholeStageCodegen (9)
-                                      ColumnarToRow
-                                        InputAdapter
-                                          CometHashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,ss_sales_price]
-                                            CometProject [i_brand,i_category,ss_sales_price,d_year,d_moy,s_store_name,s_company_name]
-                                              CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                                                CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy]
-                                                  CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                    CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                      CometBroadcastHashJoin [i_item_sk,ss_item_sk]
-                                                        CometFilter [i_item_sk,i_category,i_brand]
-                                                          CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_category]
-                                                        CometBroadcastExchange #16
-                                                          CometFilter [ss_item_sk,ss_store_sk]
-                                                            CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                              ReusedSubquery [d_date_sk] #1
-                                                    CometBroadcastExchange #17
-                                                      CometFilter [d_year,d_moy,d_date_sk]
-                                                        CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                CometBroadcastExchange #18
-                                                  CometFilter [s_store_sk,s_store_name,s_company_name]
-                                                    CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_name]
+                          ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales] #8

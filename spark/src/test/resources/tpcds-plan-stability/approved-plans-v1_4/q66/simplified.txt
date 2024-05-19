@@ -65,17 +65,7 @@ TakeOrderedAndProject [w_warehouse_name,w_warehouse_sq_ft,w_city,w_county,w_stat
                                                   CometFilter [cs_warehouse_sk,cs_sold_time_sk,cs_ship_mode_sk]
                                                     CometScan parquet spark_catalog.default.catalog_sales [cs_sold_time_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_quantity,cs_sales_price,cs_net_paid_inc_tax,cs_sold_date_sk]
                                                       ReusedSubquery [d_date_sk] #1
-                                                  CometBroadcastExchange #9
-                                                    CometFilter [w_warehouse_sk]
-                                                      CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name,w_warehouse_sq_ft,w_city,w_county,w_state,w_country]
-                                              CometBroadcastExchange #10
-                                                CometFilter [d_year,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange #11
-                                            CometProject [t_time_sk]
-                                              CometFilter [t_time,t_time_sk]
-                                                CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_time]
-                                      CometBroadcastExchange #12
-                                        CometProject [sm_ship_mode_sk]
-                                          CometFilter [sm_carrier,sm_ship_mode_sk]
-                                            CometScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_carrier]
+                                                  ReusedExchange [w_warehouse_sk,w_warehouse_name,w_warehouse_sq_ft,w_city,w_county,w_state,w_country] #4
+                                              ReusedExchange [d_date_sk,d_year,d_moy] #5
+                                          ReusedExchange [t_time_sk] #6
+                                      ReusedExchange [sm_ship_mode_sk] #7

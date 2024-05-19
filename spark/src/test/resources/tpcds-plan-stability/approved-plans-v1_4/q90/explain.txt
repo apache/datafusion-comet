@@ -1,6 +1,6 @@
 == Physical Plan ==
-* Project (53)
-+- * BroadcastNestedLoopJoin Inner BuildRight (52)
+* Project (47)
++- * BroadcastNestedLoopJoin Inner BuildRight (46)
    :- * HashAggregate (25)
    :  +- Exchange (24)
    :     +- * ColumnarToRow (23)
@@ -26,32 +26,26 @@
    :                    +- CometProject (18)
    :                       +- CometFilter (17)
    :                          +- CometScan parquet spark_catalog.default.web_page (16)
-   +- BroadcastExchange (51)
-      +- * HashAggregate (50)
-         +- Exchange (49)
-            +- * ColumnarToRow (48)
-               +- CometHashAggregate (47)
-                  +- CometProject (46)
-                     +- CometBroadcastHashJoin (45)
-                        :- CometProject (40)
-                        :  +- CometBroadcastHashJoin (39)
-                        :     :- CometProject (34)
-                        :     :  +- CometBroadcastHashJoin (33)
+   +- BroadcastExchange (45)
+      +- * HashAggregate (44)
+         +- Exchange (43)
+            +- * ColumnarToRow (42)
+               +- CometHashAggregate (41)
+                  +- CometProject (40)
+                     +- CometBroadcastHashJoin (39)
+                        :- CometProject (37)
+                        :  +- CometBroadcastHashJoin (36)
+                        :     :- CometProject (31)
+                        :     :  +- CometBroadcastHashJoin (30)
                         :     :     :- CometProject (28)
                         :     :     :  +- CometFilter (27)
                         :     :     :     +- CometScan parquet spark_catalog.default.web_sales (26)
-                        :     :     +- CometBroadcastExchange (32)
-                        :     :        +- CometProject (31)
-                        :     :           +- CometFilter (30)
-                        :     :              +- CometScan parquet spark_catalog.default.household_demographics (29)
-                        :     +- CometBroadcastExchange (38)
-                        :        +- CometProject (37)
-                        :           +- CometFilter (36)
-                        :              +- CometScan parquet spark_catalog.default.time_dim (35)
-                        +- CometBroadcastExchange (44)
-                           +- CometProject (43)
-                              +- CometFilter (42)
-                                 +- CometScan parquet spark_catalog.default.web_page (41)
+                        :     :     +- ReusedExchange (29)
+                        :     +- CometBroadcastExchange (35)
+                        :        +- CometProject (34)
+                        :           +- CometFilter (33)
+                        :              +- CometScan parquet spark_catalog.default.time_dim (32)
+                        +- ReusedExchange (38)
 
 
 (1) Scan parquet spark_catalog.default.web_sales
@@ -186,117 +180,85 @@ Condition : ((isnotnull(ws_ship_hdemo_sk#15) AND isnotnull(ws_sold_time_sk#14)) 
 Input [4]: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16, ws_sold_date_sk#17]
 Arguments: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16], [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16]
 
-(29) Scan parquet spark_catalog.default.household_demographics
-Output [2]: [hd_demo_sk#18, hd_dep_count#19]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_dep_count), EqualTo(hd_dep_count,6), IsNotNull(hd_demo_sk)]
-ReadSchema: struct<hd_demo_sk:int,hd_dep_count:int>
+(29) ReusedExchange [Reuses operator id: 7]
+Output [1]: [hd_demo_sk#18]
 
-(30) CometFilter
-Input [2]: [hd_demo_sk#18, hd_dep_count#19]
-Condition : ((isnotnull(hd_dep_count#19) AND (hd_dep_count#19 = 6)) AND isnotnull(hd_demo_sk#18))
-
-(31) CometProject
-Input [2]: [hd_demo_sk#18, hd_dep_count#19]
-Arguments: [hd_demo_sk#18], [hd_demo_sk#18]
-
-(32) CometBroadcastExchange
-Input [1]: [hd_demo_sk#18]
-Arguments: [hd_demo_sk#18]
-
-(33) CometBroadcastHashJoin
+(30) CometBroadcastHashJoin
 Left output [3]: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16]
 Right output [1]: [hd_demo_sk#18]
 Arguments: [ws_ship_hdemo_sk#15], [hd_demo_sk#18], Inner
 
-(34) CometProject
+(31) CometProject
 Input [4]: [ws_sold_time_sk#14, ws_ship_hdemo_sk#15, ws_web_page_sk#16, hd_demo_sk#18]
 Arguments: [ws_sold_time_sk#14, ws_web_page_sk#16], [ws_sold_time_sk#14, ws_web_page_sk#16]
 
-(35) Scan parquet spark_catalog.default.time_dim
-Output [2]: [t_time_sk#20, t_hour#21]
+(32) Scan parquet spark_catalog.default.time_dim
+Output [2]: [t_time_sk#19, t_hour#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
 PushedFilters: [IsNotNull(t_hour), GreaterThanOrEqual(t_hour,19), LessThanOrEqual(t_hour,20), IsNotNull(t_time_sk)]
 ReadSchema: struct<t_time_sk:int,t_hour:int>
 
-(36) CometFilter
-Input [2]: [t_time_sk#20, t_hour#21]
-Condition : (((isnotnull(t_hour#21) AND (t_hour#21 >= 19)) AND (t_hour#21 <= 20)) AND isnotnull(t_time_sk#20))
+(33) CometFilter
+Input [2]: [t_time_sk#19, t_hour#20]
+Condition : (((isnotnull(t_hour#20) AND (t_hour#20 >= 19)) AND (t_hour#20 <= 20)) AND isnotnull(t_time_sk#19))
+
+(34) CometProject
+Input [2]: [t_time_sk#19, t_hour#20]
+Arguments: [t_time_sk#19], [t_time_sk#19]
+
+(35) CometBroadcastExchange
+Input [1]: [t_time_sk#19]
+Arguments: [t_time_sk#19]
+
+(36) CometBroadcastHashJoin
+Left output [2]: [ws_sold_time_sk#14, ws_web_page_sk#16]
+Right output [1]: [t_time_sk#19]
+Arguments: [ws_sold_time_sk#14], [t_time_sk#19], Inner
 
 (37) CometProject
-Input [2]: [t_time_sk#20, t_hour#21]
-Arguments: [t_time_sk#20], [t_time_sk#20]
-
-(38) CometBroadcastExchange
-Input [1]: [t_time_sk#20]
-Arguments: [t_time_sk#20]
-
-(39) CometBroadcastHashJoin
-Left output [2]: [ws_sold_time_sk#14, ws_web_page_sk#16]
-Right output [1]: [t_time_sk#20]
-Arguments: [ws_sold_time_sk#14], [t_time_sk#20], Inner
-
-(40) CometProject
-Input [3]: [ws_sold_time_sk#14, ws_web_page_sk#16, t_time_sk#20]
+Input [3]: [ws_sold_time_sk#14, ws_web_page_sk#16, t_time_sk#19]
 Arguments: [ws_web_page_sk#16], [ws_web_page_sk#16]
 
-(41) Scan parquet spark_catalog.default.web_page
-Output [2]: [wp_web_page_sk#22, wp_char_count#23]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/web_page]
-PushedFilters: [IsNotNull(wp_char_count), GreaterThanOrEqual(wp_char_count,5000), LessThanOrEqual(wp_char_count,5200), IsNotNull(wp_web_page_sk)]
-ReadSchema: struct<wp_web_page_sk:int,wp_char_count:int>
+(38) ReusedExchange [Reuses operator id: 19]
+Output [1]: [wp_web_page_sk#21]
 
-(42) CometFilter
-Input [2]: [wp_web_page_sk#22, wp_char_count#23]
-Condition : (((isnotnull(wp_char_count#23) AND (wp_char_count#23 >= 5000)) AND (wp_char_count#23 <= 5200)) AND isnotnull(wp_web_page_sk#22))
-
-(43) CometProject
-Input [2]: [wp_web_page_sk#22, wp_char_count#23]
-Arguments: [wp_web_page_sk#22], [wp_web_page_sk#22]
-
-(44) CometBroadcastExchange
-Input [1]: [wp_web_page_sk#22]
-Arguments: [wp_web_page_sk#22]
-
-(45) CometBroadcastHashJoin
+(39) CometBroadcastHashJoin
 Left output [1]: [ws_web_page_sk#16]
-Right output [1]: [wp_web_page_sk#22]
-Arguments: [ws_web_page_sk#16], [wp_web_page_sk#22], Inner
+Right output [1]: [wp_web_page_sk#21]
+Arguments: [ws_web_page_sk#16], [wp_web_page_sk#21], Inner
 
-(46) CometProject
-Input [2]: [ws_web_page_sk#16, wp_web_page_sk#22]
+(40) CometProject
+Input [2]: [ws_web_page_sk#16, wp_web_page_sk#21]
 
-(47) CometHashAggregate
+(41) CometHashAggregate
 Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(48) ColumnarToRow [codegen id : 2]
-Input [1]: [count#24]
+(42) ColumnarToRow [codegen id : 2]
+Input [1]: [count#22]
 
-(49) Exchange
-Input [1]: [count#24]
+(43) Exchange
+Input [1]: [count#22]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=2]
 
-(50) HashAggregate [codegen id : 3]
-Input [1]: [count#24]
+(44) HashAggregate [codegen id : 3]
+Input [1]: [count#22]
 Keys: []
 Functions [1]: [count(1)]
-Aggregate Attributes [1]: [count(1)#25]
-Results [1]: [count(1)#25 AS pmc#26]
+Aggregate Attributes [1]: [count(1)#23]
+Results [1]: [count(1)#23 AS pmc#24]
 
-(51) BroadcastExchange
-Input [1]: [pmc#26]
+(45) BroadcastExchange
+Input [1]: [pmc#24]
 Arguments: IdentityBroadcastMode, [plan_id=3]
 
-(52) BroadcastNestedLoopJoin [codegen id : 4]
+(46) BroadcastNestedLoopJoin [codegen id : 4]
 Join type: Inner
 Join condition: None
 
-(53) Project [codegen id : 4]
-Output [1]: [(cast(amc#13 as decimal(15,4)) / cast(pmc#26 as decimal(15,4))) AS am_pm_ratio#27]
-Input [2]: [amc#13, pmc#26]
+(47) Project [codegen id : 4]
+Output [1]: [(cast(amc#13 as decimal(15,4)) / cast(pmc#24 as decimal(15,4))) AS am_pm_ratio#25]
+Input [2]: [amc#13, pmc#24]
 

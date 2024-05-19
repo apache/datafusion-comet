@@ -73,7 +73,4 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                       CometFilter [ss_item_sk]
                                                                         CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_sales_price,ss_sold_date_sk]
                                                                           ReusedSubquery [d_date_sk] #1
-                                                                      CometBroadcastExchange #10
-                                                                        CometProject [d_date_sk,d_date]
-                                                                          CometFilter [d_month_seq,d_date_sk]
-                                                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                                      ReusedExchange [d_date_sk,d_date] #6

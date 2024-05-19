@@ -68,7 +68,4 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                                     CometBroadcastExchange #8
                                                                                       CometFilter [s_store_sk]
                                                                                         CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
-                                                                                CometBroadcastExchange #9
-                                                                                  CometProject [d_date_sk]
-                                                                                    CometFilter [d_month_seq,d_date_sk]
-                                                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                                                ReusedExchange [d_date_sk] #4

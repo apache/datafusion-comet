@@ -86,15 +86,13 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                                     CometFilter [cs_bill_customer_sk]
                                                       CometScan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_ext_discount_amt,cs_ext_sales_price,cs_ext_wholesale_cost,cs_ext_list_price,cs_sold_date_sk]
                                                         ReusedSubquery [d_date_sk] #1
-                                              CometBroadcastExchange #13
-                                                CometFilter [d_year,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                              ReusedExchange [d_date_sk,d_year] #4
                 InputAdapter
-                  BroadcastExchange #14
+                  BroadcastExchange #13
                     WholeStageCodegen (7)
                       HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((cs_ext_list_price - cs_ext_wholesale_cost) - cs_ext_discount_amt) + cs_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                         InputAdapter
-                          Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #15
+                          Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #14
                             WholeStageCodegen (6)
                               ColumnarToRow
                                 InputAdapter
@@ -105,20 +103,18 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                           CometBroadcastHashJoin [c_customer_sk,cs_bill_customer_sk]
                                             CometFilter [c_customer_sk,c_customer_id]
                                               CometScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
-                                            CometBroadcastExchange #16
+                                            CometBroadcastExchange #15
                                               CometFilter [cs_bill_customer_sk]
                                                 CometScan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_ext_discount_amt,cs_ext_sales_price,cs_ext_wholesale_cost,cs_ext_list_price,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #2
-                                        CometBroadcastExchange #17
-                                          CometFilter [d_year,d_date_sk]
-                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                        ReusedExchange [d_date_sk,d_year] #9
             InputAdapter
-              BroadcastExchange #18
+              BroadcastExchange #16
                 WholeStageCodegen (9)
                   Filter [year_total]
                     HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ws_ext_list_price - ws_ext_wholesale_cost) - ws_ext_discount_amt) + ws_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                       InputAdapter
-                        Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #19
+                        Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #17
                           WholeStageCodegen (8)
                             ColumnarToRow
                               InputAdapter
@@ -129,19 +125,17 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                         CometBroadcastHashJoin [c_customer_sk,ws_bill_customer_sk]
                                           CometFilter [c_customer_sk,c_customer_id]
                                             CometScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
-                                          CometBroadcastExchange #20
+                                          CometBroadcastExchange #18
                                             CometFilter [ws_bill_customer_sk]
                                               CometScan parquet spark_catalog.default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_sold_date_sk]
                                                 ReusedSubquery [d_date_sk] #1
-                                      CometBroadcastExchange #21
-                                        CometFilter [d_year,d_date_sk]
-                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                      ReusedExchange [d_date_sk,d_year] #4
         InputAdapter
-          BroadcastExchange #22
+          BroadcastExchange #19
             WholeStageCodegen (11)
               HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ws_ext_list_price - ws_ext_wholesale_cost) - ws_ext_discount_amt) + ws_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                 InputAdapter
-                  Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #23
+                  Exchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #20
                     WholeStageCodegen (10)
                       ColumnarToRow
                         InputAdapter
@@ -152,10 +146,8 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                   CometBroadcastHashJoin [c_customer_sk,ws_bill_customer_sk]
                                     CometFilter [c_customer_sk,c_customer_id]
                                       CometScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
-                                    CometBroadcastExchange #24
+                                    CometBroadcastExchange #21
                                       CometFilter [ws_bill_customer_sk]
                                         CometScan parquet spark_catalog.default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_sold_date_sk]
                                           ReusedSubquery [d_date_sk] #2
-                                CometBroadcastExchange #25
-                                  CometFilter [d_year,d_date_sk]
-                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                ReusedExchange [d_date_sk,d_year] #9

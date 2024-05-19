@@ -6,7 +6,7 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
           WholeStageCodegen (2)
             HashAggregate [sum,count] [avg((cast(quantity as decimal(10,0)) * list_price)),average_sales,sum,count]
               InputAdapter
-                Exchange #16
+                Exchange #13
                   WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
@@ -16,26 +16,17 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                               CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
                                 CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_list_price,ss_sold_date_sk]
                                   ReusedSubquery [d_date_sk] #3
-                                CometBroadcastExchange #17
-                                  CometProject [d_date_sk]
-                                    CometFilter [d_year,d_date_sk]
-                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                ReusedExchange [d_date_sk] #10
                             CometProject [cs_quantity,cs_list_price] [quantity,list_price]
                               CometBroadcastHashJoin [cs_sold_date_sk,d_date_sk]
                                 CometScan parquet spark_catalog.default.catalog_sales [cs_quantity,cs_list_price,cs_sold_date_sk]
                                   ReusedSubquery [d_date_sk] #3
-                                CometBroadcastExchange #18
-                                  CometProject [d_date_sk]
-                                    CometFilter [d_year,d_date_sk]
-                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                ReusedExchange [d_date_sk] #10
                             CometProject [ws_quantity,ws_list_price] [quantity,list_price]
                               CometBroadcastHashJoin [ws_sold_date_sk,d_date_sk]
                                 CometScan parquet spark_catalog.default.web_sales [ws_quantity,ws_list_price,ws_sold_date_sk]
                                   ReusedSubquery [d_date_sk] #3
-                                CometBroadcastExchange #19
-                                  CometProject [d_date_sk]
-                                    CometFilter [d_year,d_date_sk]
-                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                ReusedExchange [d_date_sk] #10
         HashAggregate [i_brand_id,i_class_id,i_category_id,sum,isEmpty,count] [sum((cast(ss_quantity as decimal(10,0)) * ss_list_price)),count(1),channel,sales,number_sales,sum,isEmpty,count]
           InputAdapter
             Exchange [i_brand_id,i_class_id,i_category_id] #1
@@ -118,12 +109,9 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                                                                                 CometProject [d_date_sk]
                                                                                   CometFilter [d_year,d_date_sk]
                                                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                                                CometBroadcastExchange #11
-                                                                  CometProject [d_date_sk]
-                                                                    CometFilter [d_year,d_date_sk]
-                                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                ReusedExchange [d_date_sk] #10
                                               InputAdapter
-                                                BroadcastExchange #12
+                                                BroadcastExchange #11
                                                   WholeStageCodegen (2)
                                                     ColumnarToRow
                                                       InputAdapter
@@ -134,15 +122,10 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                                                                 CometFilter [ws_item_sk]
                                                                   CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_sold_date_sk]
                                                                     ReusedSubquery [d_date_sk] #3
-                                                                CometBroadcastExchange #13
-                                                                  CometFilter [i_item_sk]
-                                                                    CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
-                                                            CometBroadcastExchange #14
-                                                              CometProject [d_date_sk]
-                                                                CometFilter [d_year,d_date_sk]
-                                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #9
+                                                            ReusedExchange [d_date_sk] #10
                           InputAdapter
-                            BroadcastExchange #15
+                            BroadcastExchange #12
                               WholeStageCodegen (9)
                                 BroadcastHashJoin [i_item_sk,ss_item_sk]
                                   ColumnarToRow
@@ -154,13 +137,13 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                       InputAdapter
                         ReusedExchange [d_date_sk] #2
       InputAdapter
-        BroadcastExchange #20
+        BroadcastExchange #14
           WholeStageCodegen (23)
             Filter [sales]
               ReusedSubquery [average_sales] #4
               HashAggregate [i_brand_id,i_class_id,i_category_id,sum,isEmpty,count] [sum((cast(ss_quantity as decimal(10,0)) * ss_list_price)),count(1),channel,sales,number_sales,sum,isEmpty,count]
                 InputAdapter
-                  Exchange [i_brand_id,i_class_id,i_category_id] #21
+                  Exchange [i_brand_id,i_class_id,i_category_id] #15
                     WholeStageCodegen (22)
                       HashAggregate [i_brand_id,i_class_id,i_category_id,ss_quantity,ss_list_price] [sum,isEmpty,count,sum,isEmpty,count]
                         Project [ss_quantity,ss_list_price,i_brand_id,i_class_id,i_category_id]
@@ -173,7 +156,7 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                                       CometFilter [ss_item_sk]
                                         CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_quantity,ss_list_price,ss_sold_date_sk]
                                           SubqueryBroadcast [d_date_sk] #5
-                                            BroadcastExchange #22
+                                            BroadcastExchange #16
                                               WholeStageCodegen (1)
                                                 ColumnarToRow
                                                   InputAdapter
@@ -190,6 +173,6 @@ TakeOrderedAndProject [i_brand_id,i_class_id,i_category_id,channel,sales,number_
                                   InputAdapter
                                     ReusedExchange [ss_item_sk] #3
                                 InputAdapter
-                                  ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #15
+                                  ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #12
                             InputAdapter
-                              ReusedExchange [d_date_sk] #22
+                              ReusedExchange [d_date_sk] #16

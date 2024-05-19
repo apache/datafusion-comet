@@ -64,26 +64,13 @@ TakeOrderedAndProject [total_sales,i_manufact_id]
                                               CometFilter [cs_bill_addr_sk,cs_item_sk]
                                                 CometScan parquet spark_catalog.default.catalog_sales [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
-                                              CometBroadcastExchange #9
-                                                CometProject [d_date_sk]
-                                                  CometFilter [d_year,d_moy,d_date_sk]
-                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange #10
-                                            CometProject [ca_address_sk]
-                                              CometFilter [ca_gmt_offset,ca_address_sk]
-                                                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
-                                      CometBroadcastExchange #11
-                                        CometBroadcastHashJoin [i_manufact_id,i_manufact_id]
-                                          CometFilter [i_item_sk]
-                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
-                                          CometBroadcastExchange #12
-                                            CometProject [i_manufact_id]
-                                              CometFilter [i_category]
-                                                CometScan parquet spark_catalog.default.item [i_category,i_manufact_id]
+                                              ReusedExchange [d_date_sk] #4
+                                          ReusedExchange [ca_address_sk] #5
+                                      ReusedExchange [i_item_sk,i_manufact_id] #6
                   WholeStageCodegen (6)
                     HashAggregate [i_manufact_id,sum] [sum(UnscaledValue(ws_ext_sales_price)),total_sales,sum]
                       InputAdapter
-                        Exchange [i_manufact_id] #13
+                        Exchange [i_manufact_id] #9
                           WholeStageCodegen (5)
                             ColumnarToRow
                               InputAdapter
@@ -97,19 +84,6 @@ TakeOrderedAndProject [total_sales,i_manufact_id]
                                               CometFilter [ws_bill_addr_sk,ws_item_sk]
                                                 CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
-                                              CometBroadcastExchange #14
-                                                CometProject [d_date_sk]
-                                                  CometFilter [d_year,d_moy,d_date_sk]
-                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange #15
-                                            CometProject [ca_address_sk]
-                                              CometFilter [ca_gmt_offset,ca_address_sk]
-                                                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
-                                      CometBroadcastExchange #16
-                                        CometBroadcastHashJoin [i_manufact_id,i_manufact_id]
-                                          CometFilter [i_item_sk]
-                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
-                                          CometBroadcastExchange #17
-                                            CometProject [i_manufact_id]
-                                              CometFilter [i_category]
-                                                CometScan parquet spark_catalog.default.item [i_category,i_manufact_id]
+                                              ReusedExchange [d_date_sk] #4
+                                          ReusedExchange [ca_address_sk] #5
+                                      ReusedExchange [i_item_sk,i_manufact_id] #6

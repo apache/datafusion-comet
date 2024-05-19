@@ -63,15 +63,13 @@ WholeStageCodegen (13)
                                                       CometBroadcastExchange #9
                                                         CometFilter [d_qoy,d_year,d_date_sk]
                                                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                                  CometBroadcastExchange #10
-                                                    CometFilter [ca_address_sk,ca_county]
-                                                      CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
+                                                  ReusedExchange [ca_address_sk,ca_county] #5
                         InputAdapter
-                          BroadcastExchange #11
+                          BroadcastExchange #10
                             WholeStageCodegen (5)
                               HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
                                 InputAdapter
-                                  Exchange [ca_county,d_qoy,d_year] #12
+                                  Exchange [ca_county,d_qoy,d_year] #11
                                     WholeStageCodegen (4)
                                       ColumnarToRow
                                         InputAdapter
@@ -83,24 +81,22 @@ WholeStageCodegen (13)
                                                     CometFilter [ss_addr_sk]
                                                       CometScan parquet spark_catalog.default.store_sales [ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
                                                         SubqueryBroadcast [d_date_sk] #3
-                                                          BroadcastExchange #13
+                                                          BroadcastExchange #12
                                                             WholeStageCodegen (1)
                                                               ColumnarToRow
                                                                 InputAdapter
                                                                   CometFilter [d_qoy,d_year,d_date_sk]
                                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                                    CometBroadcastExchange #14
+                                                    CometBroadcastExchange #13
                                                       CometFilter [d_qoy,d_year,d_date_sk]
                                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                                CometBroadcastExchange #15
-                                                  CometFilter [ca_address_sk,ca_county]
-                                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
+                                                ReusedExchange [ca_address_sk,ca_county] #5
                     InputAdapter
-                      BroadcastExchange #16
+                      BroadcastExchange #14
                         WholeStageCodegen (7)
                           HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
                             InputAdapter
-                              Exchange [ca_county,d_qoy,d_year] #17
+                              Exchange [ca_county,d_qoy,d_year] #15
                                 WholeStageCodegen (6)
                                   ColumnarToRow
                                     InputAdapter
@@ -112,18 +108,14 @@ WholeStageCodegen (13)
                                                 CometFilter [ws_bill_addr_sk]
                                                   CometScan parquet spark_catalog.default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
                                                     ReusedSubquery [d_date_sk] #1
-                                                CometBroadcastExchange #18
-                                                  CometFilter [d_qoy,d_year,d_date_sk]
-                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                            CometBroadcastExchange #19
-                                              CometFilter [ca_address_sk,ca_county]
-                                                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
+                                                ReusedExchange [d_date_sk,d_year,d_qoy] #4
+                                            ReusedExchange [ca_address_sk,ca_county] #5
                   InputAdapter
-                    BroadcastExchange #20
+                    BroadcastExchange #16
                       WholeStageCodegen (9)
                         HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
                           InputAdapter
-                            Exchange [ca_county,d_qoy,d_year] #21
+                            Exchange [ca_county,d_qoy,d_year] #17
                               WholeStageCodegen (8)
                                 ColumnarToRow
                                   InputAdapter
@@ -135,18 +127,14 @@ WholeStageCodegen (13)
                                               CometFilter [ws_bill_addr_sk]
                                                 CometScan parquet spark_catalog.default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #2
-                                              CometBroadcastExchange #22
-                                                CometFilter [d_qoy,d_year,d_date_sk]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                          CometBroadcastExchange #23
-                                            CometFilter [ca_address_sk,ca_county]
-                                              CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
+                                              ReusedExchange [d_date_sk,d_year,d_qoy] #9
+                                          ReusedExchange [ca_address_sk,ca_county] #5
               InputAdapter
-                BroadcastExchange #24
+                BroadcastExchange #18
                   WholeStageCodegen (11)
                     HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
                       InputAdapter
-                        Exchange [ca_county,d_qoy,d_year] #25
+                        Exchange [ca_county,d_qoy,d_year] #19
                           WholeStageCodegen (10)
                             ColumnarToRow
                               InputAdapter
@@ -158,9 +146,5 @@ WholeStageCodegen (13)
                                           CometFilter [ws_bill_addr_sk]
                                             CometScan parquet spark_catalog.default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
                                               ReusedSubquery [d_date_sk] #3
-                                          CometBroadcastExchange #26
-                                            CometFilter [d_qoy,d_year,d_date_sk]
-                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
-                                      CometBroadcastExchange #27
-                                        CometFilter [ca_address_sk,ca_county]
-                                          CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
+                                          ReusedExchange [d_date_sk,d_year,d_qoy] #13
+                                      ReusedExchange [ca_address_sk,ca_county] #5
