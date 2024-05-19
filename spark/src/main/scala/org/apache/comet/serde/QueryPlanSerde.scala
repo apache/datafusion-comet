@@ -2607,14 +2607,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case join: CartesianProductExec if isCometOperatorEnabled(op.conf, "cross_join") =>
         // TODO: Support CartesianProductExec with join condition after new DataFusion release
         if (join.condition.isDefined) {
-          withInfo(op, "Cross_Join with a join condition is not supported")
+          withInfo(op, "Cross join with a join condition is not supported")
           return None
         }
         val joinBuilder = OperatorOuterClass.CrossJoin.newBuilder()
         Some(result.setCrossJoin(joinBuilder).build())
 
       case join: CartesianProductExec if !isCometOperatorEnabled(op.conf, "cross_join") =>
-        withInfo(join, "Cross_Join is not enabled")
+        withInfo(join, "Cross join is not enabled")
         None
 
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType)) =>

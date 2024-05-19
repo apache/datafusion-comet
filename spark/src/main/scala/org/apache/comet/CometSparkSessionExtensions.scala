@@ -717,11 +717,11 @@ class CometSparkSessionExtensions
           }
 
         case op: CartesianProductExec if !isCometOperatorEnabled(conf, "cross_join") =>
-          withInfo(op, "Cross_Join is not enabled")
+          withInfo(op, "Cross join is not enabled")
           op
 
         case op: CartesianProductExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "Cross_Join disabled because not all child plans are native")
+          withInfo(op, "Cross join disabled because not all child plans are native")
           op
 
         case op =>
