@@ -82,7 +82,7 @@ macro_rules! cast_utf8_to_int {
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
-            } else if let Some(cast_value) = $cast_method($array.value(i).trim(), $eval_mode)? {
+            } else if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
                 cast_array.append_value(cast_value);
             } else {
                 cast_array.append_null()
@@ -1012,8 +1012,6 @@ fn cast_string_to_int_with_range_check(
 
 #[derive(PartialEq)]
 enum State {
-    SkipLeadingWhiteSpace,
-    SkipTrailingWhiteSpace,
     ParseSignAndDigits,
     ParseFractionalDigits,
 }
@@ -1029,29 +1027,19 @@ fn do_cast_string_to_int<
     type_name: &str,
     min_value: T,
 ) -> CometResult<Option<T>> {
-    let len = str.len();
-    if str.is_empty() {
+    let trimmed_str = str.trim();
+    if trimmed_str.is_empty() {
         return none_or_err(eval_mode, type_name, str);
     }
-
+    let len = trimmed_str.len();
     let mut result: T = T::zero();
     let mut negative = false;
     let radix = T::from(10);
     let stop_value = min_value / radix;
-    let mut state = State::SkipLeadingWhiteSpace;
+    let mut state = State::ParseSignAndDigits;
     let mut parsed_sign = false;
 
-    for (i, ch) in str.char_indices() {
-        // skip leading whitespace
-        if state == State::SkipLeadingWhiteSpace {
-            if ch.is_whitespace() {
-                // consume this char
-                continue;
-            }
-            // change state and fall through to next section
-            state = State::ParseSignAndDigits;
-        }
-
+    for (i, ch) in trimmed_str.char_indices() {
         if state == State::ParseSignAndDigits {
             if !parsed_sign {
                 negative = ch == '-';
@@ -1105,23 +1093,9 @@ fn do_cast_string_to_int<
         }
 
         if state == State::ParseFractionalDigits {
-            // This is the case when we've encountered a decimal separator. The fractional
-            // part will not change the number, but we will verify that the fractional part
-            // is well-formed.
-            if ch.is_whitespace() {
-                // finished parsing fractional digits, now need to skip trailing whitespace
-                state = State::SkipTrailingWhiteSpace;
-                // consume this char
-                continue;
-            }
             if !ch.is_ascii_digit() {
                 return none_or_err(eval_mode, type_name, str);
             }
-        }
-
-        // skip trailing whitespace
-        if state == State::SkipTrailingWhiteSpace && !ch.is_whitespace() {
-            return none_or_err(eval_mode, type_name, str);
         }
     }
 
