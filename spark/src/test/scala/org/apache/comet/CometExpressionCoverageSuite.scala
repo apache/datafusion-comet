@@ -169,12 +169,6 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
     // TODO: convert results into HTML or .md file
     resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
-//    val str_agg = showString(
-//      spark.sql(
-//        "select result, d._2 as details, count(1) cnt from (select name, t.details.result, explode_outer(t.details.details) as d from t) group by 1, 2 order by 1"),
-//      1000,
-//      0)
-//    Files.write(Paths.get(aggCoverageFilePath), str_agg.getBytes(StandardCharsets.UTF_8))
 
     val str = showString(
       spark.sql(
@@ -184,7 +178,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
     Files.write(Paths.get(rawCoverageFilePath), str.getBytes(StandardCharsets.UTF_8))
   }
 
-  // Returns error, None means successful execution
+  // Returns execution error, None means successful execution
   private def runDatafusionCli(sql: String): Option[String] = {
 
     val datafusionCliPath = sys.env.getOrElse(
