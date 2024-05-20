@@ -22,7 +22,6 @@ package org.apache.spark.sql.comet
 import scala.math.{max, min}
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.shims.ShimDecimalPrecision
 import org.apache.spark.sql.types.DecimalType
 
 /**
@@ -41,7 +40,7 @@ import org.apache.spark.sql.types.DecimalType
  * TODO: instead of relying on this rule, it's probably better to enhance arithmetic kernels to
  * handle different decimal precisions
  */
-object DecimalPrecision extends ShimDecimalPrecision {
+object DecimalPrecision {
   def promote(
       allowPrecisionLoss: Boolean,
       expr: Expression,
@@ -106,6 +105,14 @@ object DecimalPrecision extends ShimDecimalPrecision {
         CheckOverflow(rem, resultType, nullOnOverflow)
 
       case e => e
+    }
+  }
+
+  // TODO: consider to use `org.apache.spark.sql.types.DecimalExpression` for Spark 3.5+
+  object DecimalExpression {
+    def unapply(e: Expression): Option[(Int, Int)] = e.dataType match {
+      case t: DecimalType => Some((t.precision, t.scale))
+      case _ => None
     }
   }
 }
