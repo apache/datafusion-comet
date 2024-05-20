@@ -19,16 +19,23 @@
 
 package org.apache.comet
 
+import scala.collection.mutable
 import scala.util.Random
+
+import org.apache.spark.sql.{RandomDataGenerator, Row}
+import org.apache.spark.sql.types.{ArrayType, StringType, StructType}
 
 object DataGenerator {
   // note that we use `def` rather than `val` intentionally here so that
   // each test suite starts with a fresh data generator to help ensure
   // that tests are deterministic
   def DEFAULT = new DataGenerator(new Random(42))
+  // matches the probability of nulls in Spark's RandomDataGenerator
+  private val PROBABILITY_OF_NULL: Float = 0.1f
 }
 
 class DataGenerator(r: Random) {
+  import DataGenerator._
 
   /** Generate a random string using the specified characters */
   def generateString(chars: String, maxLen: Int): String = {
@@ -93,6 +100,57 @@ class DataGenerator(r: Random) {
   def generateLongs(n: Int): Seq[Long] = {
     Seq(Long.MinValue, Long.MaxValue) ++
       Range(0, n).map(_ => r.nextLong())
+  }
+
+  // Generate a random row according to the schema, the string filed in the struct could be
+  // configured to generate strings by passing a stringGen function. Other types are delegated
+  // to Spark's RandomDataGenerator.
+  def generateRow(schema: StructType, stringGen: Option[() => String] = None): Row = {
+    val fields = mutable.ArrayBuffer.empty[Any]
+    schema.fields.foreach { f =>
+      f.dataType match {
+        case ArrayType(childType, nullable) =>
+          val data = if (f.nullable && r.nextFloat() <= PROBABILITY_OF_NULL) {
+            null
+          } else {
+            val arr = mutable.ArrayBuffer.empty[Any]
+            val n = 1 // rand.nextInt(10)
+            var i = 0
+            val generator = RandomDataGenerator.forType(childType, nullable, r)
+            assert(generator.isDefined, "Unsupported type")
+            val gen = generator.get
+            while (i < n) {
+              arr += gen()
+              i += 1
+            }
+            arr.toSeq
+          }
+          fields += data
+        case StructType(children) =>
+          fields += generateRow(StructType(children))
+        case StringType if stringGen.isDefined =>
+          val gen = stringGen.get
+          val data = if (f.nullable && r.nextFloat() <= PROBABILITY_OF_NULL) {
+            null
+          } else {
+            gen()
+          }
+          fields += data
+        case _ =>
+          val generator = RandomDataGenerator.forType(f.dataType, f.nullable, r)
+          assert(generator.isDefined, "Unsupported type")
+          val gen = generator.get
+          fields += gen()
+      }
+    }
+    Row.fromSeq(fields)
+  }
+
+  def generateRows(
+      num: Int,
+      schema: StructType,
+      stringGen: Option[() => String] = None): Seq[Row] = {
+    Range(0, num).map(_ => generateRow(schema, stringGen))
   }
 
 }
