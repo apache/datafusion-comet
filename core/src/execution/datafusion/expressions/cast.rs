@@ -1762,12 +1762,44 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_string_to_invalid_dates() {
+    fn test_cast_string_array_with_valid_dates() {
+        let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("-262143-12-31"),
+            Some("\n -262143-12-31 "),
+            Some("-262143-12-31T \t\n"),
+            Some("\n\t-262143-12-31T\r"),
+            Some("-262143-12-31T 123123123"),
+            Some("\r\n-262143-12-31T \r123123123"),
+            Some("\n -262143-12-31T \n\t"),
+        ]));
+
+        for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            let result =
+                Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
+                    .unwrap();
+
+            let date32_array = result
+                .as_any()
+                .downcast_ref::<arrow::array::Date32Array>()
+                .unwrap();
+            assert_eq!(result.len(), 7);
+            date32_array
+                .iter()
+                .for_each(|v| assert_eq!(v.unwrap(), -96464928));
+        }
+    }
+
+    #[test]
+    fn test_cast_string_array_with_invalid_dates() {
         let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020"),
             Some("2020-01"),
             Some("2020-01-01"),
+            //4 invalid dates
             Some("2020-010-01T"),
+            Some("202"),
+            Some(" 202 "),
+            Some("\n 2020-\r8 "),
             Some("2020-01-01T"),
         ]));
 
@@ -1782,7 +1814,16 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 date32_array.iter().collect::<Vec<_>>(),
-                vec![Some(18262), Some(18262), Some(18262), None, Some(18262)]
+                vec![
+                    Some(18262),
+                    Some(18262),
+                    Some(18262),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(18262)
+                ]
             );
         }
 

@@ -22,7 +22,6 @@ package org.apache.comet
 import java.io.File
 
 import scala.util.Random
-import scala.util.matching.Regex
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -613,14 +612,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "abc-def-ghi jkl",
       "2020-mar-20",
       "not_a_date",
-      "T2")
-
-    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
-    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
-    val fuzzDates = gen
-      .generateStrings(dataSize, datePattern, 8)
-      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
-    castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
+      "T2",
+      "\t\n3938\n8",
+      "8701\t",
+      "\n8757",
+      "7593\t\t\t",
+      "\t9374 \n ",
+      "\n 9850 \t",
+      "\r\n\t9840",
+      "\t9629\n",
+      "\r\n 9629 \r\n",
+      "\r\n 962 \r\n",
+      "\r\n 62 \r\n")
+    castTest((validDates ++ invalidDates).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
