@@ -39,7 +39,7 @@ import org.apache.comet.CoverageResultStatus.CoverageResultStatus
  *
  * The test will update files docs/spark_builtin_expr_coverage.txt
  */
-//@Ignore
+@Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
