@@ -53,8 +53,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
    */
   private val numericPattern = "0123456789deEf+-." + whitespaceChars
 
-  private val datePattern = "0123456789/" + whitespaceChars
-
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   test("all valid cast combinations covered") {
