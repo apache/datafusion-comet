@@ -59,6 +59,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Development Guide <contributor-guide/development>
    Debugging Guide <contributor-guide/debugging>
    Benchmarking Guide <contributor-guide/benchmarking>
+   Adding a New Expression <contributor-guide/adding_a_new_expression>
    Profiling Native Code <contributor-guide/profiling_native_code>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 

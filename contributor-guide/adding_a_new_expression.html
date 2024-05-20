@@ -1,0 +1,613 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Adding a New Expression &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Profiling Native Code" href="profiling_native_code.html" />
+    <link rel="prev" title="Comet Benchmarking Guide" href="benchmarking.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/installation.html">
+   Installing Comet
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/expressions.html">
+   Supported Expressions
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/operators.html">
+   Supported Operators
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/datatypes.html">
+   Supported Data Types
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/configs.html">
+   Configuration Settings
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/compatibility.html">
+   Compatibility Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/tuning.html">
+   Tuning Guide
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="plugin_overview.html">
+   Comet Plugin Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../index.html">
+    <img src="../_static/images/2x_bgwhite_original.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#finding-an-expression-to-add">
+   Finding an Expression to Add
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#implementing-the-expression">
+   Implementing the Expression
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#adding-the-expression-in-scala">
+     Adding the Expression in Scala
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#adding-spark-side-tests-for-the-new-expression">
+       Adding Spark-side Tests for the New Expression
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#adding-the-expression-to-the-protobuf-definition">
+     Adding the Expression To the Protobuf Definition
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#adding-the-expression-in-rust">
+     Adding the Expression in Rust
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#generally-adding-a-new-expression">
+       Generally Adding a New Expression
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#adding-a-new-scalar-function-expression">
+       Adding a New Scalar Function Expression
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#api-differences-between-spark-versions">
+     API Differences Between Spark Versions
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#shimming-to-support-different-spark-versions">
+   Shimming to Support Different Spark Versions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#resources">
+   Resources
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/adding_a_new_expression.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="adding-a-new-expression">
+<h1>Adding a New Expression<a class="headerlink" href="#adding-a-new-expression" title="Link to this heading">¶</a></h1>
+<p>There are a number of Spark expression that are not supported by DataFusion Comet yet, and implementing them is a good way to contribute to the project.</p>
+<p>Before you start, have a look through <a class="reference external" href="https://docs.google.com/presentation/d/1H0fF2MOkkBK8fPBlnqK6LejUeLcVD917JhVWfp3mb8A/edit#slide=id.p">these slides</a> as they provide a conceptual overview. And a video of a presentation on those slides is available <a class="reference external" href="https://drive.google.com/file/d/1POU4lFAZfYwZR8zV1X2eoLiAmc1GDtSP/view?usp=sharing">here</a>.</p>
+<section id="finding-an-expression-to-add">
+<h2>Finding an Expression to Add<a class="headerlink" href="#finding-an-expression-to-add" title="Link to this heading">¶</a></h2>
+<p>You may have a specific expression in mind that you’d like to add, but if not, you can review the <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt">expression coverage document</a> to see which expressions are not yet supported.</p>
+</section>
+<section id="implementing-the-expression">
+<h2>Implementing the Expression<a class="headerlink" href="#implementing-the-expression" title="Link to this heading">¶</a></h2>
+<p>Once you have the expression you’d like to add, you should take inventory of the following:</p>
+<ol class="arabic simple">
+<li><p>What is the Spark expression’s behavior across different Spark versions? These make good test cases and will inform you of any compatibility issues, such as an API change that will have to be addressed.</p></li>
+<li><p>Check if the expression is already implemented in DataFusion and if it is compatible with the Spark expression.</p>
+<ol class="arabic simple">
+<li><p>If it is, you can potentially reuse the existing implementation though you’ll need to add tests to verify compatibility.</p></li>
+<li><p>If it’s not, consider an initial version in DataFusion for expressions that are common across different engines. For expressions that are specific to Spark, consider an initial version in DataFusion Comet.</p></li>
+</ol>
+</li>
+<li><p>Test cases for the expression. As mentioned, you can refer to Spark’s test cases for a good idea of what to test.</p></li>
+</ol>
+<p>Once you know what you want to add, you’ll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation in the Rust package.</p>
+<section id="adding-the-expression-in-scala">
+<h3>Adding the Expression in Scala<a class="headerlink" href="#adding-the-expression-in-scala" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object has a method <code class="docutils literal notranslate"><span class="pre">exprToProto</span></code>, which is responsible for converting a Spark expression to a protobuf expression. Within that method is an <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code> method that contains a large match statement for each expression type. You’ll need to add a new case to this match statement for your new expression.</p>
+<p>For example, the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function looks like this:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">isSpark32</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">unHex</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">unhexSerde</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">childExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">unHex</span><span class="p">.</span><span class="n">_1</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">)</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">failOnErrorExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">unHex</span><span class="p">.</span><span class="n">_2</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">)</span>
+
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">optExpr</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">scalarExprToProtoWithReturnType</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">dataType</span><span class="p">,</span><span class="w"> </span><span class="n">childExpr</span><span class="p">,</span><span class="w"> </span><span class="n">failOnErrorExpr</span><span class="p">)</span>
+<span class="w">  </span><span class="n">optExprWithInfo</span><span class="p">(</span><span class="n">optExpr</span><span class="p">,</span><span class="w"> </span><span class="n">expr</span><span class="p">,</span><span class="w"> </span><span class="n">unHex</span><span class="p">.</span><span class="n">_1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>A few things to note here:</p>
+<ul class="simple">
+<li><p>The <code class="docutils literal notranslate"><span class="pre">isSpark32</span></code> check is used to fall back to Spark’s implementation of <code class="docutils literal notranslate"><span class="pre">unhex</span></code> in Spark 3.2. This is somewhat context specific, because in this case, due to a bug in Spark 3.2 for <code class="docutils literal notranslate"><span class="pre">unhex</span></code>, we want to use the Spark implementation and not a Comet implementation that would behave differently if correct.</p></li>
+<li><p>The function is recursively called on child expressions, so you’ll need to make sure that the child expressions are also converted to protobuf.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scalarExprToProtoWithReturnType</span></code> is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.</p></li>
+</ul>
+<section id="adding-spark-side-tests-for-the-new-expression">
+<h4>Adding Spark-side Tests for the New Expression<a class="headerlink" href="#adding-spark-side-tests-for-the-new-expression" title="Link to this heading">¶</a></h4>
+<p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code>, and use the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method to compare the results of the new expression with the expected Spark results and that Comet’s native execution engine is able to execute the expression.</p>
+<p>For example, this is the test case for the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> expression:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">assume</span><span class="p">(</span><span class="o">!</span><span class="n">isSpark32</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;unhex function has incorrect behavior in 3.2&quot;</span><span class="p">)</span><span class="w">  </span><span class="c1">// used to skip the test in Spark 3.2</span>
+
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">table</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;unhex_table&quot;</span>
+<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s&quot;create table </span><span class="si">$</span><span class="n">table</span><span class="s">(col string) using parquet&quot;</span><span class="p">)</span>
+
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s&quot;&quot;&quot;INSERT INTO </span><span class="si">$</span><span class="n">table</span><span class="s"> VALUES</span>
+<span class="s">      |(&#39;537061726B2053514C&#39;),</span>
+<span class="s">      |(&#39;737472696E67&#39;),</span>
+<span class="s">      |(&#39;\\0&#39;),</span>
+<span class="s">      |(&#39;&#39;),</span>
+<span class="s">      |(&#39;###&#39;),</span>
+<span class="s">      |(&#39;G123&#39;),</span>
+<span class="s">      |(&#39;hello&#39;),</span>
+<span class="s">      |(&#39;A1B&#39;),</span>
+<span class="s">      |(&#39;0A1B&#39;)&quot;&quot;&quot;</span><span class="p">.</span><span class="n">stripMargin</span><span class="p">)</span>
+
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">s&quot;SELECT unhex(col) FROM </span><span class="si">$</span><span class="n">table</span><span class="s">&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="adding-the-expression-to-the-protobuf-definition">
+<h3>Adding the Expression To the Protobuf Definition<a class="headerlink" href="#adding-the-expression-to-the-protobuf-definition" title="Link to this heading">¶</a></h3>
+<p>Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you’re adding a new scalar function).</p>
+<p>You can find the protobuf definition in <code class="docutils literal notranslate"><span class="pre">expr.proto</span></code>, and in particular the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> or potentially the <code class="docutils literal notranslate"><span class="pre">AggExpr</span></code>. These are similar in theory to the large case statement in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>, but in protobuf format. So if you were to add a new expression called <code class="docutils literal notranslate"><span class="pre">Add2</span></code>, you would add a new case to the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> message like so:</p>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Expr</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">oneof</span><span class="w"> </span><span class="n">expr_struct</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="o">...</span>
+<span class="w">    </span><span class="n">Add2</span><span class="w"> </span><span class="na">add2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span><span class="w">  </span><span class="c1">// Choose the next available number</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Then you would define the <code class="docutils literal notranslate"><span class="pre">Add2</span></code> message like so:</p>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Add2</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">Expr</span><span class="w"> </span><span class="na">left</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="n">Expr</span><span class="w"> </span><span class="na">right</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="adding-the-expression-in-rust">
+<h3>Adding the Expression in Rust<a class="headerlink" href="#adding-the-expression-in-rust" title="Link to this heading">¶</a></h3>
+<p>With the serialization complete, the next step is to implement the expression in Rust and ensure that the incoming plan can make use of it.</p>
+<p>How this works, is somewhat dependent on the type of expression you’re adding, so see the <code class="docutils literal notranslate"><span class="pre">core/src/execution/datafusion/expressions</span></code> directory for examples of how to implement different types of expressions.</p>
+<section id="generally-adding-a-new-expression">
+<h4>Generally Adding a New Expression<a class="headerlink" href="#generally-adding-a-new-expression" title="Link to this heading">¶</a></h4>
+<p>If you’re adding a new expression, you’ll need to review <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> and <code class="docutils literal notranslate"><span class="pre">create_expr</span></code>. <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> is responsible for translating the incoming plan into a DataFusion plan, and may delegate to <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> to create the physical expressions for the plan.</p>
+<p>If you added a new message to the protobuf definition, you’ll add a new match case to the <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> method to handle the new expression. For example, if you added an <code class="docutils literal notranslate"><span class="pre">Add2</span></code> expression, you would add a new case like so:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">spark_expr</span><span class="p">.</span><span class="n">expr_struct</span><span class="p">.</span><span class="n">as_ref</span><span class="p">().</span><span class="n">unwrap</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="o">..</span><span class="p">.</span>
+<span class="w">  </span><span class="n">ExprStruct</span><span class="p">::</span><span class="n">Add2</span><span class="p">(</span><span class="n">add2</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">create_binary_expr</span><span class="p">(</span><span class="o">..</span><span class="p">.)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">self.create_binary_expr</span></code> is for a binary expression, but if something out of the box is needed, you can create a new <code class="docutils literal notranslate"><span class="pre">PhysicalExpr</span></code> implementation. For example, see <code class="docutils literal notranslate"><span class="pre">if_expr.rs</span></code> for an example of an implementation that doesn’t fit the <code class="docutils literal notranslate"><span class="pre">create_binary_expr</span></code> mold.</p>
+</section>
+<section id="adding-a-new-scalar-function-expression">
+<h4>Adding a New Scalar Function Expression<a class="headerlink" href="#adding-a-new-scalar-function-expression" title="Link to this heading">¶</a></h4>
+<p>For a new scalar function, you can reuse a lot of code by updating the <code class="docutils literal notranslate"><span class="pre">create_comet_physical_fun</span></code> method to match on the function name and make the scalar UDF to be called. For example, the diff to add the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function is:</p>
+<div class="highlight-diff notranslate"><div class="highlight"><pre><span></span>macro_rules! make_comet_scalar_udf {
+<span class="w"> </span>   ($name:expr, $func:ident, $data_type:ident) =&gt; {{
+
+<span class="gi">+       &quot;unhex&quot; =&gt; {</span>
+<span class="gi">+           let func = Arc::new(spark_unhex);</span>
+<span class="gi">+           make_comet_scalar_udf!(&quot;unhex&quot;, func, without data_type)</span>
+<span class="gi">+       }</span>
+
+<span class="w"> </span>   }}
+}
+</pre></div>
+</div>
+<p>With that addition, you can now implement the spark function in Rust. This function will look very similar to DataFusion code. For examples, see the <code class="docutils literal notranslate"><span class="pre">core/src/execution/datafusion/expressions/scalar_funcs</span></code> directory.</p>
+<p>Without getting into the internals, the function signature will look like:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="p">(</span><span class="k">super</span><span class="p">)</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spark_unhex</span><span class="p">(</span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">ColumnarValue</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ColumnarValue</span><span class="p">,</span><span class="w"> </span><span class="n">DataFusionError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Do the work here</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<blockquote>
+<div><p><strong><em>NOTE:</em></strong>  If you call the <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf</span></code> macro with the data type, the function signature will look include the data type as a second argument.</p>
+</div></blockquote>
+</section>
+</section>
+<section id="api-differences-between-spark-versions">
+<h3>API Differences Between Spark Versions<a class="headerlink" href="#api-differences-between-spark-versions" title="Link to this heading">¶</a></h3>
+<p>If the expression you’re adding has different behavior across different Spark versions, you’ll need to account for that in your implementation. There are two tools at your disposal to help with this:</p>
+<ol class="arabic simple">
+<li><p>Shims that exist in <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala</span></code> for each Spark version. These shims are used to provide compatibility between different Spark versions.</p></li>
+<li><p>Variables that correspond to the Spark version, such as <code class="docutils literal notranslate"><span class="pre">isSpark32</span></code>, which can be used to conditionally execute code based on the Spark version.</p></li>
+</ol>
+</section>
+</section>
+<section id="shimming-to-support-different-spark-versions">
+<h2>Shimming to Support Different Spark Versions<a class="headerlink" href="#shimming-to-support-different-spark-versions" title="Link to this heading">¶</a></h2>
+<p>By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, <code class="docutils literal notranslate"><span class="pre">unhex</span></code> added a new optional parameter is Spark 3.4, for if it should <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> or not. So for version 3.2 and 3.3, the shim is:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="cm">/**</span>
+<span class="cm">      * Returns a tuple of expressions for the `unhex` function.</span>
+<span class="cm">      */</span>
+<span class="w">    </span><span class="k">def</span><span class="w"> </span><span class="nf">unhexSerde</span><span class="p">(</span><span class="n">unhex</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="nc">Expression</span><span class="p">,</span><span class="w"> </span><span class="nc">Expression</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">(</span><span class="n">unhex</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="nc">Literal</span><span class="p">(</span><span class="kc">false</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>And for version 3.4, the shim is:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="cm">/**</span>
+<span class="cm">      * Returns a tuple of expressions for the `unhex` function.</span>
+<span class="cm">      */</span>
+<span class="w">    </span><span class="k">def</span><span class="w"> </span><span class="nf">unhexSerde</span><span class="p">(</span><span class="n">unhex</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="nc">Expression</span><span class="p">,</span><span class="w"> </span><span class="nc">Expression</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">(</span><span class="n">unhex</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="n">unhex</span><span class="p">.</span><span class="n">failOnError</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Then when <code class="docutils literal notranslate"><span class="pre">unhexSerde</span></code> is called in the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object, it will use the correct shim for the Spark version.</p>
+</section>
+<section id="resources">
+<h2>Resources<a class="headerlink" href="#resources" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-comet/pull/297">Variance PR</a></p>
+<ul>
+<li><p>Aggregation function</p></li>
+</ul>
+</li>
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-comet/pull/342">Unhex PR</a></p>
+<ul>
+<li><p>Basic scalar function with shims for different Spark versions</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="benchmarking.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Comet Benchmarking Guide</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="profiling_native_code.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Profiling Native Code</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
