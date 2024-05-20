@@ -1420,14 +1420,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper wi
               "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            Set("Native shuffle is not enabled", "AQEShuffleRead is not supported")),
+            Set(
+              "Native shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
+              "AQEShuffleRead is not supported")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
             Set(
-              "Native shuffle is not enabled",
+              "Native shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "BroadcastExchange is not supported",

@@ -47,6 +47,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Supported Data Types <user-guide/datatypes>
    Configuration Settings <user-guide/configs>
    Compatibility Guide <user-guide/compatibility>
+   Tuning Guide <user-guide/tuning>
 
 .. _toc.contributor-guide-links:
 .. toctree::
@@ -57,6 +58,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Comet Plugin Overview <contributor-guide/plugin_overview>
    Development Guide <contributor-guide/development>
    Debugging Guide <contributor-guide/debugging>
+   Benchmarking Guide <contributor-guide/benchmarking>
    Profiling Native Code <contributor-guide/profiling_native_code>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 
