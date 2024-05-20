@@ -143,7 +143,7 @@ class DataGenerator(r: Random) {
           fields += gen()
       }
     }
-    Row.fromSeq(fields)
+    Row.fromSeq(fields.toSeq)
   }
 
   def generateRows(
