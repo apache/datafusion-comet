@@ -260,7 +260,10 @@ abstract class CometTestBase
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
-    assert(extendedInfo.equalsIgnoreCase(expectedInfo.toSeq.sorted.mkString("\n")))
+    val expectedStr = expectedInfo.toSeq.sorted.mkString("\n")
+    if (!extendedInfo.equalsIgnoreCase(expectedStr)) {
+      fail(s"$extendedInfo != $expectedStr (case-insensitive comparison)")
+    }
   }
 
   private var _spark: SparkSession = _

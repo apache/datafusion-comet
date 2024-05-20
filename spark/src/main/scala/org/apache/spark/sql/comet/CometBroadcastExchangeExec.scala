@@ -238,13 +238,13 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
     obj match {
       case other: CometBroadcastExchangeExec =>
         this.originalPlan == other.originalPlan &&
-        this.output == other.output && this.child == other.child
+        this.child == other.child
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, child)
+  override def hashCode(): Int = Objects.hashCode(child)
 
   override def stringArgs: Iterator[Any] = Iterator(output, child)
 
