@@ -39,7 +39,7 @@ import org.apache.comet.CoverageResultStatus.CoverageResultStatus
  *
  * The test will update files docs/spark_builtin_expr_coverage.txt
  */
-@Ignore
+//@Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
@@ -73,7 +73,6 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
    * doc/spark_builtin_expr_coverage_agg.txt
    */
   test("Test Spark builtin expressions coverage") {
-    testNames
     val builtinExamplesMap = getExamples()
 
     // key - function name
