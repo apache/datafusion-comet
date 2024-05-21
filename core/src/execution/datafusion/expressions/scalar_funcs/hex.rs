@@ -27,18 +27,6 @@ use datafusion_common::{
 };
 use std::fmt::Write;
 
-fn hex_bytes(bytes: &[u8]) -> Vec<u8> {
-    let length = bytes.len();
-    let mut value = vec![0; length * 2];
-    let mut i = 0;
-    while i < length {
-        value[i * 2] = (bytes[i] & 0xF0) >> 4;
-        value[i * 2 + 1] = bytes[i] & 0x0F;
-        i += 1;
-    }
-    value
-}
-
 fn hex_int64(num: i64) -> String {
     if num >= 0 {
         format!("{:X}", num)
@@ -69,6 +57,18 @@ fn hex_int8(num: i8) -> String {
     } else {
         format!("{:02X}", num as u8)
     }
+}
+
+fn hex_bytes(bytes: &[u8]) -> Vec<u8> {
+    let length = bytes.len();
+    let mut value = vec![0; length * 2];
+    let mut i = 0;
+    while i < length {
+        value[i * 2] = (bytes[i] & 0xF0) >> 4;
+        value[i * 2 + 1] = bytes[i] & 0x0F;
+        i += 1;
+    }
+    value
 }
 
 fn hex_string(s: &str) -> Vec<u8> {
@@ -228,6 +228,16 @@ mod test {
         let bytes = [0x01, 0x02, 0x03, 0x04];
         let hexed = super::hex_bytes(&bytes);
         assert_eq!(hexed, vec![0, 1, 0, 2, 0, 3, 0, 4]);
+    }
+
+    #[test]
+    fn test_hex_string() {
+        let s = "1234";
+        let hexed = super::hex_string(s);
+        assert_eq!(hexed, vec![0x31, 0x32, 0x33, 0x34]);
+
+        let hexed_string = super::hex_bytes_to_string(&hexed).unwrap();
+        assert_eq!(hexed_string, "31323334".to_string());
     }
 
     #[test]
