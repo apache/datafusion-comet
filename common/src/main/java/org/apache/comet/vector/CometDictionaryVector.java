@@ -39,7 +39,7 @@ public class CometDictionaryVector extends CometDecodedVector {
       CometDictionary values,
       DictionaryProvider provider,
       boolean useDecimal128) {
-    this(indices, values, provider, useDecimal128, false);
+    this(indices, values, provider, useDecimal128, false, false);
   }
 
   public CometDictionaryVector(
@@ -47,8 +47,9 @@ public class CometDictionaryVector extends CometDecodedVector {
       CometDictionary values,
       DictionaryProvider provider,
       boolean useDecimal128,
-      boolean isAlias) {
-    super(indices.valueVector, values.getValueVector().getField(), useDecimal128);
+      boolean isAlias,
+      boolean isUuid) {
+    super(indices.valueVector, values.getValueVector().getField(), useDecimal128, isUuid);
     Preconditions.checkArgument(
         indices.valueVector instanceof IntVector, "'indices' should be a IntVector");
     this.values = values;
@@ -130,6 +131,6 @@ public class CometDictionaryVector extends CometDecodedVector {
     // Set the alias flag to true so that the sliced vector will not close the dictionary vector.
     // Otherwise, if the dictionary is closed, the sliced vector will not be able to access the
     // dictionary.
-    return new CometDictionaryVector(sliced, values, provider, useDecimal128, true);
+    return new CometDictionaryVector(sliced, values, provider, useDecimal128, true, isUuid);
   }
 }
