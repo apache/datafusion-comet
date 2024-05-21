@@ -28,7 +28,7 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use datafusion_common::{internal_err, Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
 
 /// CORR aggregate expression
