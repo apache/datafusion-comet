@@ -18,11 +18,11 @@
 use std::sync::Arc;
 
 use arrow::array::as_string_array;
-use arrow_array::StringArray;
+use arrow_array::{Int16Array, Int8Array, StringArray};
 use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
-    cast::{as_binary_array, as_int64_array},
+    cast::{as_binary_array, as_fixed_size_binary_array, as_int32_array, as_int64_array},
     exec_err, DataFusionError, ScalarValue,
 };
 use std::fmt::Write;
@@ -47,6 +47,30 @@ fn hex_int64(num: i64) -> String {
     }
 }
 
+fn hex_int32(num: i32) -> String {
+    if num >= 0 {
+        format!("{:X}", num)
+    } else {
+        format!("{:08X}", num as u32)
+    }
+}
+
+fn hex_int16(num: i16) -> String {
+    if num >= 0 {
+        format!("{:X}", num)
+    } else {
+        format!("{:04X}", num as u16)
+    }
+}
+
+fn hex_int8(num: i8) -> String {
+    if num >= 0 {
+        format!("{:X}", num)
+    } else {
+        format!("{:02X}", num as u8)
+    }
+}
+
 fn hex_string(s: &str) -> Vec<u8> {
     hex_bytes(s.as_bytes())
 }
@@ -54,7 +78,7 @@ fn hex_string(s: &str) -> Vec<u8> {
 fn hex_bytes_to_string(bytes: &[u8]) -> Result<String, std::fmt::Error> {
     let mut hex_string = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(&mut hex_string, "{:01X}", byte)?;
+        write!(&mut hex_string, "{:X}", byte)?;
     }
     Ok(hex_string)
 }
@@ -72,6 +96,46 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 let array = as_int64_array(array)?;
 
                 let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int64)).collect();
+
+                let string_array = StringArray::from(hexed);
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            DataType::Int32 => {
+                let array = as_int32_array(array)?;
+
+                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int32)).collect();
+
+                let string_array = StringArray::from(hexed);
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            DataType::Int16 => {
+                let array = array.as_any().downcast_ref::<Int16Array>().unwrap();
+
+                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int16)).collect();
+
+                let string_array = StringArray::from(hexed);
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            DataType::Int8 => {
+                let array = array.as_any().downcast_ref::<Int8Array>().unwrap();
+
+                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int8)).collect();
+
+                let string_array = StringArray::from(hexed);
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            DataType::UInt64 => {
+                let array = as_int64_array(array)?;
+
+                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int64)).collect();
+
+                let string_array = StringArray::from(hexed);
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            DataType::UInt8 => {
+                let array = array.as_any().downcast_ref::<Int8Array>().unwrap();
+
+                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int8)).collect();
 
                 let string_array = StringArray::from(hexed);
                 Ok(ColumnarValue::Array(Arc::new(string_array)))
@@ -100,7 +164,22 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Array(Arc::new(string_array)))
             }
-            _ => exec_err!("hex expects a string, binary or integer argument"),
+            DataType::FixedSizeBinary(_) => {
+                let array = as_fixed_size_binary_array(array)?;
+
+                let hexed: Vec<Option<String>> = array
+                    .iter()
+                    .map(|v| v.map(|v| hex_bytes_to_string(&hex_bytes(v))).transpose())
+                    .collect::<Result<_, _>>()?;
+
+                let string_array = StringArray::from(hexed);
+
+                Ok(ColumnarValue::Array(Arc::new(string_array)))
+            }
+            _ => exec_err!(
+                "hex expects a string, binary or integer argument, got {:?}",
+                array.data_type()
+            ),
         },
         ColumnarValue::Scalar(scalar) => match scalar {
             ScalarValue::Int64(Some(v)) => {
@@ -108,7 +187,9 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
             }
-            ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
+            ScalarValue::Binary(Some(v))
+            | ScalarValue::LargeBinary(Some(v))
+            | ScalarValue::FixedSizeBinary(_, Some(v)) => {
                 let hex_bytes = hex_bytes(v);
                 let hex_string = hex_bytes_to_string(&hex_bytes)?;
 
@@ -120,10 +201,16 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
             }
-            ScalarValue::Int64(None) | ScalarValue::Utf8(None) | ScalarValue::Binary(None) => {
+            ScalarValue::Int64(None)
+            | ScalarValue::Utf8(None)
+            | ScalarValue::Binary(None)
+            | ScalarValue::FixedSizeBinary(_, None) => {
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
             }
-            _ => exec_err!("hex expects a string, binary or integer argument"),
+            _ => exec_err!(
+                "hex expects a string, binary or integer argument, got {:?}",
+                scalar.data_type()
+            ),
         },
     }
 }
@@ -154,6 +241,39 @@ mod test {
         assert_eq!(hexed, "123456789ABCDEF0".to_string());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_hex_i8() {
+        let num = 123;
+        let hexed = super::hex_int8(num);
+        assert_eq!(hexed, "7B".to_string());
+
+        let num = -1;
+        let hexed = super::hex_int8(num);
+        assert_eq!(hexed, "FF".to_string());
+    }
+
+    #[test]
+    fn test_hex_i16() {
+        let num = 1234;
+        let hexed = super::hex_int16(num);
+        assert_eq!(hexed, "4D2".to_string());
+
+        let num = -1;
+        let hexed = super::hex_int16(num);
+        assert_eq!(hexed, "FFFF".to_string());
+    }
+
+    #[test]
+    fn test_hex_i32() {
+        let num = 1234;
+        let hexed = super::hex_int32(num);
+        assert_eq!(hexed, "4D2".to_string());
+
+        let num = -1;
+        let hexed = super::hex_int32(num);
+        assert_eq!(hexed, "FFFFFFFF".to_string());
     }
 
     #[test]

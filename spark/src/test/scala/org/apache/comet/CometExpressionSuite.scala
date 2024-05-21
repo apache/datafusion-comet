@@ -1039,43 +1039,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   test("hex") {
-    val str_table = "string_hex_table"
-    withTable(str_table) {
-      sql(s"create table $str_table(col string) using parquet")
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "hex.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
 
-      sql(s"""INSERT INTO $str_table VALUES
-        |('Spark SQL'),
-        |('string'),
-        |(''),
-        |('###'),
-        |('G123'),
-        |(NULL),
-        |('hello'),
-        |('A1B'),
-        |('0A1B')""".stripMargin)
+        withParquetTable(path.toString, "tbl") {
+          // ints
+          checkSparkAnswerAndOperator("SELECT hex(_2), hex(_3), hex(_4), hex(_5) FROM tbl")
 
-      checkSparkAnswerAndOperator(s"SELECT hex(col) FROM $str_table")
-      checkSparkAnswerAndOperator(s"SELECT hex(CAST(col AS BINARY)) FROM $str_table")
-    }
+          // uints, uint8 and uint16 not working yet
+          // checkSparkAnswerAndOperator("SELECT hex(_9), hex(_10), hex(_11), hex(_12) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT hex(_11), hex(_12) FROM tbl")
 
-    val int_table = "int_hex_table"
-    withTable(int_table) {
-      sql(s"create table $int_table(col int) using parquet")
-
-      sql(s"""INSERT INTO $int_table VALUES
-        |(-1),
-        |(0),
-        |(1),
-        |(2),
-        |(3),
-        |(4),
-        |(NULL),
-        |(5),
-        |(6),
-        |(7),
-        |(8)""".stripMargin)
-
-      checkSparkAnswerAndOperator(s"SELECT hex(col) FROM $int_table")
+          // strings, binary
+          checkSparkAnswerAndOperator("SELECT hex(_8), hex(_14) FROM tbl")
+        }
+      }
     }
   }
   test("unhex") {
