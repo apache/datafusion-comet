@@ -519,28 +519,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "9223372036854775808" // Long.MaxValue + 1
   )
 
-  ignore("cast StringType to ByteType") {
+  test("cast StringType to ByteType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 4).toDF("a"), DataTypes.ByteType)
   }
 
-  ignore("cast StringType to ShortType") {
+  test("cast StringType to ShortType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
-  ignore("cast StringType to IntegerType") {
+  test("cast StringType to IntegerType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
-  ignore("cast StringType to LongType") {
+  test("cast StringType to LongType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test
