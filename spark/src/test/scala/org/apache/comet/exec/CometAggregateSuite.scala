@@ -1229,14 +1229,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     sql(s"insert into $table values(1, 4, 1), (2, 5, 1), (3, 6, 2)")
                     val expectedNumOfCometAggregates = 2
 
-                    sql("SELECT corr(col1, col2) FROM test GROUP BY col3").show
-
                     checkSparkAnswerAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1247,11 +1245,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1262,11 +1260,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1277,11 +1275,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1291,7 +1289,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1301,14 +1303,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                       s"insert into $table values(1, 4, 2), (null, null, 2), (3, 6, 1), (3, 3, 1)")
                     val expectedNumOfCometAggregates = 2
 
-                    sql("SELECT corr(col1, col2) FROM test GROUP BY col3").show()
-
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1318,11 +1318,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1332,11 +1332,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
 
@@ -1347,11 +1347,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     val expectedNumOfCometAggregates = 2
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test",
+                      s"SELECT corr(col1, col2) FROM $table",
                       expectedNumOfCometAggregates)
 
                     checkSparkAnswerWithTolAndNumOfAggregates(
-                      "SELECT corr(col1, col2) FROM test GROUP BY col3",
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
                       expectedNumOfCometAggregates)
                   }
                 }

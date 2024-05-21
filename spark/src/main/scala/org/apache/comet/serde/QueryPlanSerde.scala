@@ -565,6 +565,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .setCorrelation(corrBuilder)
               .build())
         } else {
+          withInfo(aggExpr, child1, child2)
           None
         }
       case fn =>
