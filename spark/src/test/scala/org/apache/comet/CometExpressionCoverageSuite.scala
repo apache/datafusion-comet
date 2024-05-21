@@ -27,7 +27,7 @@ import scala.collection.mutable
 import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
 
-import org.apache.spark.sql.{CometTestBase, DisableSuite}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 /**
@@ -37,10 +37,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * doc/spark_builtin_expr_coverage_agg.txt
  */
 @Ignore
-class CometExpressionCoverageSuite
-    extends CometTestBase
-    with AdaptiveSparkPlanHelper
-    with DisableSuite {
+class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
 

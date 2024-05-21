@@ -26,7 +26,7 @@ import scala.collection.mutable
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.{DisableSuite, TPCDSBase}
+import org.apache.spark.sql.TPCDSBase
 import org.apache.spark.sql.catalyst.expressions.AttributeSet
 import org.apache.spark.sql.catalyst.util.resourceToString
 import org.apache.spark.sql.execution.{FormattedMode, ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
@@ -297,7 +297,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
 }
 
-class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite with DisableSuite {
+class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   // TODO: remove the Spark 4.0 golden file once ANSI is fully supported
   private val planName =
     if (isSpark40Plus) "approved-plans-v1_4-spark4_0" else "approved-plans-v1_4"
@@ -311,7 +311,7 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite with Dis
   }
 }
 
-class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite with DisableSuite {
+class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   // TODO: remove the Spark 4.0 golden file once ANSI is fully supported
   private val planName =
     if (isSpark40Plus) "approved-plans-v2_7-spark4_0" else "approved-plans-v2_7"

@@ -24,7 +24,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, DisableSuite, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -944,13 +944,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 }
 
-class CometAsyncShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
+class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = true
 
   protected val adaptiveExecutionEnabled: Boolean = true
 }
 
-class CometShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
+class CometShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = false
 
   protected val adaptiveExecutionEnabled: Boolean = true
@@ -1003,7 +1003,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
   }
 }
 
-class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
+class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = false
 
   protected val adaptiveExecutionEnabled: Boolean = false
@@ -1035,13 +1035,13 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite with Disable
   }
 }
 
-class DisableAQECometAsyncShuffleSuite extends CometColumnarShuffleSuite with DisableSuite {
+class DisableAQECometAsyncShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = true
 
   protected val adaptiveExecutionEnabled: Boolean = false
 }
 
-class CometShuffleEncryptionSuite extends CometTestBase with DisableSuite {
+class CometShuffleEncryptionSuite extends CometTestBase {
   import testImplicits._
 
   override protected def sparkConf: SparkConf = {
@@ -1078,7 +1078,7 @@ class CometShuffleEncryptionSuite extends CometTestBase with DisableSuite {
   }
 }
 
-class CometShuffleManagerSuite extends CometTestBase with DisableSuite {
+class CometShuffleManagerSuite extends CometTestBase {
 
   test("should not bypass merge sort if executor cores are too high") {
     withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.key -> "100") {

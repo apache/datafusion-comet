@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.{Column, CometTestBase, DisableSuite}
+import org.apache.spark.sql.{Column, CometTestBase}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
@@ -28,7 +28,7 @@ import org.apache.spark.util.sketch.BloomFilter
 import java.io.ByteArrayOutputStream
 import scala.util.Random
 
-class CometExpression3_3PlusSuite extends CometTestBase with AdaptiveSparkPlanHelper with DisableSuite {
+class CometExpression3_3PlusSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   val func_might_contain = new FunctionIdentifier("might_contain")

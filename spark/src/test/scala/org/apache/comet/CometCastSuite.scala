@@ -23,7 +23,7 @@ import java.io.File
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, DataFrame, DisableSuite, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
@@ -32,7 +32,7 @@ import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
 import org.apache.comet.expressions.{CometCast, Compatible}
 
-class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper with DisableSuite {
+class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
