@@ -27,12 +27,14 @@ import scala.sys.process._
 
 import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
+import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.collect_list
 
-import org.apache.comet.CoverageResultStatus.CoverageResultStatus
+import org.apache.comet.CoverageResultStatus.{CoverageResultStatus, Passed}
 
 /**
  * Manual test to calculate Spark builtin expressions coverage support by the Comet
@@ -46,13 +48,15 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
   private val projectDocFolder = "docs"
   private val rawCoverageFilePath = s"$projectDocFolder/spark_builtin_expr_coverage.txt"
+  private val mdCoverageFilePath = s"$projectDocFolder/spark_expressions_support.md"
   private val DATAFUSIONCLI_PATH_ENV_VAR = "DATAFUSIONCLI_PATH"
-
   private val queryPattern = """(?i)SELECT (.+?);""".r
   private val valuesPattern = """(?i)FROM VALUES(.+?);""".r
   private val selectPattern = """(i?)SELECT(.+?)FROM""".r
 
-  def getExamples(): Map[String, List[String]] =
+  // key - function name
+  // value - examples
+  def getExamples(): Map[FunctionInfo, List[String]] =
     spark.sessionState.functionRegistry
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
@@ -62,7 +66,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
         !List("window", "session_window", "window_time").contains(f.getName.toLowerCase))
       .map(f => {
         val selectRows = queryPattern.findAllMatchIn(f.getExamples).map(_.group(0)).toList
-        (f.getName, selectRows.filter(_.nonEmpty))
+        (FunctionInfo(f.getName, f.getGroup), selectRows.filter(_.nonEmpty))
       })
       .toMap
 
@@ -80,7 +84,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
     val resultsMap = new mutable.HashMap[String, CoverageResult]()
 
     builtinExamplesMap.foreach {
-      case (funcName, q :: _) =>
+      case (func, q :: _) =>
         var dfMessage: Option[String] = None
         val queryResult =
           try {
@@ -123,7 +127,8 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
               CoverageResultStatus.Passed,
               CoverageResultDetails(
                 cometMessage = "OK",
-                datafusionMessage = dfMessage.getOrElse("OK")))
+                datafusionMessage = dfMessage.getOrElse("OK")),
+              group = func.group)
 
           } catch {
             case e: TestFailedException
@@ -134,7 +139,8 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 CoverageResultDetails(
                   cometMessage =
                     "Unsupported: Expected only Comet native operators but found Spark fallback",
-                  datafusionMessage = dfMessage.getOrElse("")))
+                  datafusionMessage = dfMessage.getOrElse("")),
+                group = func.group)
 
             case e if e.getMessage.contains("CometNativeException") =>
               CoverageResult(
@@ -142,7 +148,8 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 CoverageResultStatus.Failed,
                 CoverageResultDetails(
                   cometMessage = "Failed on native side: found CometNativeException",
-                  datafusionMessage = dfMessage.getOrElse("")))
+                  datafusionMessage = dfMessage.getOrElse("")),
+                group = func.group)
 
             case e =>
               CoverageResult(
@@ -150,23 +157,24 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 CoverageResultStatus.Failed,
                 CoverageResultDetails(
                   cometMessage = e.getMessage,
-                  datafusionMessage = dfMessage.getOrElse("")))
+                  datafusionMessage = dfMessage.getOrElse("")),
+                group = func.group)
           }
-        resultsMap.put(funcName, queryResult)
+        resultsMap.put(func.name, queryResult)
 
       // Function with no examples
-      case (funcName, List()) =>
+      case (func, List()) =>
         resultsMap.put(
-          funcName,
+          func.name,
           CoverageResult(
             "",
             CoverageResultStatus.Skipped,
             CoverageResultDetails(
               cometMessage = "No examples found in spark.sessionState.functionRegistry",
-              datafusionMessage = "")))
+              datafusionMessage = ""),
+            group = func.group))
     }
 
-    // TODO: convert results into HTML or .md file
     resultsMap.toSeq.toDF("name", "details").createOrReplaceTempView("t")
 
     val str = showString(
@@ -175,6 +183,86 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       1000,
       0)
     Files.write(Paths.get(rawCoverageFilePath), str.getBytes(StandardCharsets.UTF_8))
+    Files.write(
+      Paths.get(mdCoverageFilePath),
+      generateMarkdown(spark.sql("select * from t")).getBytes(StandardCharsets.UTF_8))
+  }
+
+  test("Test markdown") {
+    val map = new scala.collection.mutable.HashMap[String, CoverageResult]()
+    map.put(
+      "f1",
+      CoverageResult("q1", CoverageResultStatus.Passed, CoverageResultDetails("", ""), "group1"))
+    map.put(
+      "f2",
+      CoverageResult(
+        "q2",
+        CoverageResultStatus.Failed,
+        CoverageResultDetails("err", "err"),
+        "group1"))
+    map.put(
+      "f3",
+      CoverageResult("q3", CoverageResultStatus.Passed, CoverageResultDetails("", ""), "group2"))
+    map.put(
+      "f4",
+      CoverageResult(
+        "q4",
+        CoverageResultStatus.Failed,
+        CoverageResultDetails("err", "err"),
+        "group2"))
+    map.put(
+      "f5",
+      CoverageResult("q5", CoverageResultStatus.Passed, CoverageResultDetails("", ""), "group3"))
+    val str = generateMarkdown(map.toSeq.toDF("name", "details"))
+    str shouldBe s"${getLicenseHeader()}\n# Supported Spark Expressions\n\n### group1\n - [x] f1\n - [ ] f2\n\n### group2\n - [x] f3\n - [ ] f4\n\n### group3\n - [x] f5"
+  }
+
+  def generateMarkdown(df: DataFrame): String = {
+    val groupedDF = df
+      .orderBy("name")
+      .groupBy("details.group")
+      .agg(collect_list("name").as("names"), collect_list("details.result").as("statuses"))
+      .orderBy("group")
+    val sb = new StringBuilder(s"${getLicenseHeader()}\n# Supported Spark Expressions")
+    groupedDF.collect().foreach { row =>
+      val groupName = row.getAs[String]("group")
+      val names = row.getAs[Seq[String]]("names")
+      val statuses = row.getAs[Seq[String]]("statuses")
+
+      val passedMarks = names
+        .zip(statuses)
+        .map(x =>
+          x._2 match {
+            case s if s == Passed.toString => s" - [x] ${x._1}"
+            case _ => s" - [ ] ${x._1}"
+          })
+
+      sb.append(s"\n\n### $groupName\n" + passedMarks.mkString("\n"))
+    }
+
+    sb.result()
+  }
+
+  private def getLicenseHeader(): String = {
+    """<!---
+      |  Licensed to the Apache Software Foundation (ASF) under one
+      |  or more contributor license agreements.  See the NOTICE file
+      |  distributed with this work for additional information
+      |  regarding copyright ownership.  The ASF licenses this file
+      |  to you under the Apache License, Version 2.0 (the
+      |  "License"); you may not use this file except in compliance
+      |  with the License.  You may obtain a copy of the License at
+      |
+      |    http://www.apache.org/licenses/LICENSE-2.0
+      |
+      |  Unless required by applicable law or agreed to in writing,
+      |  software distributed under the License is distributed on an
+      |  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+      |  KIND, either express or implied.  See the License for the
+      |  specific language governing permissions and limitations
+      |  under the License.
+      |-->
+      |""".stripMargin
   }
 
   // Returns execution error, None means successful execution
@@ -224,6 +312,9 @@ object CoverageResultStatus extends Enumeration {
 case class CoverageResult(
     query: String,
     result: CoverageResultStatus,
-    details: CoverageResultDetails)
+    details: CoverageResultDetails,
+    group: String)
 
 case class CoverageResultDetails(cometMessage: String, datafusionMessage: String)
+
+case class FunctionInfo(name: String, group: String)
