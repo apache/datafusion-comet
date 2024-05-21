@@ -61,12 +61,15 @@ pub struct ScanExec {
     /// The input batch of input data. Used to determine the schema of the input data.
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// The name of the source of this scan node. It is used for debugging purpose.
+    pub name: String,
     cache: PlanProperties,
 }
 
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
+        name: String,
         input_source: Option<Arc<GlobalRef>>,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
@@ -87,6 +90,7 @@ impl ScanExec {
 
         Ok(Self {
             exec_context_id,
+            name,
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),

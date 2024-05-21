@@ -27,10 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
-import org.apache.arrow.c.CDataDictionaryProvider;
-import org.apache.arrow.c.Data;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
@@ -52,7 +49,6 @@ import org.apache.comet.vector.CometVector;
 
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
-  protected static final BufferAllocator ALLOCATOR = new RootAllocator();
 
   /**
    * The current Comet vector holding all the values read by this column reader. Owned by this
@@ -88,18 +84,19 @@ public class ColumnReader extends AbstractColumnReader {
    */
   boolean hadNull;
 
-  /** Dictionary provider for this column. */
-  private final CDataDictionaryProvider dictionaryProvider = new CDataDictionaryProvider();
+  private final CometSchemaImporter importer;
 
   public ColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
+      CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
       boolean useLegacyDateTimestamp) {
     super(type, descriptor, useDecimal128, useLegacyDateTimestamp);
     assert batchSize > 0 : "Batch size must be positive, found " + batchSize;
     this.batchSize = batchSize;
+    this.importer = importer;
     initNative();
   }
 
@@ -163,7 +160,6 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector.close();
       currentVector = null;
     }
-    dictionaryProvider.close();
     super.close();
   }
 
@@ -203,7 +199,8 @@ public class ColumnReader extends AbstractColumnReader {
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
         ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-      FieldVector vector = Data.importVector(ALLOCATOR, array, schema, dictionaryProvider);
+      FieldVector vector = importer.importVector(array, schema);
+
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
       CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
@@ -224,17 +221,17 @@ public class ColumnReader extends AbstractColumnReader {
         // return plain vector.
         currentVector = cometVector;
         return currentVector;
-      } else if (dictionary == null) {
-        // There is dictionary from native side but the Java side dictionary hasn't been
-        // initialized yet.
-        Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        CometPlainVector dictionaryVector =
-            new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
-        dictionary = new CometDictionary(dictionaryVector);
       }
 
+      // There is dictionary from native side but the Java side dictionary hasn't been
+      // initialized yet.
+      Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
+      CometPlainVector dictionaryVector =
+          new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
+      dictionary = new CometDictionary(dictionaryVector);
+
       currentVector =
-          new CometDictionaryVector(cometVector, dictionary, dictionaryProvider, useDecimal128);
+          new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
       return currentVector;
     }
   }

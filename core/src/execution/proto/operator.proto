@@ -47,6 +47,7 @@ message Operator {
 
 message Scan {
   repeated spark.spark_expression.DataType fields = 1;
+  string name = 2;
 }
 
 message Projection {

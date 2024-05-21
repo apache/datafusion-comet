@@ -46,7 +46,7 @@ under the License.
     <scala.plugin.version>4.7.2</scala.plugin.version>
     <scalatest.version>3.2.9</scalatest.version>
     <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
-    <spark.version>3.4.2</spark.version>
+    <spark.version>3.4.0.57-apple-SNAPSHOT</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.19.6</protobuf.version>

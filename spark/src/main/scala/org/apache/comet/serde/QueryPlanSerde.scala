@@ -2560,6 +2560,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // Sink operators don't have children
           result.clearChildren()
 
+          scanBuilder.setName(op.nodeName)
+
           Some(result.setScan(scanBuilder).build())
         } else {
           // There are unsupported scan type
