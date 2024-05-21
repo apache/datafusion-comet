@@ -32,9 +32,7 @@ trait ShimCometShuffleWriteProcessor extends ShuffleWriteProcessor {
       mapId: Long,
       context: TaskContext,
       partition: Partition): MapStatus = {
-    // Getting rid of the fake partitionId
-    val cometRDD = rdd.asInstanceOf[MapPartitionsRDD[_, _]].prev.asInstanceOf[RDD[ColumnarBatch]]
-    val rawIter = cometRDD.iterator(partition, context)
+    val rawIter = rdd.iterator(partition, context)
     write(rawIter, dep, mapId, partition.index, context)
   }
 
