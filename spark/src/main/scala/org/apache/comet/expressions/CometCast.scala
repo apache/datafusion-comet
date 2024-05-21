@@ -108,7 +108,7 @@ object CometCast {
         Compatible()
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        Incompatible(Some("Not all invalid inputs are detected"))
+        Compatible()
       case DataTypes.BinaryType =>
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
