@@ -458,7 +458,6 @@ class CometShuffleWriteProcessor(
     new SQLShuffleWriteMetricsReporter(context.taskMetrics().shuffleWriteMetrics, metrics)
   }
 
-  // FIXME: we need actually prev of rdd?
   override def write(
       inputs: Iterator[_],
       dep: ShuffleDependency[_, _, _],
@@ -483,8 +482,10 @@ class CometShuffleWriteProcessor(
       "elapsed_compute" -> metrics("shuffleReadElapsedCompute"))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
+    // Getting rid of the fake partitionId
+    val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
     val cometIter = CometExec.getCometIterator(
-      Seq(inputs.asInstanceOf[Iterator[ColumnarBatch]]),
+      Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       nativePlan,
       nativeMetrics)
 
