@@ -234,7 +234,7 @@ impl Accumulator for CorrelationAccumulator {
             (
                 ScalarValue::Float64(Some(c)),
                 ScalarValue::Float64(Some(s1)),
-                ScalarValue::Float64(Some(s2))
+                ScalarValue::Float64(Some(s2)),
             ) if s1 != 0.0 && s2 != 0.0 => Ok(ScalarValue::Float64(Some(c / (s1 * s2)))),
             _ if self.null_on_divide_by_zero => Ok(ScalarValue::Float64(None)),
             _ => {
