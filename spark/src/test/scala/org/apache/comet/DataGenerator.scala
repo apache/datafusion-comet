@@ -109,25 +109,8 @@ class DataGenerator(r: Random) {
     val fields = mutable.ArrayBuffer.empty[Any]
     schema.fields.foreach { f =>
       f.dataType match {
-        case ArrayType(childType, nullable) =>
-          val data = if (f.nullable && r.nextFloat() <= PROBABILITY_OF_NULL) {
-            null
-          } else {
-            val arr = mutable.ArrayBuffer.empty[Any]
-            val n = 1 // rand.nextInt(10)
-            var i = 0
-            val generator = RandomDataGenerator.forType(childType, nullable, r)
-            assert(generator.isDefined, "Unsupported type")
-            val gen = generator.get
-            while (i < n) {
-              arr += gen()
-              i += 1
-            }
-            arr.toSeq
-          }
-          fields += data
         case StructType(children) =>
-          fields += generateRow(StructType(children))
+          fields += generateRow(StructType(children), stringGen)
         case StringType if stringGen.isDefined =>
           val gen = stringGen.get
           val data = if (f.nullable && r.nextFloat() <= PROBABILITY_OF_NULL) {
