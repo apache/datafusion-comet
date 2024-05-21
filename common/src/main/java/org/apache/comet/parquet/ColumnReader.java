@@ -41,6 +41,7 @@ import org.apache.parquet.column.page.DataPageV1;
 import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
@@ -199,6 +200,11 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector.close();
     }
 
+    LogicalTypeAnnotation logicalTypeAnnotation =
+        descriptor.getPrimitiveType().getLogicalTypeAnnotation();
+    boolean isUuid =
+        logicalTypeAnnotation instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
+
     long[] addresses = Native.currentBatch(nativeHandle);
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
@@ -206,7 +212,7 @@ public class ColumnReader extends AbstractColumnReader {
       FieldVector vector = Data.importVector(ALLOCATOR, array, schema, dictionaryProvider);
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, isUuid);
 
       // Update whether the current vector contains any null values. This is used in the following
       // batch(s) to determine whether we can skip loading the native vector.
@@ -229,12 +235,14 @@ public class ColumnReader extends AbstractColumnReader {
         // initialized yet.
         Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
         CometPlainVector dictionaryVector =
-            new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
+            new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
         dictionary = new CometDictionary(dictionaryVector);
       }
 
       currentVector =
-          new CometDictionaryVector(cometVector, dictionary, dictionaryProvider, useDecimal128);
+          new CometDictionaryVector(
+              cometVector, dictionary, dictionaryProvider, useDecimal128, false, isUuid);
+
       return currentVector;
     }
   }

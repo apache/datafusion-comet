@@ -39,7 +39,11 @@ public class CometPlainVector extends CometDecodedVector {
   private int booleanByteCacheIndex = -1;
 
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
-    super(vector, vector.getField(), useDecimal128);
+    this(vector, useDecimal128, false);
+  }
+
+  public CometPlainVector(ValueVector vector, boolean useDecimal128, boolean isUuid) {
+    super(vector, vector.getField(), useDecimal128, isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
       this.valueBufferAddress = -1;
@@ -111,11 +115,10 @@ public class CometPlainVector extends CometDecodedVector {
       byte[] result = new byte[length];
       Platform.copyMemory(
           null, valueBufferAddress + offset, result, Platform.BYTE_ARRAY_OFFSET, length);
-      // FIXME Replace with Iceberg support when it is available
-      if (length == 16) {
-        return UTF8String.fromString(convertToUuid(result).toString());
-      } else {
+      if (!isUuid) {
         return UTF8String.fromBytes(result);
+      } else {
+        return UTF8String.fromString(convertToUuid(result).toString());
       }
     }
   }
