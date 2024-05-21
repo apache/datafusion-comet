@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -545,6 +545,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .build())
         } else {
           withInfo(aggExpr, child)
+          None
+        }
+      case corr @ Corr(child1, child2, nullOnDivideByZero) =>
+        val child1Expr = exprToProto(child1, inputs, binding)
+        val child2Expr = exprToProto(child2, inputs, binding)
+        val dataType = serializeDataType(corr.dataType)
+
+        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+          val corrBuilder = ExprOuterClass.Correlation.newBuilder()
+          corrBuilder.setChild1(child1Expr.get)
+          corrBuilder.setChild2(child2Expr.get)
+          corrBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          corrBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setCorrelation(corrBuilder)
+              .build())
+        } else {
           None
         }
       case fn =>
