@@ -17,7 +17,10 @@
 
 use std::sync::Arc;
 
-use arrow::array::as_string_array;
+use arrow::{
+    array::{as_dictionary_array, as_string_array},
+    datatypes::Int32Type,
+};
 use arrow_array::StringArray;
 use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
@@ -112,8 +115,69 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Array(Arc::new(string_array)))
             }
+            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Int64) => {
+                let dict = as_dictionary_array::<Int32Type>(&array);
+
+                let hexed_values = as_int64_array(dict.values())?;
+                let values = hexed_values
+                    .iter()
+                    .map(|v| v.map(hex_int64))
+                    .collect::<Vec<_>>();
+
+                let keys = dict.keys().clone();
+                let mut new_keys = Vec::with_capacity(values.len());
+
+                for key in keys.iter() {
+                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
+                    new_keys.push(key);
+                }
+
+                let string_array_values = StringArray::from(new_keys);
+                Ok(ColumnarValue::Array(Arc::new(string_array_values)))
+            }
+            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Utf8) => {
+                let dict = as_dictionary_array::<Int32Type>(&array);
+
+                let hexed_values = as_string_array(dict.values());
+                let values: Vec<Option<String>> = hexed_values
+                    .iter()
+                    .map(|v| v.map(|v| hex_bytes_to_string(&hex_string(v))).transpose())
+                    .collect::<Result<_, _>>()?;
+
+                let keys = dict.keys().clone();
+
+                let mut new_keys = Vec::with_capacity(values.len());
+
+                for key in keys.iter() {
+                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
+                    new_keys.push(key);
+                }
+
+                let string_array_values = StringArray::from(new_keys);
+                Ok(ColumnarValue::Array(Arc::new(string_array_values)))
+            }
+            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Binary) => {
+                let dict = as_dictionary_array::<Int32Type>(&array);
+
+                let hexed_values = as_binary_array(dict.values())?;
+                let values: Vec<Option<String>> = hexed_values
+                    .iter()
+                    .map(|v| v.map(|v| hex_bytes_to_string(&hex_bytes(v))).transpose())
+                    .collect::<Result<_, _>>()?;
+
+                let keys = dict.keys().clone();
+                let mut new_keys = Vec::with_capacity(values.len());
+
+                for key in keys.iter() {
+                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
+                    new_keys.push(key);
+                }
+
+                let string_array_values = StringArray::from(new_keys);
+                Ok(ColumnarValue::Array(Arc::new(string_array_values)))
+            }
             _ => exec_err!(
-                "hex expects a string, binary or integer argument, got {:?}",
+                "hex got an unexpected argument type: {:?}",
                 array.data_type()
             ),
         },
@@ -144,7 +208,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
             }
             _ => exec_err!(
-                "hex expects a string, binary or integer argument, got {:?}",
+                "hex got an unexpected argument type: {:?}",
                 scalar.data_type()
             ),
         },
@@ -155,9 +219,102 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 mod test {
     use std::sync::Arc;
 
-    use arrow::array::as_string_array;
+    use arrow::{
+        array::{
+            as_string_array, BinaryDictionaryBuilder, PrimitiveDictionaryBuilder, StringBuilder,
+            StringDictionaryBuilder,
+        },
+        datatypes::{Int32Type, Int64Type},
+    };
     use arrow_array::{Int64Array, StringArray};
     use datafusion::logical_expr::ColumnarValue;
+
+    #[test]
+    fn test_dictionary_hex_utf8() {
+        let mut input_builder = StringDictionaryBuilder::<Int32Type>::new();
+        input_builder.append_value("hi");
+        input_builder.append_value("bye");
+        input_builder.append_null();
+        input_builder.append_value("rust");
+        let input = input_builder.finish();
+
+        let mut string_builder = StringBuilder::new();
+        string_builder.append_value("6869");
+        string_builder.append_value("627965");
+        string_builder.append_null();
+        string_builder.append_value("72757374");
+        let expected = string_builder.finish();
+
+        let columnar_value = ColumnarValue::Array(Arc::new(input));
+        let result = super::spark_hex(&[columnar_value]).unwrap();
+
+        let result = match result {
+            ColumnarValue::Array(array) => array,
+            _ => panic!("Expected array"),
+        };
+
+        let result = as_string_array(&result);
+
+        assert_eq!(result, &expected);
+    }
+
+    #[test]
+    fn test_dictionary_hex_int64() {
+        let mut input_builder = PrimitiveDictionaryBuilder::<Int32Type, Int64Type>::new();
+        input_builder.append_value(1);
+        input_builder.append_value(2);
+        input_builder.append_null();
+        input_builder.append_value(3);
+        let input = input_builder.finish();
+
+        let mut string_builder = StringBuilder::new();
+        string_builder.append_value("1");
+        string_builder.append_value("2");
+        string_builder.append_null();
+        string_builder.append_value("3");
+        let expected = string_builder.finish();
+
+        let columnar_value = ColumnarValue::Array(Arc::new(input));
+        let result = super::spark_hex(&[columnar_value]).unwrap();
+
+        let result = match result {
+            ColumnarValue::Array(array) => array,
+            _ => panic!("Expected array"),
+        };
+
+        let result = as_string_array(&result);
+
+        assert_eq!(result, &expected);
+    }
+
+    #[test]
+    fn test_dictionary_hex_binary() {
+        let mut input_builder = BinaryDictionaryBuilder::<Int32Type>::new();
+        input_builder.append_value("1");
+        input_builder.append_value("1");
+        input_builder.append_null();
+        input_builder.append_value("3");
+        let input = input_builder.finish();
+
+        let mut expected_builder = StringBuilder::new();
+        expected_builder.append_value("31");
+        expected_builder.append_value("31");
+        expected_builder.append_null();
+        expected_builder.append_value("33");
+        let expected = expected_builder.finish();
+
+        let columnar_value = ColumnarValue::Array(Arc::new(input));
+        let result = super::spark_hex(&[columnar_value]).unwrap();
+
+        let result = match result {
+            ColumnarValue::Array(array) => array,
+            _ => panic!("Expected array"),
+        };
+
+        let result = as_string_array(&result);
+
+        assert_eq!(result, &expected);
+    }
 
     #[test]
     fn test_hex_bytes() {

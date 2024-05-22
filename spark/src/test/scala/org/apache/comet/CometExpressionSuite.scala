@@ -1045,9 +1045,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
 
         withParquetTable(path.toString, "tbl") {
-          // _9 and _10 (uint8 and uint16), and _13 (Dictionary(Int32, Utf8)) are not supported
+          // _9 and _10 (uint8 and uint16) not supported
           checkSparkAnswerAndOperator(
-            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
         }
       }
     }
