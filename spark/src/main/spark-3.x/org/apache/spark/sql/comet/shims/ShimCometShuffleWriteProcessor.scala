@@ -20,10 +20,9 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.{Partition, ShuffleDependency, TaskContext}
-import org.apache.spark.rdd.{MapPartitionsRDD, RDD}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.ShuffleWriteProcessor
-import org.apache.spark.sql.vectorized.ColumnarBatch
 
 trait ShimCometShuffleWriteProcessor extends ShuffleWriteProcessor {
   override def write(
