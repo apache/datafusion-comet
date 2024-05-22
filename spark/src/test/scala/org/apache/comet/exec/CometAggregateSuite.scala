@@ -1214,12 +1214,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("correlation") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(false).foreach { cometColumnShuffleEnabled =>
+      Seq(true, false).foreach { cometColumnShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
-          Seq(false).foreach { dictionary =>
+          Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-              Seq(true).foreach { nullOnDivideByZero =>
+              Seq(true, false).foreach { nullOnDivideByZero =>
                 withSQLConf(
                   "spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
                   val table = "test"
