@@ -23,7 +23,7 @@ import scala.collection.mutable
 import scala.util.Random
 
 import org.apache.spark.sql.{RandomDataGenerator, Row}
-import org.apache.spark.sql.types.{ArrayType, StringType, StructType}
+import org.apache.spark.sql.types.{StringType, StructType}
 
 object DataGenerator {
   // note that we use `def` rather than `val` intentionally here so that
