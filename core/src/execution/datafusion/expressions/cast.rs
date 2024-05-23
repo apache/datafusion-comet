@@ -663,7 +663,10 @@ impl Cast {
             DataType::Timestamp(_, _) => {
                 // TODO need to add tests to see if we really do support all
                 // timestamp to timestamp conversions
-                matches!(to_type, DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _))
+                matches!(
+                    to_type,
+                    DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _)
+                )
             }
             DataType::Binary => {
                 // note that this is not completely Spark compatible because
