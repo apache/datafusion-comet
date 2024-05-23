@@ -647,7 +647,7 @@ impl Cast {
                     | DataType::Float32
                     | DataType::Float64
             ),
-            DataType::Decimal128(_, _) => matches!(
+            DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => matches!(
                 to_type,
                 DataType::Int8
                     | DataType::Int16
@@ -655,6 +655,8 @@ impl Cast {
                     | DataType::Int64
                     | DataType::Float32
                     | DataType::Float64
+                    | DataType::Decimal128(_, _)
+                    | DataType::Decimal256(_, _)
             ),
             DataType::Utf8 => matches!(to_type, DataType::Binary),
             DataType::Date32 => matches!(to_type, DataType::Utf8),
