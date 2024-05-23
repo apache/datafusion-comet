@@ -1421,7 +1421,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
-              "Native shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
@@ -1429,7 +1429,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
             Set(
-              "Native shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "BroadcastExchange is not supported",
