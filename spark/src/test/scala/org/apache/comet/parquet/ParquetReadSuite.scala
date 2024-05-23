@@ -1123,7 +1123,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("row group skipping doesn't overflow when reading into larger type") {
-    // Spark 4.0 no longer fails for widening types
+    // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
     assume(isSpark34Plus && !isSpark34Plus)
 
