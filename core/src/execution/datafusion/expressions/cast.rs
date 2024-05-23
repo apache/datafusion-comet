@@ -500,7 +500,25 @@ impl Cast {
     fn cast_array(&self, array: ArrayRef) -> DataFusionResult<ArrayRef> {
         let to_type = &self.data_type;
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
+        let from_type = array.data_type().clone();
+
+        // unpack dictionary string arrays first
+        // TODO: we are unpacking a dictionary-encoded array and then performing
+        // the cast. We could potentially improve performance here by casting the
+        // dictionary values directly without unpacking the array first, although this
+        // would add more complexity to the code
+        let array = match &from_type {
+            DataType::Dictionary(key_type, value_type)
+                if key_type.as_ref() == &DataType::Int32
+                    && (value_type.as_ref() == &DataType::Utf8
+                        || value_type.as_ref() == &DataType::LargeUtf8) =>
+            {
+                cast_with_options(&array, value_type.as_ref(), &CAST_OPTIONS)?
+            }
+            _ => array,
+        };
         let from_type = array.data_type();
+
         let cast_result = match (from_type, to_type) {
             (DataType::Utf8, DataType::Boolean) => {
                 Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)
@@ -529,34 +547,6 @@ impl Cast {
                 DataType::LargeUtf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
             ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode),
-            (
-                DataType::Dictionary(key_type, value_type),
-                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) if key_type.as_ref() == &DataType::Int32
-                && (value_type.as_ref() == &DataType::Utf8
-                    || value_type.as_ref() == &DataType::LargeUtf8) =>
-            {
-                // TODO: we are unpacking a dictionary-encoded array and then performing
-                // the cast. We could potentially improve performance here by casting the
-                // dictionary values directly without unpacking the array first, although this
-                // would add more complexity to the code
-                match value_type.as_ref() {
-                    DataType::Utf8 => {
-                        let unpacked_array =
-                            cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)
-                    }
-                    DataType::LargeUtf8 => {
-                        let unpacked_array =
-                            cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)
-                    }
-                    dt => unreachable!(
-                        "{}",
-                        format!("invalid value type {dt} for dictionary-encoded string array")
-                    ),
-                }
-            }
             (DataType::Float64, DataType::Utf8) => {
                 Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)
             }
