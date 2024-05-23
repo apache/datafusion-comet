@@ -43,7 +43,7 @@ class DataGeneratorSuite extends CometTestBase {
         }
       })
     // 0.1 null probability
-    assert(numNulls >= 5 && numNulls <= 15)
+    assert(numNulls >= 0.05 * numRows && numNulls <= 0.15 * numRows)
   }
 
 }

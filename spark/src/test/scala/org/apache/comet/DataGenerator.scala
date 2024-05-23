@@ -19,7 +19,6 @@
 
 package org.apache.comet
 
-import scala.collection.mutable
 import scala.util.Random
 
 import org.apache.spark.sql.{RandomDataGenerator, Row}
@@ -106,11 +105,10 @@ class DataGenerator(r: Random) {
   // configured to generate strings by passing a stringGen function. Other types are delegated
   // to Spark's RandomDataGenerator.
   def generateRow(schema: StructType, stringGen: Option[() => String] = None): Row = {
-    val fields = mutable.ArrayBuffer.empty[Any]
-    schema.fields.foreach { f =>
+    val fields = schema.fields.map { f =>
       f.dataType match {
         case StructType(children) =>
-          fields += generateRow(StructType(children), stringGen)
+          generateRow(StructType(children), stringGen)
         case StringType if stringGen.isDefined =>
           val gen = stringGen.get
           val data = if (f.nullable && r.nextFloat() <= PROBABILITY_OF_NULL) {
@@ -118,15 +116,17 @@ class DataGenerator(r: Random) {
           } else {
             gen()
           }
-          fields += data
+          data
         case _ =>
-          val generator = RandomDataGenerator.forType(f.dataType, f.nullable, r)
-          assert(generator.isDefined, "Unsupported type")
-          val gen = generator.get
-          fields += gen()
+          val gen = RandomDataGenerator.forType(f.dataType, f.nullable, r) match {
+            case Some(g) => g
+            case None =>
+              throw new IllegalStateException(s"No RandomDataGenerator for type ${f.dataType}")
+          }
+          gen()
       }
-    }
-    Row.fromSeq(fields.toSeq)
+    }.toSeq
+    Row.fromSeq(fields)
   }
 
   def generateRows(
