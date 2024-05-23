@@ -115,6 +115,7 @@ The following cast operations are generally compatible with Spark except for the
 | string | integer |  |
 | string | long |  |
 | string | binary |  |
+| string | date | Only supports years between 262143 BC and 262142 AD |
 | date | string |  |
 | timestamp | long |  |
 | timestamp | decimal |  |
