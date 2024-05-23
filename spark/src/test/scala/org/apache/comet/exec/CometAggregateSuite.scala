@@ -1212,6 +1212,157 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("correlation") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      Seq(true, false).foreach { cometColumnShuffleEnabled =>
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              Seq(true, false).foreach { nullOnDivideByZero =>
+                withSQLConf(
+                  "spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
+                  val table = "test"
+                  withTable(table) {
+                    sql(
+                      s"create table $table(col1 double, col2 double, col3 double) using parquet")
+                    sql(s"insert into $table values(1, 4, 1), (2, 5, 1), (3, 6, 2)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(
+                      s"create table $table(col1 double, col2 double, col3 double) using parquet")
+                    sql(s"insert into $table values(1, 4, 3), (2, -5, 3), (3, 6, 1)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(
+                      s"create table $table(col1 double, col2 double, col3 double) using parquet")
+                    sql(s"insert into $table values(1.1, 4.1, 2.3), (2, 5, 1.5), (3, 6, 2.3)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(
+                      s"create table $table(col1 double, col2 double, col3 double) using parquet")
+                    sql(s"insert into $table values(1, 4, 1), (2, 5, 2), (3, 6, 3), (1.1, 4.4, 1), (2.2, 5.5, 2), (3.3, 6.6, 3)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                    sql(s"insert into $table values(1, 4, 1), (2, 5, 2), (3, 6, 3)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                    sql(
+                      s"insert into $table values(1, 4, 2), (null, null, 2), (3, 6, 1), (3, 3, 1)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                    sql(s"insert into $table values(1, 4, 1), (null, 5, 1), (2, 5, 2), (9, null, 2), (3, 6, 2)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                    sql(s"insert into $table values(null, null, 1), (1, 2, 1), (null, null, 2)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+
+                  withTable(table) {
+                    sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
+                    sql(
+                      s"insert into $table values(null, null, 1), (null, null, 1), (null, null, 2)")
+                    val expectedNumOfCometAggregates = 2
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table",
+                      expectedNumOfCometAggregates)
+
+                    checkSparkAnswerWithTolAndNumOfAggregates(
+                      s"SELECT corr(col1, col2) FROM $table GROUP BY col3",
+                      expectedNumOfCometAggregates)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)

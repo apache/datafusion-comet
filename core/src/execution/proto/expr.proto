@@ -96,6 +96,7 @@ message AggExpr {
     CovPopulation covPopulation = 13;
     Variance variance = 14;
     Stddev stddev = 15;
+    Correlation correlation = 16;
   }
 }
 
@@ -184,6 +185,13 @@ message Stddev {
   bool null_on_divide_by_zero = 2;
   DataType datatype = 3;
   StatisticsType stats_type = 4;
+}
+
+message Correlation {
+  Expr child1 = 1;
+  Expr child2 = 2;
+  bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
 }
 
 message Literal {
