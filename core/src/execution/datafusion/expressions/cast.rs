@@ -533,29 +533,7 @@ impl Cast {
                 Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)
             }
             (DataType::Utf8, DataType::Date32) => {
-                Self::cast_string_to_date(&array, to_type, self.eval_mode)?
-            }
-            (DataType::Dictionary(key_type, value_type), DataType::Date32)
-                if key_type.as_ref() == &DataType::Int32
-                    && (value_type.as_ref() == &DataType::Utf8
-                        || value_type.as_ref() == &DataType::LargeUtf8) =>
-            {
-                match value_type.as_ref() {
-                    DataType::Utf8 => {
-                        let unpacked_array =
-                            cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_date(&unpacked_array, to_type, self.eval_mode)?
-                    }
-                    DataType::LargeUtf8 => {
-                        let unpacked_array =
-                            cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_date(&unpacked_array, to_type, self.eval_mode)?
-                    }
-                    dt => unreachable!(
-                        "{}",
-                        format!("invalid value type {dt} for dictionary-encoded string array")
-                    ),
-                }
+                Self::cast_string_to_date(&array, to_type, self.eval_mode)
             }
             (DataType::Int64, DataType::Int32)
             | (DataType::Int64, DataType::Int16)
