@@ -503,13 +503,13 @@ impl Cast {
         let from_type = array.data_type();
         let cast_result = match (from_type, to_type) {
             (DataType::Utf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)?
+                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)
             }
             (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)?
+                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)
             }
             (DataType::Utf8, DataType::Timestamp(_, _)) => {
-                Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)?
+                Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)
             }
             (DataType::Int64, DataType::Int32)
             | (DataType::Int64, DataType::Int16)
@@ -519,16 +519,16 @@ impl Cast {
             | (DataType::Int16, DataType::Int8)
                 if self.eval_mode != EvalMode::Try =>
             {
-                Self::spark_cast_int_to_int(&array, self.eval_mode, from_type, to_type)?
+                Self::spark_cast_int_to_int(&array, self.eval_mode, from_type, to_type)
             }
             (
                 DataType::Utf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_int::<i32>(to_type, &array, self.eval_mode)?,
+            ) => Self::cast_string_to_int::<i32>(to_type, &array, self.eval_mode),
             (
                 DataType::LargeUtf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode)?,
+            ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode),
             (
                 DataType::Dictionary(key_type, value_type),
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
@@ -544,12 +544,12 @@ impl Cast {
                     DataType::Utf8 => {
                         let unpacked_array =
                             cast_with_options(&array, &DataType::Utf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)?
+                        Self::cast_string_to_int::<i32>(to_type, &unpacked_array, self.eval_mode)
                     }
                     DataType::LargeUtf8 => {
                         let unpacked_array =
                             cast_with_options(&array, &DataType::LargeUtf8, &CAST_OPTIONS)?;
-                        Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)?
+                        Self::cast_string_to_int::<i64>(to_type, &unpacked_array, self.eval_mode)
                     }
                     dt => unreachable!(
                         "{}",
@@ -558,22 +558,22 @@ impl Cast {
                 }
             }
             (DataType::Float64, DataType::Utf8) => {
-                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)?
+                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)
             }
             (DataType::Float64, DataType::LargeUtf8) => {
-                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)?
+                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)
             }
             (DataType::Float32, DataType::Utf8) => {
-                Self::spark_cast_float32_to_utf8::<i32>(&array, self.eval_mode)?
+                Self::spark_cast_float32_to_utf8::<i32>(&array, self.eval_mode)
             }
             (DataType::Float32, DataType::LargeUtf8) => {
-                Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)?
+                Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)
             }
             (DataType::Float32, DataType::Decimal128(precision, scale)) => {
-                Self::cast_float32_to_decimal128(&array, *precision, *scale, self.eval_mode)?
+                Self::cast_float32_to_decimal128(&array, *precision, *scale, self.eval_mode)
             }
             (DataType::Float64, DataType::Decimal128(precision, scale)) => {
-                Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)?
+                Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)
             }
             (DataType::Float32, DataType::Int8)
             | (DataType::Float32, DataType::Int16)
@@ -594,14 +594,50 @@ impl Cast {
                     self.eval_mode,
                     from_type,
                     to_type,
-                )?
+                )
+            }
+            _ if Self::is_datafusion_spark_compatible(from_type, to_type) => {
+                // use DataFusion cast only when we know that it is compatible with Spark
+                Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
             }
             _ => {
-                // when we have no Spark-specific casting we delegate to DataFusion
-                cast_with_options(&array, to_type, &CAST_OPTIONS)?
+                // we should never reach this code because the Scala code should be checking
+                // for supported cast operations and falling back to Spark for anything that
+                // is not yet supported
+                Err(CometError::Internal(format!(
+                    "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
+                )))
             }
         };
-        Ok(spark_cast(cast_result, from_type, to_type))
+        Ok(spark_cast(cast_result?, from_type, to_type))
+    }
+
+    fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
+        match (from_type, to_type) {
+            (
+                DataType::Boolean,
+                DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Utf8,
+            ) => true,
+            (
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+                DataType::Boolean
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Decimal128(_, _)
+                | DataType::Utf8,
+            ) => true,
+            _ => false,
+        }
     }
 
     fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
