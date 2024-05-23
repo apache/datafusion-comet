@@ -25,8 +25,8 @@ import org.apache.spark.sql.catalyst.expressions._
  */
 trait CometExprShim {
     /**
-      * Returns a tuple of expressions for the `unhex` function.
-      */
+     * Returns a tuple of expressions for the `unhex` function.
+     */
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(unhex.failOnError))
     }
