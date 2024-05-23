@@ -605,51 +605,53 @@ impl Cast {
     /// Determines if DataFusion supports the given cast in a way that is
     /// compatible with Spark
     fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
-        match (from_type, to_type) {
-            (
-                DataType::Boolean,
+        match from_type {
+            DataType::Boolean => matches!(
+                to_type,
                 DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-                | DataType::Utf8,
-            ) => true,
-            (
-                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+                    | DataType::Utf8
+            ),
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => matches!(
+                to_type,
                 DataType::Boolean
-                | DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-                | DataType::Decimal128(_, _)
-                | DataType::Utf8,
-            ) => true,
-            (
-                DataType::Float32 | DataType::Float64,
+                    | DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+                    | DataType::Decimal128(_, _)
+                    | DataType::Utf8
+            ),
+            DataType::Float32 | DataType::Float64 => matches!(
+                to_type,
                 DataType::Boolean
-                | DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64,
-            ) => true,
-            (
-                DataType::Decimal128(_, _),
+                    | DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+            ),
+            DataType::Decimal128(_, _) => matches!(
+                to_type,
                 DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64,
-            ) => true,
-            (DataType::Utf8, DataType::Binary) => true,
-            (DataType::Date32 | DataType::Timestamp(_, _), DataType::Utf8) => true,
-            (DataType::Timestamp(_, _), DataType::Int64 | DataType::Date32) => true,
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+            ),
+            DataType::Utf8 => matches!(to_type, DataType::Binary),
+            DataType::Date32 => matches!(to_type, DataType::Utf8),
+            DataType::Timestamp(_, _) => {
+                matches!(to_type, DataType::Int64 | DataType::Date32 | DataType::Utf8)
+            }
             _ => false,
         }
     }
