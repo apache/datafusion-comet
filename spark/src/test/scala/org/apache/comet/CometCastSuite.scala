@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import scala.util.Random
+import scala.util.matching.Regex
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -52,6 +53,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
    * `-12.34d` or `4e7`. Invalid numeric strings will also be generated, such as `+e.-d`.
    */
   private val numericPattern = "0123456789deEf+-." + whitespaceChars
+
+  private val datePattern = "0123456789/" + whitespaceChars
 
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
@@ -622,7 +625,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "\r\n 9629 \r\n",
       "\r\n 962 \r\n",
       "\r\n 62 \r\n")
-    castTest((validDates ++ invalidDates).toDF("a"), DataTypes.DateType)
+
+    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
+    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
+    val fuzzDates = gen
+      .generateStrings(dataSize, datePattern, 8)
+      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
+    castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
