@@ -81,7 +81,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         java_version: [17]
-        test-target: [rust, java]
+        test-target: [java]
         spark-version: ['4.0']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -97,22 +97,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - if: matrix.test-target == 'rust'
-        name: Rust test steps
-        uses: ./.github/actions/rust-test
-      - if: matrix.test-target == 'java'
-        name: Clone Spark
+      - name: Clone Spark
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
           path: "apache-spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
+      - name: Install Spark
         shell: bash
         working-directory: ./apache-spark
         run: build/mvn install -Phive -Phadoop-cloud -DskipTests
-      - if: matrix.test-target == 'java'
-        name: Java test steps
+      - name: Java test steps
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
@@ -216,7 +210,7 @@ jobs:
       matrix:
         os: [macos-13]
         java_version: [17]
-        test-target: [rust, java]
+        test-target: [java]
         spark-version: ['4.0']
       fail-fast: false
     if: github.event_name == 'push'
@@ -229,22 +223,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - if: matrix.test-target == 'rust'
-        name: Rust test steps
-        uses: ./.github/actions/rust-test
-      - if: matrix.test-target == 'java'
-        name: Clone Spark
+      - name: Clone Spark
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
           path: "apache-spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
+      - name: Install Spark
         shell: bash
         working-directory: ./apache-spark
         run: build/mvn install -Phive -Phadoop-cloud -DskipTests
-      - if: matrix.test-target == 'java'
-        name: Java test steps
+      - name: Java test steps
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
@@ -254,7 +242,7 @@ jobs:
     strategy:
       matrix:
         java_version: [17]
-        test-target: [rust, java]
+        test-target: [java]
         spark-version: ['4.0']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -273,22 +261,16 @@ jobs:
           jdk-version: ${{ matrix.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
-      - if: matrix.test-target == 'rust'
-        name: Rust test steps
-        uses: ./.github/actions/rust-test
-      - if: matrix.test-target == 'java'
-        name: Clone Spark
+      - name: Clone Spark
         uses: actions/checkout@v4
         with:
           repository: "apache/spark"
           path: "apache-spark"
-      - if: matrix.test-target == 'java'
-        name: Install Spark
+      - name: Install Spark
         shell: bash
         working-directory: ./apache-spark
         run: build/mvn install -Phive -Phadoop-cloud -DskipTests
-      - if: matrix.test-target == 'java'
-        name: Java test steps
+      - name: Java test steps
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}

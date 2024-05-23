@@ -26,7 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.comet.CometConf
 
 /**
- * This test suite contains tests for only Spark 3.4.
+ * This test suite contains tests for only Spark 3.4+.
  */
 class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
