@@ -44,7 +44,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val df1 = sql("SELECT count(DISTINCT 2), count(DISTINCT 2,3)")
       checkSparkAnswer(df1)
 
@@ -57,7 +57,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       checkSparkAnswer(sql("""
                              |SELECT
                              |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
@@ -78,7 +78,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val df1 = Seq(
         ("a", "b", "c"),
         ("a", "b", "c"),
@@ -99,7 +99,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("SELECT LAST(n) FROM lowerCaseData")
         checkSparkAnswer(df)
       }
@@ -114,7 +114,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("select sum(a), avg(a) from allNulls")
         checkSparkAnswer(df)
       }
@@ -125,7 +125,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test")
         makeParquetFile(path, 10000, 10, false)
@@ -141,7 +141,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test")
@@ -160,7 +160,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
         sql(
           "CREATE TABLE lineitem(l_extendedprice DOUBLE, l_quantity DOUBLE, l_partkey STRING) USING PARQUET")
@@ -197,7 +197,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test")
@@ -216,7 +216,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
         withTable(table) {
           sql(s"CREATE TABLE $table(col DECIMAL(5, 2)) USING PARQUET")
           sql(s"INSERT INTO TABLE $table VALUES (CAST(12345.01 AS DECIMAL(5, 2)))")
@@ -316,7 +316,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+          CometConf.COMET_SHUFFLE_MODE.key -> "native") {
           withParquetTable(
             (0 until 100).map(i => (i, (i % 10).toString)),
             "tbl",
@@ -497,7 +497,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+          CometConf.COMET_SHUFFLE_MODE.key -> "native") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
@@ -686,7 +686,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final count") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(false, true).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
           checkSparkAnswerAndNumOfAggregates("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2", 2)
@@ -703,7 +703,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final min/max") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
           checkSparkAnswerAndNumOfAggregates(
@@ -724,7 +724,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final min/max/count with result expressions") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
           checkSparkAnswerAndNumOfAggregates(
@@ -759,7 +759,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final sum") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(false, true).foreach { dictionaryEnabled =>
         withParquetTable((0L until 5L).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
           checkSparkAnswerAndNumOfAggregates(
@@ -780,7 +780,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final avg") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
           (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
@@ -805,7 +805,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
           val table = "t1"
@@ -850,7 +850,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("avg null handling") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       val table = "t1"
       withTable(table) {
         sql(s"create table $table(a double, b double) using parquet")
@@ -872,7 +872,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
           CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
@@ -912,11 +912,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("distinct") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              val cometColumnShuffleEnabled = cometShuffleMode == "jvm"
               val table = "test"
               withTable(table) {
                 sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
@@ -970,7 +970,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
           val table = "test"
@@ -1016,9 +1016,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test bool_and/bool_or") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               val table = "test"
@@ -1043,7 +1042,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("bitwise aggregate") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
           val table = "test"
@@ -1092,9 +1091,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("covar_pop and covar_samp") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               val table = "test"
@@ -1131,9 +1129,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("var_pop and var_samp") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               Seq(true, false).foreach { nullOnDivideByZero =>
@@ -1171,9 +1168,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("stddev_pop and stddev_samp") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               Seq(true, false).foreach { nullOnDivideByZero =>
@@ -1214,9 +1210,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("correlation") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
-      Seq(true, false).foreach { cometColumnShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> cometColumnShuffleEnabled.toString) {
+      Seq("jvm", "native").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
               Seq(true, false).foreach { nullOnDivideByZero =>

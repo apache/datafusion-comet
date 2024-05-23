@@ -39,22 +39,26 @@ It must be set before the Spark context is created. You can enable or disable Co
 at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
 Once it is disabled, Comet will fallback to the default Spark shuffle manager.
 
-### Columnar Shuffle
+### Shuffle Mode
 
-By default, once `spark.comet.exec.shuffle.enabled` is enabled, Comet uses columnar shuffle
+Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.
+
+#### Columnar Shuffle
+
+By default, once `spark.comet.exec.shuffle.enabled` is enabled, Comet uses JVM-based columnar shuffle
 to improve the performance of shuffle operations. Columnar shuffle supports HashPartitioning,
-RoundRobinPartitioning, RangePartitioning and SinglePartitioning.
+RoundRobinPartitioning, RangePartitioning and SinglePartitioning. This mode has the highest
+query coverage.
 
-Columnar shuffle can be disabled by setting `spark.comet.columnar.shuffle.enabled` to `false`.
+Columnar shuffle can be enabled by setting `spark.comet.exec.shuffle.mode` to `jvm`.
 
-### Native Shuffle
+#### Native Shuffle
 
 Comet also provides a fully native shuffle implementation that can be used to improve the performance.
-To enable native shuffle, just disable `spark.comet.columnar.shuffle.enabled`.
+To enable native shuffle, just set `spark.comet.exec.shuffle.mode` to `native`
 
 Native shuffle only supports HashPartitioning and SinglePartitioning.
 
+### Auto Mode
 
-
-
-
+`spark.comet.exec.shuffle.mode` to `auto` will let Comet choose the best shuffle mode based on the query plan.
