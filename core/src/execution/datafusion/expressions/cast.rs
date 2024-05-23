@@ -663,6 +663,11 @@ impl Cast {
             DataType::Timestamp(_, _) => {
                 matches!(to_type, DataType::Int64 | DataType::Date32 | DataType::Utf8)
             }
+            DataType::Binary => {
+                // note that this is not completely Spark compatible because
+                // DataFusion only supports binary data containing valid UTF-8 strings
+                matches!(to_type, DataType::Utf8)
+            }
             _ => false,
         }
     }
