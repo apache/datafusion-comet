@@ -267,13 +267,25 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#columnar-shuffle">
-     Columnar Shuffle
+    <a class="reference internal nav-link" href="#shuffle-mode">
+     Shuffle Mode
     </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#columnar-shuffle">
+       Columnar Shuffle
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#native-shuffle">
+       Native Shuffle
+      </a>
+     </li>
+    </ul>
    </li>
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#native-shuffle">
-     Native Shuffle
+    <a class="reference internal nav-link" href="#auto-mode">
+     Auto Mode
     </a>
    </li>
   </ul>
@@ -340,18 +352,27 @@ The following sections describe the different shuffle options available in Comet
 It must be set before the Spark context is created. You can enable or disable Comet shuffle
 at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
 Once it is disabled, Comet will fallback to the default Spark shuffle manager.</p>
+<section id="shuffle-mode">
+<h3>Shuffle Mode<a class="headerlink" href="#shuffle-mode" title="Link to this heading">¶</a></h3>
+<p>Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.</p>
 <section id="columnar-shuffle">
-<h3>Columnar Shuffle<a class="headerlink" href="#columnar-shuffle" title="Link to this heading">¶</a></h3>
-<p>By default, once <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> is enabled, Comet uses columnar shuffle
+<h4>Columnar Shuffle<a class="headerlink" href="#columnar-shuffle" title="Link to this heading">¶</a></h4>
+<p>By default, once <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> is enabled, Comet uses JVM-based columnar shuffle
 to improve the performance of shuffle operations. Columnar shuffle supports HashPartitioning,
-RoundRobinPartitioning, RangePartitioning and SinglePartitioning.</p>
-<p>Columnar shuffle can be disabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+RoundRobinPartitioning, RangePartitioning and SinglePartitioning. This mode has the highest
+query coverage.</p>
+<p>Columnar shuffle can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p>
 </section>
 <section id="native-shuffle">
-<h3>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">¶</a></h3>
+<h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">¶</a></h4>
 <p>Comet also provides a fully native shuffle implementation that can be used to improve the performance.
-To enable native shuffle, just disable <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.enabled</span></code>.</p>
+To enable native shuffle, just set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">native</span></code></p>
 <p>Native shuffle only supports HashPartitioning and SinglePartitioning.</p>
+</section>
+</section>
+<section id="auto-mode">
+<h3>Auto Mode<a class="headerlink" href="#auto-mode" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">auto</span></code> will let Comet choose the best shuffle mode based on the query plan.</p>
 </section>
 </section>
 </section>
