@@ -612,6 +612,8 @@ impl Cast {
         Ok(spark_cast(cast_result?, from_type, to_type))
     }
 
+    /// Determines if DataFusion supports the given cast in a way that is
+    /// compatible with Spark
     fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
         match (from_type, to_type) {
             (
@@ -636,6 +638,28 @@ impl Cast {
                 | DataType::Decimal128(_, _)
                 | DataType::Utf8,
             ) => true,
+            (
+                DataType::Float32 | DataType::Float64,
+                DataType::Boolean
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64,
+            ) => true,
+            (
+                DataType::Decimal128(_, _),
+                DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64,
+            ) => true,
+            (DataType::Utf8, DataType::Binary) => true,
+            (DataType::Date32 | DataType::Timestamp(_, _), DataType::Utf8) => true,
+            (DataType::Timestamp(_, _), DataType::Int64 | DataType::Date32) => true,
             _ => false,
         }
     }
