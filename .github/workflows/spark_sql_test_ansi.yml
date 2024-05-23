@@ -22,17 +22,17 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  # enable the following once Ansi support is completed
-  #  push:
-  #    paths-ignore:
-  #      - "doc/**"
-  #      - "**.md"
-  #  pull_request:
-  #    paths-ignore:
-  #      - "doc/**"
-  #      - "**.md"
-
-  # manual trigger ONLY
+  push:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+  # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
@@ -44,8 +44,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
+        java-version: [17]
+        spark-version: [{short: '4.0', full: '4.0.0'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}

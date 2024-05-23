@@ -385,7 +385,7 @@ object CometConf extends ShimCometConf {
         "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
         "support for ANSI mode. This should not be used in production.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
