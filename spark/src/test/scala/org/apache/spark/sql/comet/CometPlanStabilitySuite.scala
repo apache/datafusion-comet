@@ -298,7 +298,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 }
 
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
-  // TODO: remove the Spark 4.0 golden file once ANSI is fully supported
   private val planName =
     if (isSpark40Plus) "approved-plans-v1_4-spark4_0" else "approved-plans-v1_4"
   override val goldenFilePath: String =
@@ -312,7 +311,6 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 }
 
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
-  // TODO: remove the Spark 4.0 golden file once ANSI is fully supported
   private val planName =
     if (isSpark40Plus) "approved-plans-v2_7-spark4_0" else "approved-plans-v2_7"
   override val goldenFilePath: String =

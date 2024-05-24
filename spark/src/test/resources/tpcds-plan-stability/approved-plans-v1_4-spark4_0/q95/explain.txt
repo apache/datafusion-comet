@@ -14,17 +14,17 @@
                   :     :     :  :- * SortMergeJoin LeftSemi (17)
                   :     :     :  :  :- * Sort (6)
                   :     :     :  :  :  +- Exchange (5)
-                  :     :     :  :  :     +- * Project (4)
-                  :     :     :  :  :        +- * Filter (3)
-                  :     :     :  :  :           +- * ColumnarToRow (2)
+                  :     :     :  :  :     +- * ColumnarToRow (4)
+                  :     :     :  :  :        +- CometProject (3)
+                  :     :     :  :  :           +- CometFilter (2)
                   :     :     :  :  :              +- CometScan parquet spark_catalog.default.web_sales (1)
                   :     :     :  :  +- * Project (16)
                   :     :     :  :     +- * SortMergeJoin Inner (15)
                   :     :     :  :        :- * Sort (12)
                   :     :     :  :        :  +- Exchange (11)
-                  :     :     :  :        :     +- * Project (10)
-                  :     :     :  :        :        +- * Filter (9)
-                  :     :     :  :        :           +- * ColumnarToRow (8)
+                  :     :     :  :        :     +- * ColumnarToRow (10)
+                  :     :     :  :        :        +- CometProject (9)
+                  :     :     :  :        :           +- CometFilter (8)
                   :     :     :  :        :              +- CometScan parquet spark_catalog.default.web_sales (7)
                   :     :     :  :        +- * Sort (14)
                   :     :     :  :           +- ReusedExchange (13)
@@ -32,9 +32,9 @@
                   :     :     :     +- * SortMergeJoin Inner (30)
                   :     :     :        :- * Sort (23)
                   :     :     :        :  +- Exchange (22)
-                  :     :     :        :     +- * Project (21)
-                  :     :     :        :        +- * Filter (20)
-                  :     :     :        :           +- * ColumnarToRow (19)
+                  :     :     :        :     +- * ColumnarToRow (21)
+                  :     :     :        :        +- CometProject (20)
+                  :     :     :        :           +- CometFilter (19)
                   :     :     :        :              +- CometScan parquet spark_catalog.default.web_returns (18)
                   :     :     :        +- * Project (29)
                   :     :     :           +- * SortMergeJoin Inner (28)
@@ -43,19 +43,19 @@
                   :     :     :              +- * Sort (27)
                   :     :     :                 +- ReusedExchange (26)
                   :     :     +- BroadcastExchange (37)
-                  :     :        +- * Project (36)
-                  :     :           +- * Filter (35)
-                  :     :              +- * ColumnarToRow (34)
+                  :     :        +- * ColumnarToRow (36)
+                  :     :           +- CometProject (35)
+                  :     :              +- CometFilter (34)
                   :     :                 +- CometScan parquet spark_catalog.default.date_dim (33)
                   :     +- BroadcastExchange (44)
-                  :        +- * Project (43)
-                  :           +- * Filter (42)
-                  :              +- * ColumnarToRow (41)
+                  :        +- * ColumnarToRow (43)
+                  :           +- CometProject (42)
+                  :              +- CometFilter (41)
                   :                 +- CometScan parquet spark_catalog.default.customer_address (40)
                   +- BroadcastExchange (51)
-                     +- * Project (50)
-                        +- * Filter (49)
-                           +- * ColumnarToRow (48)
+                     +- * ColumnarToRow (50)
+                        +- CometProject (49)
+                           +- CometFilter (48)
                               +- CometScan parquet spark_catalog.default.web_site (47)
 
 
@@ -66,16 +66,16 @@ Location [not included in comparison]/{warehouse_dir}/web_sales]
 PushedFilters: [IsNotNull(ws_ship_date_sk), IsNotNull(ws_ship_addr_sk), IsNotNull(ws_web_site_sk)]
 ReadSchema: struct<ws_ship_date_sk:int,ws_ship_addr_sk:int,ws_web_site_sk:int,ws_order_number:int,ws_ext_ship_cost:decimal(7,2),ws_net_profit:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
-Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ws_sold_date_sk#7]
-
-(3) Filter [codegen id : 1]
+(2) CometFilter
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ws_sold_date_sk#7]
 Condition : ((isnotnull(ws_ship_date_sk#1) AND isnotnull(ws_ship_addr_sk#2)) AND isnotnull(ws_web_site_sk#3))
 
-(4) Project [codegen id : 1]
-Output [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
+(3) CometProject
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ws_sold_date_sk#7]
+Arguments: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6], [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
+
+(4) ColumnarToRow [codegen id : 1]
+Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 
 (5) Exchange
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
@@ -92,16 +92,16 @@ Location [not included in comparison]/{warehouse_dir}/web_sales]
 PushedFilters: [IsNotNull(ws_order_number), IsNotNull(ws_warehouse_sk)]
 ReadSchema: struct<ws_warehouse_sk:int,ws_order_number:int>
 
-(8) ColumnarToRow [codegen id : 3]
-Input [3]: [ws_warehouse_sk#8, ws_order_number#9, ws_sold_date_sk#10]
-
-(9) Filter [codegen id : 3]
+(8) CometFilter
 Input [3]: [ws_warehouse_sk#8, ws_order_number#9, ws_sold_date_sk#10]
 Condition : (isnotnull(ws_order_number#9) AND isnotnull(ws_warehouse_sk#8))
 
-(10) Project [codegen id : 3]
-Output [2]: [ws_warehouse_sk#8, ws_order_number#9]
+(9) CometProject
 Input [3]: [ws_warehouse_sk#8, ws_order_number#9, ws_sold_date_sk#10]
+Arguments: [ws_warehouse_sk#8, ws_order_number#9], [ws_warehouse_sk#8, ws_order_number#9]
+
+(10) ColumnarToRow [codegen id : 3]
+Input [2]: [ws_warehouse_sk#8, ws_order_number#9]
 
 (11) Exchange
 Input [2]: [ws_warehouse_sk#8, ws_order_number#9]
@@ -141,16 +141,16 @@ Location [not included in comparison]/{warehouse_dir}/web_returns]
 PushedFilters: [IsNotNull(wr_order_number)]
 ReadSchema: struct<wr_order_number:int>
 
-(19) ColumnarToRow [codegen id : 9]
-Input [2]: [wr_order_number#13, wr_returned_date_sk#14]
-
-(20) Filter [codegen id : 9]
+(19) CometFilter
 Input [2]: [wr_order_number#13, wr_returned_date_sk#14]
 Condition : isnotnull(wr_order_number#13)
 
-(21) Project [codegen id : 9]
-Output [1]: [wr_order_number#13]
+(20) CometProject
 Input [2]: [wr_order_number#13, wr_returned_date_sk#14]
+Arguments: [wr_order_number#13], [wr_order_number#13]
+
+(21) ColumnarToRow [codegen id : 9]
+Input [1]: [wr_order_number#13]
 
 (22) Exchange
 Input [1]: [wr_order_number#13]
@@ -207,16 +207,16 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,1999-02-01), LessThanOrEqual(d_date,1999-04-02), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_date:date>
 
-(34) ColumnarToRow [codegen id : 17]
-Input [2]: [d_date_sk#19, d_date#20]
-
-(35) Filter [codegen id : 17]
+(34) CometFilter
 Input [2]: [d_date_sk#19, d_date#20]
 Condition : (((isnotnull(d_date#20) AND (d_date#20 >= 1999-02-01)) AND (d_date#20 <= 1999-04-02)) AND isnotnull(d_date_sk#19))
 
-(36) Project [codegen id : 17]
-Output [1]: [d_date_sk#19]
+(35) CometProject
 Input [2]: [d_date_sk#19, d_date#20]
+Arguments: [d_date_sk#19], [d_date_sk#19]
+
+(36) ColumnarToRow [codegen id : 17]
+Input [1]: [d_date_sk#19]
 
 (37) BroadcastExchange
 Input [1]: [d_date_sk#19]
@@ -239,16 +239,16 @@ Location [not included in comparison]/{warehouse_dir}/customer_address]
 PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,IL), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
-(41) ColumnarToRow [codegen id : 18]
-Input [2]: [ca_address_sk#21, ca_state#22]
-
-(42) Filter [codegen id : 18]
+(41) CometFilter
 Input [2]: [ca_address_sk#21, ca_state#22]
 Condition : ((isnotnull(ca_state#22) AND (ca_state#22 = IL)) AND isnotnull(ca_address_sk#21))
 
-(43) Project [codegen id : 18]
-Output [1]: [ca_address_sk#21]
+(42) CometProject
 Input [2]: [ca_address_sk#21, ca_state#22]
+Arguments: [ca_address_sk#21], [ca_address_sk#21]
+
+(43) ColumnarToRow [codegen id : 18]
+Input [1]: [ca_address_sk#21]
 
 (44) BroadcastExchange
 Input [1]: [ca_address_sk#21]
@@ -271,16 +271,16 @@ Location [not included in comparison]/{warehouse_dir}/web_site]
 PushedFilters: [IsNotNull(web_company_name), EqualTo(web_company_name,pri                                               ), IsNotNull(web_site_sk)]
 ReadSchema: struct<web_site_sk:int,web_company_name:string>
 
-(48) ColumnarToRow [codegen id : 19]
-Input [2]: [web_site_sk#23, web_company_name#24]
-
-(49) Filter [codegen id : 19]
+(48) CometFilter
 Input [2]: [web_site_sk#23, web_company_name#24]
 Condition : ((isnotnull(web_company_name#24) AND (web_company_name#24 = pri                                               )) AND isnotnull(web_site_sk#23))
 
-(50) Project [codegen id : 19]
-Output [1]: [web_site_sk#23]
+(49) CometProject
 Input [2]: [web_site_sk#23, web_company_name#24]
+Arguments: [web_site_sk#23], [web_site_sk#23]
+
+(50) ColumnarToRow [codegen id : 19]
+Input [1]: [web_site_sk#23]
 
 (51) BroadcastExchange
 Input [1]: [web_site_sk#23]

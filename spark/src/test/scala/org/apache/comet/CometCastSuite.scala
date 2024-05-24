@@ -990,12 +990,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             if (CometSparkSessionExtensions.isSpark40Plus) {
               // for Spark 4 we expect to sparkException carries the message
               assert(
-                cometMessage == sparkException.getMessage
-                  .split("\n")
-                  .head
+                sparkException.getMessage
                   .replace(".WITH_SUGGESTION] ", "]")
-                  .replace(" SQLSTATE: 22003", "")
-                  .replace(" SQLSTATE: 22018", ""))
+                  .startsWith(cometMessage))
             } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)

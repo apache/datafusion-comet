@@ -146,9 +146,9 @@ Results [3]: [sum(CASE WHEN (isnotnull(customer_sk#6) AND isnull(customer_sk#13)
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (28)
-+- * Project (27)
-   +- * Filter (26)
-      +- * ColumnarToRow (25)
++- * ColumnarToRow (27)
+   +- CometProject (26)
+      +- CometFilter (25)
          +- CometScan parquet spark_catalog.default.date_dim (24)
 
 
@@ -159,16 +159,16 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), GreaterThanOrEqual(d_month_seq,1200), LessThanOrEqual(d_month_seq,1211), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_month_seq:int>
 
-(25) ColumnarToRow [codegen id : 1]
-Input [2]: [d_date_sk#5, d_month_seq#27]
-
-(26) Filter [codegen id : 1]
+(25) CometFilter
 Input [2]: [d_date_sk#5, d_month_seq#27]
 Condition : (((isnotnull(d_month_seq#27) AND (d_month_seq#27 >= 1200)) AND (d_month_seq#27 <= 1211)) AND isnotnull(d_date_sk#5))
 
-(27) Project [codegen id : 1]
-Output [1]: [d_date_sk#5]
+(26) CometProject
 Input [2]: [d_date_sk#5, d_month_seq#27]
+Arguments: [d_date_sk#5], [d_date_sk#5]
+
+(27) ColumnarToRow [codegen id : 1]
+Input [1]: [d_date_sk#5]
 
 (28) BroadcastExchange
 Input [1]: [d_date_sk#5]

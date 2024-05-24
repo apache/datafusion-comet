@@ -7,18 +7,18 @@ TakeOrderedAndProject (21)
             +- * BroadcastHashJoin Inner BuildRight (16)
                :- * Project (10)
                :  +- * BroadcastHashJoin Inner BuildRight (9)
-               :     :- * Project (4)
-               :     :  +- * Filter (3)
-               :     :     +- * ColumnarToRow (2)
+               :     :- * ColumnarToRow (4)
+               :     :  +- CometProject (3)
+               :     :     +- CometFilter (2)
                :     :        +- CometScan parquet spark_catalog.default.date_dim (1)
                :     +- BroadcastExchange (8)
-               :        +- * Filter (7)
-               :           +- * ColumnarToRow (6)
+               :        +- * ColumnarToRow (7)
+               :           +- CometFilter (6)
                :              +- CometScan parquet spark_catalog.default.store_sales (5)
                +- BroadcastExchange (15)
-                  +- * Project (14)
-                     +- * Filter (13)
-                        +- * ColumnarToRow (12)
+                  +- * ColumnarToRow (14)
+                     +- CometProject (13)
+                        +- CometFilter (12)
                            +- CometScan parquet spark_catalog.default.item (11)
 
 
@@ -29,16 +29,16 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_moy), EqualTo(d_moy,11), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(2) ColumnarToRow [codegen id : 3]
-Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
-
-(3) Filter [codegen id : 3]
+(2) CometFilter
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Condition : ((isnotnull(d_moy#3) AND (d_moy#3 = 11)) AND isnotnull(d_date_sk#1))
 
-(4) Project [codegen id : 3]
-Output [2]: [d_date_sk#1, d_year#2]
+(3) CometProject
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
+Arguments: [d_date_sk#1, d_year#2], [d_date_sk#1, d_year#2]
+
+(4) ColumnarToRow [codegen id : 3]
+Input [2]: [d_date_sk#1, d_year#2]
 
 (5) Scan parquet spark_catalog.default.store_sales
 Output [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
@@ -48,12 +48,12 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#6), dynamicpruningexpression(true)]
 PushedFilters: [IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_ext_sales_price:decimal(7,2)>
 
-(6) ColumnarToRow [codegen id : 1]
-Input [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
-
-(7) Filter [codegen id : 1]
+(6) CometFilter
 Input [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
 Condition : isnotnull(ss_item_sk#4)
+
+(7) ColumnarToRow [codegen id : 1]
+Input [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
 
 (8) BroadcastExchange
 Input [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
@@ -76,16 +76,16 @@ Location [not included in comparison]/{warehouse_dir}/item]
 PushedFilters: [IsNotNull(i_manufact_id), EqualTo(i_manufact_id,128), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_brand:string,i_manufact_id:int>
 
-(12) ColumnarToRow [codegen id : 2]
-Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manufact_id#10]
-
-(13) Filter [codegen id : 2]
+(12) CometFilter
 Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manufact_id#10]
 Condition : ((isnotnull(i_manufact_id#10) AND (i_manufact_id#10 = 128)) AND isnotnull(i_item_sk#7))
 
-(14) Project [codegen id : 2]
-Output [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
+(13) CometProject
 Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manufact_id#10]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#9], [i_item_sk#7, i_brand_id#8, i_brand#9]
+
+(14) ColumnarToRow [codegen id : 2]
+Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
 
 (15) BroadcastExchange
 Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]

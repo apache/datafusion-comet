@@ -19,39 +19,39 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_state,store_sales_quantitycount,s
                                     BroadcastHashJoin [sr_customer_sk,sr_item_sk,cs_bill_customer_sk,cs_item_sk]
                                       Project [ss_item_sk,ss_store_sk,ss_quantity,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_return_quantity,sr_returned_date_sk]
                                         BroadcastHashJoin [ss_customer_sk,ss_item_sk,ss_ticket_number,sr_customer_sk,sr_item_sk,sr_ticket_number]
-                                          Filter [ss_customer_sk,ss_item_sk,ss_ticket_number,ss_store_sk]
-                                            ColumnarToRow
-                                              InputAdapter
+                                          ColumnarToRow
+                                            InputAdapter
+                                              CometFilter [ss_customer_sk,ss_item_sk,ss_ticket_number,ss_store_sk]
                                                 CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_quantity,ss_sold_date_sk]
                                                   SubqueryBroadcast [d_date_sk] #1
                                                     BroadcastExchange #2
                                                       WholeStageCodegen (1)
-                                                        Project [d_date_sk]
-                                                          Filter [d_quarter_name,d_date_sk]
-                                                            ColumnarToRow
-                                                              InputAdapter
+                                                        ColumnarToRow
+                                                          InputAdapter
+                                                            CometProject [d_date_sk]
+                                                              CometFilter [d_quarter_name,d_date_sk]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                           InputAdapter
                                             BroadcastExchange #3
                                               WholeStageCodegen (1)
-                                                Filter [sr_customer_sk,sr_item_sk,sr_ticket_number]
-                                                  ColumnarToRow
-                                                    InputAdapter
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    CometFilter [sr_customer_sk,sr_item_sk,sr_ticket_number]
                                                       CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
                                                         SubqueryBroadcast [d_date_sk] #2
                                                           BroadcastExchange #4
                                                             WholeStageCodegen (1)
-                                                              Project [d_date_sk]
-                                                                Filter [d_quarter_name,d_date_sk]
-                                                                  ColumnarToRow
-                                                                    InputAdapter
+                                                              ColumnarToRow
+                                                                InputAdapter
+                                                                  CometProject [d_date_sk]
+                                                                    CometFilter [d_quarter_name,d_date_sk]
                                                                       CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                       InputAdapter
                                         BroadcastExchange #5
                                           WholeStageCodegen (2)
-                                            Filter [cs_bill_customer_sk,cs_item_sk]
-                                              ColumnarToRow
-                                                InputAdapter
+                                            ColumnarToRow
+                                              InputAdapter
+                                                CometFilter [cs_bill_customer_sk,cs_item_sk]
                                                   CometScan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_sold_date_sk]
                                                     ReusedSubquery [d_date_sk] #2
                                   InputAdapter
@@ -63,14 +63,14 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_state,store_sales_quantitycount,s
                       InputAdapter
                         BroadcastExchange #6
                           WholeStageCodegen (6)
-                            Filter [s_store_sk]
-                              ColumnarToRow
-                                InputAdapter
+                            ColumnarToRow
+                              InputAdapter
+                                CometFilter [s_store_sk]
                                   CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
                   InputAdapter
                     BroadcastExchange #7
                       WholeStageCodegen (7)
-                        Filter [i_item_sk]
-                          ColumnarToRow
-                            InputAdapter
+                        ColumnarToRow
+                          InputAdapter
+                            CometFilter [i_item_sk]
                               CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]

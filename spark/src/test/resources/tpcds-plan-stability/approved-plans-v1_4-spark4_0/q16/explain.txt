@@ -15,34 +15,34 @@
                   :     :     :  :  +- * SortMergeJoin LeftSemi (12)
                   :     :     :  :     :- * Sort (6)
                   :     :     :  :     :  +- Exchange (5)
-                  :     :     :  :     :     +- * Project (4)
-                  :     :     :  :     :        +- * Filter (3)
-                  :     :     :  :     :           +- * ColumnarToRow (2)
+                  :     :     :  :     :     +- * ColumnarToRow (4)
+                  :     :     :  :     :        +- CometProject (3)
+                  :     :     :  :     :           +- CometFilter (2)
                   :     :     :  :     :              +- CometScan parquet spark_catalog.default.catalog_sales (1)
                   :     :     :  :     +- * Sort (11)
                   :     :     :  :        +- Exchange (10)
-                  :     :     :  :           +- * Project (9)
-                  :     :     :  :              +- * ColumnarToRow (8)
+                  :     :     :  :           +- * ColumnarToRow (9)
+                  :     :     :  :              +- CometProject (8)
                   :     :     :  :                 +- CometScan parquet spark_catalog.default.catalog_sales (7)
                   :     :     :  +- * Sort (18)
                   :     :     :     +- Exchange (17)
-                  :     :     :        +- * Project (16)
-                  :     :     :           +- * ColumnarToRow (15)
+                  :     :     :        +- * ColumnarToRow (16)
+                  :     :     :           +- CometProject (15)
                   :     :     :              +- CometScan parquet spark_catalog.default.catalog_returns (14)
                   :     :     +- BroadcastExchange (24)
-                  :     :        +- * Project (23)
-                  :     :           +- * Filter (22)
-                  :     :              +- * ColumnarToRow (21)
+                  :     :        +- * ColumnarToRow (23)
+                  :     :           +- CometProject (22)
+                  :     :              +- CometFilter (21)
                   :     :                 +- CometScan parquet spark_catalog.default.date_dim (20)
                   :     +- BroadcastExchange (31)
-                  :        +- * Project (30)
-                  :           +- * Filter (29)
-                  :              +- * ColumnarToRow (28)
+                  :        +- * ColumnarToRow (30)
+                  :           +- CometProject (29)
+                  :              +- CometFilter (28)
                   :                 +- CometScan parquet spark_catalog.default.customer_address (27)
                   +- BroadcastExchange (38)
-                     +- * Project (37)
-                        +- * Filter (36)
-                           +- * ColumnarToRow (35)
+                     +- * ColumnarToRow (37)
+                        +- CometProject (36)
+                           +- CometFilter (35)
                               +- CometScan parquet spark_catalog.default.call_center (34)
 
 
@@ -53,16 +53,16 @@ Location [not included in comparison]/{warehouse_dir}/catalog_sales]
 PushedFilters: [IsNotNull(cs_ship_date_sk), IsNotNull(cs_ship_addr_sk), IsNotNull(cs_call_center_sk)]
 ReadSchema: struct<cs_ship_date_sk:int,cs_ship_addr_sk:int,cs_call_center_sk:int,cs_warehouse_sk:int,cs_order_number:int,cs_ext_ship_cost:decimal(7,2),cs_net_profit:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
-Input [8]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7, cs_sold_date_sk#8]
-
-(3) Filter [codegen id : 1]
+(2) CometFilter
 Input [8]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7, cs_sold_date_sk#8]
 Condition : ((isnotnull(cs_ship_date_sk#1) AND isnotnull(cs_ship_addr_sk#2)) AND isnotnull(cs_call_center_sk#3))
 
-(4) Project [codegen id : 1]
-Output [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
+(3) CometProject
 Input [8]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7, cs_sold_date_sk#8]
+Arguments: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7], [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
+
+(4) ColumnarToRow [codegen id : 1]
+Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
 
 (5) Exchange
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
@@ -78,12 +78,12 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
 ReadSchema: struct<cs_warehouse_sk:int,cs_order_number:int>
 
-(8) ColumnarToRow [codegen id : 3]
+(8) CometProject
 Input [3]: [cs_warehouse_sk#9, cs_order_number#10, cs_sold_date_sk#11]
+Arguments: [cs_warehouse_sk#9, cs_order_number#10], [cs_warehouse_sk#9, cs_order_number#10]
 
-(9) Project [codegen id : 3]
-Output [2]: [cs_warehouse_sk#9, cs_order_number#10]
-Input [3]: [cs_warehouse_sk#9, cs_order_number#10, cs_sold_date_sk#11]
+(9) ColumnarToRow [codegen id : 3]
+Input [2]: [cs_warehouse_sk#9, cs_order_number#10]
 
 (10) Exchange
 Input [2]: [cs_warehouse_sk#9, cs_order_number#10]
@@ -109,12 +109,12 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
 ReadSchema: struct<cr_order_number:int>
 
-(15) ColumnarToRow [codegen id : 6]
+(15) CometProject
 Input [2]: [cr_order_number#12, cr_returned_date_sk#13]
+Arguments: [cr_order_number#12], [cr_order_number#12]
 
-(16) Project [codegen id : 6]
-Output [1]: [cr_order_number#12]
-Input [2]: [cr_order_number#12, cr_returned_date_sk#13]
+(16) ColumnarToRow [codegen id : 6]
+Input [1]: [cr_order_number#12]
 
 (17) Exchange
 Input [1]: [cr_order_number#12]
@@ -137,16 +137,16 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,2002-02-01), LessThanOrEqual(d_date,2002-04-02), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_date:date>
 
-(21) ColumnarToRow [codegen id : 8]
-Input [2]: [d_date_sk#14, d_date#15]
-
-(22) Filter [codegen id : 8]
+(21) CometFilter
 Input [2]: [d_date_sk#14, d_date#15]
 Condition : (((isnotnull(d_date#15) AND (d_date#15 >= 2002-02-01)) AND (d_date#15 <= 2002-04-02)) AND isnotnull(d_date_sk#14))
 
-(23) Project [codegen id : 8]
-Output [1]: [d_date_sk#14]
+(22) CometProject
 Input [2]: [d_date_sk#14, d_date#15]
+Arguments: [d_date_sk#14], [d_date_sk#14]
+
+(23) ColumnarToRow [codegen id : 8]
+Input [1]: [d_date_sk#14]
 
 (24) BroadcastExchange
 Input [1]: [d_date_sk#14]
@@ -169,16 +169,16 @@ Location [not included in comparison]/{warehouse_dir}/customer_address]
 PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
-(28) ColumnarToRow [codegen id : 9]
-Input [2]: [ca_address_sk#16, ca_state#17]
-
-(29) Filter [codegen id : 9]
+(28) CometFilter
 Input [2]: [ca_address_sk#16, ca_state#17]
 Condition : ((isnotnull(ca_state#17) AND (ca_state#17 = GA)) AND isnotnull(ca_address_sk#16))
 
-(30) Project [codegen id : 9]
-Output [1]: [ca_address_sk#16]
+(29) CometProject
 Input [2]: [ca_address_sk#16, ca_state#17]
+Arguments: [ca_address_sk#16], [ca_address_sk#16]
+
+(30) ColumnarToRow [codegen id : 9]
+Input [1]: [ca_address_sk#16]
 
 (31) BroadcastExchange
 Input [1]: [ca_address_sk#16]
@@ -201,16 +201,16 @@ Location [not included in comparison]/{warehouse_dir}/call_center]
 PushedFilters: [IsNotNull(cc_county), EqualTo(cc_county,Williamson County), IsNotNull(cc_call_center_sk)]
 ReadSchema: struct<cc_call_center_sk:int,cc_county:string>
 
-(35) ColumnarToRow [codegen id : 10]
-Input [2]: [cc_call_center_sk#18, cc_county#19]
-
-(36) Filter [codegen id : 10]
+(35) CometFilter
 Input [2]: [cc_call_center_sk#18, cc_county#19]
 Condition : ((isnotnull(cc_county#19) AND (cc_county#19 = Williamson County)) AND isnotnull(cc_call_center_sk#18))
 
-(37) Project [codegen id : 10]
-Output [1]: [cc_call_center_sk#18]
+(36) CometProject
 Input [2]: [cc_call_center_sk#18, cc_county#19]
+Arguments: [cc_call_center_sk#18], [cc_call_center_sk#18]
+
+(37) ColumnarToRow [codegen id : 10]
+Input [1]: [cc_call_center_sk#18]
 
 (38) BroadcastExchange
 Input [1]: [cc_call_center_sk#18]

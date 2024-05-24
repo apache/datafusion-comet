@@ -13,42 +13,42 @@ TakeOrderedAndProject [c_customer_id,customer_id,customername]
                         BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
                           Project [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_first_name,c_last_name]
                             BroadcastHashJoin [c_current_addr_sk,ca_address_sk]
-                              Filter [c_current_addr_sk,c_current_cdemo_sk,c_current_hdemo_sk]
-                                ColumnarToRow
-                                  InputAdapter
+                              ColumnarToRow
+                                InputAdapter
+                                  CometFilter [c_current_addr_sk,c_current_cdemo_sk,c_current_hdemo_sk]
                                     CometScan parquet spark_catalog.default.customer [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_name,c_last_name]
                               InputAdapter
                                 BroadcastExchange #2
                                   WholeStageCodegen (1)
-                                    Project [ca_address_sk]
-                                      Filter [ca_city,ca_address_sk]
-                                        ColumnarToRow
-                                          InputAdapter
+                                    ColumnarToRow
+                                      InputAdapter
+                                        CometProject [ca_address_sk]
+                                          CometFilter [ca_city,ca_address_sk]
                                             CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]
                           InputAdapter
                             BroadcastExchange #3
                               WholeStageCodegen (2)
-                                Filter [cd_demo_sk]
-                                  ColumnarToRow
-                                    InputAdapter
+                                ColumnarToRow
+                                  InputAdapter
+                                    CometFilter [cd_demo_sk]
                                       CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk]
                       InputAdapter
                         BroadcastExchange #4
                           WholeStageCodegen (3)
-                            Filter [hd_demo_sk,hd_income_band_sk]
-                              ColumnarToRow
-                                InputAdapter
+                            ColumnarToRow
+                              InputAdapter
+                                CometFilter [hd_demo_sk,hd_income_band_sk]
                                   CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_income_band_sk]
                   InputAdapter
                     BroadcastExchange #5
                       WholeStageCodegen (4)
-                        Project [ib_income_band_sk]
-                          Filter [ib_lower_bound,ib_upper_bound,ib_income_band_sk]
-                            ColumnarToRow
-                              InputAdapter
+                        ColumnarToRow
+                          InputAdapter
+                            CometProject [ib_income_band_sk]
+                              CometFilter [ib_lower_bound,ib_upper_bound,ib_income_band_sk]
                                 CometScan parquet spark_catalog.default.income_band [ib_income_band_sk,ib_lower_bound,ib_upper_bound]
-        Project [sr_cdemo_sk]
-          Filter [sr_cdemo_sk]
-            ColumnarToRow
-              InputAdapter
+        ColumnarToRow
+          InputAdapter
+            CometProject [sr_cdemo_sk]
+              CometFilter [sr_cdemo_sk]
                 CometScan parquet spark_catalog.default.store_returns [sr_cdemo_sk,sr_returned_date_sk]

@@ -9,23 +9,23 @@ TakeOrderedAndProject [s_store_name,s_store_id,sun_sales,mon_sales,tue_sales,wed
                 BroadcastHashJoin [ss_store_sk,s_store_sk]
                   Project [d_day_name,ss_store_sk,ss_sales_price]
                     BroadcastHashJoin [d_date_sk,ss_sold_date_sk]
-                      Project [d_date_sk,d_day_name]
-                        Filter [d_year,d_date_sk]
-                          ColumnarToRow
-                            InputAdapter
+                      ColumnarToRow
+                        InputAdapter
+                          CometProject [d_date_sk,d_day_name]
+                            CometFilter [d_year,d_date_sk]
                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_day_name]
                       InputAdapter
                         BroadcastExchange #2
                           WholeStageCodegen (1)
-                            Filter [ss_store_sk]
-                              ColumnarToRow
-                                InputAdapter
+                            ColumnarToRow
+                              InputAdapter
+                                CometFilter [ss_store_sk]
                                   CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_sales_price,ss_sold_date_sk]
                   InputAdapter
                     BroadcastExchange #3
                       WholeStageCodegen (2)
-                        Project [s_store_sk,s_store_id,s_store_name]
-                          Filter [s_gmt_offset,s_store_sk]
-                            ColumnarToRow
-                              InputAdapter
+                        ColumnarToRow
+                          InputAdapter
+                            CometProject [s_store_sk,s_store_id,s_store_name]
+                              CometFilter [s_gmt_offset,s_store_sk]
                                 CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name,s_gmt_offset]

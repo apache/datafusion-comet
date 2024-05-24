@@ -13,12 +13,12 @@ TakeOrderedAndProject (71)
       :     :  :              +- * BroadcastHashJoin Inner BuildRight (11)
       :     :  :                 :- * Project (9)
       :     :  :                 :  +- * BroadcastHashJoin Inner BuildRight (8)
-      :     :  :                 :     :- * Filter (3)
-      :     :  :                 :     :  +- * ColumnarToRow (2)
+      :     :  :                 :     :- * ColumnarToRow (3)
+      :     :  :                 :     :  +- CometFilter (2)
       :     :  :                 :     :     +- CometScan parquet spark_catalog.default.customer (1)
       :     :  :                 :     +- BroadcastExchange (7)
-      :     :  :                 :        +- * Filter (6)
-      :     :  :                 :           +- * ColumnarToRow (5)
+      :     :  :                 :        +- * ColumnarToRow (6)
+      :     :  :                 :           +- CometFilter (5)
       :     :  :                 :              +- CometScan parquet spark_catalog.default.store_sales (4)
       :     :  :                 +- ReusedExchange (10)
       :     :  +- BroadcastExchange (32)
@@ -29,12 +29,12 @@ TakeOrderedAndProject (71)
       :     :                 +- * BroadcastHashJoin Inner BuildRight (27)
       :     :                    :- * Project (25)
       :     :                    :  +- * BroadcastHashJoin Inner BuildRight (24)
-      :     :                    :     :- * Filter (19)
-      :     :                    :     :  +- * ColumnarToRow (18)
+      :     :                    :     :- * ColumnarToRow (19)
+      :     :                    :     :  +- CometFilter (18)
       :     :                    :     :     +- CometScan parquet spark_catalog.default.customer (17)
       :     :                    :     +- BroadcastExchange (23)
-      :     :                    :        +- * Filter (22)
-      :     :                    :           +- * ColumnarToRow (21)
+      :     :                    :        +- * ColumnarToRow (22)
+      :     :                    :           +- CometFilter (21)
       :     :                    :              +- CometScan parquet spark_catalog.default.store_sales (20)
       :     :                    +- ReusedExchange (26)
       :     +- BroadcastExchange (50)
@@ -46,12 +46,12 @@ TakeOrderedAndProject (71)
       :                       +- * BroadcastHashJoin Inner BuildRight (44)
       :                          :- * Project (42)
       :                          :  +- * BroadcastHashJoin Inner BuildRight (41)
-      :                          :     :- * Filter (36)
-      :                          :     :  +- * ColumnarToRow (35)
+      :                          :     :- * ColumnarToRow (36)
+      :                          :     :  +- CometFilter (35)
       :                          :     :     +- CometScan parquet spark_catalog.default.customer (34)
       :                          :     +- BroadcastExchange (40)
-      :                          :        +- * Filter (39)
-      :                          :           +- * ColumnarToRow (38)
+      :                          :        +- * ColumnarToRow (39)
+      :                          :           +- CometFilter (38)
       :                          :              +- CometScan parquet spark_catalog.default.web_sales (37)
       :                          +- ReusedExchange (43)
       +- BroadcastExchange (68)
@@ -62,12 +62,12 @@ TakeOrderedAndProject (71)
                      +- * BroadcastHashJoin Inner BuildRight (63)
                         :- * Project (61)
                         :  +- * BroadcastHashJoin Inner BuildRight (60)
-                        :     :- * Filter (55)
-                        :     :  +- * ColumnarToRow (54)
+                        :     :- * ColumnarToRow (55)
+                        :     :  +- CometFilter (54)
                         :     :     +- CometScan parquet spark_catalog.default.customer (53)
                         :     +- BroadcastExchange (59)
-                        :        +- * Filter (58)
-                        :           +- * ColumnarToRow (57)
+                        :        +- * ColumnarToRow (58)
+                        :           +- CometFilter (57)
                         :              +- CometScan parquet spark_catalog.default.web_sales (56)
                         +- ReusedExchange (62)
 
@@ -79,12 +79,12 @@ Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_customer_id)]
 ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_first_name:string,c_last_name:string,c_preferred_cust_flag:string,c_birth_country:string,c_login:string,c_email_address:string>
 
-(2) ColumnarToRow [codegen id : 3]
-Input [8]: [c_customer_sk#1, c_customer_id#2, c_first_name#3, c_last_name#4, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8]
-
-(3) Filter [codegen id : 3]
+(2) CometFilter
 Input [8]: [c_customer_sk#1, c_customer_id#2, c_first_name#3, c_last_name#4, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8]
 Condition : (isnotnull(c_customer_sk#1) AND isnotnull(c_customer_id#2))
+
+(3) ColumnarToRow [codegen id : 3]
+Input [8]: [c_customer_sk#1, c_customer_id#2, c_first_name#3, c_last_name#4, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8]
 
 (4) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_customer_sk#9, ss_ext_discount_amt#10, ss_ext_list_price#11, ss_sold_date_sk#12]
@@ -94,12 +94,12 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#12), dynamicpruningexpression(ss_so
 PushedFilters: [IsNotNull(ss_customer_sk)]
 ReadSchema: struct<ss_customer_sk:int,ss_ext_discount_amt:decimal(7,2),ss_ext_list_price:decimal(7,2)>
 
-(5) ColumnarToRow [codegen id : 1]
-Input [4]: [ss_customer_sk#9, ss_ext_discount_amt#10, ss_ext_list_price#11, ss_sold_date_sk#12]
-
-(6) Filter [codegen id : 1]
+(5) CometFilter
 Input [4]: [ss_customer_sk#9, ss_ext_discount_amt#10, ss_ext_list_price#11, ss_sold_date_sk#12]
 Condition : isnotnull(ss_customer_sk#9)
+
+(6) ColumnarToRow [codegen id : 1]
+Input [4]: [ss_customer_sk#9, ss_ext_discount_amt#10, ss_ext_list_price#11, ss_sold_date_sk#12]
 
 (7) BroadcastExchange
 Input [4]: [ss_customer_sk#9, ss_ext_discount_amt#10, ss_ext_list_price#11, ss_sold_date_sk#12]
@@ -157,12 +157,12 @@ Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_customer_id)]
 ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_first_name:string,c_last_name:string,c_preferred_cust_flag:string,c_birth_country:string,c_login:string,c_email_address:string>
 
-(18) ColumnarToRow [codegen id : 6]
-Input [8]: [c_customer_sk#21, c_customer_id#22, c_first_name#23, c_last_name#24, c_preferred_cust_flag#25, c_birth_country#26, c_login#27, c_email_address#28]
-
-(19) Filter [codegen id : 6]
+(18) CometFilter
 Input [8]: [c_customer_sk#21, c_customer_id#22, c_first_name#23, c_last_name#24, c_preferred_cust_flag#25, c_birth_country#26, c_login#27, c_email_address#28]
 Condition : (isnotnull(c_customer_sk#21) AND isnotnull(c_customer_id#22))
+
+(19) ColumnarToRow [codegen id : 6]
+Input [8]: [c_customer_sk#21, c_customer_id#22, c_first_name#23, c_last_name#24, c_preferred_cust_flag#25, c_birth_country#26, c_login#27, c_email_address#28]
 
 (20) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_customer_sk#29, ss_ext_discount_amt#30, ss_ext_list_price#31, ss_sold_date_sk#32]
@@ -172,12 +172,12 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#32), dynamicpruningexpression(ss_so
 PushedFilters: [IsNotNull(ss_customer_sk)]
 ReadSchema: struct<ss_customer_sk:int,ss_ext_discount_amt:decimal(7,2),ss_ext_list_price:decimal(7,2)>
 
-(21) ColumnarToRow [codegen id : 4]
-Input [4]: [ss_customer_sk#29, ss_ext_discount_amt#30, ss_ext_list_price#31, ss_sold_date_sk#32]
-
-(22) Filter [codegen id : 4]
+(21) CometFilter
 Input [4]: [ss_customer_sk#29, ss_ext_discount_amt#30, ss_ext_list_price#31, ss_sold_date_sk#32]
 Condition : isnotnull(ss_customer_sk#29)
+
+(22) ColumnarToRow [codegen id : 4]
+Input [4]: [ss_customer_sk#29, ss_ext_discount_amt#30, ss_ext_list_price#31, ss_sold_date_sk#32]
 
 (23) BroadcastExchange
 Input [4]: [ss_customer_sk#29, ss_ext_discount_amt#30, ss_ext_list_price#31, ss_sold_date_sk#32]
@@ -241,12 +241,12 @@ Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_customer_id)]
 ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_first_name:string,c_last_name:string,c_preferred_cust_flag:string,c_birth_country:string,c_login:string,c_email_address:string>
 
-(35) ColumnarToRow [codegen id : 10]
-Input [8]: [c_customer_sk#43, c_customer_id#44, c_first_name#45, c_last_name#46, c_preferred_cust_flag#47, c_birth_country#48, c_login#49, c_email_address#50]
-
-(36) Filter [codegen id : 10]
+(35) CometFilter
 Input [8]: [c_customer_sk#43, c_customer_id#44, c_first_name#45, c_last_name#46, c_preferred_cust_flag#47, c_birth_country#48, c_login#49, c_email_address#50]
 Condition : (isnotnull(c_customer_sk#43) AND isnotnull(c_customer_id#44))
+
+(36) ColumnarToRow [codegen id : 10]
+Input [8]: [c_customer_sk#43, c_customer_id#44, c_first_name#45, c_last_name#46, c_preferred_cust_flag#47, c_birth_country#48, c_login#49, c_email_address#50]
 
 (37) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_bill_customer_sk#51, ws_ext_discount_amt#52, ws_ext_list_price#53, ws_sold_date_sk#54]
@@ -256,12 +256,12 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#54), dynamicpruningexpression(ws_so
 PushedFilters: [IsNotNull(ws_bill_customer_sk)]
 ReadSchema: struct<ws_bill_customer_sk:int,ws_ext_discount_amt:decimal(7,2),ws_ext_list_price:decimal(7,2)>
 
-(38) ColumnarToRow [codegen id : 8]
-Input [4]: [ws_bill_customer_sk#51, ws_ext_discount_amt#52, ws_ext_list_price#53, ws_sold_date_sk#54]
-
-(39) Filter [codegen id : 8]
+(38) CometFilter
 Input [4]: [ws_bill_customer_sk#51, ws_ext_discount_amt#52, ws_ext_list_price#53, ws_sold_date_sk#54]
 Condition : isnotnull(ws_bill_customer_sk#51)
+
+(39) ColumnarToRow [codegen id : 8]
+Input [4]: [ws_bill_customer_sk#51, ws_ext_discount_amt#52, ws_ext_list_price#53, ws_sold_date_sk#54]
 
 (40) BroadcastExchange
 Input [4]: [ws_bill_customer_sk#51, ws_ext_discount_amt#52, ws_ext_list_price#53, ws_sold_date_sk#54]
@@ -333,12 +333,12 @@ Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_customer_id)]
 ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_first_name:string,c_last_name:string,c_preferred_cust_flag:string,c_birth_country:string,c_login:string,c_email_address:string>
 
-(54) ColumnarToRow [codegen id : 14]
-Input [8]: [c_customer_sk#63, c_customer_id#64, c_first_name#65, c_last_name#66, c_preferred_cust_flag#67, c_birth_country#68, c_login#69, c_email_address#70]
-
-(55) Filter [codegen id : 14]
+(54) CometFilter
 Input [8]: [c_customer_sk#63, c_customer_id#64, c_first_name#65, c_last_name#66, c_preferred_cust_flag#67, c_birth_country#68, c_login#69, c_email_address#70]
 Condition : (isnotnull(c_customer_sk#63) AND isnotnull(c_customer_id#64))
+
+(55) ColumnarToRow [codegen id : 14]
+Input [8]: [c_customer_sk#63, c_customer_id#64, c_first_name#65, c_last_name#66, c_preferred_cust_flag#67, c_birth_country#68, c_login#69, c_email_address#70]
 
 (56) Scan parquet spark_catalog.default.web_sales
 Output [4]: [ws_bill_customer_sk#71, ws_ext_discount_amt#72, ws_ext_list_price#73, ws_sold_date_sk#74]
@@ -348,12 +348,12 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#74), dynamicpruningexpression(ws_so
 PushedFilters: [IsNotNull(ws_bill_customer_sk)]
 ReadSchema: struct<ws_bill_customer_sk:int,ws_ext_discount_amt:decimal(7,2),ws_ext_list_price:decimal(7,2)>
 
-(57) ColumnarToRow [codegen id : 12]
-Input [4]: [ws_bill_customer_sk#71, ws_ext_discount_amt#72, ws_ext_list_price#73, ws_sold_date_sk#74]
-
-(58) Filter [codegen id : 12]
+(57) CometFilter
 Input [4]: [ws_bill_customer_sk#71, ws_ext_discount_amt#72, ws_ext_list_price#73, ws_sold_date_sk#74]
 Condition : isnotnull(ws_bill_customer_sk#71)
+
+(58) ColumnarToRow [codegen id : 12]
+Input [4]: [ws_bill_customer_sk#71, ws_ext_discount_amt#72, ws_ext_list_price#73, ws_sold_date_sk#74]
 
 (59) BroadcastExchange
 Input [4]: [ws_bill_customer_sk#71, ws_ext_discount_amt#72, ws_ext_list_price#73, ws_sold_date_sk#74]
@@ -422,8 +422,8 @@ Arguments: 100, [customer_id#38 ASC NULLS FIRST, customer_first_name#39 ASC NULL
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = ss_sold_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (75)
-+- * Filter (74)
-   +- * ColumnarToRow (73)
++- * ColumnarToRow (74)
+   +- CometFilter (73)
       +- CometScan parquet spark_catalog.default.date_dim (72)
 
 
@@ -434,12 +434,12 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(73) ColumnarToRow [codegen id : 1]
-Input [2]: [d_date_sk#14, d_year#15]
-
-(74) Filter [codegen id : 1]
+(73) CometFilter
 Input [2]: [d_date_sk#14, d_year#15]
 Condition : ((isnotnull(d_year#15) AND (d_year#15 = 2001)) AND isnotnull(d_date_sk#14))
+
+(74) ColumnarToRow [codegen id : 1]
+Input [2]: [d_date_sk#14, d_year#15]
 
 (75) BroadcastExchange
 Input [2]: [d_date_sk#14, d_year#15]
@@ -447,8 +447,8 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 20 Hosting Expression = ss_sold_date_sk#32 IN dynamicpruning#33
 BroadcastExchange (79)
-+- * Filter (78)
-   +- * ColumnarToRow (77)
++- * ColumnarToRow (78)
+   +- CometFilter (77)
       +- CometScan parquet spark_catalog.default.date_dim (76)
 
 
@@ -459,12 +459,12 @@ Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2002), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(77) ColumnarToRow [codegen id : 1]
-Input [2]: [d_date_sk#34, d_year#35]
-
-(78) Filter [codegen id : 1]
+(77) CometFilter
 Input [2]: [d_date_sk#34, d_year#35]
 Condition : ((isnotnull(d_year#35) AND (d_year#35 = 2002)) AND isnotnull(d_date_sk#34))
+
+(78) ColumnarToRow [codegen id : 1]
+Input [2]: [d_date_sk#34, d_year#35]
 
 (79) BroadcastExchange
 Input [2]: [d_date_sk#34, d_year#35]
