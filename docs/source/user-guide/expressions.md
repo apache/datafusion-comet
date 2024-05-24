@@ -48,7 +48,7 @@ The following Spark expressions are currently available:
   - Substring
   - Coalesce
   - StringSpace
-  - Like
+  - Like/RLike
   - Contains
   - Startswith
   - Endswith
