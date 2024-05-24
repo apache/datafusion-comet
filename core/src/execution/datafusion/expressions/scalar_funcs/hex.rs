@@ -56,8 +56,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
             DataType::Int64 => {
                 let array = as_int64_array(array)?;
 
-                let hexed_array: StringArray =
-                    array.iter().map(|v| v.map(|v| hex_int64(v))).collect();
+                let hexed_array: StringArray = array.iter().map(|v| v.map(hex_int64)).collect();
 
                 Ok(ColumnarValue::Array(Arc::new(hexed_array)))
             }
@@ -66,7 +65,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 let hexed: StringArray = array
                     .iter()
-                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
+                    .map(|v| v.map(hex_bytes).transpose())
                     .collect::<Result<_, _>>()?;
 
                 Ok(ColumnarValue::Array(Arc::new(hexed)))
@@ -76,7 +75,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 let hexed: StringArray = array
                     .iter()
-                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
+                    .map(|v| v.map(hex_bytes).transpose())
                     .collect::<Result<_, _>>()?;
 
                 Ok(ColumnarValue::Array(Arc::new(hexed)))
@@ -86,7 +85,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 let hexed: StringArray = array
                     .iter()
-                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
+                    .map(|v| v.map(hex_bytes).transpose())
                     .collect::<Result<_, _>>()?;
 
                 Ok(ColumnarValue::Array(Arc::new(hexed)))
@@ -117,7 +116,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 let hexed_values = as_string_array(dict.values());
                 let values: Vec<Option<String>> = hexed_values
                     .iter()
-                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
+                    .map(|v| v.map(hex_bytes).transpose())
                     .collect::<Result<_, _>>()?;
 
                 let keys = dict.keys().clone();
@@ -138,7 +137,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 let hexed_values = as_binary_array(dict.values())?;
                 let values: Vec<Option<String>> = hexed_values
                     .iter()
-                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
+                    .map(|v| v.map(hex_bytes).transpose())
                     .collect::<Result<_, _>>()?;
 
                 let keys = dict.keys().clone();
