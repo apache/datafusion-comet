@@ -17,14 +17,13 @@
  * under the License.
  */
 
-use crate::execution::datafusion::expressions::{
-    strings::{StringSpaceExec, SubstringExec},
-    utils::down_cast_any_ref,
-};
-use arrow_array::RecordBatch;
+use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
+use arrow_array::{builder::BooleanBuilder, Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion_common::ScalarValue;
 use datafusion_physical_expr::PhysicalExpr;
+use regex::Regex;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -68,8 +67,8 @@ impl PhysicalExpr for RLike {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
-        self.child.data_type(input_schema)
+    fn data_type(&self, _input_schema: &Schema) -> datafusion_common::Result<DataType> {
+        Ok(DataType::Boolean)
     }
 
     fn nullable(&self, input_schema: &Schema) -> datafusion_common::Result<bool> {
@@ -77,7 +76,37 @@ impl PhysicalExpr for RLike {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
-        todo!()
+        if let ColumnarValue::Array(v) = self.child.evaluate(batch)? {
+            if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern))) =
+                self.pattern.evaluate(batch)?
+            {
+                // TODO cache Regex across invocations of evaluate or create it in constructor
+                let re = Regex::new(&pattern).unwrap(); // TODO error handling
+                let inputs = v
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("string array");
+                let mut builder = BooleanBuilder::with_capacity(inputs.len());
+                if inputs.is_nullable() {
+                    for i in 0..inputs.len() {
+                        if inputs.is_null(i) {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(re.is_match(inputs.value(i)));
+                        }
+                    }
+                } else {
+                    for i in 0..inputs.len() {
+                        builder.append_value(re.is_match(inputs.value(i)));
+                    }
+                }
+                Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+            } else {
+                todo!()
+            }
+        } else {
+            todo!()
+        }
     }
 
     fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
