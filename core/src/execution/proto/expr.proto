@@ -54,7 +54,7 @@ message Expr {
     StartsWith startsWith = 27;
     EndsWith endsWith = 28;
     Contains contains = 29;
-    // RLike rlike = 30;
+    RLike rlike = 30;
     ScalarFunc scalarFunc = 31;
     EqualNullSafe eqNullSafe = 32;
     NotEqualNullSafe neqNullSafe = 33;
@@ -368,10 +368,10 @@ message Like {
   Expr right = 2;
 }
 
-// message RLike {
-//   Expr left = 1;
-//   Expr right = 2;
-// }
+ message RLike {
+   Expr left = 1;
+   Expr right = 2;
+ }
 
 message StartsWith {
   Expr left = 1;

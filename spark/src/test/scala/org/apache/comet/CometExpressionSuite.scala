@@ -588,6 +588,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike") {
+    val table = "rlike_names"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      sql(s"insert into $table values(2,'Michael Rose')")
+      sql(s"insert into $table values(3,'Robert Williams')")
+      sql(s"insert into $table values(4,'Rames Rose')")
+      sql(s"insert into $table values(5,'Rames rose')")
+
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        val query = sql(s"select id from $table where name rlike 'R[a-z]+s [Rr]ose'")
+        checkSparkAnswerAndOperator(query)
+      }
+    }
+  }
+
   test("contains") {
     assume(!isSpark32)
 
