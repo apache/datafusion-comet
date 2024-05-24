@@ -62,46 +62,40 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
             DataType::Int64 => {
                 let array = as_int64_array(array)?;
 
-                let hexed: Vec<Option<String>> = array.iter().map(|v| v.map(hex_int64)).collect();
+                let hexed_array: StringArray =
+                    array.iter().map(|v| v.map(|v| hex_int64(v))).collect();
 
-                let string_array = StringArray::from(hexed);
-                Ok(ColumnarValue::Array(Arc::new(string_array)))
+                Ok(ColumnarValue::Array(Arc::new(hexed_array)))
             }
             DataType::Utf8 | DataType::LargeUtf8 => {
                 let array = as_string_array(array);
 
-                let hexed: Vec<Option<String>> = array
+                let hexed: StringArray = array
                     .iter()
                     .map(|v| v.map(|v| hex_string(v)).transpose())
                     .collect::<Result<_, _>>()?;
 
-                let string_array = StringArray::from(hexed);
-
-                Ok(ColumnarValue::Array(Arc::new(string_array)))
+                Ok(ColumnarValue::Array(Arc::new(hexed)))
             }
             DataType::Binary => {
                 let array = as_binary_array(array)?;
 
-                let hexed: Vec<Option<String>> = array
+                let hexed: StringArray = array
                     .iter()
                     .map(|v| v.map(|v| hex_bytes(v)).transpose())
                     .collect::<Result<_, _>>()?;
 
-                let string_array = StringArray::from(hexed);
-
-                Ok(ColumnarValue::Array(Arc::new(string_array)))
+                Ok(ColumnarValue::Array(Arc::new(hexed)))
             }
             DataType::FixedSizeBinary(_) => {
                 let array = as_fixed_size_binary_array(array)?;
 
-                let hexed: Vec<Option<String>> = array
+                let hexed: StringArray = array
                     .iter()
                     .map(|v| v.map(|v| hex_bytes(v)).transpose())
                     .collect::<Result<_, _>>()?;
 
-                let string_array = StringArray::from(hexed);
-
-                Ok(ColumnarValue::Array(Arc::new(string_array)))
+                Ok(ColumnarValue::Array(Arc::new(hexed)))
             }
             DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Int64) => {
                 let dict = as_dictionary_array::<Int32Type>(&array);
