@@ -9,19 +9,19 @@ TakeOrderedAndProject (24)
                :  +- * SortMergeJoin Inner (12)
                :     :- * Sort (5)
                :     :  +- Exchange (4)
-               :     :     +- * Project (3)
-               :     :        +- * ColumnarToRow (2)
+               :     :     +- * ColumnarToRow (3)
+               :     :        +- CometProject (2)
                :     :           +- CometScan parquet spark_catalog.default.store_sales (1)
                :     +- * Sort (11)
                :        +- Exchange (10)
-               :           +- * Project (9)
-               :              +- * Filter (8)
-               :                 +- * ColumnarToRow (7)
+               :           +- * ColumnarToRow (9)
+               :              +- CometProject (8)
+               :                 +- CometFilter (7)
                :                    +- CometScan parquet spark_catalog.default.store_returns (6)
                +- BroadcastExchange (18)
-                  +- * Project (17)
-                     +- * Filter (16)
-                        +- * ColumnarToRow (15)
+                  +- * ColumnarToRow (17)
+                     +- CometProject (16)
+                        +- CometFilter (15)
                            +- CometScan parquet spark_catalog.default.reason (14)
 
 
@@ -31,12 +31,12 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int,ss_ticket_number:int,ss_quantity:int,ss_sales_price:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) CometProject
 Input [6]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
+Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5], [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
 
-(3) Project [codegen id : 1]
-Output [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
-Input [6]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
+(3) ColumnarToRow [codegen id : 1]
+Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
 
 (4) Exchange
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
@@ -53,16 +53,16 @@ Location [not included in comparison]/{warehouse_dir}/store_returns]
 PushedFilters: [IsNotNull(sr_item_sk), IsNotNull(sr_ticket_number), IsNotNull(sr_reason_sk)]
 ReadSchema: struct<sr_item_sk:int,sr_reason_sk:int,sr_ticket_number:int,sr_return_quantity:int>
 
-(7) ColumnarToRow [codegen id : 3]
-Input [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
-
-(8) Filter [codegen id : 3]
+(7) CometFilter
 Input [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
 Condition : ((isnotnull(sr_item_sk#7) AND isnotnull(sr_ticket_number#9)) AND isnotnull(sr_reason_sk#8))
 
-(9) Project [codegen id : 3]
-Output [4]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
+(8) CometProject
 Input [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
+Arguments: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10], [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
+
+(9) ColumnarToRow [codegen id : 3]
+Input [4]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
 
 (10) Exchange
 Input [4]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
@@ -89,16 +89,16 @@ Location [not included in comparison]/{warehouse_dir}/reason]
 PushedFilters: [IsNotNull(r_reason_desc), EqualTo(r_reason_desc,reason 28                                                                                           ), IsNotNull(r_reason_sk)]
 ReadSchema: struct<r_reason_sk:int,r_reason_desc:string>
 
-(15) ColumnarToRow [codegen id : 5]
-Input [2]: [r_reason_sk#12, r_reason_desc#13]
-
-(16) Filter [codegen id : 5]
+(15) CometFilter
 Input [2]: [r_reason_sk#12, r_reason_desc#13]
 Condition : ((isnotnull(r_reason_desc#13) AND (r_reason_desc#13 = reason 28                                                                                           )) AND isnotnull(r_reason_sk#12))
 
-(17) Project [codegen id : 5]
-Output [1]: [r_reason_sk#12]
+(16) CometProject
 Input [2]: [r_reason_sk#12, r_reason_desc#13]
+Arguments: [r_reason_sk#12], [r_reason_sk#12]
+
+(17) ColumnarToRow [codegen id : 5]
+Input [1]: [r_reason_sk#12]
 
 (18) BroadcastExchange
 Input [1]: [r_reason_sk#12]

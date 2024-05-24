@@ -11,26 +11,26 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                     BroadcastHashJoin [ss_store_sk,s_store_sk]
                       Project [ss_store_sk,ss_net_profit]
                         BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                          Filter [ss_store_sk]
-                            ColumnarToRow
-                              InputAdapter
+                          ColumnarToRow
+                            InputAdapter
+                              CometFilter [ss_store_sk]
                                 CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #2
                                       WholeStageCodegen (1)
-                                        Project [d_date_sk]
-                                          Filter [d_qoy,d_year,d_date_sk]
-                                            ColumnarToRow
-                                              InputAdapter
+                                        ColumnarToRow
+                                          InputAdapter
+                                            CometProject [d_date_sk]
+                                              CometFilter [d_qoy,d_year,d_date_sk]
                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                           InputAdapter
                             ReusedExchange [d_date_sk] #2
                       InputAdapter
                         BroadcastExchange #3
                           WholeStageCodegen (2)
-                            Filter [s_store_sk,s_zip]
-                              ColumnarToRow
-                                InputAdapter
+                            ColumnarToRow
+                              InputAdapter
+                                CometFilter [s_store_sk,s_zip]
                                   CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                   InputAdapter
                     BroadcastExchange #4
@@ -41,10 +41,10 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                               WholeStageCodegen (6)
                                 HashAggregate [ca_zip]
                                   BroadcastHashJoin [ca_zip,ca_zip]
-                                    Project [ca_zip]
-                                      Filter [ca_zip]
-                                        ColumnarToRow
-                                          InputAdapter
+                                    ColumnarToRow
+                                      InputAdapter
+                                        CometProject [ca_zip] [ca_zip]
+                                          CometFilter [ca_zip]
                                             CometScan parquet spark_catalog.default.customer_address [ca_zip]
                                     InputAdapter
                                       BroadcastExchange #6
@@ -58,15 +58,15 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                                       HashAggregate [ca_zip] [count,count]
                                                         Project [ca_zip]
                                                           BroadcastHashJoin [ca_address_sk,c_current_addr_sk]
-                                                            Filter [ca_address_sk]
-                                                              ColumnarToRow
-                                                                InputAdapter
+                                                            ColumnarToRow
+                                                              InputAdapter
+                                                                CometFilter [ca_address_sk]
                                                                   CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
                                                             InputAdapter
                                                               BroadcastExchange #8
                                                                 WholeStageCodegen (3)
-                                                                  Project [c_current_addr_sk]
-                                                                    Filter [c_preferred_cust_flag,c_current_addr_sk]
-                                                                      ColumnarToRow
-                                                                        InputAdapter
+                                                                  ColumnarToRow
+                                                                    InputAdapter
+                                                                      CometProject [c_current_addr_sk]
+                                                                        CometFilter [c_preferred_cust_flag,c_current_addr_sk]
                                                                           CometScan parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]

@@ -7,10 +7,10 @@ TakeOrderedAndProject [i_product_name]
             HashAggregate [i_product_name]
               Project [i_product_name]
                 BroadcastHashJoin [i_manufact,i_manufact]
-                  Project [i_manufact,i_product_name]
-                    Filter [i_manufact_id,i_manufact]
-                      ColumnarToRow
-                        InputAdapter
+                  ColumnarToRow
+                    InputAdapter
+                      CometProject [i_manufact,i_product_name]
+                        CometFilter [i_manufact_id,i_manufact]
                           CometScan parquet spark_catalog.default.item [i_manufact_id,i_manufact,i_product_name]
                   InputAdapter
                     BroadcastExchange #2
@@ -21,9 +21,9 @@ TakeOrderedAndProject [i_product_name]
                               InputAdapter
                                 Exchange [i_manufact] #3
                                   WholeStageCodegen (1)
-                                    HashAggregate [i_manufact] [count,count]
-                                      Project [i_manufact]
-                                        Filter [i_category,i_color,i_units,i_size,i_manufact]
-                                          ColumnarToRow
-                                            InputAdapter
+                                    ColumnarToRow
+                                      InputAdapter
+                                        CometHashAggregate [i_manufact]
+                                          CometProject [i_manufact]
+                                            CometFilter [i_category,i_color,i_units,i_size,i_manufact]
                                               CometScan parquet spark_catalog.default.item [i_category,i_manufact,i_size,i_color,i_units]

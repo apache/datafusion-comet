@@ -22,10 +22,10 @@ WholeStageCodegen (8)
                                           SubqueryBroadcast [d_date_sk] #1
                                             BroadcastExchange #3
                                               WholeStageCodegen (1)
-                                                Project [d_date_sk]
-                                                  Filter [d_month_seq,d_date_sk]
-                                                    ColumnarToRow
-                                                      InputAdapter
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    CometProject [d_date_sk]
+                                                      CometFilter [d_month_seq,d_date_sk]
                                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                     InputAdapter
                                       ReusedExchange [d_date_sk] #3

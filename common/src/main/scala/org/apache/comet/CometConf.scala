@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 import scala.collection.mutable.ListBuffer
@@ -133,14 +134,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.enabled")
-      .doc(
-        "Whether to enable Arrow-based columnar shuffle for Comet and Spark regular operators. " +
-          "If this is enabled, Comet prefers columnar shuffle than native shuffle. " +
-          "By default, this config is true.")
-      .booleanConf
-      .createWithDefault(true)
+  val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
+    .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
+      "is enabled. Available modes are 'native', 'jvm', and 'auto'. " +
+      "'native' is for native shuffle which has best performance in general. " +
+      "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
+      "'auto' is for Comet to choose the best shuffle mode based on the query plan. " +
+      "By default, this config is 'jvm'.")
+    .stringConf
+    .transform(_.toLowerCase(Locale.ROOT))
+    .checkValues(Set("native", "jvm", "auto"))
+    .createWithDefault("jvm")
 
   val COMET_SHUFFLE_ENFORCE_MODE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.enforceMode.enabled")
@@ -380,6 +384,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
   val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
+    .internal()
     .doc(
       "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
         "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +

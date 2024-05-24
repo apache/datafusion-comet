@@ -109,3 +109,4 @@ The following Spark expressions are currently available:
   - VarianceSamp
   - StddevPop
   - StddevSamp
+  - Corr
