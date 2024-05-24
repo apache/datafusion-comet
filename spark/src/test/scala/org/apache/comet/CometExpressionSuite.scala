@@ -1445,6 +1445,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("sttdev") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        "spark.comet.exec.shuffle.enabled" -> "true") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col int) using parquet")
+          sql(s"insert into $table VALUES (1), (2), (3)")
+          checkSparkAnswerAndOperator(s"SELECT stddev_pop(col) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("to_date") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        "spark.comet.exec.shuffle.enabled" -> "true") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string) using parquet")
+          sql(s"insert into $table VALUES ('2009-07-30 04:17:52')")
+          checkSparkAnswerAndOperator(s"SELECT to_date(col) FROM $table")
+        }
+      }
+    }
+  }
+
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(

@@ -31,6 +31,9 @@ import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedFunction
+import org.apache.spark.sql.catalyst.expressions.LambdaFunction
+import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.collect_list
 
@@ -54,6 +57,70 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
   private val valuesPattern = """(?i)FROM VALUES(.+?);""".r
   private val selectPattern = """(i?)SELECT(.+?)FROM""".r
 
+  // exclude funcs Comet has no plans to support streaming in near future
+  // like spark streaming functions, java calls
+  private val outofRoadmapFuncs =
+    List("window", "session_window", "window_time", "java_method", "reflect")
+  private val sqlConf = Seq(
+    "spark.comet.exec.shuffle.enabled" -> "true",
+    "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+    "spark.sql.adaptive.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
+
+  // Tests to run manually as its syntax is different from usual or nested
+  val manualTests: Map[String, (String, String)] = Map(
+    "!" -> ("select true a", "select ! true from tbl"),
+    "%" -> ("select 1 a, 2 b", "select a + b from tbl"),
+    "&" -> ("select 1 a, 2 b", "select a & b from tbl"),
+    "*" -> ("select 1 a, 2 b", "select a * b from tbl"),
+    "+" -> ("select 1 a, 2 b", "select a + b from tbl"),
+    "-" -> ("select 1 a, 2 b", "select a - b from tbl"),
+    "/" -> ("select 1 a, 2 b", "select a / b from tbl"),
+    "<" -> ("select 1 a, 2 b", "select a < b from tbl"),
+    "<=" -> ("select 1 a, 2 b", "select a <= b from tbl"),
+    "<=>" -> ("select 1 a, 2 b", "select a <=> b from tbl"),
+    "=" -> ("select 1 a, 2 b", "select a = b from tbl"),
+    "==" -> ("select 1 a, 2 b", "select a == b from tbl"),
+    ">" -> ("select 1 a, 2 b", "select a > b from tbl"),
+    ">=" -> ("select 1 a, 2 b", "select a >= b from tbl"),
+    "^" -> ("select 1 a, 2 b", "select a ^ b from tbl"),
+    "|" -> ("select 1 a, 2 b", "select a | b from tbl"),
+    "stack" -> ("select 1 a, 2 b", "select stack(1, a, b) from tbl"),
+    "~" -> ("select 1 a", "select ~ a from tbl"),
+    "unhex" -> ("select '537061726B2053514C' a", "select unhex(a) from tbl"),
+    "when" -> ("select 1 a, 2 b, 3 c, 4 d", "select case a > b then c else d end from tbl"),
+    "transform_values" -> ("select array(1, 2, 3) a", "select transform_values(map_from_arrays(a, a), (k, v) -> v + 1) from tbl"),
+    "transform_keys" -> ("select array(1, 2, 3) a", "select transform_keys(map_from_arrays(a, a), (k, v) -> v + 1) from tbl"),
+    "transform" -> ("select array(1, 2, 3) a", "select transform(a, (k, v) -> v + 1) from tbl"),
+    "reduce" -> ("select array(1, 2, 3) a", "select reduce(a, 0, (acc, x) -> acc + x) from tbl"),
+    "struct" -> ("select 1 a, 2 b", "select struct(a, b) from tbl"),
+    "space" -> ("select 1 a", "select space(a) from tbl"),
+    "sort_array" -> ("select array('b', 'd', null, 'c', 'a') a", "select sort_array(a) from tbl"),
+    "or" -> ("select true a, false b", "select a or b from tbl"),
+    "overlay" -> ("select 'Spark SQL' a", "select overlay(a PLACING '_' FROM 6) from tbl"),
+    "nvl" -> ("select 1 a, cast(null as int) b", "select nvl(b, a) from tbl"),
+    "nvl2" -> ("select 1 a, cast(null as int) b, cast(null as int) c", "select nvl2(c, b, a) from tbl"),
+    "coalesce" -> ("select 1 a, cast(null as int) b, cast(null as int) c", "select coalesce(c, b, a) from tbl"),
+    "and" -> ("select true a, false b", "select a and b from tbl"),
+    "not" -> ("select true a", "select not a from tbl"),
+    "named_struct" -> ("select 1 a", "select named_struct('a', a) from tbl"),
+    "mod" -> ("select 1 a, 1 b", "select mod(b, a) from tbl"),
+    "div" -> ("select 1 a, 1 b", "select div(b, a) from tbl"),
+    "map_zip_with" -> ("select map(1, 'a', 2, 'b') a, map(1, 'x', 2, 'y') b", "SELECT map_zip_with(a, b, (k, v1, v2) -> concat(v1, v2)) from tbl"),
+    "map_filter" -> ("select map(1, 0, 2, 2, 3, -1) a", "SELECT map_filter(a, (k, v) -> k > v) from tbl"),
+    "in" -> ("select 1 a", "SELECT a in ('1', '2', '3') from tbl"),
+    "ifnull" -> ("select 1 a, cast(null as int) b", "SELECT ifnull(b, a) from tbl"),
+    "from_json" -> ("select '{\"a\":1, \"b\":0.8}' a", "SELECT from_json(a, 'a INT, b DOUBLE') from tbl"),
+    "from_csv" -> ("select '1, 0.8' a", "SELECT from_csv(a, 'a INT, b DOUBLE') from tbl"),
+    "forall" -> ("select array(1, 2, 3) a", "SELECT forall(a, x -> x % 2 == 0) from tbl"),
+    "filter" -> ("select array(1, 2, 3) a", "SELECT filter(a, x -> x % 2 == 1) from tbl"),
+    "exists" -> ("select array(1, 2, 3) a", "SELECT filter(a, x -> x % 2 == 0) from tbl"),
+    "aggregate" -> ("select array(1, 2, 3) a", "SELECT aggregate(a, 0, (acc, x) -> acc + x) from tbl"),
+    "extract" -> ("select TIMESTAMP '2019-08-12 01:00:00.123456' a", "SELECT extract(YEAR FROM a) from tbl"),
+    "datepart" -> ("select TIMESTAMP '2019-08-12 01:00:00.123456' a", "SELECT datepart('YEAR', a) from tbl"),
+    "date_part" -> ("select TIMESTAMP '2019-08-12 01:00:00.123456' a", "SELECT date_part('YEAR', a) from tbl"),
+    "cast" -> ("select '10' a", "SELECT cast(a as int) from tbl"),
+    "aes_encrypt" -> ("select 'Spark' a, '0000111122223333' b", "SELECT aes_encrypt(a, b) from tbl"))
+
   // key - function name
   // value - examples
   def getExamples(): Map[FunctionInfo, List[String]] =
@@ -61,9 +128,8 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
       .filter(_.getSource.toLowerCase == "built-in")
-      // exclude spark streaming functions, Comet has no plans to support streaming in near future
-      .filter(f =>
-        !List("window", "session_window", "window_time").contains(f.getName.toLowerCase))
+      // .filter(_.getName == "curdate")
+      .filter(f => !outofRoadmapFuncs.contains(f.getName.toLowerCase))
       .map(f => {
         val selectRows = queryPattern.findAllMatchIn(f.getExamples).map(_.group(0)).toList
         (FunctionInfo(f.getName, f.getGroup), selectRows.filter(_.nonEmpty))
@@ -103,7 +169,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                     dfMessage = runDatafusionCli(s"""$s '$path/*.parquet'""")
                   }
 
-                  testSingleLineQuery(s"select * $v", s"$s tbl")
+                  testSingleLineQuery(s"select * $v", s"$s tbl", sqlConf = sqlConf)
                 case _ =>
                   sys.error("Cannot parse properly")
               }
@@ -116,12 +182,55 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
               // ConstantFolding is a operator optimization rule in Catalyst that replaces expressions
               // that can be statically evaluated with their equivalent literal values.
               dfMessage = runDatafusionCli(q)
-              testSingleLineQuery(
-                "select 'dummy' x",
-                s"${q.dropRight(1)}, x from tbl",
-                excludedOptimizerRules =
-                  Some("org.apache.spark.sql.catalyst.optimizer.ConstantFolding"))
+
+              manualTests.get(func.name) match {
+                // the test is manual query
+                case Some(test) => testSingleLineQuery(test._1, test._2, sqlConf = sqlConf)
+                case None =>
+                  // extract function arguments as a sql text
+                  // example:
+                  // cos(0) -> 0
+                  // explode_outer(array(10, 20)) -> array(10, 20)
+                  val args = getSqlFunctionArguments(q.dropRight(1))
+                  val (aliased, aliases) =
+                    if (Seq(
+                        "bround",
+                        "rlike",
+                        "round",
+                        "to_binary",
+                        "to_char",
+                        "to_number",
+                        "try_to_binary",
+                        "try_to_number",
+                        "xpath",
+                        "xpath_boolean",
+                        "xpath_double",
+                        "xpath_double",
+                        "xpath_float",
+                        "xpath_int",
+                        "xpath_long",
+                        "xpath_number",
+                        "xpath_short",
+                        "xpath_string").contains(func.name.toLowerCase)) {
+                      // c0 column, c1 foldable literal(cannot be from column)
+                      (
+                        Seq(s"${args.head} as c0").mkString(","),
+                        Seq(s"c0, ${args(1)}").mkString(","))
+                    } else {
+                      (
+                        args.zipWithIndex.map(x => s"${x._1} as c${x._2}").mkString(","),
+                        args.zipWithIndex.map(x => s"c${x._2}").mkString(","))
+                    }
+
+                  val select = s"select ${func.name}($aliases)"
+
+                  testSingleLineQuery(
+                    s"select ${if (aliased.nonEmpty) aliased else 1}",
+                    s"$select from tbl",
+                    sqlConf = sqlConf)
+              }
             }
+
             CoverageResult(
               q,
               CoverageResultStatus.Passed,
@@ -129,7 +238,6 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 cometMessage = "OK",
                 datafusionMessage = dfMessage.getOrElse("OK")),
               group = func.group)
-
           } catch {
             case e: TestFailedException
                 if e.getMessage.contains("Expected only Comet native operators") =>
@@ -215,6 +323,25 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       CoverageResult("q5", CoverageResultStatus.Passed, CoverageResultDetails("", ""), "group3"))
     val str = generateMarkdown(map.toSeq.toDF("name", "details"))
     str shouldBe s"${getLicenseHeader()}\n# Supported Spark Expressions\n\n### group1\n - [x] f1\n - [ ] f2\n\n### group2\n - [x] f3\n - [ ] f4\n\n### group3\n - [x] f5"
+  }
+
+  test("get sql function arguments") {
+    // getSqlFunctionArguments("SELECT unix_seconds(TIMESTAMP('1970-01-01 00:00:01Z'))") shouldBe Seq("TIMESTAMP('1970-01-01 00:00:01Z')")
+    // getSqlFunctionArguments("SELECT decode(unhex('537061726B2053514C'), 'UTF-8')") shouldBe Seq("unhex('537061726B2053514C')", "'UTF-8'")
+    // getSqlFunctionArguments("SELECT extract(YEAR FROM TIMESTAMP '2019-08-12 01:00:00.123456')") shouldBe Seq("'YEAR'", "TIMESTAMP '2019-08-12 01:00:00.123456'")
+    // getSqlFunctionArguments("SELECT exists(array(1, 2, 3), x -> x % 2 == 0)") shouldBe Seq("array(1, 2, 3)")
+    getSqlFunctionArguments("select to_char(454, '999')") shouldBe Seq("array(1, 2, 3)")
+  }
+
+  def getSqlFunctionArguments(sql: String): Seq[String] = {
+    val plan = spark.sessionState.sqlParser.parsePlan(sql)
+    plan match {
+      case Project(projectList, _) =>
+        // unwrap projection to get first expression arguments
+        // assuming first expression is Unresolved function
+        val projection = projectList.head.children.head.asInstanceOf[UnresolvedFunction].arguments
+        projection.filter(!_.isInstanceOf[LambdaFunction]).map(_.sql)
+    }
   }
 
   def generateMarkdown(df: DataFrame): String = {

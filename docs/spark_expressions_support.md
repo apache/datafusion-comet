@@ -20,46 +20,46 @@
 # Supported Spark Expressions
 
 ### agg_funcs
- - [ ] any
- - [ ] any_value
+ - [x] any
+ - [x] any_value
  - [ ] approx_count_distinct
  - [ ] approx_percentile
  - [ ] array_agg
- - [ ] avg
- - [ ] bit_and
- - [ ] bit_or
- - [ ] bit_xor
- - [ ] bool_and
- - [ ] bool_or
+ - [x] avg
+ - [x] bit_and
+ - [x] bit_or
+ - [x] bit_xor
+ - [x] bool_and
+ - [x] bool_or
  - [ ] collect_list
  - [ ] collect_set
  - [ ] corr
- - [ ] count
- - [ ] count_if
+ - [x] count
+ - [x] count_if
  - [ ] count_min_sketch
- - [ ] covar_pop
- - [ ] covar_samp
- - [ ] every
- - [ ] first
- - [ ] first_value
+ - [x] covar_pop
+ - [x] covar_samp
+ - [x] every
+ - [x] first
+ - [x] first_value
  - [ ] grouping
  - [ ] grouping_id
  - [ ] histogram_numeric
  - [ ] kurtosis
- - [ ] last
- - [ ] last_value
- - [ ] max
+ - [x] last
+ - [x] last_value
+ - [x] max
  - [ ] max_by
- - [ ] mean
+ - [x] mean
  - [ ] median
- - [ ] min
+ - [x] min
  - [ ] min_by
  - [ ] mode
  - [ ] percentile
  - [ ] percentile_approx
- - [ ] regr_avgx
- - [ ] regr_avgy
- - [ ] regr_count
+ - [x] regr_avgx
+ - [x] regr_avgy
+ - [x] regr_count
  - [ ] regr_intercept
  - [ ] regr_r2
  - [ ] regr_slope
@@ -67,17 +67,17 @@
  - [ ] regr_sxy
  - [ ] regr_syy
  - [ ] skewness
- - [ ] some
- - [ ] std
- - [ ] stddev
- - [ ] stddev_pop
- - [ ] stddev_samp
- - [ ] sum
+ - [x] some
+ - [x] std
+ - [x] stddev
+ - [x] stddev_pop
+ - [x] stddev_samp
+ - [x] sum
  - [ ] try_avg
  - [ ] try_sum
- - [ ] var_pop
- - [ ] var_samp
- - [ ] variance
+ - [x] var_pop
+ - [x] var_samp
+ - [x] variance
 
 ### array_funcs
  - [ ] array
@@ -98,7 +98,7 @@
  - [ ] arrays_overlap
  - [ ] arrays_zip
  - [ ] flatten
- - [x] get
+ - [ ] get
  - [ ] sequence
  - [ ] shuffle
  - [ ] slice
@@ -113,7 +113,7 @@
  - [x] shiftright
  - [ ] shiftrightunsigned
  - [x] |
- - [ ] ~
+ - [x] ~
 
 ### collection_funcs
  - [ ] array_size
@@ -125,18 +125,18 @@
 ### conditional_funcs
  - [x] coalesce
  - [x] if
- - [ ] ifnull
+ - [x] ifnull
  - [ ] nanvl
  - [x] nullif
- - [ ] nvl
+ - [x] nvl
  - [x] nvl2
- - [x] when
+ - [ ] when
 
 ### conversion_funcs
  - [ ] bigint
  - [ ] binary
  - [ ] boolean
- - [x] cast
+ - [ ] cast
  - [ ] date
  - [ ] decimal
  - [ ] double
@@ -196,14 +196,14 @@
  - [ ] timestamp_micros
  - [ ] timestamp_millis
  - [ ] timestamp_seconds
- - [x] to_date
- - [x] to_timestamp
- - [x] to_timestamp_ltz
+ - [ ] to_date
+ - [ ] to_timestamp
+ - [ ] to_timestamp_ltz
  - [ ] to_timestamp_ntz
  - [ ] to_unix_timestamp
  - [ ] to_utc_timestamp
  - [ ] trunc
- - [x] try_to_timestamp
+ - [ ] try_to_timestamp
  - [ ] unix_date
  - [ ] unix_micros
  - [ ] unix_millis
@@ -211,7 +211,7 @@
  - [ ] unix_timestamp
  - [ ] weekday
  - [ ] weekofyear
- - [x] year
+ - [ ] year
 
 ### generator_funcs
  - [ ] explode
@@ -228,7 +228,7 @@
  - [x] md5
  - [ ] sha
  - [ ] sha1
- - [x] sha2
+ - [ ] sha2
  - [ ] xxhash64
 
 ### json_funcs
@@ -333,7 +333,7 @@
  - [x] try_divide
  - [x] try_multiply
  - [x] try_subtract
- - [ ] unhex
+ - [x] unhex
  - [ ] width_bucket
 
 ### misc_funcs
@@ -348,10 +348,8 @@
  - [ ] input_file_block_length
  - [ ] input_file_block_start
  - [ ] input_file_name
- - [ ] java_method
  - [ ] monotonically_increasing_id
  - [ ] raise_error
- - [ ] reflect
  - [ ] spark_partition_id
  - [ ] typeof
  - [x] user
@@ -368,12 +366,12 @@
  - [x] >
  - [x] >=
  - [x] and
- - [ ] ilike
+ - [x] ilike
  - [x] in
  - [ ] isnan
  - [x] isnotnull
  - [x] isnull
- - [ ] like
+ - [x] like
  - [x] not
  - [x] or
  - [ ] regexp
@@ -390,11 +388,11 @@
  - [x] character_length
  - [x] chr
  - [x] concat_ws
- - [ ] contains
+ - [x] contains
  - [ ] decode
  - [ ] elt
  - [ ] encode
- - [ ] endswith
+ - [x] endswith
  - [ ] find_in_set
  - [ ] format_number
  - [ ] format_string
@@ -427,10 +425,10 @@
  - [x] rtrim
  - [ ] sentences
  - [ ] soundex
- - [ ] space
+ - [x] space
  - [ ] split
  - [ ] split_part
- - [ ] startswith
+ - [x] startswith
  - [ ] substr
  - [ ] substring
  - [ ] substring_index
