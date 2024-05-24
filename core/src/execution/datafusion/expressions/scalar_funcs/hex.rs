@@ -34,20 +34,14 @@ fn hex_int64(num: i64) -> String {
     format!("{:X}", num)
 }
 
-fn hex_bytes(bytes: &[u8]) -> Result<String, std::fmt::Error> {
+fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
+    let bytes = bytes.as_ref();
     let length = bytes.len();
-    let mut hex_string = String::with_capacity(bytes.len() * 2);
-    let mut i = 0;
-    while i < length {
-        write!(&mut hex_string, "{:X}", (bytes[i] & 0xF0) >> 4)?;
-        write!(&mut hex_string, "{:X}", bytes[i] & 0x0F)?;
-        i += 1;
+    let mut hex_string = String::with_capacity(length * 2);
+    for &byte in bytes {
+        write!(&mut hex_string, "{:02X}", byte)?;
     }
     Ok(hex_string)
-}
-
-fn hex_string(s: &str) -> Result<String, std::fmt::Error> {
-    hex_bytes(s.as_bytes())
 }
 
 pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -72,7 +66,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 let hexed: StringArray = array
                     .iter()
-                    .map(|v| v.map(|v| hex_string(v)).transpose())
+                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
                     .collect::<Result<_, _>>()?;
 
                 Ok(ColumnarValue::Array(Arc::new(hexed)))
@@ -123,7 +117,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 let hexed_values = as_string_array(dict.values());
                 let values: Vec<Option<String>> = hexed_values
                     .iter()
-                    .map(|v| v.map(|v| hex_string(v)).transpose())
+                    .map(|v| v.map(|v| hex_bytes(v)).transpose())
                     .collect::<Result<_, _>>()?;
 
                 let keys = dict.keys().clone();
@@ -177,7 +171,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
             }
             ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
-                let hex_string = hex_string(v)?;
+                let hex_string = hex_bytes(v)?;
 
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
             }
