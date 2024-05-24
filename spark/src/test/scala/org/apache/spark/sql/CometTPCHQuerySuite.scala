@@ -91,7 +91,7 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with ShimCometTPCH
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_MODE.key, "jvm")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
   }

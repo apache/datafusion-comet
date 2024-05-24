@@ -131,7 +131,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark.sql(
               "SELECT (SELECT max(col1) AS parquetV1Table FROM parquetV1Table) AS a, " +
                 "col2, col3 FROM parquetV1Table")

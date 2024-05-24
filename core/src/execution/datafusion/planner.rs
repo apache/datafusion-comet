@@ -67,6 +67,7 @@ use crate::{
                 bloom_filter_might_contain::BloomFilterMightContain,
                 cast::{Cast, EvalMode},
                 checkoverflow::CheckOverflow,
+                correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
                 scalar_funcs::create_comet_physical_fun,
@@ -1309,6 +1310,18 @@ impl PhysicalPlanner {
                         stats_type
                     ))),
                 }
+            }
+            AggExprStruct::Correlation(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Correlation::new(
+                    child1,
+                    child2,
+                    "correlation",
+                    datatype,
+                    expr.null_on_divide_by_zero,
+                )))
             }
         }
     }
