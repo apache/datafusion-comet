@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
+use crate::{errors::CometError, execution::datafusion::expressions::utils::down_cast_any_ref};
 use arrow_array::{builder::BooleanBuilder, Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
@@ -80,32 +80,42 @@ impl PhysicalExpr for RLike {
             if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern))) =
                 self.pattern.evaluate(batch)?
             {
-                // TODO cache Regex across invocations of evaluate or create it in constructor
-                let re = Regex::new(&pattern).unwrap(); // TODO error handling
-                let inputs = v
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("string array");
-                let mut builder = BooleanBuilder::with_capacity(inputs.len());
-                if inputs.is_nullable() {
-                    for i in 0..inputs.len() {
-                        if inputs.is_null(i) {
-                            builder.append_null();
+                // TODO cache Regex across invocations of evaluate() or create it in constructor
+                match Regex::new(&pattern) {
+                    Ok(re) => {
+                        let inputs = v
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .expect("string array");
+                        let mut builder = BooleanBuilder::with_capacity(inputs.len());
+                        if inputs.is_nullable() {
+                            for i in 0..inputs.len() {
+                                if inputs.is_null(i) {
+                                    builder.append_null();
+                                } else {
+                                    builder.append_value(re.is_match(inputs.value(i)));
+                                }
+                            }
                         } else {
-                            builder.append_value(re.is_match(inputs.value(i)));
+                            for i in 0..inputs.len() {
+                                builder.append_value(re.is_match(inputs.value(i)));
+                            }
                         }
+                        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
                     }
-                } else {
-                    for i in 0..inputs.len() {
-                        builder.append_value(re.is_match(inputs.value(i)));
-                    }
+                    Err(e) => Err(CometError::Internal(format!(
+                        "Failed to compile regular expression: {e:?}"
+                    ))
+                    .into()),
                 }
-                Ok(ColumnarValue::Array(Arc::new(builder.finish())))
             } else {
-                todo!()
+                Err(
+                    CometError::Internal("Only scalar regex patterns are supported".to_string())
+                        .into(),
+                )
             }
         } else {
-            todo!()
+            Err(CometError::Internal("Only columnar inputs are supported".to_string()).into())
         }
     }
 
