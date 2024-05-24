@@ -56,21 +56,24 @@ impl Display for RLike {
 
 impl PartialEq<dyn Any> for RLike {
     fn eq(&self, other: &dyn Any) -> bool {
-        todo!()
+        down_cast_any_ref(other)
+            .downcast_ref::<Self>()
+            .map(|x| self.child.eq(&x.child) && self.pattern.eq(&x.pattern))
+            .unwrap_or(false)
     }
 }
 
 impl PhysicalExpr for RLike {
     fn as_any(&self) -> &dyn Any {
-        todo!()
+        self
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
-        todo!()
+        self.child.data_type(input_schema)
     }
 
     fn nullable(&self, input_schema: &Schema) -> datafusion_common::Result<bool> {
-        todo!()
+        self.child.nullable(input_schema)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
@@ -78,17 +81,23 @@ impl PhysicalExpr for RLike {
     }
 
     fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        todo!()
+        vec![self.child.clone()]
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        todo!()
+        assert!(children.len() == 2);
+        Ok(Arc::new(RLike::new(
+            children[0].clone(),
+            children[1].clone(),
+        )))
     }
 
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        use std::hash::Hash;
+        let mut s = state;
+        self.hash(&mut s);
     }
 }
