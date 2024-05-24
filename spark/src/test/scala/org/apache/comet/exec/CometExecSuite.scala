@@ -134,14 +134,15 @@ class CometExecSuite extends CometTestBase {
         .toDF("c1", "c2")
         .createOrReplaceTempView("v")
 
-      Seq(true, false).foreach { columnarShuffle =>
+      Seq("native", "jvm").foreach { columnarShuffleMode =>
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
+          CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
           val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
           val shuffle = find(df.queryExecution.executedPlan) {
-            case _: CometShuffleExchangeExec if columnarShuffle => true
-            case _: ShuffleExchangeExec if !columnarShuffle => true
+            case _: CometShuffleExchangeExec if columnarShuffleMode.equalsIgnoreCase("jvm") =>
+              true
+            case _: ShuffleExchangeExec if !columnarShuffleMode.equalsIgnoreCase("jvm") => true
             case _ => false
           }.get
           assert(shuffle.logicalLink.isEmpty)
@@ -179,7 +180,7 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
         // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
         "spark.sql.requireAllClusterKeysForDistribution" -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
         val windowSpec = Window.partitionBy("key1", "key2").orderBy("value")
@@ -318,7 +319,7 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
@@ -499,7 +500,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable(tableName, dim) {
 
         sql(
@@ -716,7 +717,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * FROM tbl").sort($"_1".desc)
         checkSparkAnswerAndOperator(df)
@@ -764,10 +765,10 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("limit") {
-    Seq("true", "false").foreach { columnarShuffle =>
+    Seq("native", "jvm").foreach { columnarShuffleMode =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle) {
+        CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
           val df = sql("SELECT * FROM tbl_a")
             .repartition(10, $"_1")
@@ -1415,7 +1416,7 @@ class CometExecSuite extends CometTestBase {
     Seq("true", "false").foreach(aqe => {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
         spark
           .range(1000)
