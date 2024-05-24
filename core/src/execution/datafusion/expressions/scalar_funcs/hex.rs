@@ -31,11 +31,7 @@ use datafusion_common::{
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
-    if num >= 0 {
-        format!("{:X}", num)
-    } else {
-        format!("{:016X}", num as u64)
-    }
+    format!("{:X}", num)
 }
 
 fn hex_bytes(bytes: &[u8]) -> Vec<u8> {
