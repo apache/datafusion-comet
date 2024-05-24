@@ -26,7 +26,7 @@ use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
     cast::{as_binary_array, as_fixed_size_binary_array, as_int64_array},
-    exec_err, DataFusionError, ScalarValue,
+    exec_err, DataFusionError,
 };
 use std::fmt::Write;
 
@@ -156,35 +156,7 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                 array.data_type()
             ),
         },
-        ColumnarValue::Scalar(scalar) => match scalar {
-            ScalarValue::Int64(Some(v)) => {
-                let hex_string = hex_int64(*v);
-
-                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
-            }
-            ScalarValue::Binary(Some(v))
-            | ScalarValue::LargeBinary(Some(v))
-            | ScalarValue::FixedSizeBinary(_, Some(v)) => {
-                let hex_string = hex_bytes(v)?;
-
-                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
-            }
-            ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
-                let hex_string = hex_bytes(v)?;
-
-                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(hex_string))))
-            }
-            ScalarValue::Int64(None)
-            | ScalarValue::Utf8(None)
-            | ScalarValue::Binary(None)
-            | ScalarValue::FixedSizeBinary(_, None) => {
-                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
-            }
-            _ => exec_err!(
-                "hex got an unexpected argument type: {:?}",
-                scalar.data_type()
-            ),
-        },
+        _ => exec_err!("native hex does not support scalar values at this time"),
     }
 }
 
