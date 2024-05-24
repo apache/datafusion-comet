@@ -601,6 +601,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
         val query = sql(s"select id from $table where name rlike 'R[a-z]+s [Rr]ose'")
         checkSparkAnswerAndOperator(query)
+
+        // test that we fall back to Spark if the pattern is not a scalar value
+        val query2 = sql(s"select id from $table where name rlike name")
+        val (sparkPlan, cometPlan) = checkSparkAnswer(query2)
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(explain == "Only scalar patterns are supported")
       }
     }
   }

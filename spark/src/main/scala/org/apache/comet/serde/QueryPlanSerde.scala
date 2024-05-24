@@ -1100,6 +1100,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // in Rust, or even transpile the pattern to work around differences between the JVM
           // and Rust regular expression engines
           if (CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+
+            // we currently only support scalar regex patterns
+            right match {
+              case Literal(_, DataTypes.StringType) =>
+              // supported
+              case _ =>
+                withInfo(expr, "Only scalar patterns are supported")
+                return None
+            }
+
             val leftExpr = exprToProtoInternal(left, inputs)
             val rightExpr = exprToProtoInternal(right, inputs)
 

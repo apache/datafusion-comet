@@ -115,6 +115,8 @@ impl PhysicalExpr for RLike {
                 )
             }
         } else {
+            // this should be unreachable because Spark will evaluate regex expressions against
+            // literal strings as part of query planning
             Err(CometError::Internal("Only columnar inputs are supported".to_string()).into())
         }
     }
