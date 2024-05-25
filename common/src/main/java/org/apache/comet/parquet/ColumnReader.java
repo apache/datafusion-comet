@@ -230,14 +230,14 @@ public class ColumnReader extends AbstractColumnReader {
         // return plain vector.
         currentVector = cometVector;
         return currentVector;
-      } else if (dictionary == null) {
-        // There is dictionary from native side but the Java side dictionary hasn't been
-        // initialized yet.
-        Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        CometPlainVector dictionaryVector =
-            new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
-        dictionary = new CometDictionary(dictionaryVector);
       }
+
+      // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
+      // release the previous dictionary vector and create a new one.
+      Dictionary arrowDictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
+      CometPlainVector dictionaryVector =
+          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
+      dictionary = new CometDictionary(dictionaryVector);
 
       currentVector =
           new CometDictionaryVector(
