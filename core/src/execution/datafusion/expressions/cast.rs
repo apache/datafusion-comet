@@ -625,18 +625,23 @@ impl Cast {
                     | DataType::Float64
                     | DataType::Utf8
             ),
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => matches!(
-                to_type,
-                DataType::Boolean
-                    | DataType::Int8
-                    | DataType::Int16
-                    | DataType::Int32
-                    | DataType::Int64
-                    | DataType::Float32
-                    | DataType::Float64
-                    | DataType::Decimal128(_, _)
-                    | DataType::Utf8
-            ),
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                // note that the cast from Int32/Int64 -> Decimal128 here is actually
+                // not compatible with Spark (no overflow checks) but we have tests that
+                // rely on this cast working so we have to leave it here for now
+                matches!(
+                    to_type,
+                    DataType::Boolean
+                        | DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::Float32
+                        | DataType::Float64
+                        | DataType::Decimal128(_, _)
+                        | DataType::Utf8
+                )
+            }
             DataType::Float32 | DataType::Float64 => matches!(
                 to_type,
                 DataType::Boolean
