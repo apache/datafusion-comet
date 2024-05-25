@@ -1,0 +1,64 @@
+# Comet Fuzz
+
+Comet Fuzz is a standalone project for generating random data and queries and executing queries against Spark 
+with Comet disabled and enabled and checking for incompatibilities.
+
+Although it is a simple tool it has already been useful in finding many bugs.
+
+Comet Fuzz is inspired by the [SparkFuzz](https://ir.cwi.nl/pub/30222) paper from Databricks and CWI.
+
+## Usage
+
+Build the jar file first.
+
+```shell
+mvn package
+```
+
+Set appropriate values for `SPARK_HOME`, `SPARK_MASTER`, and `COMET_JAR` environment variables and then use
+`spark-submit` to run CometFuzz against a Spark cluster.
+
+### Generating Data Files
+
+```shell
+$SPARK_HOME/bin/spark-submit \
+    --master $SPARK_MASTER \
+    --class org.apache.comet.fuzz.Main \
+    target/cometfuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    data --num-files=2 --num-rows=200 --num-columns=100
+```
+
+### Generating Queries
+
+Generate random queries that are based on the available test files.
+
+```shell
+$SPARK_HOME/bin/spark-submit \
+    --master $SPARK_MASTER \
+    --class org.apache.comet.fuzz.Main \
+    target/cometfuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    queries --num-files=2 --num-queries=500
+```
+
+Note that the output filename is currently hard-coded as `queries.sql`
+
+### Execute Queries
+
+```shell
+$SPARK_HOME/bin/spark-submit \
+    --master $SPARK_MASTER \
+    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+    --conf spark.comet.enabled=true \
+    --conf spark.comet.exec.enabled=true \
+    --conf spark.comet.exec.all.enabled=true \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.exec.shuffle.enabled=true \
+    --conf spark.comet.columnar.shuffle.enabled=true \
+    --jars $COMET_JAR \
+    --driver-class-path $COMET_JAR \
+    --class org.apache.comet.fuzz.Main \
+    target/cometfuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    run --num-files=2 --filename=queries.sql
+```
+
+Note that the output filename is currently hard-coded as `results.md`
