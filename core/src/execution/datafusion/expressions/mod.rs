@@ -37,3 +37,4 @@ pub mod sum_decimal;
 pub mod temporal;
 mod utils;
 pub mod variance;
+pub mod negative;

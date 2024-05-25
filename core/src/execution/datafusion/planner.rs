@@ -33,7 +33,7 @@ use datafusion::{
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
+            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum, UnKnownColumn,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -79,6 +79,7 @@ use crate::{
                 temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
                 variance::Variance,
                 NormalizeNaNAndZero,
+                negative,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -567,7 +568,13 @@ impl PhysicalPlanner {
             }
             ExprStruct::Negative(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NegativeExpr::new(child)))
+                let result = negative::create_negate_expr(child, EvalMode::Legacy);
+                match result {
+                    Ok(expr) => Ok(expr),
+                    Err(e) => Err(ExecutionError::GeneralError(
+                        e.to_string()
+                    )),
+                }
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
