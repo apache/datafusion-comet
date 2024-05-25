@@ -30,14 +30,14 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
+import org.apache.spark.sql.execution.{FileSourceScanExec, FileSourceScanLike, PartitionedFileUtil, ScanFileListing}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.SparkContext
 
-trait ShimCometScanExec {
+trait ShimCometScanExec extends FileSourceScanLike {
   def wrapped: FileSourceScanExec
 
-  lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
+  override lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
     wrapped.fileConstantMetadataColumns
 
   protected def newDataSourceRDD(
@@ -80,4 +80,11 @@ trait ShimCometScanExec {
                            maxSplitBytes: Long,
                            partitionValues: InternalRow): Seq[PartitionedFile] =
     PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
+
+  @transient override lazy val selectedPartitions: ScanFileListing = wrapped.selectedPartitions
+
+  // exposed for testing
+  override lazy val bucketedScan: Boolean = wrapped.bucketedScan
+
+  lazy val inputRDD = wrapped.inputRDD
 }
