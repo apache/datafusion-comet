@@ -61,7 +61,8 @@ case class CometScanExec(
     tableIdentifier: Option[TableIdentifier],
     disableBucketedScan: Boolean = false,
     wrapped: FileSourceScanExec)
-    extends ShimCometScanExec
+    extends DataSourceScanExec
+    with ShimCometScanExec
     with CometPlan {
 
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
@@ -88,6 +89,48 @@ case class CometScanExec(
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.find(_.isInstanceOf[PlanExpression[_]]).isDefined
 
+  @transient lazy val selectedPartitions: Array[PartitionDirectory] = {
+    val optimizerMetadataTimeNs = relation.location.metadataOpsTimeNs.getOrElse(0L)
+    val startTime = System.nanoTime()
+    val ret =
+      relation.location.listFiles(partitionFilters.filterNot(isDynamicPruningFilter), dataFilters)
+    setFilesNumAndSizeMetric(ret, true)
+    val timeTakenMs =
+      NANOSECONDS.toMillis((System.nanoTime() - startTime) + optimizerMetadataTimeNs)
+    driverMetrics("metadataTime") = timeTakenMs
+    ret
+  }.toArray
+
+  // We can only determine the actual partitions at runtime when a dynamic partition filter is
+  // present. This is because such a filter relies on information that is only available at run
+  // time (for instance the keys used in the other side of a join).
+  @transient private lazy val dynamicallySelectedPartitions: Array[PartitionDirectory] = {
+    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
+
+    if (dynamicPartitionFilters.nonEmpty) {
+      val startTime = System.nanoTime()
+      // call the file index for the files matching all filters except dynamic partition filters
+      val predicate = dynamicPartitionFilters.reduce(And)
+      val partitionColumns = relation.partitionSchema
+      val boundPredicate = Predicate.create(
+        predicate.transform { case a: AttributeReference =>
+          val index = partitionColumns.indexWhere(a.name == _.name)
+          BoundReference(index, partitionColumns(index).dataType, nullable = true)
+        },
+        Nil)
+      val ret = selectedPartitions.filter(p => boundPredicate.eval(p.values))
+      setFilesNumAndSizeMetric(ret, false)
+      val timeTakenMs = (System.nanoTime() - startTime) / 1000 / 1000
+      driverMetrics("pruningTime") = timeTakenMs
+      ret
+    } else {
+      selectedPartitions
+    }
+  }
+
+  // exposed for testing
+  lazy val bucketedScan: Boolean = wrapped.bucketedScan
+
   override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) =
     (wrapped.outputPartitioning, wrapped.outputOrdering)
 
@@ -105,8 +148,53 @@ case class CometScanExec(
     wrapped.verboseStringWithOperatorId()
   }
 
+  lazy val inputRDD: RDD[InternalRow] = {
+    val options = relation.options +
+      (ShimFileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
+    val readFile: (PartitionedFile) => Iterator[InternalRow] =
+      relation.fileFormat.buildReaderWithPartitionValues(
+        sparkSession = relation.sparkSession,
+        dataSchema = relation.dataSchema,
+        partitionSchema = relation.partitionSchema,
+        requiredSchema = requiredSchema,
+        filters = pushedDownFilters,
+        options = options,
+        hadoopConf =
+          relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options))
+
+    val readRDD = if (bucketedScan) {
+      createBucketedReadRDD(
+        relation.bucketSpec.get,
+        readFile,
+        dynamicallySelectedPartitions,
+        relation)
+    } else {
+      createReadRDD(readFile, dynamicallySelectedPartitions, relation)
+    }
+    sendDriverMetrics()
+    readRDD
+  }
+
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     inputRDD :: Nil
+  }
+
+  /** Helper for computing total number and size of files in selected partitions. */
+  private def setFilesNumAndSizeMetric(
+      partitions: Seq[PartitionDirectory],
+      static: Boolean): Unit = {
+    val filesNum = partitions.map(_.files.size.toLong).sum
+    val filesSize = partitions.map(_.files.map(_.getLen).sum).sum
+    if (!static || !partitionFilters.exists(isDynamicPruningFilter)) {
+      driverMetrics("numFiles") = filesNum
+      driverMetrics("filesSize") = filesSize
+    } else {
+      driverMetrics("staticFilesNum") = filesNum
+      driverMetrics("staticFilesSize") = filesSize
+    }
+    if (relation.partitionSchema.nonEmpty) {
+      driverMetrics("numPartitions") = partitions.length
+    }
   }
 
   override lazy val metrics: Map[String, SQLMetric] = wrapped.metrics ++ {
