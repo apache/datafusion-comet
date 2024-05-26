@@ -19,21 +19,25 @@
 
 package org.apache.comet.fuzz
 
+import java.sql.Timestamp
+
+import scala.util.Random
+
 import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
-import java.sql.Timestamp
-import scala.util.Random
 
 object DataGen {
 
-  def generateRandomFiles(r: Random, spark: SparkSession, numFiles: Int, numRows: Int, numColumns: Int): Unit = {
+  def generateRandomFiles(r: Random, spark: SparkSession, numFiles: Int, numRows: Int,
+      numColumns: Int): Unit = {
     for (i <- 0 until numFiles) {
       generateRandomParquetFile(r, spark, s"test$i.parquet", numRows, numColumns)
     }
   }
 
-  def generateRandomParquetFile(r: Random, spark: SparkSession, filename: String, numRows: Int, numColumns: Int): Unit = {
+  def generateRandomParquetFile(r: Random, spark: SparkSession, filename: String,
+      numRows: Int, numColumns: Int): Unit = {
 
     // TODO add examples of all supported types, including complex types
     val dataTypes = Seq(

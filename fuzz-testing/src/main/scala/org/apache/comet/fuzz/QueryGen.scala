@@ -19,11 +19,12 @@
 
 package org.apache.comet.fuzz
 
-import org.apache.spark.sql.SparkSession
-
 import java.io.{BufferedWriter, FileWriter}
+
 import scala.collection.mutable
 import scala.util.Random
+
+import org.apache.spark.sql.SparkSession
 
 object QueryGen {
 
@@ -102,7 +103,7 @@ object QueryGen {
     Function("Sqrt", 1),
     Function("Tan", 1),
     Function("Ceil", 1),
-    Function("Floor", 1),
+    Function("Floor", 1)
   )
 
   val aggFunc = Seq(
@@ -165,7 +166,7 @@ object QueryGen {
     val joinTypes = Seq(
       ("INNER", 0.4),
       ("LEFT", 0.3),
-      ("RIGHT", 0.3),
+      ("RIGHT", 0.3)
     )
     val joinType = Utils.randomWeightedChoice(joinTypes)
 

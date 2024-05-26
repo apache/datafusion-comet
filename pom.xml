@@ -33,6 +33,7 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
+    <module>fuzz-testing</module>
   </modules>
 
   <properties>

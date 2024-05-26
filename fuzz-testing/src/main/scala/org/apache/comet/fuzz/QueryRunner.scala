@@ -19,10 +19,11 @@
 
 package org.apache.comet.fuzz
 
-import org.apache.spark.sql.SparkSession
-
 import java.io.{BufferedWriter, FileWriter}
+
 import scala.io.Source
+
+import org.apache.spark.sql.SparkSession
 
 object QueryRunner {
 
@@ -34,7 +35,9 @@ object QueryRunner {
     showFailedSparkQueries: Boolean = false): Unit = {
 
     val outputFilename = s"results-${System.currentTimeMillis()}.md"
+    // scalastyle:off println
     println(s"Writing results to $outputFilename")
+    // scalastyle:on println
 
     val w = new BufferedWriter(new FileWriter(outputFilename))
 
@@ -101,7 +104,8 @@ object QueryRunner {
 
               w.write("### Results \n")
 
-              w.write(s"Spark produced ${sparkRows.length} rows and Comet produced ${cometRows.length} rows.\n")
+              w.write(s"Spark produced ${sparkRows.length} rows and " +
+                s"Comet produced ${cometRows.length} rows.\n")
 
               if (sparkRows.length == cometRows.length) {
                 var i = 0
@@ -135,7 +139,7 @@ object QueryRunner {
         }
       })
 
-    } finally  {
+    } finally {
       w.close()
       querySource.close()
     }

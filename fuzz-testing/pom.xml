@@ -22,20 +22,20 @@ under the License.
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.apache.comet.fuzz</groupId>
-    <artifactId>cometfuzz</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
+    <parent>
+        <groupId>org.apache.comet</groupId>
+        <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
 
+    <artifactId>comet-fuzz-spark${spark.version.short}_${scala.binary.version}</artifactId>
     <name>comet-fuzz</name>
     <url>http://maven.apache.org</url>
 
     <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>11</java.version>
-        <scala.version>2.12.7</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.4.2</spark.version>
+        <!-- Reverse default (skip installation), and then enable only for child modules -->
+        <maven.deploy.skip>false</maven.deploy.skip>
     </properties>
 
     <dependencies>
@@ -48,7 +48,6 @@ under the License.
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
-            <version>${spark.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

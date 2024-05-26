@@ -19,10 +19,10 @@
 
 package org.apache.comet.fuzz
 
+import scala.util.Random
+
 import org.apache.spark.sql.SparkSession
 import org.rogach.scallop.{ScallopConf, Subcommand}
-
-import scala.util.Random
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   val generateData = new Subcommand("data") {
@@ -64,7 +64,9 @@ object Main {
       case Some(opt @ conf.runQueries) =>
         QueryRunner.runQueries(spark, opt.numFiles(), opt.filename(), opt.showMatchingResults())
       case _ =>
+        // scalastyle:off println
         println("Invalid subcommand")
+        // scalastyle:on println
         sys.exit(-1)
     }
   }
