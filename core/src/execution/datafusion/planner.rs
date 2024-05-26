@@ -156,6 +156,7 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        println!("Spark expression: {:?}", spark_expr);
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -579,7 +580,7 @@ impl PhysicalPlanner {
                         )))
                     }
                 };
-                let result = negative::create_negate_expr(child, input_schema.as_ref().clone(), eval_mode);
+                let result = negative::create_negate_expr(child, eval_mode);
                 match result {
                     Ok(expr) => Ok(expr),
                     Err(e) => Err(ExecutionError::GeneralError(
