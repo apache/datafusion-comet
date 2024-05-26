@@ -25,7 +25,8 @@ import java.nio.channels.Channels
 
 import scala.collection.JavaConverters._
 
-import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, CometSchemaImporter, Data}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.dictionary.DictionaryProvider
@@ -38,7 +39,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
-import org.apache.comet.vector.CometVector
+import org.apache.comet.vector._
 
 object Utils {
   def getConfPath(confFileName: String): String = {
@@ -263,5 +264,25 @@ object Utils {
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
+  }
+
+  /**
+   * Imports data from ArrowArray/ArrowSchema into a FieldVector. This is basically the same as
+   * Java Arrow `Data.importVector`. `Data.importVector` initiates `SchemaImporter` internally
+   * which is used to fill dictionary ids for dictionary encoded vectors. Every call to
+   * `importVector` will begin with dictionary ids starting from 0. So, separate calls to
+   * `importVector` will overwrite dictionary ids. To avoid this, we need to use the same
+   * `SchemaImporter` instance for all calls to `importVector`.
+   */
+  def importVector(
+      allocator: BufferAllocator,
+      importer: CometSchemaImporter,
+      array: ArrowArray,
+      schema: ArrowSchema): FieldVector = {
+    val field = importer.importField(schema)
+    val vector = field.createVector(allocator)
+    Data.importIntoVector(allocator, array, vector, importer.getProvider())
+
+    vector
   }
 }

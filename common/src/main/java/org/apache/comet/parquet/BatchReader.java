@@ -37,6 +37,9 @@ import scala.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.arrow.c.CometSchemaImporter;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -88,6 +91,7 @@ import org.apache.comet.vector.CometVector;
  */
 public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
+  protected static final BufferAllocator ALLOCATOR = new RootAllocator();
 
   private Configuration conf;
   private int capacity;
@@ -552,6 +556,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       numRowGroupsMetric.add(1);
     }
 
+    CometSchemaImporter importer = new CometSchemaImporter(ALLOCATOR);
+
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     for (int i = 0; i < columns.size(); i++) {
       if (missingColumns[i]) continue;
@@ -564,6 +570,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
           Utils.getColumnReader(
               dataType,
               columns.get(i),
+              importer,
               capacity,
               useDecimal128,
               useLazyMaterialization,
