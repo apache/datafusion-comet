@@ -27,25 +27,22 @@ import org.rogach.scallop.ScallopOption
 import org.apache.spark.sql.SparkSession
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
-  val generateData: generateData = new generateData
-  class generateData extends Subcommand("data") {
+  object generateData extends Subcommand("data") {
     val numFiles: ScallopOption[Int] = opt[Int](required = true)
     val numRows: ScallopOption[Int] = opt[Int](required = true)
     val numColumns: ScallopOption[Int] = opt[Int](required = true)
   }
-  val generateQueries: generateQueries = new generateQueries
-  class generateQueries extends Subcommand("queries") {
+  addSubcommand(generateData)
+  object generateQueries extends Subcommand("queries") {
     val numFiles: ScallopOption[Int] = opt[Int](required = false)
     val numQueries: ScallopOption[Int] = opt[Int](required = true)
   }
-  val runQueries: runQueries = new runQueries
-  class runQueries extends Subcommand("run") {
+  addSubcommand(generateQueries)
+  object runQueries extends Subcommand("run") {
     val filename: ScallopOption[String] = opt[String](required = true)
     val numFiles: ScallopOption[Int] = opt[Int](required = false)
     val showMatchingResults: ScallopOption[Boolean] = opt[Boolean](required = false)
   }
-  addSubcommand(generateData)
-  addSubcommand(generateQueries)
   addSubcommand(runQueries)
   verify()
 }
@@ -60,19 +57,27 @@ object Main {
   def main(args: Array[String]): Unit = {
     val r = new Random(42)
 
-    val conf = new Conf(args)
+    val conf = new Conf(args.toIndexedSeq)
     conf.subcommand match {
-      case Some(opt @ conf.generateData) =>
+      case Some(conf.generateData) =>
         DataGen.generateRandomFiles(
           r,
           spark,
-          numFiles = opt.numFiles(),
-          numRows = opt.numRows(),
-          numColumns = opt.numColumns())
-      case Some(opt @ conf.generateQueries) =>
-        QueryGen.generateRandomQueries(r, spark, numFiles = opt.numFiles(), opt.numQueries())
-      case Some(opt @ conf.runQueries) =>
-        QueryRunner.runQueries(spark, opt.numFiles(), opt.filename(), opt.showMatchingResults())
+          numFiles = conf.generateData.numFiles(),
+          numRows = conf.generateData.numRows(),
+          numColumns = conf.generateData.numColumns())
+      case Some(conf.generateQueries) =>
+        QueryGen.generateRandomQueries(
+          r,
+          spark,
+          numFiles = conf.generateQueries.numFiles(),
+          conf.generateQueries.numQueries())
+      case Some(conf.runQueries) =>
+        QueryRunner.runQueries(
+          spark,
+          conf.runQueries.numFiles(),
+          conf.runQueries.filename(),
+          conf.runQueries.showMatchingResults())
       case _ =>
         // scalastyle:off println
         println("Invalid subcommand")
