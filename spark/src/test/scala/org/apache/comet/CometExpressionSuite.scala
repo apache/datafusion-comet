@@ -156,6 +156,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("string type and substring") {
     withParquetTable((0 until 5).map(i => (i.toString, (i + 100).toString)), "tbl") {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, -2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, -2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, 10) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 0, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 1, 0) FROM tbl")
     }
   }
 

@@ -395,7 +395,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 // Spark Substring's start is 1-based when start > 0
                 let start = expr.start - i32::from(expr.start > 0);
-                let len = expr.len;
+                // substring negative len is treated as 0 in Spark
+                let len = std::cmp::max(expr.len, 0);
 
                 Ok(Arc::new(SubstringExec::new(
                     child,
