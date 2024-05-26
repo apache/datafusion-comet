@@ -16,44 +16,38 @@
 // under the License.
 
 use std::sync::Arc;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::expressions::{Literal, NegativeExpr};
 use datafusion_common::ScalarValue;
 use crate::errors::CometError;
 use crate::execution::datafusion::expressions::cast::EvalMode;
 
-pub fn create_negate_expr(expr: Arc<dyn PhysicalExpr>, eval_mode: EvalMode) -> Result<Arc<dyn PhysicalExpr>, CometError> {
-    println!("create_negate_expr");
-    println!("expr: {:?}", expr);
+pub fn create_negate_expr(expr: Arc<dyn PhysicalExpr>, input_schema: Schema, eval_mode: EvalMode) -> Result<Arc<dyn PhysicalExpr>, CometError> {
     if eval_mode == EvalMode::Ansi {
-        // here check invalid inputs check for integer overflow
-        let result = check_invalid_inputs(&expr);
-        match result {
-            Ok(_) => {},
+        let checked_input: Result<(), CometError> = check_invalid_inputs(expr.clone(), input_schema.clone());
+        match checked_input {
+            Ok(_) => {
+                return Ok(Arc::new(NegativeExpr::new(expr)));
+            },
             Err(e) => {
                 return Err(e);
             }
         }
-        return Ok(Arc::new(NegativeExpr::new(expr)));
     }
     Ok(Arc::new(NegativeExpr::new(expr)))
 }
 
-fn check_invalid_inputs(expr: &Arc<dyn PhysicalExpr>) -> Result<(), CometError> {
-    // get literal value
-    let literal = match expr.as_any().downcast_ref::<Literal>() {
-        Some(literal) => literal,
-        None => return Err(CometError::Panic { msg: "Invalid input".to_string() }),
-    };
+fn check_invalid_inputs(expr: Arc<dyn PhysicalExpr>, input_schema: Schema) -> Result<(), CometError> {
+    // TODO
 
-    let value = literal.value();
-    
-    if value.is_null() {
-        return Err(CometError::Panic { msg: "Invalid input".to_string() });
-    }
-    
-    match value.data_type() {
+    let data_type = expr.data_type(&input_schema)?;    
+
+    let value = expr.as_any().downcast_ref::<Literal>().unwrap().value();
+    match data_type {
+        DataType::Interval(_) => {
+            // TODO: implement checks for interval data type
+        }
         DataType::Int8 => {
             if let ScalarValue::Int8(Some(int_value)) = value {
                 if *int_value <= i8::MIN || *int_value >= i8::MAX {
@@ -149,7 +143,6 @@ fn check_invalid_inputs(expr: &Arc<dyn PhysicalExpr>) -> Result<(), CometError> 
         }
     }
     
-    println!("value: {:?}", value);
     Ok(())
 }
 
@@ -162,7 +155,7 @@ mod tests {
     fn test_create_negate_expr() {
         let expr = Arc::new(Literal::new(1_i32.into()));
         let eval_mode = EvalMode::Ansi;
-        let result = create_negate_expr(expr, eval_mode);
+        let result = create_negate_expr(expr, Schema::empty(), eval_mode);
         assert!(result.is_ok());
         if result.is_ok() {
             let result = result.unwrap();
@@ -171,7 +164,7 @@ mod tests {
 
         let expr = Arc::new(Literal::new(i32::MAX.into()));
         let eval_mode = EvalMode::Ansi;
-        let result = create_negate_expr(expr, eval_mode);
+        let result = create_negate_expr(expr, Schema::empty(), eval_mode);
         assert!(result.is_err());
     }
 }

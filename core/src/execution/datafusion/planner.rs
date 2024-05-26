@@ -567,8 +567,19 @@ impl PhysicalPlanner {
                 Ok(Arc::new(NotExpr::new(child)))
             }
             ExprStruct::Negative(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let result = negative::create_negate_expr(child, EvalMode::Legacy);
+                let child: Arc<dyn PhysicalExpr> = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let eval_mode = match expr.eval_mode.as_str() {
+                    "ANSI" => EvalMode::Ansi,
+                    "TRY" => EvalMode::Try,
+                    "LEGACY" => EvalMode::Legacy,
+                    other => {
+
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Invalid EvalMode: \"{other}\""
+                        )))
+                    }
+                };
+                let result = negative::create_negate_expr(child, input_schema.as_ref().clone(), eval_mode);
                 match result {
                     Ok(expr) => Ok(expr),
                     Err(e) => Err(ExecutionError::GeneralError(

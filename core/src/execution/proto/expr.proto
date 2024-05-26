@@ -448,6 +448,8 @@ message Not {
 
 message Negative {
   Expr child = 1;
+  // LEGACY, ANSI, or TRY
+  string eval_mode = 2;
 }
 
 message IfExpr {

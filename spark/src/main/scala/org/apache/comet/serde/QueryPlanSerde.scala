@@ -1959,9 +1959,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case UnaryMinus(child, _) =>
           val childExpr = exprToProtoInternal(child, inputs)
+          val evalMode = SQLConf.get.ansiEnabled
+          val evalModeStr = evalMode match {
+            case bool: Boolean =>
+              // Spark 3.2 & 3.3 has ansiEnabled boolean
+              if (bool) "ANSI" else "LEGACY"
+            case _ =>
+              // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+              evalMode.toString
+          }
           if (childExpr.isDefined) {
             val builder = ExprOuterClass.Negative.newBuilder()
             builder.setChild(childExpr.get)
+            builder.setEvalMode(evalModeStr)
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
