@@ -70,6 +70,7 @@ use crate::{
                 correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
+                negative,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
@@ -79,7 +80,6 @@ use crate::{
                 temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
                 variance::Variance,
                 NormalizeNaNAndZero,
-                negative,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -567,13 +567,13 @@ impl PhysicalPlanner {
                 Ok(Arc::new(NotExpr::new(child)))
             }
             ExprStruct::Negative(expr) => {
-                let child: Arc<dyn PhysicalExpr> = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let child: Arc<dyn PhysicalExpr> =
+                    self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let eval_mode = match expr.eval_mode.as_str() {
                     "ANSI" => EvalMode::Ansi,
                     "TRY" => EvalMode::Try,
                     "LEGACY" => EvalMode::Legacy,
                     other => {
-
                         return Err(ExecutionError::GeneralError(format!(
                             "Invalid EvalMode: \"{other}\""
                         )))
@@ -582,9 +582,7 @@ impl PhysicalPlanner {
                 let result = negative::create_negate_expr(child, eval_mode);
                 match result {
                     Ok(expr) => Ok(expr),
-                    Err(e) => Err(ExecutionError::GeneralError(
-                        e.to_string()
-                    )),
+                    Err(e) => Err(ExecutionError::GeneralError(e.to_string())),
                 }
             }
             ExprStruct::NormalizeNanAndZero(expr) => {

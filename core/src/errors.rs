@@ -89,9 +89,7 @@ pub enum CometError {
     },
 
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"true\" to bypass this error.")]
-    ArithmeticOverflow {
-        from_type: String,
-    },
+    ArithmeticOverflow { from_type: String },
 
     #[error(transparent)]
     Arrow {
