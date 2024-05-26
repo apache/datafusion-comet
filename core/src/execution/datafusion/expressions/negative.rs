@@ -145,65 +145,6 @@ impl PhysicalExpr for NegativeExpr {
                                 }
                             }
                         }
-                        DataType::UInt8 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::UInt8Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) <= u8::MIN || int_array.value(i) >= u8::MAX {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                        DataType::UInt16 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::UInt16Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) <= u16::MIN || int_array.value(i) >= u16::MAX
-                                {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                        DataType::UInt32 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::UInt32Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) <= u32::MIN || int_array.value(i) >= u32::MAX
-                                {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                        DataType::UInt64 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::UInt64Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) <= u64::MIN || int_array.value(i) >= u64::MAX
-                                {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
                         DataType::Float16 => {
                             let float_array = array
                                 .as_any()
@@ -345,38 +286,6 @@ impl PhysicalExpr for NegativeExpr {
                         }
                         ScalarValue::Int64(value) => {
                             if value <= Some(i64::MIN) || value >= Some(i64::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
-                            }
-                        }
-                        ScalarValue::UInt8(value) => {
-                            if value <= Some(u8::MIN) || value >= Some(u8::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
-                            }
-                        }
-                        ScalarValue::UInt16(value) => {
-                            if value <= Some(u16::MIN) || value >= Some(u16::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
-                            }
-                        }
-                        ScalarValue::UInt32(value) => {
-                            if value <= Some(u32::MIN) || value >= Some(u32::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
-                            }
-                        }
-                        ScalarValue::UInt64(value) => {
-                            if value <= Some(u64::MIN) || value >= Some(u64::MAX) {
                                 return Err(CometError::ArithmeticOverflow {
                                     from_type: "integer".to_string(),
                                 }
