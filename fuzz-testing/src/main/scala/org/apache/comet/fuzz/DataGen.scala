@@ -26,33 +26,40 @@ import scala.util.Random
 import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
-
 object DataGen {
 
-  def generateRandomFiles(r: Random, spark: SparkSession, numFiles: Int, numRows: Int,
+  def generateRandomFiles(
+      r: Random,
+      spark: SparkSession,
+      numFiles: Int,
+      numRows: Int,
       numColumns: Int): Unit = {
     for (i <- 0 until numFiles) {
       generateRandomParquetFile(r, spark, s"test$i.parquet", numRows, numColumns)
     }
   }
 
-  def generateRandomParquetFile(r: Random, spark: SparkSession, filename: String,
-      numRows: Int, numColumns: Int): Unit = {
+  def generateRandomParquetFile(
+      r: Random,
+      spark: SparkSession,
+      filename: String,
+      numRows: Int,
+      numColumns: Int): Unit = {
 
     // TODO add examples of all supported types, including complex types
     val dataTypes = Seq(
       (DataTypes.ByteType, 0.2),
-            (DataTypes.ShortType, 0.2),
-            (DataTypes.IntegerType, 0.2),
-            (DataTypes.LongType, 0.2),
-            (DataTypes.FloatType, 0.2),
-            (DataTypes.DoubleType, 0.2),
+      (DataTypes.ShortType, 0.2),
+      (DataTypes.IntegerType, 0.2),
+      (DataTypes.LongType, 0.2),
+      (DataTypes.FloatType, 0.2),
+      (DataTypes.DoubleType, 0.2),
       // TODO add support for all Comet supported types
 //            (DataTypes.createDecimalType(10,2), 0.2),
 //            (DataTypes.createDecimalType(10,0), 0.2),
 //            (DataTypes.createDecimalType(4,0), 0.2),
-            (DataTypes.DateType, 0.2),
-            (DataTypes.TimestampType, 0.2),
+      (DataTypes.DateType, 0.2),
+      (DataTypes.TimestampType, 0.2),
 //            (DataTypes.TimestampNTZType, 0.2),
       (DataTypes.StringType, 0.2))
 
@@ -142,6 +149,5 @@ object DataGen {
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
   }
-
 
 }

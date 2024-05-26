@@ -28,8 +28,11 @@ import org.apache.spark.sql.SparkSession
 
 object QueryGen {
 
-  def generateRandomQueries(r: Random, spark: SparkSession, numFiles: Int,
-                            numQueries: Int): Unit = {
+  def generateRandomQueries(
+      r: Random,
+      spark: SparkSession,
+      numFiles: Int,
+      numQueries: Int): Unit = {
     for (i <- 0 until numFiles) {
       spark.read.parquet(s"test$i.parquet").createTempView(s"test$i")
     }
@@ -55,7 +58,7 @@ object QueryGen {
     w.close()
   }
 
-  val scalarFunc = Seq(
+  val scalarFunc: Seq[Function] = Seq(
     // string
     Function("substring", 3),
     Function("coalesce", 1),
@@ -103,10 +106,9 @@ object QueryGen {
     Function("Sqrt", 1),
     Function("Tan", 1),
     Function("Ceil", 1),
-    Function("Floor", 1)
-  )
+    Function("Floor", 1))
 
-  val aggFunc = Seq(
+  val aggFunc: Seq[Function] = Seq(
     Function("min", 1),
     Function("max", 1),
     Function("count", 1),
@@ -163,14 +165,10 @@ object QueryGen {
     val leftCol = Utils.randomChoice(leftTable.columns, r)
     val rightCol = Utils.randomChoice(rightTable.columns, r)
 
-    val joinTypes = Seq(
-      ("INNER", 0.4),
-      ("LEFT", 0.3),
-      ("RIGHT", 0.3)
-    )
+    val joinTypes = Seq(("INNER", 0.4), ("LEFT", 0.3), ("RIGHT", 0.3))
     val joinType = Utils.randomWeightedChoice(joinTypes)
 
-    s"SELECT * " +
+    "SELECT * " +
       s"FROM ${leftTableName} " +
       s"${joinType} JOIN ${rightTableName} " +
       s"ON ${leftTableName}.${leftCol} = ${rightTableName}.${rightCol};"
