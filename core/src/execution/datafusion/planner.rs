@@ -156,7 +156,6 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        println!("Spark expression: {:?}", spark_expr);
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
