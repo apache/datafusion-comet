@@ -32,6 +32,7 @@ under the License.
     <artifactId>comet-fuzz-spark${spark.version.short}_${scala.binary.version}</artifactId>
     <name>comet-fuzz</name>
     <url>http://maven.apache.org</url>
+    <packaging>jar</packaging>
 
     <properties>
         <!-- Reverse default (skip installation), and then enable only for child modules -->

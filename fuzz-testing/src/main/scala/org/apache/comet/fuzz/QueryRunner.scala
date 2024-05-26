@@ -62,72 +62,49 @@ object QueryRunner {
             spark.conf.set("spark.comet.enabled", "false")
             val df = spark.sql(sql)
             val sparkRows = df.collect()
-
-            // TODO for now we sort the output to make this deterministic, but this means
-            // that we are never testing Comet's sort for correctness
-            val sparkRowsAsStrings = sparkRows.map(_.toString()).sorted
-            val sparkResult = sparkRowsAsStrings.mkString("\n")
-
             val sparkPlan = df.queryExecution.executedPlan.toString
-
-            w.write(s"## $sql\n\n")
 
             try {
               spark.conf.set("spark.comet.enabled", "true")
               val df = spark.sql(sql)
               val cometRows = df.collect()
-              // TODO for now we sort the output to make this deterministic, but this means
-              // that we are never testing Comet's sort for correctness
-              val cometRowsAsStrings = cometRows.map(_.toString()).sorted
-              val cometResult = cometRowsAsStrings.mkString("\n")
               val cometPlan = df.queryExecution.executedPlan.toString
 
-              if (sparkResult == cometResult) {
-                w.write(s"Spark and Comet produce the same results (${cometRows.length} rows).\n")
-                if (showMatchingResults) {
-                  w.write("### Spark Plan\n")
-                  w.write(s"```\n$sparkPlan\n```\n")
-
-                  w.write("### Comet Plan\n")
-                  w.write(s"```\n$cometPlan\n```\n")
-
-                  w.write("### Query Result\n")
-                  w.write("```\n")
-                  w.write(s"$cometResult\n")
-                  w.write("```\n\n")
-                }
-              } else {
-                w.write("[ERROR] Spark and Comet produced different results.\n")
-
-                w.write("### Spark Plan\n")
-                w.write(s"```\n$sparkPlan\n```\n")
-
-                w.write("### Comet Plan\n")
-                w.write(s"```\n$cometPlan\n```\n")
-
-                w.write("### Results \n")
-
-                w.write(
-                  s"Spark produced ${sparkRows.length} rows and " +
-                    s"Comet produced ${cometRows.length} rows.\n")
-
-                if (sparkRows.length == cometRows.length) {
-                  var i = 0
-                  while (i < sparkRows.length) {
-                    if (sparkRowsAsStrings(i) != cometRowsAsStrings(i)) {
+              if (sparkRows.length == cometRows.length) {
+                var i = 0
+                while (i < sparkRows.length) {
+                  val l = sparkRows(i)
+                  val r = cometRows(i)
+                  assert(l.length == r.length)
+                  for (j <- 0 until l.length) {
+                    val same = (l(j), r(j)) match {
+                      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+                      case (a: Double, b: Double) => (a - b).abs <= 0.000001
+                      case (a, b) => a == b
+                    }
+                    if (!same) {
+                      w.write(s"## $sql\n\n")
+                      showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
-                      w.write("Spark: `" + sparkRowsAsStrings(i) + "`\n")
-                      w.write("Comet: `" + cometRowsAsStrings(i) + "`\n")
+                      w.write("Spark: `" + l.mkString(",") + "`\n")
+                      w.write("Comet: `" + r.mkString(", ") + "`\n")
                       i = sparkRows.length
                     }
-                    i += 1
                   }
+                  i += 1
                 }
+              } else {
+                w.write(s"## $sql\n\n")
+                showPlans(w, sparkPlan, cometPlan)
+                w.write(
+                  s"[ERROR] Spark produced ${sparkRows.length} rows and " +
+                    s"Comet produced ${cometRows.length} rows.\n")
               }
             } catch {
               case e: Exception =>
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
-                w.write(s"Query failed in Comet: ${e.getMessage}\n")
+                w.write(s"## $sql\n\n")
+                w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}\n")
             }
 
             // flush after every query so that results are saved in the event of the driver crashing
@@ -147,6 +124,13 @@ object QueryRunner {
       w.close()
       querySource.close()
     }
+  }
+
+  private def showPlans(w: BufferedWriter, sparkPlan: String, cometPlan: String): Unit = {
+    w.write("### Spark Plan\n")
+    w.write(s"```\n$sparkPlan\n```\n")
+    w.write("### Comet Plan\n")
+    w.write(s"```\n$cometPlan\n```\n")
   }
 
 }

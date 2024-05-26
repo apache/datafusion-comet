@@ -22,26 +22,27 @@ package org.apache.comet.fuzz
 import scala.util.Random
 
 import org.rogach.scallop.{ScallopConf, Subcommand}
+import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   val generateData: generateData = new generateData
   class generateData extends Subcommand("data") {
-    val numFiles = opt[Int](required = true)
-    val numRows = opt[Int](required = true)
-    val numColumns = opt[Int](required = true)
+    val numFiles: ScallopOption[Int] = opt[Int](required = true)
+    val numRows: ScallopOption[Int] = opt[Int](required = true)
+    val numColumns: ScallopOption[Int] = opt[Int](required = true)
   }
   val generateQueries: generateQueries = new generateQueries
   class generateQueries extends Subcommand("queries") {
-    val numFiles = opt[Int](required = false)
-    val numQueries = opt[Int](required = true)
+    val numFiles: ScallopOption[Int] = opt[Int](required = false)
+    val numQueries: ScallopOption[Int] = opt[Int](required = true)
   }
   val runQueries: runQueries = new runQueries
   class runQueries extends Subcommand("run") {
-    val filename = opt[String](required = true)
-    val numFiles = opt[Int](required = false)
-    val showMatchingResults = opt[Boolean](required = false)
+    val filename: ScallopOption[String] = opt[String](required = true)
+    val numFiles: ScallopOption[Int] = opt[Int](required = false)
+    val showMatchingResults: ScallopOption[Boolean] = opt[Boolean](required = false)
   }
   addSubcommand(generateData)
   addSubcommand(generateQueries)

@@ -49,6 +49,7 @@ object QueryGen {
         // TODO add explicit casts
         // TODO add unary and binary arithmetic expressions
         // TODO add IF and CASE WHEN expressions
+        // TODO support nested expressions
       }
       if (!uniqueQueries.contains(sql)) {
         uniqueQueries += sql
@@ -134,10 +135,14 @@ object QueryGen {
       .map(_ => Utils.randomChoice(table.columns, r))
     val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
     if (groupingCols.isEmpty) {
-      s"SELECT ${func.name}(${args.mkString(", ")}) FROM $tableName"
+      s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
+        s"FROM $tableName" +
+        s"ORDER BY ${args.mkString(", ")}"
     } else {
       s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
-        s"FROM $tableName GROUP BY ${groupingCols.mkString(",")}"
+        s"FROM $tableName " +
+        s"GROUP BY ${groupingCols.mkString(",")}" +
+        s"ORDER BY ${groupingCols.mkString(", ")}"
     }
   }
 
@@ -150,7 +155,9 @@ object QueryGen {
       // TODO support using literals as well as columns
       .map(_ => Utils.randomChoice(table.columns, r))
 
-    s"SELECT ${func.name}(${args.mkString(", ")}) FROM $tableName"
+    s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
+      s"FROM $tableName " +
+      s"ORDER BY ${args.mkString(", ")}"
   }
 
   private def generateJoin(r: Random, spark: SparkSession, numFiles: Int): String = {
@@ -169,9 +176,10 @@ object QueryGen {
     val joinType = Utils.randomWeightedChoice(joinTypes)
 
     "SELECT * " +
-      s"FROM ${leftTableName} " +
-      s"${joinType} JOIN ${rightTableName} " +
-      s"ON ${leftTableName}.${leftCol} = ${rightTableName}.${rightCol};"
+      s"FROM $leftTableName " +
+      s"$joinType JOIN $rightTableName " +
+      s"ON $leftTableName.$leftCol = $rightTableName.$rightCol " +
+      s"ORDER BY $leftCol;"
   }
 
 }
