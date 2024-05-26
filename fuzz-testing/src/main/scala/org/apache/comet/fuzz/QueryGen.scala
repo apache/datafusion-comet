@@ -183,13 +183,13 @@ object QueryGen {
     // TODO avoid sorting on floating-point columns
     val leftColProjection = leftTable.columns.map(c => s"l.$c").mkString(", ")
     val rightColProjection = rightTable.columns.map(c => s"r.$c").mkString(", ")
-    s"SELECT " +
+    "SELECT " +
       s"$leftColProjection, " +
       s"$rightColProjection " +
       s"FROM $leftTableName l " +
       s"$joinType JOIN $rightTableName r " +
       s"ON l.$leftCol = r.$rightCol " +
-      s"ORDER BY " +
+      "ORDER BY " +
       s"$leftColProjection, " +
       s"$rightColProjection;"
   }
