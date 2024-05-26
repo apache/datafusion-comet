@@ -78,7 +78,11 @@ object QueryRunner {
                   assert(l.length == r.length)
                   for (j <- 0 until l.length) {
                     val same = (l(j), r(j)) match {
+                      case (a: Float, b: Float) if a.isInfinity => b.isInfinity
+                      case (a: Float, b: Float) if a.isNaN => b.isNaN
                       case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+                      case (a: Double, b: Double) if a.isInfinity => b.isInfinity
+                      case (a: Double, b: Double) if a.isNaN => b.isNaN
                       case (a: Double, b: Double) => (a - b).abs <= 0.000001
                       case (a, b) => a == b
                     }
@@ -87,7 +91,7 @@ object QueryRunner {
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
                       w.write("Spark: `" + l.mkString(",") + "`\n")
-                      w.write("Comet: `" + r.mkString(", ") + "`\n")
+                      w.write("Comet: `" + r.mkString(",") + "`\n")
                       i = sparkRows.length
                     }
                   }

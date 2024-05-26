@@ -43,7 +43,7 @@ Set appropriate values for `SPARK_HOME`, `SPARK_MASTER`, and `COMET_JAR` environ
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --class org.apache.comet.fuzz.Main \
-    target/comet-fuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    target/comet-fuzz-spark3.4_2.12-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
     data --num-files=2 --num-rows=200 --num-columns=100
 ```
 
@@ -55,7 +55,7 @@ Generate random queries that are based on the available test files.
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --class org.apache.comet.fuzz.Main \
-    target/cometfuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    target/comet-fuzz-spark3.4_2.12-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
     queries --num-files=2 --num-queries=500
 ```
 
@@ -76,7 +76,7 @@ $SPARK_HOME/bin/spark-submit \
     --jars $COMET_JAR \
     --driver-class-path $COMET_JAR \
     --class org.apache.comet.fuzz.Main \
-    target/cometfuzz-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
+    target/comet-fuzz-spark3.4_2.12-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
     run --num-files=2 --filename=queries.sql
 ```
 

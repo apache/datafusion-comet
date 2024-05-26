@@ -133,15 +133,19 @@ object QueryGen {
     val args = Range(0, func.num_args)
       // TODO support using literals as well as columns
       .map(_ => Utils.randomChoice(table.columns, r))
+
+    // TODO avoid grouping and sorting on floating-point columns
     val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
+
     if (groupingCols.isEmpty) {
       s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
-        s"FROM $tableName" +
+        s"FROM $tableName " +
+        // TODO avoid sorting on floating-point columns
         s"ORDER BY ${args.mkString(", ")}"
     } else {
       s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
         s"FROM $tableName " +
-        s"GROUP BY ${groupingCols.mkString(",")}" +
+        s"GROUP BY ${groupingCols.mkString(",")} " +
         s"ORDER BY ${groupingCols.mkString(", ")}"
     }
   }
@@ -157,6 +161,7 @@ object QueryGen {
 
     s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
+      // TODO avoid sorting on floating-point columns
       s"ORDER BY ${args.mkString(", ")}"
   }
 
@@ -175,11 +180,18 @@ object QueryGen {
     val joinTypes = Seq(("INNER", 0.4), ("LEFT", 0.3), ("RIGHT", 0.3))
     val joinType = Utils.randomWeightedChoice(joinTypes)
 
-    "SELECT * " +
-      s"FROM $leftTableName " +
-      s"$joinType JOIN $rightTableName " +
-      s"ON $leftTableName.$leftCol = $rightTableName.$rightCol " +
-      s"ORDER BY $leftCol;"
+    // TODO avoid sorting on floating-point columns
+    val leftColProjection = leftTable.columns.map(c => s"l.$c").mkString(", ")
+    val rightColProjection = rightTable.columns.map(c => s"r.$c").mkString(", ")
+    s"SELECT " +
+      s"$leftColProjection, " +
+      s"$rightColProjection " +
+      s"FROM $leftTableName l " +
+      s"$joinType JOIN $rightTableName r " +
+      s"ON l.$leftCol = r.$rightCol " +
+      s"ORDER BY " +
+      s"$leftColProjection, " +
+      s"$rightColProjection;"
   }
 
 }
