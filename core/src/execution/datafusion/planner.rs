@@ -580,10 +580,7 @@ impl PhysicalPlanner {
                     }
                 };
                 let result = negative::create_negate_expr(child, eval_mode);
-                match result {
-                    Ok(expr) => Ok(expr),
-                    Err(e) => Err(ExecutionError::GeneralError(e.to_string())),
-                }
+                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;

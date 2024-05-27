@@ -90,7 +90,7 @@ impl PhysicalExpr for NegativeExpr {
                             let int_array = array
                                 .as_any()
                                 .downcast_ref::<arrow::array::Int8Array>()
-                                .unwrap();
+                                .expect("Int8Array");
                             for i in 0..int_array.len() {
                                 if int_array.value(i) == i8::MIN || int_array.value(i) == i8::MAX {
                                     return Err(CometError::ArithmeticOverflow {
@@ -140,22 +140,6 @@ impl PhysicalExpr for NegativeExpr {
                                 {
                                     return Err(CometError::ArithmeticOverflow {
                                         from_type: "integer".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                        DataType::Float16 => {
-                            let float_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Float16Array>()
-                                .unwrap();
-                            for i in 0..float_array.len() {
-                                if float_array.value(i) <= half::f16::MIN
-                                    || float_array.value(i) >= half::f16::MAX
-                                {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "float".to_string(),
                                     }
                                     .into());
                                 }
