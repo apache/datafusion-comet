@@ -981,7 +981,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             None
           }
 
-        case Like(left, right, _) =>
+        case Like(left, right, escapeChar) if escapeChar == '\\' =>
           // TODO escapeChar
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(right, inputs)
