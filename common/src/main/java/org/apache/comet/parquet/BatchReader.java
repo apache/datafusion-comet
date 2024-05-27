@@ -108,6 +108,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private MessageType requestedSchema;
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
+  private CometSchemaImporter importer;
   private ColumnarBatch currentBatch;
   private Future<Option<Throwable>> prefetchTask;
   private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
@@ -519,6 +520,10 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       fileReader.close();
       fileReader = null;
     }
+    if (importer != null) {
+      importer.close();
+      importer = null;
+    }
   }
 
   @SuppressWarnings("deprecation")
@@ -556,7 +561,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       numRowGroupsMetric.add(1);
     }
 
-    CometSchemaImporter importer = new CometSchemaImporter(ALLOCATOR);
+    if (importer != null) importer.close();
+    importer = new CometSchemaImporter(ALLOCATOR);
 
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     for (int i = 0; i < columns.size(); i++) {

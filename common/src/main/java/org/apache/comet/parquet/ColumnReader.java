@@ -39,7 +39,6 @@ import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
-import org.apache.spark.sql.comet.util.Utils$;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
@@ -206,8 +205,7 @@ public class ColumnReader extends AbstractColumnReader {
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
         ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-      FieldVector vector =
-          Utils$.MODULE$.importVector(importer.getAllocator(), importer, array, schema);
+      FieldVector vector = importer.importVector(array, schema);
 
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
