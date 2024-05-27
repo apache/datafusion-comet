@@ -92,7 +92,7 @@ impl PhysicalExpr for NegativeExpr {
                                 .downcast_ref::<arrow::array::Int8Array>()
                                 .unwrap();
                             for i in 0..int_array.len() {
-                                if int_array.value(i) <= i8::MIN || int_array.value(i) >= i8::MAX {
+                                if int_array.value(i) == i8::MIN || int_array.value(i) == i8::MAX {
                                     return Err(CometError::ArithmeticOverflow {
                                         from_type: "integer".to_string(),
                                     }
@@ -106,7 +106,7 @@ impl PhysicalExpr for NegativeExpr {
                                 .downcast_ref::<arrow::array::Int16Array>()
                                 .unwrap();
                             for i in 0..int_array.len() {
-                                if int_array.value(i) <= i16::MIN || int_array.value(i) >= i16::MAX
+                                if int_array.value(i) == i16::MIN || int_array.value(i) == i16::MAX
                                 {
                                     return Err(CometError::ArithmeticOverflow {
                                         from_type: "integer".to_string(),
@@ -121,7 +121,7 @@ impl PhysicalExpr for NegativeExpr {
                                 .downcast_ref::<arrow::array::Int32Array>()
                                 .unwrap();
                             for i in 0..int_array.len() {
-                                if int_array.value(i) <= i32::MIN || int_array.value(i) >= i32::MAX
+                                if int_array.value(i) == i32::MIN || int_array.value(i) == i32::MAX
                                 {
                                     return Err(CometError::ArithmeticOverflow {
                                         from_type: "integer".to_string(),
@@ -136,7 +136,7 @@ impl PhysicalExpr for NegativeExpr {
                                 .downcast_ref::<arrow::array::Int64Array>()
                                 .unwrap();
                             for i in 0..int_array.len() {
-                                if int_array.value(i) <= i64::MIN || int_array.value(i) >= i64::MAX
+                                if int_array.value(i) == i64::MIN || int_array.value(i) == i64::MAX
                                 {
                                     return Err(CometError::ArithmeticOverflow {
                                         from_type: "integer".to_string(),
@@ -202,8 +202,8 @@ impl PhysicalExpr for NegativeExpr {
                                         .downcast_ref::<arrow::array::IntervalYearMonthArray>()
                                         .unwrap();
                                     for i in 0..interval_array.len() {
-                                        if interval_array.value(i) <= i32::MIN
-                                            || interval_array.value(i) >= i32::MAX
+                                        if interval_array.value(i) == i32::MIN
+                                            || interval_array.value(i) == i32::MAX
                                         {
                                             return Err(CometError::ArithmeticOverflow {
                                                 from_type: "interval".to_string(),
@@ -218,8 +218,8 @@ impl PhysicalExpr for NegativeExpr {
                                         .downcast_ref::<arrow::array::IntervalDayTimeArray>()
                                         .unwrap();
                                     for i in 0..interval_array.len() {
-                                        if interval_array.value(i) <= i64::MIN
-                                            || interval_array.value(i) >= i64::MAX
+                                        if interval_array.value(i) == i64::MIN
+                                            || interval_array.value(i) == i64::MAX
                                         {
                                             return Err(CometError::ArithmeticOverflow {
                                                 from_type: "interval".to_string(),
@@ -234,8 +234,8 @@ impl PhysicalExpr for NegativeExpr {
                                         .downcast_ref::<arrow::array::IntervalMonthDayNanoArray>()
                                         .unwrap();
                                     for i in 0..interval_array.len() {
-                                        if interval_array.value(i) <= i128::MIN
-                                            || interval_array.value(i) >= i128::MAX
+                                        if interval_array.value(i) == i128::MIN
+                                            || interval_array.value(i) == i128::MAX
                                         {
                                             return Err(CometError::ArithmeticOverflow {
                                                 from_type: "interval".to_string(),
