@@ -48,6 +48,12 @@ pub struct NegativeExpr {
     eval_mode: EvalMode,
 }
 
+fn arithmetic_overflow_error(from_type: &str) -> CometError {
+    CometError::ArithmeticOverflow {
+        from_type: from_type.to_string(),
+    }
+}
+
 impl NegativeExpr {
     /// Create new not expression
     pub fn new(arg: Arc<dyn PhysicalExpr>, eval_mode: EvalMode) -> Self {
@@ -93,10 +99,7 @@ impl PhysicalExpr for NegativeExpr {
                                 .expect("Int8Array");
                             for i in 0..int_array.len() {
                                 if int_array.value(i) == i8::MIN || int_array.value(i) == i8::MAX {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("integer").into());
                                 }
                             }
                         }
@@ -108,10 +111,7 @@ impl PhysicalExpr for NegativeExpr {
                             for i in 0..int_array.len() {
                                 if int_array.value(i) == i16::MIN || int_array.value(i) == i16::MAX
                                 {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("integer").into());
                                 }
                             }
                         }
@@ -123,10 +123,7 @@ impl PhysicalExpr for NegativeExpr {
                             for i in 0..int_array.len() {
                                 if int_array.value(i) == i32::MIN || int_array.value(i) == i32::MAX
                                 {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("integer").into());
                                 }
                             }
                         }
@@ -138,10 +135,7 @@ impl PhysicalExpr for NegativeExpr {
                             for i in 0..int_array.len() {
                                 if int_array.value(i) == i64::MIN || int_array.value(i) == i64::MAX
                                 {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "integer".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("integer").into());
                                 }
                             }
                         }
@@ -154,10 +148,7 @@ impl PhysicalExpr for NegativeExpr {
                                 if float_array.value(i) <= f32::MIN
                                     || float_array.value(i) >= f32::MAX
                                 {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "float".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("float").into());
                                 }
                             }
                         }
@@ -170,10 +161,7 @@ impl PhysicalExpr for NegativeExpr {
                                 if float_array.value(i) <= f64::MIN
                                     || float_array.value(i) >= f64::MAX
                                 {
-                                    return Err(CometError::ArithmeticOverflow {
-                                        from_type: "float".to_string(),
-                                    }
-                                    .into());
+                                    return Err(arithmetic_overflow_error("float").into());
                                 }
                             }
                         }
@@ -189,10 +177,9 @@ impl PhysicalExpr for NegativeExpr {
                                         if interval_array.value(i) == i32::MIN
                                             || interval_array.value(i) == i32::MAX
                                         {
-                                            return Err(CometError::ArithmeticOverflow {
-                                                from_type: "interval".to_string(),
-                                            }
-                                            .into());
+                                            return Err(
+                                                arithmetic_overflow_error("interval").into()
+                                            );
                                         }
                                     }
                                 }
@@ -205,10 +192,9 @@ impl PhysicalExpr for NegativeExpr {
                                         if interval_array.value(i) == i64::MIN
                                             || interval_array.value(i) == i64::MAX
                                         {
-                                            return Err(CometError::ArithmeticOverflow {
-                                                from_type: "interval".to_string(),
-                                            }
-                                            .into());
+                                            return Err(
+                                                arithmetic_overflow_error("interval").into()
+                                            );
                                         }
                                     }
                                 }
@@ -221,10 +207,9 @@ impl PhysicalExpr for NegativeExpr {
                                         if interval_array.value(i) == i128::MIN
                                             || interval_array.value(i) == i128::MAX
                                         {
-                                            return Err(CometError::ArithmeticOverflow {
-                                                from_type: "interval".to_string(),
-                                            }
-                                            .into());
+                                            return Err(
+                                                arithmetic_overflow_error("interval").into()
+                                            );
                                         }
                                     }
                                 }
@@ -246,74 +231,47 @@ impl PhysicalExpr for NegativeExpr {
                     match scalar {
                         ScalarValue::Int8(value) => {
                             if value <= Some(i8::MIN) || value >= Some(i8::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("integer").into());
                             }
                         }
                         ScalarValue::Int16(value) => {
                             if value <= Some(i16::MIN) || value >= Some(i16::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("integer").into());
                             }
                         }
                         ScalarValue::Int32(value) => {
                             if value <= Some(i32::MIN) || value >= Some(i32::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("integer").into());
                             }
                         }
                         ScalarValue::Int64(value) => {
                             if value <= Some(i64::MIN) || value >= Some(i64::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "integer".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("integer").into());
                             }
                         }
                         ScalarValue::Float32(value) => {
                             if value <= Some(f32::MIN) || value >= Some(f32::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "float".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("float").into());
                             }
                         }
                         ScalarValue::Float64(value) => {
                             if value <= Some(f64::MIN) || value >= Some(f64::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "float".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("float").into());
                             }
                         }
                         ScalarValue::IntervalDayTime(value) => {
                             if value <= Some(i64::MIN) || value >= Some(i64::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "interval".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
                         ScalarValue::IntervalYearMonth(value) => {
                             if value <= Some(i32::MIN) || value >= Some(i32::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "interval".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
                         ScalarValue::IntervalMonthDayNano(value) => {
                             if value <= Some(i128::MIN) || value >= Some(i128::MAX) {
-                                return Err(CometError::ArithmeticOverflow {
-                                    from_type: "interval".to_string(),
-                                }
-                                .into());
+                                return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
                         _ => {
