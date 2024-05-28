@@ -1469,5 +1469,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("unary negative integer overflow test") {
 
+    val df = Seq(Int.MaxValue, Int.MinValue).toDF("a")
+    df.write.mode("overwrite").parquet("/tmp/int.parquet")
+    spark.read.parquet("/tmp/int.parquet").createTempView("t")
+
+    // without ANSI mode
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      checkSparkMaybeThrows(sql("select a, -a from t")) match {
+        case (None, None) => // no exception
+        case _ =>
+          fail("No exception should be thrown")
+      }
+    }
+
+    // with ANSI mode
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      checkSparkMaybeThrows(sql("select a, -a from t")) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains("integer overflow"))
+          assert(cometException.getMessage.contains("integer overflow"))
+        case _ =>
+          fail("Exception should be thrown")
+      }
+    }
+  }
 }
