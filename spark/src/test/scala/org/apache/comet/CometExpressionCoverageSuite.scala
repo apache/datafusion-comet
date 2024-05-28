@@ -326,10 +326,10 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("get sql function arguments") {
-    // getSqlFunctionArguments("SELECT unix_seconds(TIMESTAMP('1970-01-01 00:00:01Z'))") shouldBe Seq("TIMESTAMP('1970-01-01 00:00:01Z')")
-    // getSqlFunctionArguments("SELECT decode(unhex('537061726B2053514C'), 'UTF-8')") shouldBe Seq("unhex('537061726B2053514C')", "'UTF-8'")
-    // getSqlFunctionArguments("SELECT extract(YEAR FROM TIMESTAMP '2019-08-12 01:00:00.123456')") shouldBe Seq("'YEAR'", "TIMESTAMP '2019-08-12 01:00:00.123456'")
-    // getSqlFunctionArguments("SELECT exists(array(1, 2, 3), x -> x % 2 == 0)") shouldBe Seq("array(1, 2, 3)")
+    getSqlFunctionArguments("SELECT unix_seconds(TIMESTAMP('1970-01-01 00:00:01Z'))") shouldBe Seq("TIMESTAMP('1970-01-01 00:00:01Z')")
+    getSqlFunctionArguments("SELECT decode(unhex('537061726B2053514C'), 'UTF-8')") shouldBe Seq("unhex('537061726B2053514C')", "'UTF-8'")
+    getSqlFunctionArguments("SELECT extract(YEAR FROM TIMESTAMP '2019-08-12 01:00:00.123456')") shouldBe Seq("'YEAR'", "TIMESTAMP '2019-08-12 01:00:00.123456'")
+    getSqlFunctionArguments("SELECT exists(array(1, 2, 3), x -> x % 2 == 0)") shouldBe Seq("array(1, 2, 3)")
     getSqlFunctionArguments("select to_char(454, '999')") shouldBe Seq("array(1, 2, 3)")
   }
 
