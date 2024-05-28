@@ -156,6 +156,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("string type and substring") {
     withParquetTable((0 until 5).map(i => (i.toString, (i + 100).toString)), "tbl") {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, -2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, -2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, 10) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 0, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, substring(_2, 1, 0) FROM tbl")
     }
   }
 
@@ -1420,14 +1426,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            Set("Native shuffle is not enabled", "AQEShuffleRead is not supported")),
+            Set(
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
+              "AQEShuffleRead is not supported")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
             Set(
-              "Native shuffle is not enabled",
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "BroadcastExchange is not supported",
@@ -1452,17 +1460,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
           sql(s"""
-             |insert into $table values
-             |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-             |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-             |""".stripMargin)
+              |insert into $table values
+              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |""".stripMargin)
           checkSparkAnswerAndOperator("""
-               |select
-               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
-               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
-               |from test
-               |""".stripMargin)
+              |select
+              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
+              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |from test
+              |""".stripMargin)
+        }
+      }
+    }
+  }
+
+  test("hash functions with random input") {
+    val dataGen = DataGenerator.DEFAULT
+    // sufficient number of rows to create dictionary encoded ArrowArray.
+    val randomNumRows = 1000
+
+    val whitespaceChars = " \t\r\n"
+    val timestampPattern = "0123456789/:T" + whitespaceChars
+    Seq(true, false).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string, a int, b float) using parquet")
+          // TODO: Add a Row generator in the data gen class and replace th following code
+          val col = dataGen.generateStrings(randomNumRows, timestampPattern, 6)
+          val colA = dataGen.generateInts(randomNumRows)
+          val colB = dataGen.generateFloats(randomNumRows)
+          val data = col.zip(colA).zip(colB).map { case ((a, b), c) => (a, b, c) }
+          data
+            .toDF("col", "a", "b")
+            .write
+            .mode("append")
+            .insertInto(table)
+          // with random generated data
+          // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
+          checkSparkAnswerAndOperator("""
+              |select
+              |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
+              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |from test
+              |""".stripMargin)
         }
       }
     }

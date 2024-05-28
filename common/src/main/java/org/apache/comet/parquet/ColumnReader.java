@@ -38,6 +38,7 @@ import org.apache.parquet.column.page.DataPageV1;
 import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
@@ -195,6 +196,11 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector.close();
     }
 
+    LogicalTypeAnnotation logicalTypeAnnotation =
+        descriptor.getPrimitiveType().getLogicalTypeAnnotation();
+    boolean isUuid =
+        logicalTypeAnnotation instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
+
     long[] addresses = Native.currentBatch(nativeHandle);
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
@@ -223,12 +229,16 @@ public class ColumnReader extends AbstractColumnReader {
         return currentVector;
       }
 
-      // There is dictionary from native side but the Java side dictionary hasn't been
-      // initialized yet.
+      // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
+      // release the previous dictionary vector and create a new one.
       Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
       CometPlainVector dictionaryVector =
-          new CometPlainVector(arrowDictionary.getVector(), useDecimal128);
+          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
       dictionary = new CometDictionary(dictionaryVector);
+
+      currentVector =
+          new CometDictionaryVector(
+              cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
 
       currentVector =
           new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);

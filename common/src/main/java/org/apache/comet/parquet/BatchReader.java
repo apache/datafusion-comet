@@ -520,6 +520,10 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       fileReader.close();
       fileReader = null;
     }
+    if (importer != null) {
+      importer.close();
+      importer = null;
+    }
   }
 
   @SuppressWarnings("deprecation")
