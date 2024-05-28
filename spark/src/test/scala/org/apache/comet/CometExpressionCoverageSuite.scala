@@ -338,7 +338,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       "TIMESTAMP '2019-08-12 01:00:00.123456'")
     getSqlFunctionArguments("SELECT exists(array(1, 2, 3), x -> x % 2 == 0)") shouldBe Seq(
       "array(1, 2, 3)")
-    getSqlFunctionArguments("select to_char(454, '999')") shouldBe Seq("array(1, 2, 3)")
+    getSqlFunctionArguments("select to_char(454, '999')") shouldBe Seq("454", "'999'")
   }
 
   def getSqlFunctionArguments(sql: String): Seq[String] = {
