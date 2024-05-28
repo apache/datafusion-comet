@@ -16,29 +16,18 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+package org.apache.comet.shims
 
-package org.apache.comet
+import org.apache.spark.sql.catalyst.expressions._
 
-import java.io.File
-
-import scala.collection.mutable.ArrayBuffer
-
-object TestUtils {
-
-  /**
-   * Spark 3.3.0 moved {{{SpecificParquetRecordReaderBase.listDirectory}}} to
-   * {{{org.apache.spark.TestUtils.listDirectory}}}. Copying it here to bridge the difference
-   * between Spark 3.2.0 and 3.3.0 TODO: remove after dropping Spark 3.2.0 support and use
-   * {{{org.apache.spark.TestUtils.listDirectory}}}
-   */
-  def listDirectory(path: File): Array[String] = {
-    val result = ArrayBuffer.empty[String]
-    if (path.isDirectory) {
-      path.listFiles.foreach(f => result.appendAll(listDirectory(f)))
-    } else {
-      val c = path.getName.charAt(0)
-      if (c != '.' && c != '_') result.append(path.getAbsolutePath)
+/**
+ * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
+ */
+trait CometExprShim {
+    /**
+     * Returns a tuple of expressions for the `unhex` function.
+     */
+    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+        (unhex.child, Literal(unhex.failOnError))
     }
-    result.toArray
-  }
 }

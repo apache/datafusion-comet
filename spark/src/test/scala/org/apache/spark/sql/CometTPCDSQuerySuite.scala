@@ -21,13 +21,13 @@ package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
+import org.apache.spark.sql.comet.shims.ShimCometTPCDSQuerySuite
 
 import org.apache.comet.CometConf
 
 class CometTPCDSQuerySuite
     extends {
-      // This is private in `TPCDSBase`.
-      val excludedTpcdsQueries: Seq[String] = Seq()
+      override val excludedTpcdsQueries: Set[String] = Set()
 
       // This is private in `TPCDSBase` and `excludedTpcdsQueries` is private too.
       // So we cannot override `excludedTpcdsQueries` to exclude the queries.
@@ -145,7 +145,8 @@ class CometTPCDSQuerySuite
       override val tpcdsQueries: Seq[String] =
         tpcdsAllQueries.filterNot(excludedTpcdsQueries.contains)
     }
-    with TPCDSQueryTestSuite {
+    with TPCDSQueryTestSuite
+    with ShimCometTPCDSQuerySuite {
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf.set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")

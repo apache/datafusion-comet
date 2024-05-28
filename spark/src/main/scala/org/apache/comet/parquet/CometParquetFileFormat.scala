@@ -37,7 +37,6 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
@@ -144,7 +143,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
         isCaseSensitive,
         useFieldId,
         ignoreMissingIds,
-        datetimeRebaseSpec.mode == LegacyBehaviorPolicy.CORRECTED,
+        datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
         JavaConverters.mapAsJavaMap(metrics))
@@ -161,7 +160,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
   }
 }
 
-object CometParquetFileFormat extends Logging {
+object CometParquetFileFormat extends Logging with ShimSQLConf {
 
   /**
    * Populates Parquet related configurations from the input `sqlConf` to the `hadoopConf`
@@ -210,7 +209,7 @@ object CometParquetFileFormat extends Logging {
         case _ => false
       })
 
-    if (hasDateOrTimestamp && datetimeRebaseSpec.mode == LegacyBehaviorPolicy.LEGACY) {
+    if (hasDateOrTimestamp && datetimeRebaseSpec.mode == LEGACY) {
       if (exceptionOnRebase) {
         logWarning(
           s"""Found Parquet file $file that could potentially contain dates/timestamps that were
@@ -222,7 +221,7 @@ object CometParquetFileFormat extends Logging {
               calendar, please disable Comet for this query.""")
       } else {
         // do not throw exception on rebase - read as it is
-        datetimeRebaseSpec = datetimeRebaseSpec.copy(LegacyBehaviorPolicy.CORRECTED)
+        datetimeRebaseSpec = datetimeRebaseSpec.copy(CORRECTED)
       }
     }
 
