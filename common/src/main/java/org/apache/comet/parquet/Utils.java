@@ -19,6 +19,7 @@
 
 package org.apache.comet.parquet;
 
+import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
@@ -28,26 +29,29 @@ public class Utils {
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
+      CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
       boolean useLazyMaterialization) {
     // TODO: support `useLegacyDateTimestamp` for Iceberg
     return getColumnReader(
-        type, descriptor, batchSize, useDecimal128, useLazyMaterialization, true);
+        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
   }
 
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
+      CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
       boolean useLazyMaterialization,
       boolean useLegacyDateTimestamp) {
     if (useLazyMaterialization && supportLazyMaterialization(type)) {
       return new LazyColumnReader(
-          type, descriptor, batchSize, useDecimal128, useLegacyDateTimestamp);
+          type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
     } else {
-      return new ColumnReader(type, descriptor, batchSize, useDecimal128, useLegacyDateTimestamp);
+      return new ColumnReader(
+          type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
     }
   }
 
