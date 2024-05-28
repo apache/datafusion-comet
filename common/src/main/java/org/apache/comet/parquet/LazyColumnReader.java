@@ -21,6 +21,7 @@ package org.apache.comet.parquet;
 
 import java.io.IOException;
 
+import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.page.PageReader;
 import org.apache.spark.sql.types.DataType;
@@ -45,10 +46,11 @@ public class LazyColumnReader extends ColumnReader {
   public LazyColumnReader(
       DataType sparkReadType,
       ColumnDescriptor descriptor,
+      CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
       boolean useLegacyDateTimestamp) {
-    super(sparkReadType, descriptor, batchSize, useDecimal128, useLegacyDateTimestamp);
+    super(sparkReadType, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
     this.batchSize = 0; // the batch size is set later in `readBatch`
     this.vector = new CometLazyVector(sparkReadType, this, useDecimal128);
   }
