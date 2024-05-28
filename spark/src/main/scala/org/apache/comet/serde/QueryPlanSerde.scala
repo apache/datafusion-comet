@@ -2438,10 +2438,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
-          // DataFusion HashJoin LeftAnti has bugs on null keys.
-          withInfo(join, "BuildRight with LeftAnti is not supported")
-          return None
+        join match {
+          case b: BroadcastHashJoinExec if b.isNullAwareAntiJoin =>
+            // DataFusion HashJoin LeftAnti has bugs on null keys.
+            withInfo(join, "DataFusion doesn't support null-aware anti join")
+            return None
+          case _ => // no-op
         }
 
         val condition = join.condition.map { cond =>
