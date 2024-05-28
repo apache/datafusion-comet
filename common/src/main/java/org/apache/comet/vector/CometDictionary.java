@@ -26,7 +26,7 @@ import org.apache.spark.unsafe.types.UTF8String;
 public class CometDictionary implements AutoCloseable {
   private static final int DECIMAL_BYTE_WIDTH = 16;
 
-  private final CometPlainVector values;
+  private CometPlainVector values;
   private final int numValues;
 
   /** Decoded dictionary values. Only one of the following is set. */
@@ -45,6 +45,13 @@ public class CometDictionary implements AutoCloseable {
     this.values = values;
     this.numValues = values.numValues();
     initialize();
+  }
+
+  public void setDictionaryVector(CometPlainVector values) {
+    this.values = values;
+    if (values.numValues() != numValues) {
+      throw new IllegalArgumentException("Mismatched dictionary size");
+    }
   }
 
   public ValueVector getValueVector() {
