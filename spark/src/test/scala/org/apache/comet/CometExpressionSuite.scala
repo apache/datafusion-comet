@@ -1478,6 +1478,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // without ANSI mode
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "false",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true") {
       checkSparkMaybeThrows(sql("select a, -a from t")) match {
@@ -1490,6 +1491,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // with ANSI mode
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true") {
       checkSparkMaybeThrows(sql("select a, -a from t")) match {
