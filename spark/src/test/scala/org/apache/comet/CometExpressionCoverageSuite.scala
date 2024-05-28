@@ -69,7 +69,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
   // Tests to run manually as its syntax is different from usual or nested
   val manualTests: Map[String, (String, String)] = Map(
     "!" -> ("select true a", "select ! true from tbl"),
-    "%" -> ("select 1 a, 2 b", "select a + b from tbl"),
+    "%" -> ("select 1 a, 2 b", "select a % b from tbl"),
     "&" -> ("select 1 a, 2 b", "select a & b from tbl"),
     "*" -> ("select 1 a, 2 b", "select a * b from tbl"),
     "+" -> ("select 1 a, 2 b", "select a + b from tbl"),
