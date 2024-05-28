@@ -587,8 +587,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values(3,'Robert_R_Williams')")
 
       // Filter column having values that include underscores
-      val query = sql("select id from names where name like '%$_%' escape '$'")
-      checkAnswer(query, Row(2) :: Row(3) :: Nil)
+      val queryDefaultEscape = sql("select id from names where name like '%\\_%'")
+      checkAnswer(queryDefaultEscape, Row(2) :: Row(3) :: Nil)
+
+      val queryCustomEscape = sql("select id from names where name like '%$_%' escape '$'")
+      checkAnswer(queryCustomEscape, Row(2) :: Row(3) :: Nil)
+
     }
   }
 

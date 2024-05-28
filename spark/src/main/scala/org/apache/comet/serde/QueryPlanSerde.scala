@@ -981,23 +981,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
             None
           }
 
-        case Like(left, right, escapeChar) if escapeChar == '\\' =>
-          // TODO escapeChar
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+        case Like(left, right, escapeChar) =>
+          if (escapeChar == '\\') {
+            val leftExpr = exprToProtoInternal(left, inputs)
+            val rightExpr = exprToProtoInternal(right, inputs)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Like.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
+            if (leftExpr.isDefined && rightExpr.isDefined) {
+              val builder = ExprOuterClass.Like.newBuilder()
+              builder.setLeft(leftExpr.get)
+              builder.setRight(rightExpr.get)
 
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setLike(builder)
-                .build())
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setLike(builder)
+                  .build())
+            } else {
+              withInfo(expr, left, right)
+              None
+            }
           } else {
-            withInfo(expr, left, right)
+            // TODO custom escape char
+            withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
             None
           }
 
