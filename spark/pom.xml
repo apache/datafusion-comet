@@ -252,6 +252,8 @@ under the License.
               <sources>
                 <source>src/test/${additional.3_3.test.source}</source>
                 <source>src/test/${additional.3_4.test.source}</source>
+                <source>src/test/${shims.majorVerSrc}</source>
+                <source>src/test/${shims.minorVerSrc}</source>
               </sources>
             </configuration>
           </execution>

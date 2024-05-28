@@ -27,9 +27,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.comet.CometConf
 
 /**
- * This test suite contains tests for only Spark 3.4.
+ * This test suite contains tests for only Spark 3.4+.
  */
-class CometExec3_4Suite extends CometTestBase {
+class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit

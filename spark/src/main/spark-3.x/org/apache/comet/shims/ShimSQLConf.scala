@@ -20,6 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 
 trait ShimSQLConf {
 
@@ -39,4 +40,7 @@ trait ShimSQLConf {
           case _ => None
         })
       .head
+
+  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
+  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
 }
