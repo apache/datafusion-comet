@@ -588,7 +588,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       // Filter column having values that include underscores
       val queryDefaultEscape = sql("select id from names where name like '%\\_%'")
-      checkAnswer(queryDefaultEscape, Row(2) :: Row(3) :: Nil)
+      checkSparkAnswerAndOperator(queryDefaultEscape)
 
       val queryCustomEscape = sql("select id from names where name like '%$_%' escape '$'")
       checkAnswer(queryCustomEscape, Row(2) :: Row(3) :: Nil)
