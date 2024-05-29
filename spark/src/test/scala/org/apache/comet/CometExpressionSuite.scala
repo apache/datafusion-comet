@@ -1470,33 +1470,51 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   test("unary negative integer overflow test") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      val df =
-        Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(path.toString)
-      withParquetTable(path.toString, "t") {
-        // without ANSI mode
-        withSQLConf(
-          SQLConf.ANSI_ENABLED.key -> "false",
-          CometConf.COMET_ANSI_MODE_ENABLED.key -> "false",
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-          checkSparkAnswerAndOperator(sql("select a, -a from t"))
-        }
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
 
-        // with ANSI mode
-        withSQLConf(
-          SQLConf.ANSI_ENABLED.key -> "true",
-          CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-          checkSparkMaybeThrows(sql("select a, -a from t")) match {
-            case (Some(sparkException), Some(cometException)) =>
-              assert(sparkException.getMessage.contains("integer overflow"))
-              assert(cometException.getMessage.contains("integer overflow"))
-            case _ =>
-              fail("Exception should be thrown")
-          }
+    def checkOverflow(query: String): Unit = {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains("integer overflow"))
+          assert(cometException.getMessage.contains("integer overflow"))
+        case (None, None) =>
+          fail("Exception should be thrown")
+        case (None, Some(_)) =>
+          fail("Comet threw an exception but Spark did not")
+        case (Some(_), None) =>
+          fail("Spark threw an exception but Comet did not")
+      }
+    }
+
+    def runArrayTest(query: String, path: String): Unit = {
+      withParquetTable(path, "t") {
+        withAnsiMode(enabled = false) {
+          checkSparkAnswerAndOperator(sql(query))
+        }
+        withAnsiMode(enabled = true) {
+          checkOverflow(query)
+        }
+      }
+    }
+
+    withTempDir { dir =>
+      // Array values test
+      val arrayPath = new Path(dir.toURI.toString, "array_test.parquet").toString
+      Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(arrayPath)
+      val arrayQuery = "select a, -a from t"
+      runArrayTest(arrayQuery, arrayPath)
+
+      withTable("t") {
+        sql("create table t(a int) using parquet")
+        sql("insert into t values (-2147483648)")
+        withAnsiMode(enabled = true) {
+          checkOverflow("select a, -a from t")
         }
       }
     }
