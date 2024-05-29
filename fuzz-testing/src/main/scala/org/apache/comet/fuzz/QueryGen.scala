@@ -68,12 +68,12 @@ object QueryGen {
     if (groupingCols.isEmpty) {
       s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
         s"FROM $tableName " +
-        s"ORDER BY ${args.mkString(", ")}"
+        s"ORDER BY ${args.mkString(", ")};"
     } else {
       s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
         s"FROM $tableName " +
         s"GROUP BY ${groupingCols.mkString(",")} " +
-        s"ORDER BY ${groupingCols.mkString(", ")}"
+        s"ORDER BY ${groupingCols.mkString(", ")};"
     }
   }
 
@@ -88,7 +88,7 @@ object QueryGen {
     // Example SELECT c0, log(c0) as x FROM test0
     s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
-      s"ORDER BY ${args.mkString(", ")}"
+      s"ORDER BY ${args.mkString(", ")};"
   }
 
   private def generateJoin(r: Random, spark: SparkSession, numFiles: Int): String = {
