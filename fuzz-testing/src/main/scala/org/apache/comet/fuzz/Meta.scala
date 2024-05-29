@@ -62,15 +62,10 @@ object Meta {
     Function("reverse", 1),
     Function("in_str", 2),
     Function("replace", 2),
-    Function("translate", 2)
-  )
+    Function("translate", 2))
 
-  val dateScalarFunc: Seq[Function] = Seq(
-    Function("year", 1),
-    Function("hour", 1),
-    Function("minute", 1),
-    Function("second", 1)
-  )
+  val dateScalarFunc: Seq[Function] =
+    Seq(Function("year", 1), Function("hour", 1), Function("minute", 1), Function("second", 1))
 
   val mathScalarFunc: Seq[Function] = Seq(
     Function("abs", 1),
@@ -90,8 +85,7 @@ object Meta {
     Function("Sqrt", 1),
     Function("Tan", 1),
     Function("Ceil", 1),
-    Function("Floor", 1)
-  )
+    Function("Floor", 1))
 
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++ mathScalarFunc
 

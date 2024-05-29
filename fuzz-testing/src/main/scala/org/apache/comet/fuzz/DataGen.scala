@@ -19,7 +19,7 @@
 
 package org.apache.comet.fuzz
 
-import java.math.BigDecimal
+import java.math.{BigDecimal, RoundingMode}
 import java.nio.charset.Charset
 import java.sql.Timestamp
 
@@ -120,7 +120,8 @@ object DataGen {
           }
         })
       case dt: DecimalType =>
-        Range(0, numRows).map(_ => new BigDecimal(r.nextDouble()).setScale(dt.scale))
+        Range(0, numRows).map(_ =>
+          new BigDecimal(r.nextDouble()).setScale(dt.scale, RoundingMode.HALF_UP))
       case DataTypes.StringType =>
         Range(0, numRows).map(_ => {
           r.nextInt(10) match {
@@ -133,6 +134,7 @@ object DataGen {
         })
       case DataTypes.BinaryType =>
         generateColumn(r, DataTypes.StringType, numRows)
+          .filterNot(_ == null)
           .map(_.asInstanceOf[String].getBytes(Charset.defaultCharset()))
       case DataTypes.DateType =>
         Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))

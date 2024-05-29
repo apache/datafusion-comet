@@ -85,6 +85,7 @@ object QueryGen {
     val args = Range(0, func.num_args)
       .map(_ => Utils.randomChoice(table.columns, r))
 
+    // Example SELECT c0, log(c0) as x FROM test0
     s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
       s"ORDER BY ${args.mkString(", ")}"

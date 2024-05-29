@@ -89,7 +89,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.all.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.columnar.shuffle.enabled=true \
+    --conf spark.comet.exec.shuffle.mode=auto \
     --jars $COMET_JAR \
     --driver-class-path $COMET_JAR \
     --class org.apache.comet.fuzz.Main \
@@ -97,4 +97,4 @@ $SPARK_HOME/bin/spark-submit \
     run --num-files=2 --filename=queries.sql
 ```
 
-Note that the output filename is currently hard-coded as `results.md`
+Note that the output filename is currently hard-coded as `results-${System.currentTimeMillis()}.md`
