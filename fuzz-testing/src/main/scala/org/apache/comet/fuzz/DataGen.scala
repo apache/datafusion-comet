@@ -134,8 +134,12 @@ object DataGen {
         })
       case DataTypes.BinaryType =>
         generateColumn(r, DataTypes.StringType, numRows)
-          .filterNot(_ == null)
-          .map(_.asInstanceOf[String].getBytes(Charset.defaultCharset()))
+          .map {
+            case x: String =>
+              x.getBytes(Charset.defaultCharset())
+            case _ =>
+              null
+          }
       case DataTypes.DateType =>
         Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
       case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
