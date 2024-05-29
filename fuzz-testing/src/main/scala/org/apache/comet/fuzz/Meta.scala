@@ -32,16 +32,14 @@ object Meta {
     (DataTypes.LongType, 0.2),
     (DataTypes.FloatType, 0.2),
     (DataTypes.DoubleType, 0.2),
-    // TODO add Decimal support
-    // (DataTypes.createDecimalType(10,2), 0.2),
+    (DataTypes.createDecimalType(10, 2), 0.2),
     (DataTypes.DateType, 0.2),
     (DataTypes.TimestampType, 0.2),
     (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.2))
 
-  val scalarFunc: Seq[Function] = Seq(
-    // string
+  val stringScalarFunc: Seq[Function] = Seq(
     Function("substring", 3),
     Function("coalesce", 1),
     Function("starts_with", 2),
@@ -64,13 +62,17 @@ object Meta {
     Function("reverse", 1),
     Function("in_str", 2),
     Function("replace", 2),
-    Function("translate", 2),
-    // date
+    Function("translate", 2)
+  )
+
+  val dateScalarFunc: Seq[Function] = Seq(
     Function("year", 1),
     Function("hour", 1),
     Function("minute", 1),
-    Function("second", 1),
-    // math
+    Function("second", 1)
+  )
+
+  val mathScalarFunc: Seq[Function] = Seq(
     Function("abs", 1),
     Function("acos", 1),
     Function("asin", 1),
@@ -88,7 +90,10 @@ object Meta {
     Function("Sqrt", 1),
     Function("Tan", 1),
     Function("Ceil", 1),
-    Function("Floor", 1))
+    Function("Floor", 1)
+  )
+
+  val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++ mathScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
     Function("min", 1),

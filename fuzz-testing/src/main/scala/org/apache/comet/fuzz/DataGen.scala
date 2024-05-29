@@ -19,13 +19,14 @@
 
 package org.apache.comet.fuzz
 
+import java.math.BigDecimal
 import java.nio.charset.Charset
 import java.sql.Timestamp
 
 import scala.util.Random
 
 import org.apache.spark.sql.{Row, SaveMode, SparkSession}
-import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
 
 object DataGen {
 
@@ -118,6 +119,8 @@ object DataGen {
             case _ => r.nextDouble()
           }
         })
+      case dt: DecimalType =>
+        Range(0, numRows).map(_ => new BigDecimal(r.nextDouble()).setScale(dt.scale))
       case DataTypes.StringType =>
         Range(0, numRows).map(_ => {
           r.nextInt(10) match {
