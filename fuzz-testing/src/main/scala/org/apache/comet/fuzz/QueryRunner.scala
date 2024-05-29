@@ -87,7 +87,7 @@ object QueryRunner {
                       case (a, b) => a == b
                     }
                     if (!same) {
-                      w.write(s"## $sql\n\n")
+                      showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
                       w.write("Spark: `" + l.mkString(",") + "`\n")
@@ -98,7 +98,7 @@ object QueryRunner {
                   i += 1
                 }
               } else {
-                w.write(s"## $sql\n\n")
+                showSQL(w, sql)
                 showPlans(w, sparkPlan, cometPlan)
                 w.write(
                   s"[ERROR] Spark produced ${sparkRows.length} rows and " +
@@ -107,7 +107,7 @@ object QueryRunner {
             } catch {
               case e: Exception =>
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
-                w.write(s"## $sql\n\n")
+                showSQL(w, sql)
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}\n")
             }
 
@@ -118,7 +118,7 @@ object QueryRunner {
             case e: Exception =>
               // we expect many generated queries to be invalid
               if (showFailedSparkQueries) {
-                w.write(s"## $sql\n\n")
+                showSQL(w, sql)
                 w.write(s"Query failed in Spark: ${e.getMessage}\n")
               }
           }
@@ -128,6 +128,26 @@ object QueryRunner {
       w.close()
       querySource.close()
     }
+  }
+
+  private def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
+    w.write("## SQL\n")
+    w.write("```\n")
+    val words = sql.split(" ")
+    val currentLine = new StringBuilder
+    for (word <- words) {
+      if (currentLine.length + word.length + 1 > maxLength) {
+        w.write(currentLine.toString.trim)
+        w.write("\n")
+        currentLine.setLength(0)
+      }
+      currentLine.append(word).append(" ")
+    }
+    if (currentLine.nonEmpty) {
+      w.write(currentLine.toString.trim)
+      w.write("\n")
+    }
+    w.write("```\n")
   }
 
   private def showPlans(w: BufferedWriter, sparkPlan: String, cometPlan: String): Unit = {
