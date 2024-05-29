@@ -54,6 +54,22 @@ fn arithmetic_overflow_error(from_type: &str) -> CometError {
     }
 }
 
+macro_rules! check_overflow {
+    ($array:expr, $array_type:ty, $min_val:expr, $max_val:expr, $type_name:expr) => {
+        {
+            let typed_array = $array
+                .as_any()
+                .downcast_ref::<$array_type>()
+                .expect(concat!(stringify!($array_type), " expected"));
+            for i in 0..typed_array.len() {
+                if typed_array.value(i) == $min_val || typed_array.value(i) == $max_val {
+                    return Err(arithmetic_overflow_error($type_name).into());
+                }
+            }
+        }
+    };
+}
+
 impl NegativeExpr {
     /// Create new not expression
     pub fn new(arg: Arc<dyn PhysicalExpr>, eval_mode: EvalMode) -> Self {
@@ -92,135 +108,23 @@ impl PhysicalExpr for NegativeExpr {
             ColumnarValue::Array(array) => {
                 if self.eval_mode == EvalMode::Ansi {
                     match array.data_type() {
-                        DataType::Int8 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Int8Array>()
-                                .expect("Int8Array");
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) == i8::MIN || int_array.value(i) == i8::MAX {
-                                    return Err(arithmetic_overflow_error("integer").into());
-                                }
-                            }
-                        }
-                        DataType::Int16 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Int16Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) == i16::MIN || int_array.value(i) == i16::MAX
-                                {
-                                    return Err(arithmetic_overflow_error("integer").into());
-                                }
-                            }
-                        }
-                        DataType::Int32 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Int32Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) == i32::MIN || int_array.value(i) == i32::MAX
-                                {
-                                    return Err(arithmetic_overflow_error("integer").into());
-                                }
-                            }
-                        }
-                        DataType::Int64 => {
-                            let int_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Int64Array>()
-                                .unwrap();
-                            for i in 0..int_array.len() {
-                                if int_array.value(i) == i64::MIN || int_array.value(i) == i64::MAX
-                                {
-                                    return Err(arithmetic_overflow_error("integer").into());
-                                }
-                            }
-                        }
-                        DataType::Float32 => {
-                            let float_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Float32Array>()
-                                .unwrap();
-                            for i in 0..float_array.len() {
-                                if float_array.value(i) <= f32::MIN
-                                    || float_array.value(i) >= f32::MAX
-                                {
-                                    return Err(arithmetic_overflow_error("float").into());
-                                }
-                            }
-                        }
-                        DataType::Float64 => {
-                            let float_array = array
-                                .as_any()
-                                .downcast_ref::<arrow::array::Float64Array>()
-                                .unwrap();
-                            for i in 0..float_array.len() {
-                                if float_array.value(i) <= f64::MIN
-                                    || float_array.value(i) >= f64::MAX
-                                {
-                                    return Err(arithmetic_overflow_error("float").into());
-                                }
-                            }
-                        }
+                        DataType::Int8 => check_overflow!(array, arrow::array::Int8Array, i8::MIN, i8::MAX, "integer"),
+                        DataType::Int16 => check_overflow!(array, arrow::array::Int16Array, i16::MIN, i16::MAX, "integer"),
+                        DataType::Int32 => check_overflow!(array, arrow::array::Int32Array, i32::MIN, i32::MAX, "integer"),
+                        DataType::Int64 => check_overflow!(array, arrow::array::Int64Array, i64::MIN, i64::MAX, "integer"),
+                        DataType::Float32 => check_overflow!(array, arrow::array::Float32Array, f32::MIN, f32::MAX, "float"),
+                        DataType::Float64 => check_overflow!(array, arrow::array::Float64Array, f64::MIN, f64::MAX, "float"),
                         DataType::Interval(value) => {
-                            // Downcast the array to the appropriate interval type
                             match value {
-                                arrow::datatypes::IntervalUnit::YearMonth => {
-                                    let interval_array = array
-                                        .as_any()
-                                        .downcast_ref::<arrow::array::IntervalYearMonthArray>()
-                                        .unwrap();
-                                    for i in 0..interval_array.len() {
-                                        if interval_array.value(i) == i32::MIN
-                                            || interval_array.value(i) == i32::MAX
-                                        {
-                                            return Err(
-                                                arithmetic_overflow_error("interval").into()
-                                            );
-                                        }
-                                    }
-                                }
-                                arrow::datatypes::IntervalUnit::DayTime => {
-                                    let interval_array = array
-                                        .as_any()
-                                        .downcast_ref::<arrow::array::IntervalDayTimeArray>()
-                                        .unwrap();
-                                    for i in 0..interval_array.len() {
-                                        if interval_array.value(i) == i64::MIN
-                                            || interval_array.value(i) == i64::MAX
-                                        {
-                                            return Err(
-                                                arithmetic_overflow_error("interval").into()
-                                            );
-                                        }
-                                    }
-                                }
-                                arrow::datatypes::IntervalUnit::MonthDayNano => {
-                                    let interval_array = array
-                                        .as_any()
-                                        .downcast_ref::<arrow::array::IntervalMonthDayNanoArray>()
-                                        .unwrap();
-                                    for i in 0..interval_array.len() {
-                                        if interval_array.value(i) == i128::MIN
-                                            || interval_array.value(i) == i128::MAX
-                                        {
-                                            return Err(
-                                                arithmetic_overflow_error("interval").into()
-                                            );
-                                        }
-                                    }
-                                }
+                                arrow::datatypes::IntervalUnit::YearMonth => check_overflow!(array, arrow::array::IntervalYearMonthArray, i32::MIN, i32::MAX, "interval"),
+                                arrow::datatypes::IntervalUnit::DayTime => check_overflow!(array, arrow::array::IntervalDayTimeArray, i64::MIN, i64::MAX, "interval"),
+                                arrow::datatypes::IntervalUnit::MonthDayNano => check_overflow!(array, arrow::array::IntervalMonthDayNanoArray, i128::MIN, i128::MAX, "interval"),
                             }
-                        }
-                        _ => {
-                            unimplemented!(
-                                "Overflow error: cannot negate value of type {:?}",
-                                array.data_type()
-                            );
-                        }
+                        },
+                        _ => unimplemented!(
+                            "Overflow error: cannot negate value of type {:?}",
+                            array.data_type()
+                        ),
                     }
                 }
                 let result = neg_wrapping(array.as_ref())?;
