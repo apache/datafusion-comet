@@ -55,77 +55,11 @@ object QueryGen {
     w.close()
   }
 
-  val scalarFunc: Seq[Function] = Seq(
-    // string
-    Function("substring", 3),
-    Function("coalesce", 1),
-    Function("starts_with", 2),
-    Function("ends_with", 2),
-    Function("contains", 2),
-    Function("ascii", 1),
-    Function("bit_length", 1),
-    Function("octet_length", 1),
-    Function("upper", 1),
-    Function("lower", 1),
-    Function("chr", 1),
-    Function("init_cap", 1),
-    Function("trim", 1),
-    Function("ltrim", 1),
-    Function("rtrim", 1),
-    Function("btrim", 1),
-    Function("concat_ws", 2),
-    Function("repeat", 2),
-    Function("length", 1),
-    Function("reverse", 1),
-    Function("in_str", 2),
-    Function("replace", 2),
-    Function("translate", 2),
-    // date
-    Function("year", 1),
-    Function("hour", 1),
-    Function("minute", 1),
-    Function("second", 1),
-    // math
-    Function("abs", 1),
-    Function("acos", 1),
-    Function("asin", 1),
-    Function("atan", 1),
-    Function("Atan2", 1),
-    Function("Cos", 1),
-    Function("Exp", 2),
-    Function("Ln", 1),
-    Function("Log10", 1),
-    Function("Log2", 1),
-    Function("Pow", 2),
-    Function("Round", 1),
-    Function("Signum", 1),
-    Function("Sin", 1),
-    Function("Sqrt", 1),
-    Function("Tan", 1),
-    Function("Ceil", 1),
-    Function("Floor", 1))
-
-  val aggFunc: Seq[Function] = Seq(
-    Function("min", 1),
-    Function("max", 1),
-    Function("count", 1),
-    Function("avg", 1),
-    Function("sum", 1),
-    Function("first", 1),
-    Function("last", 1),
-    Function("var_pop", 1),
-    Function("var_samp", 1),
-    Function("covar_pop", 1),
-    Function("covar_samp", 1),
-    Function("stddev_pop", 1),
-    Function("stddev_samp", 1),
-    Function("corr", 2))
-
   private def generateAggregate(r: Random, spark: SparkSession, numFiles: Int): String = {
     val tableName = s"test${r.nextInt(numFiles)}"
     val table = spark.table(tableName)
 
-    val func = Utils.randomChoice(aggFunc, r)
+    val func = Utils.randomChoice(Meta.aggFunc, r)
     val args = Range(0, func.num_args)
       .map(_ => Utils.randomChoice(table.columns, r))
 
@@ -147,7 +81,7 @@ object QueryGen {
     val tableName = s"test${r.nextInt(numFiles)}"
     val table = spark.table(tableName)
 
-    val func = Utils.randomChoice(scalarFunc, r)
+    val func = Utils.randomChoice(Meta.scalarFunc, r)
     val args = Range(0, func.num_args)
       .map(_ => Utils.randomChoice(table.columns, r))
 

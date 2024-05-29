@@ -47,25 +47,9 @@ object DataGen {
       numRows: Int,
       numColumns: Int): Unit = {
 
-    val dataTypes = Seq(
-      (DataTypes.BooleanType, 0.2),
-      (DataTypes.ByteType, 0.2),
-      (DataTypes.ShortType, 0.2),
-      (DataTypes.IntegerType, 0.2),
-      (DataTypes.LongType, 0.2),
-      (DataTypes.FloatType, 0.2),
-      (DataTypes.DoubleType, 0.2),
-      //TODO add Decimal support
-      //(DataTypes.createDecimalType(10,2), 0.2),
-      (DataTypes.DateType, 0.2),
-      (DataTypes.TimestampType, 0.2),
-      (DataTypes.TimestampNTZType, 0.2),
-      (DataTypes.StringType, 0.2),
-      (DataTypes.BinaryType, 0.2))
-
     // generate schema using random data types
     val fields = Range(0, numColumns)
-      .map(i => StructField(s"c$i", Utils.randomWeightedChoice(dataTypes), nullable = true))
+      .map(i => StructField(s"c$i", Utils.randomWeightedChoice(Meta.dataTypes), nullable = true))
     val schema = StructType(fields)
 
     // generate columnar data
@@ -83,7 +67,9 @@ object DataGen {
   def generateColumn(r: Random, dataType: DataType, numRows: Int): Seq[Any] = {
     dataType match {
       case DataTypes.BooleanType =>
-        generateColumn(r, DataTypes.LongType, numRows).map(_.asInstanceOf[Long].toShort).map(s => s%2 ==0)
+        generateColumn(r, DataTypes.LongType, numRows)
+          .map(_.asInstanceOf[Long].toShort)
+          .map(s => s % 2 == 0)
       case DataTypes.ByteType =>
         generateColumn(r, DataTypes.LongType, numRows).map(_.asInstanceOf[Long].toByte)
       case DataTypes.ShortType =>
@@ -143,7 +129,8 @@ object DataGen {
           }
         })
       case DataTypes.BinaryType =>
-        generateColumn(r, DataTypes.StringType, numRows).map(_.asInstanceOf[String].getBytes(Charset.defaultCharset()))
+        generateColumn(r, DataTypes.StringType, numRows)
+          .map(_.asInstanceOf[String].getBytes(Charset.defaultCharset()))
       case DataTypes.DateType =>
         Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
       case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
