@@ -26,6 +26,23 @@ Although it is a simple tool it has already been useful in finding many bugs.
 
 Comet Fuzz is inspired by the [SparkFuzz](https://ir.cwi.nl/pub/30222) paper from Databricks and CWI.
 
+## Roadmap
+
+Planned areas of improvement:
+
+- Support for all data types, expressions, and operators supported by Comet
+- Explicit casts
+- Unary and binary arithmetic expressions
+- IF and CASE WHEN expressions
+- Complex (nested) expressions
+- Literal scalar values in queries
+- Add option to avoid grouping and sorting on floating-point columns
+- Improve join query support:
+  - Support joins without join keys
+  - Support composite join keys
+  - Support multiple join keys
+  - Support join conditions that use expressions
+
 ## Usage
 
 Build the jar file first.

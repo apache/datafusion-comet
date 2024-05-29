@@ -46,10 +46,6 @@ object QueryGen {
         case 0 => generateJoin(r, spark, numFiles)
         case 1 => generateAggregate(r, spark, numFiles)
         case 2 => generateScalar(r, spark, numFiles)
-        // TODO add explicit casts
-        // TODO add unary and binary arithmetic expressions
-        // TODO add IF and CASE WHEN expressions
-        // TODO support nested expressions
       }
       if (!uniqueQueries.contains(sql)) {
         uniqueQueries += sql
@@ -131,16 +127,13 @@ object QueryGen {
 
     val func = Utils.randomChoice(aggFunc, r)
     val args = Range(0, func.num_args)
-      // TODO support using literals as well as columns
       .map(_ => Utils.randomChoice(table.columns, r))
 
-    // TODO avoid grouping and sorting on floating-point columns
     val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
 
     if (groupingCols.isEmpty) {
       s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
         s"FROM $tableName " +
-        // TODO avoid sorting on floating-point columns
         s"ORDER BY ${args.mkString(", ")}"
     } else {
       s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
@@ -156,12 +149,10 @@ object QueryGen {
 
     val func = Utils.randomChoice(scalarFunc, r)
     val args = Range(0, func.num_args)
-      // TODO support using literals as well as columns
       .map(_ => Utils.randomChoice(table.columns, r))
 
     s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
-      // TODO avoid sorting on floating-point columns
       s"ORDER BY ${args.mkString(", ")}"
   }
 
@@ -171,16 +162,12 @@ object QueryGen {
     val leftTable = spark.table(leftTableName)
     val rightTable = spark.table(rightTableName)
 
-    // TODO support no join keys
-    // TODO support multiple join keys
-    // TODO support join conditions that use expressions
     val leftCol = Utils.randomChoice(leftTable.columns, r)
     val rightCol = Utils.randomChoice(rightTable.columns, r)
 
     val joinTypes = Seq(("INNER", 0.4), ("LEFT", 0.3), ("RIGHT", 0.3))
     val joinType = Utils.randomWeightedChoice(joinTypes)
 
-    // TODO avoid sorting on floating-point columns
     val leftColProjection = leftTable.columns.map(c => s"l.$c").mkString(", ")
     val rightColProjection = rightTable.columns.map(c => s"r.$c").mkString(", ")
     "SELECT " +
