@@ -142,7 +142,7 @@ object DataGen {
           }
       case DataTypes.DateType =>
         Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
-      case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
+      case DataTypes.TimestampType | dataType.typeName == "timestamp_ntz" =>
         Range(0, numRows).map(_ => new Timestamp(1716645600011L + r.nextInt()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }

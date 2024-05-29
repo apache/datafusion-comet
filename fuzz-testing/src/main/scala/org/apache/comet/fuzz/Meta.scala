@@ -35,6 +35,7 @@ object Meta {
     // (DataTypes.createDecimalType(10, 2), 0.2),
     (DataTypes.DateType, 0.2),
     (DataTypes.TimestampType, 0.2),
+    // TimestampNTZType only in Spark 3.4+
     // (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2)
     // (DataTypes.BinaryType, 0.2)
