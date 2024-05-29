@@ -1038,6 +1038,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
   test("hex") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1052,6 +1053,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
   test("unhex") {
     // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
     // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
