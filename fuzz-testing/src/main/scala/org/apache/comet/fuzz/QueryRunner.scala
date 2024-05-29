@@ -23,7 +23,7 @@ import java.io.{BufferedWriter, FileWriter}
 
 import scala.io.Source
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{Row, SparkSession}
 
 object QueryRunner {
 
@@ -84,14 +84,15 @@ object QueryRunner {
                       case (a: Double, b: Double) if a.isInfinity => b.isInfinity
                       case (a: Double, b: Double) if a.isNaN => b.isNaN
                       case (a: Double, b: Double) => (a - b).abs <= 0.000001
+                      case (a: Array[Byte], b: Array[Byte]) => a.sameElements(b)
                       case (a, b) => a == b
                     }
                     if (!same) {
                       showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
-                      w.write("Spark: `" + l.mkString(",") + "`\n")
-                      w.write("Comet: `" + r.mkString(",") + "`\n")
+                      w.write("Spark: `" + formatRow(l) + "`\n")
+                      w.write("Comet: `" + formatRow(r) + "`\n")
                       i = sparkRows.length
                     }
                   }
@@ -128,6 +129,15 @@ object QueryRunner {
       w.close()
       querySource.close()
     }
+  }
+
+  private def formatRow(row: Row): String = {
+    row.toSeq
+      .map {
+        case v: Array[Byte] => v.mkString
+        case other => other.toString
+      }
+      .mkString(",")
   }
 
   private def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {

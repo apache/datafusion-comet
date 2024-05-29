@@ -25,20 +25,20 @@ import org.apache.spark.sql.types.DataTypes
 object Meta {
 
   val dataTypes: Seq[(DataType, Double)] = Seq(
-    (DataTypes.BooleanType, 0.2),
+    (DataTypes.BooleanType, 0.1),
     (DataTypes.ByteType, 0.2),
     (DataTypes.ShortType, 0.2),
     (DataTypes.IntegerType, 0.2),
     (DataTypes.LongType, 0.2),
     (DataTypes.FloatType, 0.2),
     (DataTypes.DoubleType, 0.2),
-    // (DataTypes.createDecimalType(10, 2), 0.2),
+    (DataTypes.createDecimalType(10, 2), 0.2),
     (DataTypes.DateType, 0.2),
     (DataTypes.TimestampType, 0.2),
     // TimestampNTZType only in Spark 3.4+
     // (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2),
-    (DataTypes.BinaryType, 0.2))
+    (DataTypes.BinaryType, 0.1))
 
   val stringScalarFunc: Seq[Function] = Seq(
     Function("substring", 3),
