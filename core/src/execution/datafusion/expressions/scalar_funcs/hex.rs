@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{as_dictionary_array, as_string_array},
+    array::{as_dictionary_array, as_largestring_array, as_string_array},
     datatypes::Int32Type,
 };
 use arrow_array::StringArray;
@@ -60,8 +60,18 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Array(Arc::new(hexed_array)))
             }
-            DataType::Utf8 | DataType::LargeUtf8 => {
+            DataType::Utf8 => {
                 let array = as_string_array(array);
+
+                let hexed: StringArray = array
+                    .iter()
+                    .map(|v| v.map(hex_bytes).transpose())
+                    .collect::<Result<_, _>>()?;
+
+                Ok(ColumnarValue::Array(Arc::new(hexed)))
+            }
+            DataType::LargeUtf8 => {
+                let array = as_largestring_array(array);
 
                 let hexed: StringArray = array
                     .iter()
