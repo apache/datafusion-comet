@@ -1471,32 +1471,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
   test("unary negative integer overflow test") {
     withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "int.parquet")
-      val df = Seq(Int.MaxValue, Int.MinValue).toDF("a")
-      df.write.mode("overwrite").parquet(path.toString)
-      spark.read.parquet(path.toString).createTempView("t")
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val df =
+        Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(path.toString)
+      withParquetTable(path.toString, "t") {
+        // without ANSI mode
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "false",
+          CometConf.COMET_ANSI_MODE_ENABLED.key -> "false",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          checkSparkAnswerAndOperator(sql("select a, -a from t"))
+        }
 
-      // without ANSI mode
-      withSQLConf(
-        SQLConf.ANSI_ENABLED.key -> "false",
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> "false",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true") {
-        checkSparkAnswerAndOperator(sql("select a, -a from t"))
-      }
-
-      // with ANSI mode
-      withSQLConf(
-        SQLConf.ANSI_ENABLED.key -> "true",
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true") {
-        checkSparkMaybeThrows(sql("select a, -a from t")) match {
-          case (Some(sparkException), Some(cometException)) =>
-            assert(sparkException.getMessage.contains("integer overflow"))
-            assert(cometException.getMessage.contains("integer overflow"))
-          case _ =>
-            fail("Exception should be thrown")
+        // with ANSI mode
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          checkSparkMaybeThrows(sql("select a, -a from t")) match {
+            case (Some(sparkException), Some(cometException)) =>
+              assert(sparkException.getMessage.contains("integer overflow"))
+              assert(cometException.getMessage.contains("integer overflow"))
+            case _ =>
+              fail("Exception should be thrown")
+          }
         }
       }
     }
