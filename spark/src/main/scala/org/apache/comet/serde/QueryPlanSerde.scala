@@ -54,6 +54,13 @@ import org.apache.comet.shims.ShimQueryPlanSerde
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
+
+  object ExecutionMode {
+    val ANSI = "ANSI"
+    val LEGACY = "LEGACY"
+    val TRY = "TRY"
+  }
+
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -691,7 +698,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case Cast(child, dt, timeZoneId, evalMode) =>
           val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
             // Spark 3.2 & 3.3 has ansiEnabled boolean
-            if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
+            if (evalMode.asInstanceOf[Boolean]) ExecutionMode.ANSI else ExecutionMode.LEGACY
           } else {
             // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
             evalMode.toString
@@ -1474,15 +1481,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, _) =>
+        case Abs(child, failOnErr) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val abs =
-              ExprOuterClass.Abs
-                .newBuilder()
-                .setChild(childExpr.get)
-                .build()
-            Some(Expr.newBuilder().setAbs(abs).build())
+            val evalModeStr = if (failOnErr) ExecutionMode.ANSI else ExecutionMode.LEGACY
+            val absBuilder = ExprOuterClass.Abs.newBuilder()
+            absBuilder.setChild(childExpr.get)
+            absBuilder.setEvalMode(evalModeStr)
+            Some(Expr.newBuilder().setAbs(absBuilder).build())
           } else {
             withInfo(expr, child)
             None
