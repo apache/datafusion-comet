@@ -111,8 +111,8 @@ impl PhysicalExpr for HourExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
@@ -205,8 +205,8 @@ impl PhysicalExpr for MinuteExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
@@ -299,8 +299,8 @@ impl PhysicalExpr for SecondExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
@@ -386,8 +386,8 @@ impl PhysicalExpr for DateTruncExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
@@ -511,8 +511,8 @@ impl PhysicalExpr for TimestampTruncExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(

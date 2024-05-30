@@ -96,8 +96,8 @@ impl ExecutionPlan for CometExpandExec {
         self.schema.clone()
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.child]
     }
 
     fn with_new_children(

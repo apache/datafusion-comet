@@ -77,7 +77,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
         self.child.children()
     }
 

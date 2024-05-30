@@ -248,7 +248,7 @@ impl ExecutionPlan for ScanExec {
         scan_schema(input_batch, &self.data_types)
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
