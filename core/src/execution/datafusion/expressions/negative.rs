@@ -55,13 +55,17 @@ fn arithmetic_overflow_error(from_type: &str) -> CometError {
 }
 
 macro_rules! check_overflow {
-    ($array:expr, $array_type:ty, $min_val:expr, $max_val:expr, $type_name:expr) => {{
+    ($array:expr, $array_type:ty, $min_val:expr, $type_name:expr) => {{
         let typed_array = $array
             .as_any()
             .downcast_ref::<$array_type>()
             .expect(concat!(stringify!($array_type), " expected"));
         for i in 0..typed_array.len() {
-            if typed_array.value(i) == $min_val || typed_array.value(i) == $max_val {
+            if typed_array.value(i) <= $min_val {
+                if $type_name == "byte" || $type_name == "short" {
+                    let value = typed_array.value(i).to_string() + " caused";
+                    return Err(arithmetic_overflow_error(value.as_str()).into());
+                }
                 return Err(arithmetic_overflow_error($type_name).into());
             }
         }
@@ -102,6 +106,9 @@ impl PhysicalExpr for NegativeExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let arg = self.arg.evaluate(batch)?;
+
+        // overflow checks only apply in ANSI mode
+        // datatypes supported are byte, short, integer, long, float, interval    
         match arg {
             ColumnarValue::Array(array) => {
                 if self.eval_mode == EvalMode::Ansi {
@@ -110,42 +117,30 @@ impl PhysicalExpr for NegativeExpr {
                             array,
                             arrow::array::Int8Array,
                             i8::MIN,
-                            i8::MAX,
-                            "integer"
+                            "byte"
                         ),
                         DataType::Int16 => check_overflow!(
                             array,
                             arrow::array::Int16Array,
                             i16::MIN,
-                            i16::MAX,
-                            "integer"
+                            "short"
                         ),
                         DataType::Int32 => check_overflow!(
                             array,
                             arrow::array::Int32Array,
                             i32::MIN,
-                            i32::MAX,
                             "integer"
                         ),
                         DataType::Int64 => check_overflow!(
                             array,
                             arrow::array::Int64Array,
                             i64::MIN,
-                            i64::MAX,
-                            "integer"
-                        ),
-                        DataType::Float32 => check_overflow!(
-                            array,
-                            arrow::array::Float32Array,
-                            f32::MIN,
-                            f32::MAX,
-                            "float"
+                            "long"
                         ),
                         DataType::Float64 => check_overflow!(
                             array,
                             arrow::array::Float64Array,
                             f64::MIN,
-                            f64::MAX,
                             "float"
                         ),
                         DataType::Interval(value) => match value {
@@ -153,59 +148,51 @@ impl PhysicalExpr for NegativeExpr {
                                 array,
                                 arrow::array::IntervalYearMonthArray,
                                 i32::MIN,
-                                i32::MAX,
                                 "interval"
                             ),
                             arrow::datatypes::IntervalUnit::DayTime => check_overflow!(
                                 array,
                                 arrow::array::IntervalDayTimeArray,
                                 i64::MIN,
-                                i64::MAX,
                                 "interval"
                             ),
                             arrow::datatypes::IntervalUnit::MonthDayNano => check_overflow!(
                                 array,
                                 arrow::array::IntervalMonthDayNanoArray,
                                 i128::MIN,
-                                i128::MAX,
                                 "interval"
                             ),
                         },
-                        _ => unimplemented!(
-                            "Overflow error: cannot negate value of type {:?}",
-                            array.data_type()
-                        ),
+                        _ => {
+                            // Overflow checks are not supported for other datatypes
+                        }
                     }
                 }
                 let result = neg_wrapping(array.as_ref())?;
                 Ok(ColumnarValue::Array(result))
             }
             ColumnarValue::Scalar(scalar) => {
+                println!("Scalar: {:?}", scalar);
                 if self.eval_mode == EvalMode::Ansi {
                     match scalar {
                         ScalarValue::Int8(value) => {
-                            if value == Some(i8::MIN) || value == Some(i8::MAX) {
-                                return Err(arithmetic_overflow_error("integer").into());
+                            if value == Some(i8::MIN) {
+                                return Err(arithmetic_overflow_error(" caused").into());
                             }
                         }
                         ScalarValue::Int16(value) => {
-                            if value == Some(i16::MIN) || value == Some(i16::MAX) {
-                                return Err(arithmetic_overflow_error("integer").into());
+                            if value == Some(i16::MIN) {
+                                return Err(arithmetic_overflow_error(" caused").into());
                             }
                         }
                         ScalarValue::Int32(value) => {
-                            if value == Some(i32::MIN) || value == Some(i32::MAX) {
+                            if value == Some(i32::MIN) {
                                 return Err(arithmetic_overflow_error("integer").into());
                             }
                         }
                         ScalarValue::Int64(value) => {
-                            if value == Some(i64::MIN) || value == Some(i64::MAX) {
-                                return Err(arithmetic_overflow_error("integer").into());
-                            }
-                        }
-                        ScalarValue::Float32(value) => {
-                            if value == Some(f32::MIN) || value == Some(f32::MAX) {
-                                return Err(arithmetic_overflow_error("float").into());
+                            if value == Some(i64::MIN) {
+                                return Err(arithmetic_overflow_error("long").into());
                             }
                         }
                         ScalarValue::Float64(value) => {
@@ -214,12 +201,12 @@ impl PhysicalExpr for NegativeExpr {
                             }
                         }
                         ScalarValue::IntervalDayTime(value) => {
-                            if value == Some(i64::MIN) || value == Some(i64::MAX) {
+                            if value == Some(i64::MIN) {
                                 return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
                         ScalarValue::IntervalYearMonth(value) => {
-                            if value == Some(i32::MIN) || value == Some(i32::MAX) {
+                            if value == Some(i32::MIN) {
                                 return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
@@ -229,10 +216,7 @@ impl PhysicalExpr for NegativeExpr {
                             }
                         }
                         _ => {
-                            unimplemented!(
-                                "Overflow error: cannot negate value of type {:?}",
-                                scalar
-                            );
+                            // Overflow checks are not supported for other datatypes
                         }
                     }
                 }
