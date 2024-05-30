@@ -24,6 +24,7 @@ pub mod if_expr;
 mod normalize_nan;
 pub mod scalar_funcs;
 pub use normalize_nan::NormalizeNaNAndZero;
+pub mod abs;
 pub mod avg;
 pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
@@ -37,3 +38,10 @@ pub mod sum_decimal;
 pub mod temporal;
 mod utils;
 pub mod variance;
+
+#[derive(Debug, Hash, PartialEq, Clone, Copy)]
+pub enum EvalMode {
+    Legacy,
+    Ansi,
+    Try,
+}
