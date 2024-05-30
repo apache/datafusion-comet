@@ -91,7 +91,7 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, JoinType, Operator},
+        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
@@ -981,7 +981,7 @@ impl PhysicalPlanner {
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
-                let hash_join = if join.build_side == 0 {
+                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
                     hash_join
                 } else {
                     swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
