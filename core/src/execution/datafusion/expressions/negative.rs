@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{errors::CometError, execution::datafusion::expressions::cast::EvalMode};
+use crate::errors::CometError;
 use arrow::compute::kernels::numeric::neg_wrapping;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
@@ -35,9 +35,9 @@ use std::{
 
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
-    eval_mode: EvalMode,
+    fail_on_error: bool,
 ) -> Result<Arc<dyn PhysicalExpr>, CometError> {
-    Ok(Arc::new(NegativeExpr::new(expr, eval_mode)))
+    Ok(Arc::new(NegativeExpr::new(expr, fail_on_error)))
 }
 
 /// Negative expression
@@ -45,7 +45,7 @@ pub fn create_negate_expr(
 pub struct NegativeExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
-    eval_mode: EvalMode,
+    fail_on_error: bool,
 }
 
 fn arithmetic_overflow_error(from_type: &str) -> CometError {
@@ -74,8 +74,8 @@ macro_rules! check_overflow {
 
 impl NegativeExpr {
     /// Create new not expression
-    pub fn new(arg: Arc<dyn PhysicalExpr>, eval_mode: EvalMode) -> Self {
-        Self { arg, eval_mode }
+    pub fn new(arg: Arc<dyn PhysicalExpr>, fail_on_error: bool) -> Self {
+        Self { arg, fail_on_error }
     }
 
     /// Get the input expression
@@ -108,41 +108,26 @@ impl PhysicalExpr for NegativeExpr {
         let arg = self.arg.evaluate(batch)?;
 
         // overflow checks only apply in ANSI mode
-        // datatypes supported are byte, short, integer, long, float, interval    
+        // datatypes supported are byte, short, integer, long, float, interval
         match arg {
             ColumnarValue::Array(array) => {
-                if self.eval_mode == EvalMode::Ansi {
+                if self.fail_on_error {
                     match array.data_type() {
-                        DataType::Int8 => check_overflow!(
-                            array,
-                            arrow::array::Int8Array,
-                            i8::MIN,
-                            "byte"
-                        ),
-                        DataType::Int16 => check_overflow!(
-                            array,
-                            arrow::array::Int16Array,
-                            i16::MIN,
-                            "short"
-                        ),
-                        DataType::Int32 => check_overflow!(
-                            array,
-                            arrow::array::Int32Array,
-                            i32::MIN,
-                            "integer"
-                        ),
-                        DataType::Int64 => check_overflow!(
-                            array,
-                            arrow::array::Int64Array,
-                            i64::MIN,
-                            "long"
-                        ),
-                        DataType::Float64 => check_overflow!(
-                            array,
-                            arrow::array::Float64Array,
-                            f64::MIN,
-                            "float"
-                        ),
+                        DataType::Int8 => {
+                            check_overflow!(array, arrow::array::Int8Array, i8::MIN, "byte")
+                        }
+                        DataType::Int16 => {
+                            check_overflow!(array, arrow::array::Int16Array, i16::MIN, "short")
+                        }
+                        DataType::Int32 => {
+                            check_overflow!(array, arrow::array::Int32Array, i32::MIN, "integer")
+                        }
+                        DataType::Int64 => {
+                            check_overflow!(array, arrow::array::Int64Array, i64::MIN, "long")
+                        }
+                        DataType::Float64 => {
+                            check_overflow!(array, arrow::array::Float64Array, f64::MIN, "float")
+                        }
                         DataType::Interval(value) => match value {
                             arrow::datatypes::IntervalUnit::YearMonth => check_overflow!(
                                 array,
@@ -172,8 +157,7 @@ impl PhysicalExpr for NegativeExpr {
                 Ok(ColumnarValue::Array(result))
             }
             ColumnarValue::Scalar(scalar) => {
-                println!("Scalar: {:?}", scalar);
-                if self.eval_mode == EvalMode::Ansi {
+                if self.fail_on_error {
                     match scalar {
                         ScalarValue::Int8(value) => {
                             if value == Some(i8::MIN) {
@@ -235,7 +219,7 @@ impl PhysicalExpr for NegativeExpr {
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(NegativeExpr::new(
             children[0].clone(),
-            self.eval_mode,
+            self.fail_on_error,
         )))
     }
 
