@@ -84,10 +84,14 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
     ">=" -> ("select 1 a, 2 b", "select a >= b from tbl"),
     "^" -> ("select 1 a, 2 b", "select a ^ b from tbl"),
     "|" -> ("select 1 a, 2 b", "select a | b from tbl"),
+    "try_multiply" -> ("select 2000000 a, 30000000 b", "select try_multiply(a, b) from tbl"),
+    "try_add" -> ("select 2147483647 a, 1 b", "select try_add(a, b) from tbl"),
+    "try_subtract" -> ("select cast(-2147483647 as int) a, cast(1 as int) b", "select try_subtract(a, b) from tbl"),
     "stack" -> ("select 1 a, 2 b", "select stack(1, a, b) from tbl"),
     "~" -> ("select 1 a", "select ~ a from tbl"),
     "unhex" -> ("select '537061726B2053514C' a", "select unhex(a) from tbl"),
     "when" -> ("select 1 a, 2 b, 3 c, 4 d", "select case a > b then c else d end from tbl"),
+    "case" -> ("select 1 a, 2 b, 3 c, 4 d", "select case a when 1 then c else d end from tbl"),
     "transform_values" -> ("select array(1, 2, 3) a", "select transform_values(map_from_arrays(a, a), (k, v) -> v + 1) from tbl"),
     "transform_keys" -> ("select array(1, 2, 3) a", "select transform_keys(map_from_arrays(a, a), (k, v) -> v + 1) from tbl"),
     "transform" -> ("select array(1, 2, 3) a", "select transform(a, (k, v) -> v + 1) from tbl"),
@@ -128,7 +132,6 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
       .filter(_.getSource.toLowerCase == "built-in")
-      // .filter(_.getName == "curdate")
       .filter(f => !outofRoadmapFuncs.contains(f.getName.toLowerCase))
       .map(f => {
         val selectRows = queryPattern.findAllMatchIn(f.getExamples).map(_.group(0)).toList
@@ -247,6 +250,16 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                 CoverageResultDetails(
                   cometMessage =
                     "Unsupported: Expected only Comet native operators but found Spark fallback",
+                  datafusionMessage = dfMessage.getOrElse("")),
+                group = func.group)
+
+            case e: TestFailedException
+                if e.getMessage.contains("Results do not match for query") =>
+              CoverageResult(
+                q,
+                CoverageResultStatus.Failed,
+                CoverageResultDetails(
+                  cometMessage = "Unsupported: Results do not match for query",
                   datafusionMessage = dfMessage.getOrElse("")),
                 group = func.group)
 

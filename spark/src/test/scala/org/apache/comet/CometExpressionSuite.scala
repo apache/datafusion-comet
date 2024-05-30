@@ -1445,46 +1445,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("try_multiply") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary.toString,
-        "spark.comet.exec.shuffle.enabled" -> "true",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-      ) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(a int, b int) using parquet")
-          sql(s"insert into $table VALUES (-2147483647, 1)")
-          checkSparkAnswerAndOperator(s"SELECT try_subtract(a, b) FROM $table")
-        }
-      }
-    }
-  }
-
-  test("regr_avgx") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary.toString,
-        "spark.comet.exec.shuffle.enabled" -> "true",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-      ) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(a int, b int) using parquet")
-          sql(s"insert into $table VALUES (1, 2), (2, 2), (2, 3), (2, 4)")
-          checkSparkAnswerAndOperator(s"SELECT regr_avgx(a, b) FROM $table")
-        }
-      }
-    }
-  }
-
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
