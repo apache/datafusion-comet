@@ -17,17 +17,21 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.shims
+
+import org.apache.comet.shims.ShimFileFormat
 
 import scala.language.implicitConversions
+
+import org.apache.hadoop.fs.{FileStatus, Path}
 
 import org.apache.spark.{SparkContext, SparkException}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFactory}
-import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
+import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, PartitionDirectory, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -63,7 +67,7 @@ trait ShimCometScanExec {
 
   // TODO: remove after dropping Spark 3.2 support and directly call new FileScanRDD
   protected def newFileScanRDD(
-      sparkSession: SparkSession,
+      fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
       filePartitions: Seq[FilePartition],
       readSchema: StructType,
@@ -73,12 +77,12 @@ trait ShimCometScanExec {
       .filter(c => List(3, 5, 6).contains(c.getParameterCount()) )
       .map { c =>
         c.getParameterCount match {
-          case 3 => c.newInstance(sparkSession, readFunction, filePartitions)
+          case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
           case 5 =>
-            c.newInstance(sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
+            c.newInstance(fsRelation.sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
           case 6 =>
             c.newInstance(
-              sparkSession,
+              fsRelation.sparkSession,
               readFunction,
               filePartitions,
               readSchema,
@@ -123,4 +127,15 @@ trait ShimCometScanExec {
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = {
     findRowIndexColumnIndexInSchema(sparkSchema) >= 0
   }
+
+  protected def getPartitionedFile(f: FileStatus, p: PartitionDirectory): PartitionedFile =
+    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+
+  protected def splitFiles(sparkSession: SparkSession,
+                           file: FileStatus,
+                           filePath: Path,
+                           isSplitable: Boolean,
+                           maxSplitBytes: Long,
+                           partitionValues: InternalRow): Seq[PartitionedFile] =
+    PartitionedFileUtil.splitFiles(sparkSession, file, filePath, isSplitable, maxSplitBytes, partitionValues)
 }

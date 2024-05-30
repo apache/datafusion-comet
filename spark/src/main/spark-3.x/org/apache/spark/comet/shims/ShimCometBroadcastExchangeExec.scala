@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.comet.shims
 
 import scala.reflect.ClassTag
 

@@ -37,7 +37,6 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.FilePartitionReaderFactory
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -135,7 +134,7 @@ case class CometParquetPartitionReaderFactory(
         isCaseSensitive,
         useFieldId,
         ignoreMissingIds,
-        datetimeRebaseSpec.mode == LegacyBehaviorPolicy.CORRECTED,
+        datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
         JavaConverters.mapAsJavaMap(metrics))

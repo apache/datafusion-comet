@@ -234,7 +234,11 @@ public class ColumnReader extends AbstractColumnReader {
       Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
       CometPlainVector dictionaryVector =
           new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
-      dictionary = new CometDictionary(dictionaryVector);
+      if (dictionary != null) {
+        dictionary.setDictionaryVector(dictionaryVector);
+      } else {
+        dictionary = new CometDictionary(dictionaryVector);
+      }
 
       currentVector =
           new CometDictionaryVector(
