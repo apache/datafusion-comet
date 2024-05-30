@@ -284,8 +284,8 @@ fn create_xxhash64_hashes_dictionary<K: ArrowDictionaryKeyType>(
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
 ///
-/// `hash_method` is the hash function to use
-/// `create_dictionary_hash_method` is the function to create hashes for dictionary arrays input
+/// `hash_method` is the hash function to use.
+/// `create_dictionary_hash_method` is the function to create hashes for dictionary arrays input.
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident) => {
         for (i, col) in $arrays.iter().enumerate() {
