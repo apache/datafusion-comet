@@ -329,9 +329,9 @@
  - [x] sqrt
  - [x] tan
  - [ ] tanh
- - [x] try_add
+ - [ ] try_add
  - [x] try_divide
- - [x] try_multiply
+ - [ ] try_multiply
  - [x] try_subtract
  - [x] unhex
  - [ ] width_bucket
