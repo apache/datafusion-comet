@@ -39,6 +39,7 @@ use datafusion::{
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        coalesce_batches::CoalesceBatchesExec,
         filter::FilterExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
@@ -725,7 +726,11 @@ impl PhysicalPlanner {
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
-                Ok((scans, Arc::new(ProjectionExec::try_new(exprs?, child)?)))
+
+                let projection = Arc::new(ProjectionExec::try_new(exprs?, child)?);
+                let coalesced: Arc<dyn ExecutionPlan> =
+                    Arc::new(CoalesceBatchesExec::new(projection, 4196));
+                Ok((scans, coalesced))
             }
             OpStruct::Filter(filter) => {
                 assert!(children.len() == 1);
