@@ -29,9 +29,13 @@ public class CometDictionary implements AutoCloseable {
   private CometPlainVector values;
   private final int numValues;
 
+  /** Decoded dictionary values. We only need to copy values for decimal type. */
+  private ByteArrayWrapper[] binaries;
+
   public CometDictionary(CometPlainVector values) {
     this.values = values;
     this.numValues = values.numValues();
+    initialize();
   }
 
   public void setDictionaryVector(CometPlainVector values) {
@@ -79,9 +83,7 @@ public class CometDictionary implements AutoCloseable {
       case FIXEDSIZEBINARY:
         return values.getBinary(index);
       case DECIMAL:
-        byte[] bytes = new byte[DECIMAL_BYTE_WIDTH];
-        bytes = values.copyBinaryDecimal(index, bytes);
-        return bytes;
+        return binaries[index].bytes;
       default:
         throw new IllegalArgumentException(
             "Invalid Arrow minor type: " + values.getValueVector().getMinorType());
@@ -95,6 +97,23 @@ public class CometDictionary implements AutoCloseable {
   @Override
   public void close() {
     values.close();
+  }
+
+  private void initialize() {
+    switch (values.getValueVector().getMinorType()) {
+      case DECIMAL:
+        // We only need to copy values for decimal type as random access
+        // to the dictionary is not efficient for decimal (it needs to copy
+        // the value to a new byte array everytime).
+        binaries = new ByteArrayWrapper[numValues];
+        for (int i = 0; i < numValues; i++) {
+          // Need copying here since we re-use byte array for decimal
+          byte[] bytes = new byte[DECIMAL_BYTE_WIDTH];
+          bytes = values.copyBinaryDecimal(i, bytes);
+          binaries[i] = new ByteArrayWrapper(bytes);
+        }
+        break;
+    }
   }
 
   private static class ByteArrayWrapper {
