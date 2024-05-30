@@ -500,7 +500,7 @@ impl PhysicalPlanner {
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
                 let eval_mode = Self::eval_mode_from_str(expr.eval_mode.as_str(), false)?;
-                let comet_abs = ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode));
+                let comet_abs = ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode, return_type.to_string()));
                 let scalar_def = ScalarFunctionDefinition::UDF(Arc::new(comet_abs));
                 
                 let expr =
