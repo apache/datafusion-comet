@@ -24,7 +24,6 @@ use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    functions::math,
     logical_expr::{
         BuiltinScalarFunction, Operator as DataFusionOperator, ScalarFunctionDefinition,
     },
@@ -48,6 +47,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_physical_expr::udf::ScalarUDF;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -65,7 +65,7 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::{Cast, EvalMode},
+                cast::Cast,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
                 covariance::Covariance,
@@ -94,6 +94,8 @@ use crate::{
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
+
+use super::expressions::{abs::CometAbsFunc, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -146,6 +148,17 @@ impl PhysicalPlanner {
             exec_context_id,
             execution_props: self.execution_props,
             session_ctx: self.session_ctx.clone(),
+        }
+    }
+
+    fn eval_mode_from_str(eval_mode_str: &str, allow_try: bool) -> Result<EvalMode, ExecutionError> {
+        match eval_mode_str {
+            "ANSI" => Ok(EvalMode::Ansi),
+            "LEGACY" => Ok(EvalMode::Legacy),
+            "TRY" if allow_try => Ok(EvalMode::Try),
+            other => Err(ExecutionError::GeneralError(format!(
+                "Invalid EvalMode: \"{other}\""
+            ))),
         }
     }
 
@@ -348,16 +361,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match expr.eval_mode.as_str() {
-                    "ANSI" => EvalMode::Ansi,
-                    "TRY" => EvalMode::Try,
-                    "LEGACY" => EvalMode::Legacy,
-                    other => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Invalid Cast EvalMode: \"{other}\""
-                        )))
-                    }
-                };
+                let eval_mode = Self::eval_mode_from_str(expr.eval_mode.as_str(), true)?;
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
@@ -495,8 +499,10 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let scalar_def = ScalarFunctionDefinition::UDF(math::abs());
-
+                let eval_mode = Self::eval_mode_from_str(expr.eval_mode.as_str(), false)?;
+                let comet_abs = ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode));
+                let scalar_def = ScalarFunctionDefinition::UDF(Arc::new(comet_abs));
+                
                 let expr =
                     ScalarFunctionExpr::new("abs", scalar_def, args, return_type, None, false);
                 Ok(Arc::new(expr))
