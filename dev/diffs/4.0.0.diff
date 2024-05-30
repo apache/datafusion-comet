@@ -418,7 +418,7 @@ index b2aaaceb26a..625522f36ae 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 49a33d1c925..53027acc595 100644
+index 49a33d1c925..9a540abd0c2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterTha
@@ -441,7 +441,7 @@ index 49a33d1c925..53027acc595 100644
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
@@ -449,7 +449,7 @@ index 49a33d1c925..53027acc595 100644
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
@@ -863,10 +863,10 @@ index 10a32441b6c..5e5d763ee70 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index 8238eabc7fe..37c4dfae5f2 100644
+index 8238eabc7fe..c960fd75a9e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-@@ -31,9 +31,11 @@ import org.mockito.Mockito.{mock, spy, when}
+@@ -31,7 +31,7 @@ import org.mockito.Mockito.{mock, spy, when}
  import org.scalatest.time.SpanSugar._
  
  import org.apache.spark._
@@ -874,12 +874,8 @@ index 8238eabc7fe..37c4dfae5f2 100644
 +import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, Encoder, IgnoreComet, KryoData, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.FunctionIdentifier
  import org.apache.spark.sql.catalyst.analysis.{NamedParameter, UnresolvedGenerator}
-+import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
-+import org.apache.spark.sql.catalyst.util.BadRecordException
  import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
- import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Concat, CreateArray, EmptyRow, Expression, Flatten, Grouping, Literal, RowNumber, UnaryExpression}
- import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
-@@ -266,7 +268,8 @@ class QueryExecutionErrorsSuite
+@@ -266,7 +266,8 @@ class QueryExecutionErrorsSuite
    }
  
    test("INCONSISTENT_BEHAVIOR_CROSS_VERSION: " +
@@ -2020,14 +2016,14 @@ index 3573bafe482..a21767840a2 100644
                  assert(scans.isEmpty)
                }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
-index 6f897a9c0b7..0bbbb13f8b3 100644
+index 6f897a9c0b7..b0723634f68 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
 @@ -20,6 +20,7 @@ package org.apache.spark.sql.sources
  import java.io.File
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.{AnalysisException, IgnoreCometSuite}
++import org.apache.spark.sql.IgnoreCometSuite
  import org.apache.spark.sql.catalyst.TableIdentifier
  import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTableType}
  import org.apache.spark.sql.catalyst.parser.ParseException

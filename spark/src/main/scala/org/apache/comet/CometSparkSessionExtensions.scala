@@ -716,7 +716,7 @@ class CometSparkSessionExtensions
       // enabled.
       if (isANSIEnabled(conf)) {
         if (COMET_ANSI_MODE_ENABLED.get()) {
-          logWarning("Using Comet's experimental support for ANSI mode.")
+          logInfo("Using Comet's experimental support for ANSI mode.")
         } else {
           logInfo("Comet extension disabled for ANSI mode")
           return plan
