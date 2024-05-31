@@ -125,9 +125,6 @@ impl PhysicalExpr for NegativeExpr {
                         DataType::Int64 => {
                             check_overflow!(array, arrow::array::Int64Array, i64::MIN, "long")
                         }
-                        DataType::Float64 => {
-                            check_overflow!(array, arrow::array::Float64Array, f64::MIN, "float")
-                        }
                         DataType::Interval(value) => match value {
                             arrow::datatypes::IntervalUnit::YearMonth => check_overflow!(
                                 array,
@@ -139,12 +136,6 @@ impl PhysicalExpr for NegativeExpr {
                                 array,
                                 arrow::array::IntervalDayTimeArray,
                                 i64::MIN,
-                                "interval"
-                            ),
-                            arrow::datatypes::IntervalUnit::MonthDayNano => check_overflow!(
-                                array,
-                                arrow::array::IntervalMonthDayNanoArray,
-                                i128::MIN,
                                 "interval"
                             ),
                         },
@@ -191,11 +182,6 @@ impl PhysicalExpr for NegativeExpr {
                         }
                         ScalarValue::IntervalYearMonth(value) => {
                             if value == Some(i32::MIN) {
-                                return Err(arithmetic_overflow_error("interval").into());
-                            }
-                        }
-                        ScalarValue::IntervalMonthDayNano(value) => {
-                            if value == Some(i128::MIN) || value == Some(i128::MAX) {
                                 return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
