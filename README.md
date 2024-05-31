@@ -31,7 +31,8 @@ Spark ecosystem without requiring any code changes.
 Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.
 
 The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format 
-using a single executor with 8 cores.
+using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
+for details of the environment used for these benchmarks.
 
 When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, a 1.5x speedup.
 

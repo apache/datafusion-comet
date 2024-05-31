@@ -25,7 +25,8 @@ benchmarking documentation and scripts are available in the [DataFusion Benchmar
 Here are example commands for running the benchmarks against a Spark cluster. This command will need to be 
 adapted based on the Spark environment and location of data files.
 
-This command assumes that `datafusion-benchmarks` is checked out in a parallel directory to `datafusion-comet`.
+These commands are intended to be run from the `runners/datafusion-comet` directory in the `datafusion-benchmarks` 
+repository.
 
 ## Running Benchmarks Against Apache Spark
 
@@ -33,10 +34,9 @@ This command assumes that `datafusion-benchmarks` is checked out in a parallel d
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
-    --conf spark.executor.memory=64G \
-    --conf spark.executor.cores=16 \
-    --conf spark.cores.max=16 \
-    --conf spark.eventLog.enabled=true \
+    --conf spark.executor.memory=32G \
+    --conf spark.executor.cores=8 \
+    --conf spark.cores.max=8 \
     --conf spark.sql.autoBroadcastJoinThreshold=-1 \
     tpcbench.py \
     --benchmark tpch \
@@ -52,9 +52,8 @@ $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
     --conf spark.executor.memory=64G \
-    --conf spark.executor.cores=16 \
-    --conf spark.cores.max=16 \
-    --conf spark.eventLog.enabled=true \
+    --conf spark.executor.cores=8 \
+    --conf spark.cores.max=8 \
     --conf spark.sql.autoBroadcastJoinThreshold=-1 \
     --jars $COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
@@ -77,3 +76,23 @@ $SPARK_HOME/bin/spark-submit \
     --queries ../../tpch/queries \
     --iterations 5
 ```
+
+## Current Performance
+
+Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup
+for many use cases.
+
+The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and 
+data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage 
+you to run these benchmarks in your own environments.
+
+![](../../_static/images/tpch_allqueries.png)
+
+Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
+
+![](../../_static/images/tpch_queries_compare.png)
+
+The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
+is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
+
+![](../../_static/images/tpch_queries_speedup.png)
