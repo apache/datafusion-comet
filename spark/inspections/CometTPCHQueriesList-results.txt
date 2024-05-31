@@ -1,8 +1,8 @@
-Query: q1 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q1 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometProject)
 Query: q1 TPCH Snappy: ExplainInfo:
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 
-Query: q2 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q2 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q2 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -10,7 +10,7 @@ ObjectHashAggregate is not supported
 SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q3 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q3 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q3 TPCH Snappy: ExplainInfo:
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 SortMergeJoin disabled because not all child plans are native
@@ -18,10 +18,10 @@ TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q4 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q4 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
-Query: q5 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q5 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q5 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -32,23 +32,27 @@ Query: q6 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, Com
 Query: q6 TPCH Snappy: ExplainInfo:
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 
-Query: q7 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q7 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q7 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
-Query: q8 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q8 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q8 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
-Query: q9 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q9 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q9 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 SortMergeJoin disabled because not all child plans are native
 
-Query: q10 TPCH Snappy. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q10 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q10 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -59,48 +63,50 @@ Query: q11 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q11 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
-Query: q12 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
+Query: q12 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q12 TPCH Snappy: ExplainInfo:
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q13 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q13 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q14 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q14 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q15 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q15 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q16 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q16 TPCH Snappy: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q17 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q17 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 SortMergeJoin disabled because not all child plans are native
 
-Query: q18 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter)
+Query: q18 TPCH Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q18 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q19 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q19 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q20 TPCH Snappy. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q20 TPCH Snappy: ExplainInfo:
@@ -117,11 +123,11 @@ ObjectHashAggregate is not supported
 SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q22 TPCH Snappy. Comet Exec: Disabled
+Query: q22 TPCH Snappy. Comet Exec: Enabled (CometProject)
 Query: q22 TPCH Snappy: ExplainInfo:
-BroadcastExchange is not supported
-Comet does not guarantee correct results for cast from DecimalType(12,2) to DecimalType(16,6) with timezone Some(Asia/Shanghai) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
+Comet does not guarantee correct results for cast from DecimalType(12,2) to DecimalType(16,6) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q1 TPCH Extended Snappy. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q1 TPCH Extended Snappy: ExplainInfo:

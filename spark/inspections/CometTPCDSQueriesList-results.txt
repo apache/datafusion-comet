@@ -2,14 +2,18 @@ Query: q1. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q1: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q2. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
 Query: q2: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
-Query: q3. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q3. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q3: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -19,19 +23,22 @@ Query: q4. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q4: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q5. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
 Query: q5: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
-Query: q6. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q6: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q7. Comet Exec: Enabled (CometFilter, CometProject)
@@ -40,10 +47,11 @@ BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q8. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q8. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q8: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q9. Comet Exec: Enabled (CometFilter)
@@ -55,12 +63,14 @@ Query: q10. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q10: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q11. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q11: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q12. Comet Exec: Enabled (CometFilter, CometProject)
@@ -79,6 +89,7 @@ Query: q14a. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q14a: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -86,6 +97,7 @@ Query: q14b. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q14b: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -93,29 +105,35 @@ Query: q15. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q15: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q16. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q16: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q17. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q17: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q18. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q18: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q19. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q19. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q19: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q20. Comet Exec: Enabled (CometFilter, CometProject)
@@ -141,12 +159,14 @@ Query: q23a. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q23a: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 Union disabled because not all child plans are native
 
 Query: q23b. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q23b: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -154,16 +174,21 @@ Query: q24a. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q24a: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q24b. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q24b: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q25. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q25: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q26. Comet Exec: Enabled (CometFilter, CometProject)
@@ -187,23 +212,27 @@ Query: q29. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q29: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q30. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q30: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q31. Comet Exec: Enabled (CometFilter)
 Query: q31: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q32. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q32: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q33. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q33: ExplainInfo:
@@ -216,11 +245,13 @@ Query: q34. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q34: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q35. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q35: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q36. Comet Exec: Enabled (CometFilter, CometProject)
@@ -230,31 +261,36 @@ Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is e
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q37. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q37. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q37: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q38. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q38: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q39a. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q39a: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q39b. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q39b: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q40. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q40: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q41. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
@@ -263,13 +299,13 @@ BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q42. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q42. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q42: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q43. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q43. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q43: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -279,6 +315,7 @@ Query: q44. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q44: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -286,18 +323,21 @@ Query: q45. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q45: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q46. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q46: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q47. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q47: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -310,6 +350,7 @@ Query: q49. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q49: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 Window is not supported
@@ -318,6 +359,7 @@ Query: q50. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q50: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q51. Comet Exec: Enabled (CometFilter, CometProject)
@@ -328,13 +370,13 @@ SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q52. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q52. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q52: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q53. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q53. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q53: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -345,9 +387,10 @@ Query: q54. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
 Query: q54: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q55. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q55. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q55: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -360,10 +403,11 @@ Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is e
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
-Query: q57. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q57: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -371,12 +415,15 @@ Query: q58. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q58: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q59. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q59: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q60. Comet Exec: Enabled (CometFilter, CometProject)
@@ -390,6 +437,8 @@ Query: q61. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q61: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q62. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q62: ExplainInfo:
@@ -397,7 +446,7 @@ BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q63. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q63. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q63: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -408,11 +457,13 @@ Query: q64. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q64: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q65. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q65: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q66. Comet Exec: Enabled (CometFilter, CometProject)
@@ -433,18 +484,21 @@ Query: q68. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q68: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q69. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q69: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q70. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q70: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -458,23 +512,28 @@ Query: q72. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q72: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q73. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q73: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q74. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q74: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q75. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q75: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -489,25 +548,30 @@ Query: q77. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q77: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
-Query: q78. Comet Exec: Enabled (CometFilter)
+Query: q78. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q78: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q79. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q79: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q80. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q80: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -515,29 +579,35 @@ Query: q81. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q81: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q82. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q82. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q82: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q83. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q83: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q84. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q84: ExplainInfo:
 BroadcastExchange is not supported
+Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q85. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q85: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q86. Comet Exec: Enabled (CometFilter, CometProject)
@@ -551,13 +621,14 @@ Query: q87. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q87: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q88. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q88: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 
-Query: q89. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q89. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q89: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
@@ -569,31 +640,40 @@ Query: q90: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 
-Query: q91. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q91. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q91: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q92. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q92: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q93. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q93: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q94. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q94: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q95. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q95: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q96. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q96: ExplainInfo:
@@ -622,19 +702,22 @@ Query: q5a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
 Query: q5a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
-Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q6-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q10a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q10a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -642,6 +725,7 @@ Query: q11-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q11-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q12-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
@@ -655,6 +739,7 @@ Query: q14-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q14-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -662,6 +747,7 @@ Query: q14a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q14a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -669,6 +755,7 @@ Query: q18a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q18a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -696,6 +783,8 @@ Query: q24-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q24-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 
 Query: q27a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q27a-v2.7: ExplainInfo:
@@ -708,17 +797,20 @@ Query: q34-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q34-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q35-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q35-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q35a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q35a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -730,10 +822,11 @@ TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 Window is not supported
 
-Query: q47-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q47-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -741,6 +834,7 @@ Query: q49-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q49-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 Window is not supported
@@ -753,10 +847,11 @@ SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q57-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q57-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
@@ -764,6 +859,7 @@ Query: q64-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q64-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 
 Query: q67a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q67a-v2.7: ExplainInfo:
@@ -777,6 +873,7 @@ Query: q70a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q70a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 Window is not supported
@@ -785,18 +882,22 @@ Query: q72-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q72-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q74-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q74-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q75-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q75-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
@@ -804,19 +905,23 @@ Query: q77a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q77a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
-Query: q78-v2.7. Comet Exec: Enabled (CometFilter)
+Query: q78-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q78-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q80a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q80a-v2.7: ExplainInfo:
 BroadcastExchange is not supported
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+ObjectHashAggregate is not supported
+SortMergeJoin disabled because not all child plans are native
 TakeOrderedAndProject requires shuffle to be enabled
 Union disabled because not all child plans are native
 
