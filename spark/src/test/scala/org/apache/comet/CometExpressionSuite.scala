@@ -850,6 +850,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("abs Overflow ansi mode") {
+    val data: Seq[(Int,Int)] = Seq((Int.MaxValue, Int.MinValue))
+    withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
+          case (Some(e1), Some(e2)) =>
+            val errorPattern = s""".+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
+            assert(errorPattern.findFirstIn(e1.getMessage).isDefined)
+            assert(errorPattern.findFirstIn(e2.getMessage).isDefined)
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("abs Overflow legacy mode") {
+    val data: Seq[(Int,Int)] = Seq((Int.MaxValue, Int.MinValue), (1, -1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+      }
+    }
+  }
+
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf(
