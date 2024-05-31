@@ -61,7 +61,7 @@ macro_rules! check_overflow {
             .downcast_ref::<$array_type>()
             .expect(concat!(stringify!($array_type), " expected"));
         for i in 0..typed_array.len() {
-            if typed_array.value(i) <= $min_val {
+            if typed_array.value(i) == $min_val {
                 if $type_name == "byte" || $type_name == "short" {
                     let value = typed_array.value(i).to_string() + " caused";
                     return Err(arithmetic_overflow_error(value.as_str()).into());
