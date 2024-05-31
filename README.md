@@ -21,7 +21,7 @@ under the License.
 
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
 [Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
-performance of Apache Spark workloads while leveraging existing commodity hardware and seamlessly integrating with the
+performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
 
 # Benefits of Using Comet
@@ -33,9 +33,9 @@ Comet delivers a performance speedup for many queries, enabling faster data proc
 The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format 
 using a single executor with 8 cores.
 
-When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, which is 1.5x faster.
+When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, a 1.5x speedup.
 
-When running DataFusion standalone (without Spark), the run time is 3.9x faster.
+Running DataFusion standalone (without Spark) with the same number of cores results in a 3.9x speedup compared to Spark.
 
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
 for many use cases.
@@ -55,11 +55,11 @@ These benchmarks can be reproduced in any environment using the documentation in
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
 you to run your own benchmarks.
 
-## Use Existing Hardware
+## Use Commodity Hardware
 
-Comet leverages your existing hardware infrastructure, eliminating the need for costly hardware upgrades or
-specialized hardware accelerators. By maximizing the utilization of commodity hardware, Comet ensures
-cost-effectiveness and scalability for your Spark deployments.
+Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or
+specialized hardware accelerators, such as GPUs or FGPA. By maximizing the utilization of commodity hardware, Comet 
+ensures cost-effectiveness and scalability for your Spark deployments.
 
 ## Spark Compatibility
 
