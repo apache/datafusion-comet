@@ -173,11 +173,6 @@ impl PhysicalExpr for NegativeExpr {
                                 return Err(arithmetic_overflow_error("long").into());
                             }
                         }
-                        ScalarValue::Float64(value) => {
-                            if value == Some(f64::MIN) || value == Some(f64::MAX) {
-                                return Err(arithmetic_overflow_error("float").into());
-                            }
-                        }
                         ScalarValue::IntervalDayTime(value) => {
                             if value == Some(i64::MIN) {
                                 return Err(arithmetic_overflow_error("interval").into());
@@ -235,6 +230,18 @@ impl PhysicalExpr for NegativeExpr {
         children: &[&Interval],
     ) -> Result<Option<Vec<Interval>>> {
         let child_interval = children[0];
+
+        if child_interval.lower() == &ScalarValue::Int32(Some(i32::MIN))
+            || child_interval.upper() == &ScalarValue::Int32(Some(i32::MIN))
+            || child_interval.lower() == &ScalarValue::Int64(Some(i64::MIN))
+            || child_interval.upper() == &ScalarValue::Int64(Some(i64::MIN))
+        {
+            return Err(CometError::ArithmeticOverflow {
+                from_type: "long".to_string(),
+            }
+            .into());
+        }
+
         let negated_interval = Interval::try_new(
             interval.upper().arithmetic_negate()?,
             interval.lower().arithmetic_negate()?,
