@@ -22,6 +22,7 @@ package org.apache.comet.parquet;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,6 +118,41 @@ public class BloomFilterReader implements FilterPredicate.Visitor<Boolean> {
 
   @Override
   public <T extends Comparable<T>> Boolean visit(Operators.GtEq<T> gtEq) {
+    return BLOCK_MIGHT_MATCH;
+  }
+
+  @Override
+  public <T extends Comparable<T>> Boolean visit(Operators.In<T> in) {
+    Set<T> values = in.getValues();
+
+    if (values.contains(null)) {
+      // the bloom filter bitset contains only non-null values so isn't helpful. this
+      // could check the column stats, but the StatisticsFilter is responsible
+      return BLOCK_MIGHT_MATCH;
+    }
+
+    Operators.Column<T> filterColumn = in.getColumn();
+    ColumnChunkMetaData meta = columns.get(filterColumn.getColumnPath());
+    if (meta == null) {
+      // the column isn't in this file so all values are null, but the value
+      // must be non-null because of the above check.
+      return BLOCK_CANNOT_MATCH;
+    }
+
+    BloomFilter bloomFilter = readBloomFilter(meta);
+    if (bloomFilter != null) {
+      for (T value : values) {
+        if (bloomFilter.findHash(bloomFilter.hash(value))) {
+          return BLOCK_MIGHT_MATCH;
+        }
+      }
+      return BLOCK_CANNOT_MATCH;
+    }
+    return BLOCK_MIGHT_MATCH;
+  }
+
+  @Override
+  public <T extends Comparable<T>> Boolean visit(Operators.NotIn<T> notIn) {
     return BLOCK_MIGHT_MATCH;
   }
 
