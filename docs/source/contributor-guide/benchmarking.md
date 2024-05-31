@@ -96,3 +96,10 @@ The following chart shows how much Comet currently accelerates each query from t
 is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
 
 ![](../../_static/images/tpch_queries_speedup.png)
+
+The raw results of these benchmarks in JSON format is available here:
+
+- [Spark](./benchmark-results/2024-05-30/spark-8-exec-5-runs.json)
+- [Comet](./benchmark-results/2024-05-30/comet-8-exec-5-runs.json)
+- [DataFusion](./benchmark-results/2024-05-30/datafusion-python-8-cores.json)
+ 
