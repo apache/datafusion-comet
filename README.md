@@ -35,7 +35,7 @@ using a single executor with 8 cores.
 
 When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, which is 1.5x faster.
 
-When running DataFusion standalone (without Spark), the run time is 3.9x faster.
+When running TPC-H queries with DataFusion standalone (without Spark), the overall  run time is 3.9x faster.
 
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
 for many use cases.
