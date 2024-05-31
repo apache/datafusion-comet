@@ -19,58 +19,84 @@ under the License.
 
 # Apache DataFusion Comet
 
-Apache DataFusion Comet is an Apache Spark plugin that uses [Apache DataFusion](https://datafusion.apache.org/)
-as native runtime to achieve improvement in terms of query efficiency and query runtime.
+Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
+[Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
+performance of Apache Spark workloads while leveraging existing commodity hardware and seamlessly integrating with the
+Spark ecosystem without requiring any code changes.
 
-Comet runs Spark SQL queries using the native DataFusion runtime, which is
-typically faster and more resource efficient than JVM based runtimes.
+# Benefits of Using Comet
 
-<a href="docs/source/_static/images/comet-overview.png"><img src="docs/source/_static/images/comet-system-diagram.png" align="center" width="500" ></a>
+## Run Spark Queries at DataFusion Speeds
 
-Comet aims to support:
+Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.
 
-- a native Parquet implementation, including both reader and writer
-- full implementation of Spark operators, including
-  Filter/Project/Aggregation/Join/Exchange etc.
-- full implementation of Spark built-in expressions
-- a UDF framework for users to migrate their existing UDF to native
+The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format 
+using a single executor with 8 cores.
 
-## Architecture
+When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, which is 1.5x faster.
 
-The following diagram illustrates the architecture of Comet:
+When running DataFusion standalone (without Spark), the run time is 3.9x faster.
 
-<a href="docs/source/_static/images/comet-overview.png"><img src="docs/source/_static/images/comet-overview.png" align="center" height="600" width="750" ></a>
+Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
+for many use cases.
 
-## Current Status
+![](docs/source/_static/images/tpch_allqueries.png)
 
-The project is currently integrated into Apache Spark 3.2, 3.3, and 3.4.
+Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
 
-## Feature Parity with Apache Spark
+![](docs/source/_static/images/tpch_queries_compare.png)
 
-The project strives to keep feature parity with Apache Spark, that is,
-users should expect the same behavior (w.r.t features, configurations,
-query results, etc) with Comet turned on or turned off in their Spark
-jobs. In addition, Comet extension should automatically detect unsupported
-features and fallback to Spark engine.
+The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
+is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
 
-To achieve this, besides unit tests within Comet itself, we also re-use
-Spark SQL tests and make sure they all pass with Comet extension
-enabled.
+![](docs/source/_static/images/tpch_queries_speedup.png)
 
-## Supported Platforms
+These benchmarks can be reproduced in any environment using the documentation in the 
+[Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
+you to run your own benchmarks.
 
-Linux, Apple OSX (Intel and M1)
+## Use Existing Hardware
 
-## Requirements
+Comet leverages your existing hardware infrastructure, eliminating the need for costly hardware upgrades or
+specialized hardware accelerators. By maximizing the utilization of commodity hardware, Comet ensures
+cost-effectiveness and scalability for your Spark deployments.
 
-- Apache Spark 3.2, 3.3, or 3.4
-- JDK 8, 11 and 17 (JDK 11 recommended because Spark 3.2 doesn't support 17)
-- GLIBC 2.17 (Centos 7) and up
+## Spark Compatibility
 
-## Getting started
+Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
+your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
+the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
 
-See the [DataFusion Comet User Guide](https://datafusion.apache.org/comet/user-guide/installation.html) for installation instructions.
+## Tight Integration with Apache DataFusion
+
+Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
+seamless interoperability between Comet and DataFusion, you can achieve optimal performance and efficiency in your
+Spark workloads.
+
+## Active Community
+
+Comet boasts a vibrant and active community of developers, contributors, and users dedicated to advancing the
+capabilities of Apache DataFusion and accelerating the performance of Apache Spark.
+
+## Getting Started
+
+To get started with Apache DataFusion Comet, follow the
+[installation instructions](https://datafusion.apache.org/comet/user-guide/installation.html). Join the
+[DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html) to connect
+with other users, ask questions, and share your experiences with Comet.
 
 ## Contributing
-See the [DataFusion Comet Contribution Guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html)
-for information on how to get started contributing to the project.
+
+We welcome contributions from the community to help improve and enhance Apache DataFusion Comet. Whether it's fixing
+bugs, adding new features, writing documentation, or optimizing performance, your contributions are invaluable in
+shaping the future of Comet. Check out our
+[contributor guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html) to get started.
+
+## License
+
+Apache DataFusion Comet is licensed under the Apache License 2.0. See the [LICENSE.txt](LICENSE.txt) file for details.
+
+## Acknowledgments
+
+We would like to express our gratitude to the Apache DataFusion community for their support and contributions to
+Comet. Together, we're building a faster, more efficient future for big data processing with Apache Spark.
