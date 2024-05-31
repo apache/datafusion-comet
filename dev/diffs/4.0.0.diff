@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 6bbcf05b59e..59300f94bef 100644
+index 36d12b9b528..4a459825eb2 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -147,6 +147,8 @@
@@ -11,7 +11,7 @@ index 6bbcf05b59e..59300f94bef 100644
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
-@@ -2844,6 +2846,25 @@
+@@ -2848,6 +2850,25 @@
          <artifactId>arpack</artifactId>
          <version>${netlib.ludovic.dev.version}</version>
        </dependency>
@@ -252,7 +252,7 @@ index f6fd6b501d7..11870c85d82 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-index f11ad230ec1..a1271bd51cd 100644
+index 760ee802608..db4dc90475e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 @@ -40,7 +40,7 @@ import org.apache.spark.sql.connector.FakeV2Provider
@@ -1624,10 +1624,10 @@ index 795e9f46a8d..5306c94a686 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 4fb8faa43a3..984fd1a9892 100644
+index 02e1c70cc8c..8b61d0ad2a7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1297,7 +1297,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1334,7 +1334,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2459,7 +2459,7 @@ index 4b000fff0eb..e867b6c0d9b 100644
        spark.sql(
          """
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index 3f8de93b330..e96c10bf789 100644
+index 3f8de93b330..fc06e81f41a 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 @@ -53,24 +53,53 @@ object TestHive
@@ -2507,7 +2507,7 @@ index 3f8de93b330..e96c10bf789 100644
 +        val v = System.getenv("ENABLE_COMET")
 +        if (v != null && v.toBoolean) {
 +          conf
-+            .set("spark.sql.extensions", "org.apache.spark.CometSparkSessionExtensions")
++            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
 +
 +          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")

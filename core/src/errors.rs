@@ -38,6 +38,7 @@ use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, js
 
 use crate::execution::operators::ExecutionError;
 use jni::JNIEnv;
+use jni::objects::{GlobalRef, JThrowable};
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
 use thiserror::Error;
@@ -156,7 +157,7 @@ pub enum CometError {
     },
 
     #[error("{class}: {msg}")]
-    JavaException { class: String, msg: String },
+    JavaException { class: String, msg: String, throwable: GlobalRef },
 }
 
 pub fn init() {
@@ -366,19 +367,28 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
     }
 }
 
-fn throw_exception<E: ToException>(env: &mut JNIEnv, error: &E, backtrace: Option<String>) {
+fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<String>) {
     // If there isn't already an exception?
     if env.exception_check().is_ok() {
         // ... then throw new exception
-        let exception = error.to_exception();
-        match backtrace {
-            Some(backtrace_string) => env.throw_new(
-                exception.class,
-                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-            ),
-            _ => env.throw_new(exception.class, exception.msg),
+        match error {
+            CometError::JavaException { class: _, msg: _, throwable } => {
+                let obj = env.new_local_ref(throwable).unwrap();
+                // let obj = env.alloc_object(JClass::from(obj)).unwrap();
+                env.throw(JThrowable::from(obj))
+            }
+            _ => {
+                let exception = error.to_exception();
+                match backtrace {
+                    Some(backtrace_string) => env.throw_new(
+                        exception.class,
+                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                    ),
+                    _ => env.throw_new(exception.class, exception.msg),
+                }
+            }
         }
-        .expect("Thrown exception")
+            .expect("Thrown exception")
     }
 }
 
