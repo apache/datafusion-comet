@@ -138,6 +138,9 @@ impl PhysicalExpr for NegativeExpr {
                                 i64::MIN,
                                 "interval"
                             ),
+                            arrow::datatypes::IntervalUnit::MonthDayNano => {
+                                // Overflow checks are not supported
+                            }
                         },
                         _ => {
                             // Overflow checks are not supported for other datatypes
