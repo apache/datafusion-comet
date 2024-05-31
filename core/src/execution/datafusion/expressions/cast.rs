@@ -62,7 +62,6 @@ static CAST_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
 
-
 #[derive(Debug, Hash)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,

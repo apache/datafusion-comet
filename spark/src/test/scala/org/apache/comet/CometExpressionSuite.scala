@@ -859,7 +859,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
           case (Some(e1), Some(e2)) =>
             val errorPattern =
-              s""".+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
+              """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
             assert(errorPattern.findFirstIn(e1.getMessage).isDefined)
             assert(errorPattern.findFirstIn(e2.getMessage).isDefined)
           case _ => fail("Exception should be thrown")
