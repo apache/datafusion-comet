@@ -1009,7 +1009,7 @@ impl PhysicalPlanner {
                     &join.left_join_keys,
                     &join.right_join_keys,
                     join.join_type,
-                    &None,
+                    &join.condition,
                 )?;
 
                 let sort_options = join
