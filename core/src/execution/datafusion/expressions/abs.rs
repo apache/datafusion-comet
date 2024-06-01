@@ -58,7 +58,7 @@ impl ScalarUDFImpl for CometAbsFunc {
     }
 
     fn signature(&self) -> &Signature {
-        &self.inner_abs_func.signature()
+        self.inner_abs_func.signature()
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType, DataFusionError> {
