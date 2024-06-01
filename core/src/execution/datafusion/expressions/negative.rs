@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::errors::CometError;
-use arrow::compute::kernels::numeric::neg_wrapping;
+use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeType};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
 use datafusion::{
@@ -174,7 +174,9 @@ impl PhysicalExpr for NegativeExpr {
                             }
                         }
                         ScalarValue::IntervalDayTime(value) => {
-                            if value == Some(i64::MIN) {
+                            let (days, ms) =
+                                IntervalDayTimeType::to_parts(value.unwrap_or_default());
+                            if days == i32::MIN || ms == i32::MIN {
                                 return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
