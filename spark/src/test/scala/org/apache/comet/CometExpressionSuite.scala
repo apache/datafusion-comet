@@ -19,13 +19,17 @@
 
 package org.apache.comet
 
+import java.sql.Date
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.util.IntervalUtils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType}
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DayTimeIntervalType, Decimal, DecimalType, StructField, StructType, YearMonthIntervalType}
+import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
@@ -1538,6 +1542,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .parquet(byteArrayPath)
       val byteArrayQuery = "select a, -a from t"
       runArrayTest(byteArrayQuery, " caused", byteArrayPath)
+
+      // interval values test
+      withTable("t_interval") {
+        spark.sql("CREATE TABLE t_interval(a STRING) USING PARQUET")
+        spark.sql("INSERT INTO t_interval VALUES ('INTERVAL 10000000000 YEAR')")
+        withAnsiMode(enabled = true) {
+          spark
+            .sql("SELECT CAST(a AS INTERVAL) AS a FROM t_interval")
+            .createOrReplaceTempView("t_interval_casted")
+          checkOverflow("SELECT a, -a FROM t_interval_casted", "interval")
+        }
+      }
 
       withTable("t") {
         sql("create table t(a int) using parquet")
