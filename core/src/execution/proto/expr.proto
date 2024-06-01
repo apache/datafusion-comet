@@ -243,9 +243,7 @@ message Cast {
   Expr child = 1;
   DataType datatype = 2;
   string timezone = 3;
-  // Depreciateid: LEGACY, ANSI, or TRY - preserved for backward compatibity
-  string eval_mode_string= 4; // for backward compatibility 
-  EvalMode eval_mode = 5; // New enum field
+  EvalMode eval_mode = 4; 
   
 }
 

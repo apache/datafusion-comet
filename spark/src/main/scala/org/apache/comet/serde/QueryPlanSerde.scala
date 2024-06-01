@@ -533,9 +533,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
       case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
       case "TRY" => ExprOuterClass.EvalMode.TRY
       case "ANSI" => ExprOuterClass.EvalMode.ANSI
-      case _ =>
+      case invalid =>
         throw new IllegalArgumentException(
-          "Invalid eval mode"
+          s"Invalid eval mode '$invalid' "
         ) // Assuming we want to catch errors strictly
     }
 
@@ -1223,7 +1223,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
-                    .setEvalMode(stringToEvalMode("LEGACY")) // year is not affected by ANSI mode
+                    .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
                     .build())
                 .build()
             })
