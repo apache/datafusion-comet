@@ -773,7 +773,7 @@ impl PhysicalPlanner {
                     .iter()
                     .enumerate()
                     .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
+                        self.create_expr(expr, aggregate.schema())
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
