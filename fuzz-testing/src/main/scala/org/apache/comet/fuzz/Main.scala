@@ -51,7 +51,6 @@ object Main {
 
   lazy val spark: SparkSession = SparkSession
     .builder()
-    .master("local[*]")
     .getOrCreate()
 
   def main(args: Array[String]): Unit = {
