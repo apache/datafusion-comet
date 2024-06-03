@@ -21,7 +21,6 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::derive_partial_eq_without_eq)] // For prost generated struct
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
-#![feature(specialization)]
 
 // Branch prediction hint. This is currently only available on nightly.
 #[cfg(feature = "nightly")]
