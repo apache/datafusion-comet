@@ -207,7 +207,7 @@ impl Default for SparkUnsafeRow {
 }
 
 impl SparkUnsafeRow {
-    fn new(schema: &[DataType]) -> Self {
+    fn new(schema: &Vec<DataType>) -> Self {
         Self {
             row_addr: -1,
             row_size: -1,
@@ -1046,7 +1046,7 @@ pub(crate) fn append_columns(
     row_sizes_ptr: *mut jint,
     row_start: usize,
     row_end: usize,
-    schema: &[DataType],
+    schema: &Vec<DataType>,
     column_idx: usize,
     builder: &mut Box<dyn ArrayBuilder>,
     prefer_dictionary_ratio: f64,
@@ -3283,7 +3283,7 @@ pub fn process_sorted_row_partition(
     batch_size: usize,
     row_addresses_ptr: *mut jlong,
     row_sizes_ptr: *mut jint,
-    schema: &[DataType],
+    schema: &Vec<DataType>,
     output_path: String,
     prefer_dictionary_ratio: f64,
     checksum_enabled: bool,

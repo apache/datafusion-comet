@@ -45,6 +45,8 @@ const MURMUR_R: i32 = 47;
 unsafe fn murmur_hash2_64a(data_bytes: &[u8], seed: u64) -> u64 {
     let len = data_bytes.len();
     let len_64 = (len / 8) * 8;
+    assert!(len_64 > 0);
+    assert!(len_64 <= len);
     let data_bytes_64 =
         std::slice::from_raw_parts(&data_bytes[0..len_64] as *const [u8] as *const u64, len / 8);
 
@@ -135,7 +137,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore] // thread caused non-unwinding panic. aborting.
     fn test_murmur2_64a() {
         unsafe {
             let result = murmur_hash2_64a(b"hello", 123);

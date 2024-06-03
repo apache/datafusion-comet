@@ -82,9 +82,13 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
     let len = data.len();
     let len_aligned = len - len % 4;
 
+    if len == 0 {
+        panic!("cannot hash empty slice");
+    }
+
     // safety:
     // avoid boundary checking in performance critical codes.
-    // all operations are garenteed to be safe
+    // all operations are guaranteed to be safe
     unsafe {
         let mut h1 = hash_bytes_by_int(
             std::slice::from_raw_parts(data.get_unchecked(0), len_aligned),
@@ -690,7 +694,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // thread caused non-unwinding panic. aborting.
     fn test_str() {
         let input = vec![
             "hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde",
