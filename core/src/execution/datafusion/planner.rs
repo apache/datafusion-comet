@@ -151,20 +151,6 @@ impl PhysicalPlanner {
         }
     }
 
-    fn eval_mode_from_str(
-        eval_mode_str: &str,
-        allow_try: bool,
-    ) -> Result<EvalMode, ExecutionError> {
-        match eval_mode_str {
-            "ANSI" => Ok(EvalMode::Ansi),
-            "LEGACY" => Ok(EvalMode::Legacy),
-            "TRY" if allow_try => Ok(EvalMode::Try),
-            other => Err(ExecutionError::GeneralError(format!(
-                "Invalid EvalMode: \"{other}\""
-            ))),
-        }
-    }
-
     /// Create a DataFusion physical expression from Spark physical expression
     fn create_expr(
         &self,
@@ -507,7 +493,13 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let eval_mode = Self::eval_mode_from_str(expr.eval_mode.as_str(), false)?;
+                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
+                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
+                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
+                    spark_expression::EvalMode::Try => return Err(ExecutionError::GeneralError(format!(
+                        "Invalid EvalMode: \"TRY\""
+                    ))),
+                };
                 let comet_abs =
                     ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode, return_type.to_string()));
                 let scalar_def = ScalarFunctionDefinition::UDF(Arc::new(comet_abs));
