@@ -1584,14 +1584,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val optExpr = scalarExprToProto("pow", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
 
-        case r: Round if r.ansiEnabled =>
-          // https://github.com/apache/datafusion-comet/issues/466
-          withInfo(
-            r,
-            "Round does not support ANSI mode. " +
-              s"Set ${CometConf.COMET_ANSI_MODE_ENABLED.key}=true to enable it anyway")
-          None
-
         case r: Round if isSpark32 =>
           // round function for Spark 3.2 does not allow negative round target scale. In addition,
           // it has different result precision/scale for decimals. Supporting only 3.3 and above.
