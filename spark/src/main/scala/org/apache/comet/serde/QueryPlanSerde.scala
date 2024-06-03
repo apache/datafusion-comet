@@ -1590,9 +1590,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(r, "Round not supported prior to Spark 3.3")
           None
 
-        case r @ Round(_, _, ansiEnabledOrEvalMode) =>
-          val evalMode = getCometEvalMode(ansiEnabledOrEvalMode)
-          if (evalMode == CometEvalMode.ANSI && !CometConf.COMET_ANSI_MODE_ENABLED.get) {
+        case r: Round =>
+          val cometEvalMode = evalMode(r)
+          if (cometEvalMode == CometEvalMode.ANSI && !CometConf.COMET_ANSI_MODE_ENABLED.get) {
             // https://github.com/apache/datafusion-comet/issues/466
             withInfo(
               r,
