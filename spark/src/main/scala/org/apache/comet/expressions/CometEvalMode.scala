@@ -19,8 +19,6 @@
 
 package org.apache.comet.expressions
 
-import java.util.Locale
-
 import org.apache.spark.sql.internal.SQLConf
 
 /**
@@ -48,15 +46,5 @@ object CometEvalMode extends Enumeration {
     LEGACY
   }
 
-  def fromString(str: String): CometEvalMode.Value = {
-    str.toUpperCase(Locale.ROOT) match {
-      case "LEGACY" => CometEvalMode.LEGACY
-      case "TRY" => CometEvalMode.TRY
-      case "ANSI" => CometEvalMode.ANSI
-      case _ =>
-        throw new IllegalArgumentException(
-          s"Invalid eval mode '$str' "
-        ) // Assuming we want to catch errors strictly
-    }
-  }
+  def fromString(str: String): CometEvalMode.Value = CometEvalMode.withName(str)
 }
