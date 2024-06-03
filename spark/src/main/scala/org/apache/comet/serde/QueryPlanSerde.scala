@@ -555,7 +555,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
-        // castBuilder.setEvalMode(evalMode)
         castBuilder.setEvalMode(evalModeEnum) // Set the enum in protobuf
 
         val timeZone = timeZoneId.getOrElse("UTC")
