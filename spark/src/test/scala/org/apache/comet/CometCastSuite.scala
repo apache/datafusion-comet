@@ -31,7 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
-import org.apache.comet.expressions.{CometCast, Compatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -76,7 +76,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else {
               val testIgnored =
                 tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
-              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
                 case Compatible(_) =>
                   if (testIgnored) {
                     fail(
