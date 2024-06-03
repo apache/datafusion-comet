@@ -89,7 +89,6 @@ assertables = "7"
 
 [features]
 default = []
-nightly = []
 
 [profile.release]
 debug = true
