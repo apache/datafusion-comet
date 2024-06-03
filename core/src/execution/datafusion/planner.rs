@@ -1397,7 +1397,18 @@ impl PhysicalPlanner {
             args.is_empty(),
         ));
 
-        Ok(scalar_expr)
+        match fun_name.as_str() {
+            // TODO: The <=0 check in spark_log_fun can also be used for `log` and `log10`.
+            "log2" if expr.args.len() == 1 => {
+                let first_arg = expr
+                    .args
+                    .first()
+                    .and_then(|x| self.create_expr(x, input_schema.clone()).ok());
+
+                spark_log_fun(scalar_expr, first_arg)
+            }
+            _ => Ok(scalar_expr),
+        }
     }
 }
 
@@ -1555,6 +1566,32 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+/// Physical expression that simulates Spark `log` expressions, which are only defined for
+/// postive numberes
+fn spark_log_fun(
+    datafusion_expr: Arc<dyn PhysicalExpr>,
+    first_arg: Option<Arc<dyn PhysicalExpr>>,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    match first_arg {
+        Some(arg) => {
+            let less_than_0 = BinaryExpr::new(
+                arg,
+                DataFusionOperator::LtEq,
+                Arc::new(DataFusionLiteral::new(ScalarValue::Float64(Some(0.0)))),
+            );
+
+            let lit_null = Arc::new(DataFusionLiteral::new(ScalarValue::Float64(None)));
+
+            // values less than or equal to 0 eval to null in Hive, instead of NaN or -Infinity
+            let if_expr = IfExpr::new(Arc::new(less_than_0), lit_null, datafusion_expr);
+            Ok(Arc::new(if_expr))
+        }
+
+        // If a first arg could not be resolved
+        None => Ok(datafusion_expr),
+    }
 }
 
 #[cfg(test)]
