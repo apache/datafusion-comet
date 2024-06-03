@@ -696,8 +696,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val timeZoneId = SQLConf.get.sessionLocalTimeZone
           handleCast(child, inputs, expr.dataType, Some(timeZoneId), CometEvalMode.TRY)
 
-        case Cast(child, dt, timeZoneId, evalMode) =>
-          handleCast(child, inputs, dt, timeZoneId, getCometEvalMode(evalMode))
+        case c @ Cast(child, dt, timeZoneId, _) =>
+          handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)

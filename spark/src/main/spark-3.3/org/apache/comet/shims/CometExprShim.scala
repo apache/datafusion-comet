@@ -32,5 +32,7 @@ trait CometExprShim {
         (unhex.child, Literal(false))
     }
 
+    def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
+
     def evalMode(r: Round): CometEvalMode.Value = CometEvalMode.LEGACY
 }
