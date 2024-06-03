@@ -39,7 +39,7 @@ trait CometExprShim {
 }
 
 object CometEvalModeUtil {
-    def fromSparkEvalMode(evalMode: EvalMode.Value) = evalMode match {
+    def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
         case EvalMode.LEGACY => CometEvalMode.LEGACY
         case EvalMode.TRY => CometEvalMode.TRY
         case EvalMode.ANSI => CometEvalMode.ANSI
