@@ -2208,16 +2208,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     exprToProtoInternal(newExpr, input)
   }
 
-  private def getCometEvalMode(evalMode: Any): CometEvalMode.Value = {
-    if (evalMode.isInstanceOf[Boolean]) {
-      // Spark 3.2 & 3.3 has ansiEnabled boolean
-      CometEvalMode.fromBoolean(evalMode.asInstanceOf[Boolean])
-    } else {
-      // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
-      CometEvalMode.fromString(evalMode.toString)
-    }
-  }
-
   def scalarExprToProtoWithReturnType(
       funcName: String,
       returnType: DataType,
