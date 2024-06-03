@@ -207,7 +207,7 @@ impl Default for SparkUnsafeRow {
 }
 
 impl SparkUnsafeRow {
-    fn new(schema: &Vec<DataType>) -> Self {
+    fn new(schema: &[DataType]) -> Self {
         Self {
             row_addr: -1,
             row_size: -1,
