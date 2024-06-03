@@ -33,7 +33,7 @@ use datafusion::{
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
+            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum, UnKnownColumn,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -70,6 +70,7 @@ use crate::{
                 correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
+                negative,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
@@ -563,8 +564,10 @@ impl PhysicalPlanner {
                 Ok(Arc::new(NotExpr::new(child)))
             }
             ExprStruct::Negative(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NegativeExpr::new(child)))
+                let child: Arc<dyn PhysicalExpr> =
+                    self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let result = negative::create_negate_expr(child, expr.fail_on_error);
+                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;

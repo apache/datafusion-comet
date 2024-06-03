@@ -1548,5 +1548,103 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("unary negative integer overflow test") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
 
+    def checkOverflow(query: String, dtype: String): Unit = {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(dtype + " overflow"))
+          assert(cometException.getMessage.contains(dtype + " overflow"))
+        case (None, None) => assert(true) // got same outputs
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not " + ex.getMessage)
+        case (Some(_), None) =>
+          fail("Spark threw an exception but Comet did not")
+      }
+    }
+
+    def runArrayTest(query: String, dtype: String, path: String): Unit = {
+      withParquetTable(path, "t") {
+        withAnsiMode(enabled = false) {
+          checkSparkAnswerAndOperator(sql(query))
+        }
+        withAnsiMode(enabled = true) {
+          checkOverflow(query, dtype)
+        }
+      }
+    }
+
+    withTempDir { dir =>
+      // Array values test
+      val arrayPath = new Path(dir.toURI.toString, "array_test.parquet").toString
+      Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(arrayPath)
+      val arrayQuery = "select a, -a from t"
+      runArrayTest(arrayQuery, "integer", arrayPath)
+
+      // long values test
+      val longArrayPath = new Path(dir.toURI.toString, "long_array_test.parquet").toString
+      Seq(Long.MaxValue, Long.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(longArrayPath)
+      val longArrayQuery = "select a, -a from t"
+      runArrayTest(longArrayQuery, "long", longArrayPath)
+
+      // short values test
+      val shortArrayPath = new Path(dir.toURI.toString, "short_array_test.parquet").toString
+      Seq(Short.MaxValue, Short.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(shortArrayPath)
+      val shortArrayQuery = "select a, -a from t"
+      runArrayTest(shortArrayQuery, " caused", shortArrayPath)
+
+      // byte values test
+      val byteArrayPath = new Path(dir.toURI.toString, "byte_array_test.parquet").toString
+      Seq(Byte.MaxValue, Byte.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(byteArrayPath)
+      val byteArrayQuery = "select a, -a from t"
+      runArrayTest(byteArrayQuery, " caused", byteArrayPath)
+
+      // interval values test
+      withTable("t_interval") {
+        spark.sql("CREATE TABLE t_interval(a STRING) USING PARQUET")
+        spark.sql("INSERT INTO t_interval VALUES ('INTERVAL 10000000000 YEAR')")
+        withAnsiMode(enabled = true) {
+          spark
+            .sql("SELECT CAST(a AS INTERVAL) AS a FROM t_interval")
+            .createOrReplaceTempView("t_interval_casted")
+          checkOverflow("SELECT a, -a FROM t_interval_casted", "interval")
+        }
+      }
+
+      withTable("t") {
+        sql("create table t(a int) using parquet")
+        sql("insert into t values (-2147483648)")
+        withAnsiMode(enabled = true) {
+          checkOverflow("select a, -a from t", "integer")
+        }
+      }
+
+      withTable("t_float") {
+        sql("create table t_float(a float) using parquet")
+        sql("insert into t_float values (3.4128235E38)")
+        withAnsiMode(enabled = true) {
+          checkOverflow("select a, -a from t_float", "float")
+        }
+      }
+    }
+  }
 }
