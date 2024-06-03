@@ -56,7 +56,6 @@ import org.apache.comet.shims.ShimQueryPlanSerde
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
-
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -1493,7 +1492,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case Abs(child, failOnErr) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val evalModeStr = if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+            val evalModeStr =
+              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
             val absBuilder = ExprOuterClass.Abs.newBuilder()
             absBuilder.setChild(childExpr.get)
             absBuilder.setEvalMode(evalModeStr)

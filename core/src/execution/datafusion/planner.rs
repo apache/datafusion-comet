@@ -496,9 +496,11 @@ impl PhysicalPlanner {
                 let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
                     spark_expression::EvalMode::Legacy => EvalMode::Legacy,
                     spark_expression::EvalMode::Ansi => EvalMode::Ansi,
-                    spark_expression::EvalMode::Try => return Err(ExecutionError::GeneralError(format!(
-                        "Invalid EvalMode: \"TRY\""
-                    ))),
+                    spark_expression::EvalMode::Try => {
+                        return Err(ExecutionError::GeneralError(
+                            "Invalid EvalMode: \"TRY\"".to_string(),
+                        ))
+                    }
                 };
                 let comet_abs =
                     ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode, return_type.to_string()));
