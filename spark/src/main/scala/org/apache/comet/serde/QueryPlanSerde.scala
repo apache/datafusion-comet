@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
@@ -588,6 +590,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported
    */
+
+  def stringToEvalMode(evalModeStr: String): ExprOuterClass.EvalMode =
+    evalModeStr.toUpperCase(Locale.ROOT) match {
+      case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
+      case "TRY" => ExprOuterClass.EvalMode.TRY
+      case "ANSI" => ExprOuterClass.EvalMode.ANSI
+      case invalid =>
+        throw new IllegalArgumentException(
+          s"Invalid eval mode '$invalid' "
+        ) // Assuming we want to catch errors strictly
+    }
+
   def exprToProto(
       expr: Expression,
       input: Seq[Attribute],
@@ -598,12 +612,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         childExpr: Option[Expr],
         evalMode: String): Option[Expr] = {
       val dataType = serializeDataType(dt)
+      val evalModeEnum = stringToEvalMode(evalMode) // Convert string to enum
 
       if (childExpr.isDefined && dataType.isDefined) {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
-        castBuilder.setEvalMode(evalMode)
+        castBuilder.setEvalMode(evalModeEnum) // Set the enum in protobuf
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
@@ -1305,7 +1320,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
-                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
+                    .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
                     .build())
                 .build()
             })

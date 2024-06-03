@@ -348,16 +348,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match expr.eval_mode.as_str() {
-                    "ANSI" => EvalMode::Ansi,
-                    "TRY" => EvalMode::Try,
-                    "LEGACY" => EvalMode::Legacy,
-                    other => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Invalid Cast EvalMode: \"{other}\""
-                        )))
-                    }
+                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
+                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
+                    spark_expression::EvalMode::Try => EvalMode::Try,
+                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
                 };
+
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
