@@ -1062,6 +1062,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hex") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "hex.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+
+        withParquetTable(path.toString, "tbl") {
+          // _9 and _10 (uint8 and uint16) not supported
+          checkSparkAnswerAndOperator(
+            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+        }
+      }
+    }
+  }
+
   test("unhex") {
     // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
     // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
