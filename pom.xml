@@ -33,6 +33,7 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
+    <module>fuzz-testing</module>
   </modules>
 
   <properties>
@@ -411,6 +412,12 @@ under the License.
         <artifactId>jackson-mapper-asl</artifactId>
         <version>${codehaus.jackson.version}</version>
         <scope>test</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>org.rogach</groupId>
+        <artifactId>scallop_${scala.binary.version}</artifactId>
+        <version>5.1.0</version>
       </dependency>
 
     </dependencies>
