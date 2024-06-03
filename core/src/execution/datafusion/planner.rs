@@ -833,14 +833,13 @@ impl PhysicalPlanner {
                 }
 
                 // Consumes the first input source for the scan
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                    && inputs.is_empty()
-                {
-                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                    None
-                } else {
-                    Some(inputs.remove(0))
-                };
+                let input_source =
+                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                        None
+                    } else {
+                        Some(inputs.remove(0))
+                    };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan = ScanExec::new(self.exec_context_id, input_source, fields)?;
