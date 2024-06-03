@@ -159,7 +159,6 @@ where
                     pos += 1;
                 }
             } else {
-                assert!(pos < self.len(), "rdxsort pos out of range");
                 unsafe {
                     ptr::copy_nonoverlapping(
                         bucket.as_ptr(),

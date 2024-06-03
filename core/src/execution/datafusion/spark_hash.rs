@@ -82,10 +82,6 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
     let len = data.len();
     let len_aligned = len - len % 4;
 
-    if len == 0 {
-        panic!("cannot hash empty slice");
-    }
-
     // safety:
     // avoid boundary checking in performance critical codes.
     // all operations are guaranteed to be safe
