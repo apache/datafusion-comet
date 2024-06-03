@@ -1486,6 +1486,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |select
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
               |from test
               |""".stripMargin)
@@ -1508,14 +1509,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
-          // TODO: Add a Row generator in the data gen class and replace th following code
-          val col = dataGen.generateStrings(randomNumRows, timestampPattern, 6)
-          val colA = dataGen.generateInts(randomNumRows)
-          val colB = dataGen.generateFloats(randomNumRows)
-          val data = col.zip(colA).zip(colB).map { case ((a, b), c) => (a, b, c) }
-          data
-            .toDF("col", "a", "b")
-            .write
+          val tableSchema = spark.table(table).schema
+          val rows = dataGen.generateRows(
+            randomNumRows,
+            tableSchema,
+            Some(() => dataGen.generateString(timestampPattern, 6)))
+          val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), tableSchema)
+          data.write
             .mode("append")
             .insertInto(table)
           // with random generated data
@@ -1524,6 +1524,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |select
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
               |from test
               |""".stripMargin)
