@@ -2245,7 +2245,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   def nullIfWhenPrimitive(expression: Expression): Expression = if (isPrimitive(expression)) {
-    new NullIf(expression, Literal.default(expression.dataType)).child
+    val zero = Literal.default(expression.dataType)
+    If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
   } else {
     expression
   }
