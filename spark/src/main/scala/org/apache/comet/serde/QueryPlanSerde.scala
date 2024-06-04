@@ -2169,10 +2169,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val trimCast = Cast(trimStr.get, StringType)
         val trimExpr = exprToProtoInternal(trimCast, inputs)
         val optExpr = scalarExprToProto(trimType, srcExpr, trimExpr)
-        optExprWithInfo(optExpr, expr, null, srcCast, trimCast)
+        optExprWithInfo(optExpr, expr, srcCast, trimCast)
       } else {
         val optExpr = scalarExprToProto(trimType, srcExpr)
-        optExprWithInfo(optExpr, expr, null, srcCast)
+        optExprWithInfo(optExpr, expr, srcCast)
       }
     }
 

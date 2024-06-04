@@ -27,9 +27,9 @@ object Utils {
     list(r.nextInt(list.length))
   }
 
-  def randomWeightedChoice[T](valuesWithWeights: Seq[(T, Double)]): T = {
+  def randomWeightedChoice[T](valuesWithWeights: Seq[(T, Double)], r: Random): T = {
     val totalWeight = valuesWithWeights.map(_._2).sum
-    val randomValue = Random.nextDouble() * totalWeight
+    val randomValue = r.nextDouble() * totalWeight
     var cumulativeWeight = 0.0
 
     for ((value, weight) <- valuesWithWeights) {

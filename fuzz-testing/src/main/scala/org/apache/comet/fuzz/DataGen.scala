@@ -50,7 +50,8 @@ object DataGen {
 
     // generate schema using random data types
     val fields = Range(0, numColumns)
-      .map(i => StructField(s"c$i", Utils.randomWeightedChoice(Meta.dataTypes), nullable = true))
+      .map(i =>
+        StructField(s"c$i", Utils.randomWeightedChoice(Meta.dataTypes, r), nullable = true))
     val schema = StructType(fields)
 
     // generate columnar data
