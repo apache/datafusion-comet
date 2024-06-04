@@ -106,32 +106,11 @@ setup_tempdir() {
 }
 
 test_source_distribution() {
-  # install rust toolchain in a similar fashion like test-miniconda
-  export RUSTUP_HOME=$PWD/test-rustup
-  export CARGO_HOME=$PWD/test-rustup
-
-  curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path
-
-  export PATH=$RUSTUP_HOME/bin:$PATH
-  source $RUSTUP_HOME/env
-
-  # build and test rust
-
-  # raises on any formatting errors
-  rustup component add rustfmt --toolchain stable
-  cargo fmt --all -- --check
-
-  cargo build
-  cargo test --all --features=avro
-
-  if ( find -iname 'Cargo.toml' | xargs grep SNAPSHOT ); then
-    echo "Cargo.toml version should not contain SNAPSHOT for releases"
-    exit 1
-  fi
-
+  set -e
   pushd core
-    cargo publish --dry-run
+    RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
   popd
+  ./mvnw install -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true
 }
 
 TEST_SUCCESS=no
