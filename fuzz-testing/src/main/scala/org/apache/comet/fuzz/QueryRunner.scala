@@ -110,11 +110,11 @@ object QueryRunner {
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
                 showSQL(w, sql)
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
-                w.write(s"```\n")
+                w.write("```\n")
                 val p = new PrintWriter(w)
                 e.printStackTrace(p)
                 p.close()
-                w.write(s"```\n")
+                w.write("```\n")
             }
 
             // flush after every query so that results are saved in the event of the driver crashing
