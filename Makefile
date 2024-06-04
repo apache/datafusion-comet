@@ -44,10 +44,10 @@ format:
 
 core-amd64:
 	rustup target add x86_64-apple-darwin
-	cd core && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release
 	mkdir -p common/target/classes/org/apache/comet/darwin/x86_64
 	cp core/target/x86_64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/x86_64
-	cd core && RUSTFLAGS="-Ctarget-cpu=haswell -Ctarget-feature=-prefer-256-bit" cargo build --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=haswell -Ctarget-feature=-prefer-256-bit" cargo build --release
 	mkdir -p common/target/classes/org/apache/comet/linux/amd64
 	cp core/target/release/libcomet.so common/target/classes/org/apache/comet/linux/amd64
 	jar -cf common/target/comet-native-x86_64.jar \
@@ -57,10 +57,10 @@ core-amd64:
 
 core-arm64:
 	rustup target add aarch64-apple-darwin
-	cd core && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release
 	mkdir -p common/target/classes/org/apache/comet/darwin/aarch64
 	cp core/target/aarch64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/aarch64
-	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo build --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	mkdir -p common/target/classes/org/apache/comet/linux/aarch64
 	cp core/target/release/libcomet.so common/target/classes/org/apache/comet/linux/aarch64
 	jar -cf common/target/comet-native-aarch64.jar \
@@ -70,12 +70,12 @@ core-arm64:
 
 release-linux: clean
 	rustup target add aarch64-apple-darwin x86_64-apple-darwin
-	cd core && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --features nightly --release
-	cd core && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --features nightly --release
-	cd core && RUSTFLAGS="-Ctarget-cpu=native -Ctarget-feature=-prefer-256-bit" cargo build --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=native -Ctarget-feature=-prefer-256-bit" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release:
-	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo build --features nightly --release
+	cd core && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 benchmark-%: clean release
 	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)

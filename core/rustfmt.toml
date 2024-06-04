@@ -17,11 +17,3 @@
 
 edition = "2021"
 max_width = 100
-
-# The following requires nightly feature:
-#  rustup install nightly
-#  rustup component add rustfmt --toolchain nightly
-#  cargo +nightly fmt
-wrap_comments = true
-comment_width = 100
-imports_granularity = "Crate" # group imports by crate
