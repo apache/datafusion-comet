@@ -21,7 +21,7 @@ inputs:
   rust-version:
     description: 'version of rust to install (e.g. nightly)'
     required: true
-    default: 'nightly'
+    default: 'stable'
   jdk-version:
     description: 'jdk version to install (e.g., 17)'
     required: true

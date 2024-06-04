@@ -34,9 +34,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.CometBatchScanExec
@@ -49,7 +47,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark40Plus}
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -1125,7 +1123,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("row group skipping doesn't overflow when reading into larger type") {
-    assume(isSpark34Plus)
+    // Spark 4.0 no longer fails for widening types
+    // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
+    assume(isSpark34Plus && !isSpark40Plus)
 
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
