@@ -19,7 +19,7 @@
 
 package org.apache.comet.fuzz
 
-import java.io.{BufferedWriter, FileWriter}
+import java.io.{BufferedWriter, FileWriter, PrintWriter}
 
 import scala.io.Source
 
@@ -109,7 +109,12 @@ object QueryRunner {
               case e: Exception =>
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
                 showSQL(w, sql)
-                w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}\n")
+                w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
+                w.write(s"```\n")
+                val p = new PrintWriter(w)
+                e.printStackTrace(p)
+                p.close()
+                w.write(s"```\n")
             }
 
             // flush after every query so that results are saved in the event of the driver crashing
@@ -134,6 +139,7 @@ object QueryRunner {
   private def formatRow(row: Row): String = {
     row.toSeq
       .map {
+        case null => "NULL"
         case v: Array[Byte] => v.mkString
         case other => other.toString
       }

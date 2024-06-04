@@ -42,10 +42,11 @@ object QueryGen {
     val uniqueQueries = mutable.HashSet[String]()
 
     for (_ <- 0 until numQueries) {
-      val sql = r.nextInt().abs % 3 match {
+      val sql = r.nextInt().abs % 4 match {
         case 0 => generateJoin(r, spark, numFiles)
         case 1 => generateAggregate(r, spark, numFiles)
         case 2 => generateScalar(r, spark, numFiles)
+        case 3 => generateCast(r, spark, numFiles)
       }
       if (!uniqueQueries.contains(sql)) {
         uniqueQueries += sql
@@ -91,6 +92,21 @@ object QueryGen {
       s"ORDER BY ${args.mkString(", ")};"
   }
 
+  private def generateCast(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val toType = Utils.randomWeightedChoice(Meta.dataTypes, r).sql
+    val arg = Utils.randomChoice(table.columns, r)
+
+    // We test both `cast` and `try_cast` to cover LEGACY and TRY eval modes. It is not
+    // recommended to run Comet Fuzz with ANSI enabled currently.
+    // Example SELECT c0, cast(c0 as float), try_cast(c0 as float) FROM test0
+    s"SELECT $arg, cast($arg as $toType), try_cast($arg as $toType) " +
+      s"FROM $tableName " +
+      s"ORDER BY $arg;"
+  }
+
   private def generateJoin(r: Random, spark: SparkSession, numFiles: Int): String = {
     val leftTableName = s"test${r.nextInt(numFiles)}"
     val rightTableName = s"test${r.nextInt(numFiles)}"
@@ -101,7 +117,7 @@ object QueryGen {
     val rightCol = Utils.randomChoice(rightTable.columns, r)
 
     val joinTypes = Seq(("INNER", 0.4), ("LEFT", 0.3), ("RIGHT", 0.3))
-    val joinType = Utils.randomWeightedChoice(joinTypes)
+    val joinType = Utils.randomWeightedChoice(joinTypes, r)
 
     val leftColProjection = leftTable.columns.map(c => s"l.$c").mkString(", ")
     val rightColProjection = rightTable.columns.map(c => s"r.$c").mkString(", ")
