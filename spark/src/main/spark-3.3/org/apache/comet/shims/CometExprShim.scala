@@ -32,6 +32,24 @@ trait CometExprShim {
         (unhex.child, Literal(false))
     }
 
+    def evalMode(expr: Add): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Subtract): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Multiply): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Divide): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Remainder): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Pmod): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
     def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 
     def evalMode(r: Round): CometEvalMode.Value = CometEvalMode.LEGACY

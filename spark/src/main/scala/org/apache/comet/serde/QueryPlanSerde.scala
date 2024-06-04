@@ -699,6 +699,30 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case c @ Cast(child, dt, timeZoneId, _) =>
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
+        case expr: Add if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
+        case expr: Subtract if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
+        case expr: Multiply if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
+        case expr: Divide if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
+        case expr: Remainder if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
+        case expr: Pmod if evalMode(expr) == CometEvalMode.ANSI =>
+          withInfo(expr, s"ANSI mode not supported")
+          None
+
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(right, inputs)
