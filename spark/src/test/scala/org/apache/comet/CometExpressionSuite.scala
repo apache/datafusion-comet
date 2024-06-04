@@ -26,8 +26,10 @@ import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
+
+import scala.reflect.ClassTag
+import scala.reflect.runtime.universe.TypeTag
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -851,31 +853,54 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("abs Overflow ansi mode") {
-    val data: Seq[(Int, Int)] = Seq((Int.MaxValue, Int.MinValue))
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+
+    def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
         checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
               """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
-            val sparkErrorPattern = ".*integer overflow.*".r
             assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
-            assert(sparkErrorPattern.findFirstIn(sparkExc.getMessage).isDefined)
+            assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
         }
       }
     }
-  }
 
-  test("abs Overflow legacy mode") {
-    val data: Seq[(Int, Int)] = Seq((Int.MaxValue, Int.MinValue), (1, -1))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+    def testAbsAnsi[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
         checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
       }
     }
+
+    withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+      testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
+      testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
+      testAbsAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)))
+      testAbsAnsi(Seq((Float.MaxValue, Float.MinValue)))
+      testAbsAnsi(Seq((Double.MaxValue, Double.MinValue)))
+    }
+  }
+
+  test("abs Overflow legacy mode") {
+
+    def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl") {
+          checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+        }
+      }
+    }
+
+    testAbsLegacyOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+    testAbsLegacyOverflow(Seq((Short.MaxValue, Short.MinValue)))
+    testAbsLegacyOverflow(Seq((Int.MaxValue, Int.MinValue)))
+    testAbsLegacyOverflow(Seq((Long.MaxValue, Long.MinValue)))
+    testAbsLegacyOverflow(Seq((Float.MaxValue, Float.MinValue)))
+    testAbsLegacyOverflow(Seq((Double.MaxValue, Double.MinValue)))
   }
 
   test("ceil and floor") {
