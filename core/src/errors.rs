@@ -377,7 +377,6 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
         match error {
             CometError::JavaException { class: _, msg: _, throwable } => {
                 let obj = env.new_local_ref(throwable).unwrap();
-                // let obj = env.alloc_object(JClass::from(obj)).unwrap();
                 env.throw(JThrowable::from(obj))
             }
             _ => {
