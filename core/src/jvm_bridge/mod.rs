@@ -382,9 +382,6 @@ pub(crate) fn convert_exception(
     let exception_class_name_str = get_throwable_class_name(env, cache, throwable)?;
     let message_str = get_throwable_message(env, cache, throwable)?;
 
-    // let obj = env.new_local_ref(throwable).unwrap();
-    // let obj = env.alloc_object(JClass::from(obj)).unwrap();
-
     Ok(CometError::JavaException {
         class: exception_class_name_str,
         msg: message_str,

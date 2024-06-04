@@ -21,6 +21,7 @@ use arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
 use jni::errors::{Exception, ToException};
 use regex::Regex;
+
 use std::{
     any::Any,
     convert,
@@ -37,8 +38,8 @@ use std::{
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
 use crate::execution::operators::ExecutionError;
-use jni::JNIEnv;
 use jni::objects::{GlobalRef, JThrowable};
+use jni::JNIEnv;
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
 use thiserror::Error;
@@ -160,7 +161,11 @@ pub enum CometError {
     },
 
     #[error("{class}: {msg}")]
-    JavaException { class: String, msg: String, throwable: GlobalRef },
+    JavaException {
+        class: String,
+        msg: String,
+        throwable: GlobalRef,
+    },
 }
 
 pub fn init() {
@@ -199,6 +204,15 @@ impl From<CometError> for ExecutionError {
     fn from(value: CometError) -> Self {
         match value {
             CometError::Execution { source } => source,
+            CometError::JavaException {
+                class,
+                msg,
+                throwable,
+            } => ExecutionError::JavaException {
+                class,
+                msg,
+                throwable,
+            },
             _ => ExecutionError::GeneralError(value.to_string()),
         }
     }
@@ -375,10 +389,19 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
     if env.exception_check().is_ok() {
         // ... then throw new exception
         match error {
-            CometError::JavaException { class: _, msg: _, throwable } => {
-                let obj = env.new_local_ref(throwable).unwrap();
-                env.throw(JThrowable::from(obj))
-            }
+            CometError::JavaException {
+                class: _,
+                msg: _,
+                throwable,
+            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            CometError::Execution {
+                source:
+                    ExecutionError::JavaException {
+                        class: _,
+                        msg: _,
+                        throwable,
+                    },
+            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
             _ => {
                 let exception = error.to_exception();
                 match backtrace {
@@ -390,7 +413,7 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                 }
             }
         }
-            .expect("Thrown exception")
+        .expect("Thrown exception")
     }
 }
 
