@@ -728,8 +728,12 @@ impl PhysicalPlanner {
                     .collect();
 
                 let projection = Arc::new(ProjectionExec::try_new(exprs?, child)?);
+                // the scan reuses batches so we need to copy them before coalescing ... if
+                // this approach looks like it has benefit then we may want to build a custom
+                // version of CoalesceBatchesExec that copies when needed
+                let copied = Arc::new(CopyExec::new(projection));
                 let coalesced: Arc<dyn ExecutionPlan> =
-                    Arc::new(CoalesceBatchesExec::new(projection, 4196));
+                    Arc::new(CoalesceBatchesExec::new(copied, 4196));
                 Ok((scans, coalesced))
             }
             OpStruct::Filter(filter) => {
