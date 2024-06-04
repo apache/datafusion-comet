@@ -992,7 +992,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test0"
         withTable(table) {
           sql(s"create table $table(c9 int, c4 int) using parquet")
-          sql(s"insert into $table values(null, null), (66, null), (null, 70), (null, null)")
+          sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
           checkSparkMaybeThrows(sql(s"SELECT chr(c9), chr(c4) FROM $table")) match {
             case (None, None) => {}
             case (_, _) => fail("Expected no exception")
