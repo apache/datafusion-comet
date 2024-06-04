@@ -27,6 +27,7 @@ import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
 import org.apache.spark.{broadcast, Partition, SparkContext, TaskContext}
+import org.apache.spark.comet.shims.ShimCometBroadcastExchangeExec
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -44,7 +45,6 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.CometRuntimeException
-import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
 /**
  * A [[CometBroadcastExchangeExec]] collects, transforms and finally broadcasts the result of a
@@ -238,13 +238,13 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
     obj match {
       case other: CometBroadcastExchangeExec =>
         this.originalPlan == other.originalPlan &&
-        this.output == other.output && this.child == other.child
+        this.child == other.child
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, child)
+  override def hashCode(): Int = Objects.hashCode(child)
 
   override def stringArgs: Iterator[Any] = Iterator(output, child)
 

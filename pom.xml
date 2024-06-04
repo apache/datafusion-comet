@@ -33,6 +33,7 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
+    <module>fuzz-testing</module>
   </modules>
 
   <properties>
@@ -46,7 +47,7 @@ under the License.
     <scala.plugin.version>4.7.2</scala.plugin.version>
     <scalatest.version>3.2.9</scalatest.version>
     <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
-    <spark.version>3.4.2</spark.version>
+    <spark.version>3.4.3</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.19.6</protobuf.version>
@@ -87,7 +88,7 @@ under the License.
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
-    <additional.3_4.test.source>spark-3.4</additional.3_4.test.source>
+    <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
   </properties>
@@ -409,6 +410,12 @@ under the License.
         <scope>test</scope>
       </dependency>
 
+      <dependency>
+        <groupId>org.rogach</groupId>
+        <artifactId>scallop_${scala.binary.version}</artifactId>
+        <version>5.1.0</version>
+      </dependency>
+
     </dependencies>
 
   </dependencyManagement>
@@ -512,7 +519,6 @@ under the License.
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
-        <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
@@ -524,9 +530,25 @@ under the License.
         <scala.version>2.12.17</scala.version>
         <spark.version.short>3.4</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
-        <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
-        <additional.3_4.test.source>spark-3.4</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+      </properties>
+    </profile>
+
+    <profile>
+      <!-- FIXME: this is WIP. Tests may fail -->
+      <id>spark-4.0</id>
+      <properties>
+        <!-- Use Scala 2.13 by default -->
+        <scala.version>2.13.13</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.0.0-SNAPSHOT</spark.version>
+        <spark.version.short>4.0</spark.version.short>
+        <parquet.version>1.13.1</parquet.version>
+        <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
+        <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -605,7 +627,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.7.5</version>
+                    <version>4.8.8</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>
@@ -899,7 +921,7 @@ under the License.
             <exclude>tpcds-kit/**</exclude>
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
-            <exclude>doc/*.txt</exclude>
+            <exclude>docs/*.txt</exclude>
           </excludes>
         </configuration>
       </plugin>

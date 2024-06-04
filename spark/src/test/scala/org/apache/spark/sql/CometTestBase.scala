@@ -48,7 +48,6 @@ import org.apache.spark.sql.types.StructType
 import org.apache.comet._
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
-import org.apache.comet.shims.ShimCometSparkSessionExtensions.supportsExtendedExplainInfo
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -80,7 +79,6 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key, "true")
     conf.set(CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf
@@ -248,9 +246,7 @@ abstract class CometTestBase
       expectedInfo: Set[String]): Unit = {
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "false",
-      "spark.sql.extendedExplainProvider" -> "") {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
       dfSpark = Dataset.ofRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
@@ -260,11 +256,14 @@ abstract class CometTestBase
       dfSpark.queryExecution.explainString(ExtendedMode),
       dfComet.queryExecution.explainString(ExtendedMode))
     if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
-      assert(diff.contains(expectedInfo))
+      assert(expectedInfo.forall(s => diff.contains(s)))
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
-    assert(extendedInfo.equalsIgnoreCase(expectedInfo.toSeq.sorted.mkString("\n")))
+    val expectedStr = expectedInfo.toSeq.sorted.mkString("\n")
+    if (!extendedInfo.equalsIgnoreCase(expectedStr)) {
+      fail(s"$extendedInfo != $expectedStr (case-insensitive comparison)")
+    }
   }
 
   private var _spark: SparkSession = _

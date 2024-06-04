@@ -363,13 +363,31 @@ abstract class CometNativeExec extends CometExec {
   }
 
   override protected def doCanonicalize(): SparkPlan = {
-    val canonicalizedPlan = super.doCanonicalize().asInstanceOf[CometNativeExec]
+    val canonicalizedPlan = super
+      .doCanonicalize()
+      .asInstanceOf[CometNativeExec]
+      .canonicalizePlans()
+
     if (serializedPlanOpt.isDefined) {
       // If the plan is a boundary node, we should remove the serialized plan.
       canonicalizedPlan.cleanBlock()
     } else {
       canonicalizedPlan
     }
+  }
+
+  /**
+   * Canonicalizes the plans of Product parameters in Comet native operators.
+   */
+  protected def canonicalizePlans(): CometNativeExec = {
+    def transform(arg: Any): AnyRef = arg match {
+      case sparkPlan: SparkPlan => sparkPlan.canonicalized
+      case other: AnyRef => other
+      case null => null
+    }
+
+    val newArgs = mapProductIterator(transform)
+    makeCopy(newArgs).asInstanceOf[CometNativeExec]
   }
 }
 
@@ -406,14 +424,14 @@ case class CometProjectExec(
     obj match {
       case other: CometProjectExec =>
         this.projectList == other.projectList &&
-        this.output == other.output && this.child == other.child &&
+        this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(projectList, output, child)
+  override def hashCode(): Int = Objects.hashCode(projectList, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = projectList
 }

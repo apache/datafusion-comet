@@ -21,9 +21,9 @@ under the License.
 
 This HOWTO describes how to debug JVM code and Native code concurrently. The guide assumes you have:
 
-1. Intellij as the Java IDE
+1. IntelliJ as the Java IDE
 2. CLion as the Native IDE. For Rust code, the CLion Rust language plugin is required. Note that the
-   Intellij Rust plugin is not sufficient.
+   IntelliJ Rust plugin is not sufficient.
 3. CLion/LLDB as the native debugger. CLion ships with a bundled LLDB and the Rust community has
    its own packaging of LLDB (`lldb-rust`). Both provide a better display of Rust symbols than plain
    LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with CLion for this guide.
@@ -36,7 +36,7 @@ _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
 Add a `.lldbinit` to comet/core. This is not strictly necessary but will be useful if you want to
 use advanced `lldb` debugging.
 
-### In Intellij
+### In IntelliJ
 
 1. Set a breakpoint in `NativeBase.load()`, at a point _after_ the Comet library has been loaded.
 
@@ -48,7 +48,7 @@ use advanced `lldb` debugging.
 
 1. Add a println to the unit test to print the PID of the JVM process. (jps can also be used but this is less error prone if you have multiple jvm processes running)
 
-   ```JDK8
+   ```scala
         println("Waiting for Debugger: PID - ", ManagementFactory.getRuntimeMXBean().getName())
    ```
 
@@ -56,31 +56,31 @@ use advanced `lldb` debugging.
 
    For JDK9 and newer
 
-   ```JDK9
+   ```scala
         println("Waiting for Debugger: PID - ", ProcessHandle.current.pid)
    ```
 
    ==> Note the PID
 
-1. Debug-run the test in Intellij and wait for the breakpoint to be hit
+1. Debug-run the test in IntelliJ and wait for the breakpoint to be hit
 
 ### In CLion
 
-1. After the breakpoint is hit in Intellij, in Clion (or LLDB from terminal or editor) -
+1. After the breakpoint is hit in IntelliJ, in Clion (or LLDB from terminal or editor) -
 
    1. Attach to the jvm process (make sure the PID matches). In CLion, this is `Run -> Atttach to process`
 
    1. Put your breakpoint in the native code
 
-1. Go back to intellij and resume the process.
+1. Go back to IntelliJ and resume the process.
 
-1. Most debugging in CLion is similar to Intellij. For advanced LLDB based debugging the LLDB command line can be accessed from the LLDB tab in the Debugger view. Refer to the [LLDB manual](https://lldb.llvm.org/use/tutorial.html) for LLDB commands.
+1. Most debugging in CLion is similar to IntelliJ. For advanced LLDB based debugging the LLDB command line can be accessed from the LLDB tab in the Debugger view. Refer to the [LLDB manual](https://lldb.llvm.org/use/tutorial.html) for LLDB commands.
 
-### After your debugging is done,
+### After your debugging is done
 
 1. In CLion, detach from the process if not already detached
 
-2. In Intellij, the debugger might have lost track of the process. If so, the debugger tab
+2. In IntelliJ, the debugger might have lost track of the process. If so, the debugger tab
    will show the process as running (even if the test/job is shown as completed).
 
 3. Close the debugger tab, and if the IDS asks whether it should terminate the process,
@@ -94,10 +94,10 @@ use advanced `lldb` debugging.
 ### Additional Info
 
 OpenJDK mailing list on debugging the JDK on MacOS
-https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html
+<https://mail.openjdk.org/pipermail/hotspot-dev/2019-September/039429.html>
 
 Detecting the debugger
-https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase).
+<https://stackoverflow.com/questions/5393403/can-a-java-application-detect-that-a-debugger-is-attached#:~:text=No.,to%20let%20your%20app%20continue.&text=I%20know%20that%20those%20are,meant%20with%20my%20first%20phrase>).
 
 ## Verbose debug
 
@@ -117,10 +117,10 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 ```
 
 There is a verbose exception option by leveraging DataFusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-This option allows to append native DataFusion stacktrace to the original error message.
+This option allows to append native DataFusion stack trace to the original error message.
 To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for DataFusion dependencies
 
-```
+```toml
 datafusion-common = { version = "36.0.0", features = ["backtrace"] }
 datafusion = { default-features = false, version = "36.0.0", features = ["unicode_expressions", "backtrace"] }
 ```
@@ -129,7 +129,7 @@ Then build the Comet as [described](https://github.com/apache/arrow-datafusion-c
 
 Start Comet with `RUST_BACKTRACE=1`
 
-```commandline
+```console
 RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true --conf spark.comet.exec.all.enabled=true
 ```
 

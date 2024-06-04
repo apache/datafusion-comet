@@ -71,6 +71,11 @@ The following Spark expressions are currently available:
   - Shiftright/Shiftleft
 - Date/Time functions
   - Year/Hour/Minute/Second
+- Hash functions
+  - Md5
+  - Sha2
+  - Hash
+  - Xxhash64
 - Math functions
   - Abs
   - Acos
@@ -109,3 +114,4 @@ The following Spark expressions are currently available:
   - VarianceSamp
   - StddevPop
   - StddevSamp
+  - Corr

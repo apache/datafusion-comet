@@ -119,7 +119,7 @@ object CometCast {
         Unsupported
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
-        Unsupported
+        Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
       case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
         Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
       case DataTypes.TimestampType if evalMode == "ANSI" =>

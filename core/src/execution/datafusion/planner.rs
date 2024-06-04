@@ -33,7 +33,7 @@ use datafusion::{
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
+            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum, UnKnownColumn,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -67,8 +67,10 @@ use crate::{
                 bloom_filter_might_contain::BloomFilterMightContain,
                 cast::{Cast, EvalMode},
                 checkoverflow::CheckOverflow,
+                correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
+                negative,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
@@ -347,16 +349,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match expr.eval_mode.as_str() {
-                    "ANSI" => EvalMode::Ansi,
-                    "TRY" => EvalMode::Try,
-                    "LEGACY" => EvalMode::Legacy,
-                    other => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Invalid Cast EvalMode: \"{other}\""
-                        )))
-                    }
+                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
+                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
+                    spark_expression::EvalMode::Try => EvalMode::Try,
+                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
                 };
+
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
@@ -394,7 +392,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 // Spark Substring's start is 1-based when start > 0
                 let start = expr.start - i32::from(expr.start > 0);
-                let len = expr.len;
+                // substring negative len is treated as 0 in Spark
+                let len = std::cmp::max(expr.len, 0);
 
                 Ok(Arc::new(SubstringExec::new(
                     child,
@@ -565,8 +564,10 @@ impl PhysicalPlanner {
                 Ok(Arc::new(NotExpr::new(child)))
             }
             ExprStruct::Negative(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NegativeExpr::new(child)))
+                let child: Arc<dyn PhysicalExpr> =
+                    self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let result = negative::create_negate_expr(child, expr.fail_on_error);
+                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -777,7 +778,7 @@ impl PhysicalPlanner {
                     .iter()
                     .enumerate()
                     .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
+                        self.create_expr(expr, aggregate.schema())
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
@@ -835,14 +836,13 @@ impl PhysicalPlanner {
                 }
 
                 // Consumes the first input source for the scan
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                    && inputs.is_empty()
-                {
-                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                    None
-                } else {
-                    Some(inputs.remove(0))
-                };
+                let input_source =
+                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                        None
+                    } else {
+                        Some(inputs.remove(0))
+                    };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan = ScanExec::new(self.exec_context_id, input_source, fields)?;
@@ -1309,6 +1309,18 @@ impl PhysicalPlanner {
                         stats_type
                     ))),
                 }
+            }
+            AggExprStruct::Correlation(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Correlation::new(
+                    child1,
+                    child2,
+                    "correlation",
+                    datatype,
+                    expr.null_on_divide_by_zero,
+                )))
             }
         }
     }

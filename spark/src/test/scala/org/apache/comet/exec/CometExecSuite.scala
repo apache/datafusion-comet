@@ -38,8 +38,9 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometRowToColumnarExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{col, date_add, expr, lead, sum}
@@ -48,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -62,6 +63,70 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTable("td") {
+        testData
+          .withColumn("bucket", $"key" % 3)
+          .write
+          .mode(SaveMode.Overwrite)
+          .bucketBy(2, "bucket")
+          .format("parquet")
+          .saveAsTable("td")
+        val df = sql("""
+            |SELECT t1.key, t2.key, t3.key
+            |FROM td AS t1
+            |JOIN td AS t2 ON t2.key = t1.key
+            |JOIN td AS t3 ON t3.key = t2.key
+            |WHERE t1.bucket = 1 AND t2.bucket = 1 AND t3.bucket = 1
+            |""".stripMargin)
+        val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
+        val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
+          r
+        }
+        assert(reusedExchanges.size == 1)
+        assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
+      }
+    }
+  }
+
+  test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
+    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      withTempPath { path =>
+        spark
+          .range(5)
+          .withColumn("p", $"id" % 2)
+          .write
+          .mode("overwrite")
+          .partitionBy("p")
+          .parquet(path.toString)
+        withTempView("t") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("t")
+          val df = sql("""
+              |SELECT t1.id, t2.id, t3.id
+              |FROM t AS t1
+              |JOIN t AS t2 ON t2.id = t1.id
+              |JOIN t AS t3 ON t3.id = t2.id
+              |WHERE t1.p = 1 AND t2.p = 1 AND t3.p = 1
+              |""".stripMargin)
+          val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
+          val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
+            r
+          }
+          assert(reusedExchanges.size == 1)
+          assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
+        }
+      }
+    }
+  }
+
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
@@ -69,14 +134,15 @@ class CometExecSuite extends CometTestBase {
         .toDF("c1", "c2")
         .createOrReplaceTempView("v")
 
-      Seq(true, false).foreach { columnarShuffle =>
+      Seq("native", "jvm").foreach { columnarShuffleMode =>
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle.toString) {
+          CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
           val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
           val shuffle = find(df.queryExecution.executedPlan) {
-            case _: CometShuffleExchangeExec if columnarShuffle => true
-            case _: ShuffleExchangeExec if !columnarShuffle => true
+            case _: CometShuffleExchangeExec if columnarShuffleMode.equalsIgnoreCase("jvm") =>
+              true
+            case _: ShuffleExchangeExec if !columnarShuffleMode.equalsIgnoreCase("jvm") => true
             case _ => false
           }.get
           assert(shuffle.logicalLink.isEmpty)
@@ -114,7 +180,7 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
         // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
         "spark.sql.requireAllClusterKeysForDistribution" -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
         val windowSpec = Window.partitionBy("key1", "key2").orderBy("value")
@@ -253,7 +319,7 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
@@ -434,7 +500,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable(tableName, dim) {
 
         sql(
@@ -651,7 +717,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * FROM tbl").sort($"_1".desc)
         checkSparkAnswerAndOperator(df)
@@ -699,10 +765,10 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("limit") {
-    Seq("true", "false").foreach { columnarShuffle =>
+    Seq("native", "jvm").foreach { columnarShuffleMode =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> columnarShuffle) {
+        CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
           val df = sql("SELECT * FROM tbl_a")
             .repartition(10, $"_1")
@@ -989,7 +1055,11 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[AnalysisException] {
           sql("CREATE TABLE t2(name STRING, part INTERVAL) USING PARQUET PARTITIONED BY (part)")
         }.getMessage
-        assert(e.contains("Cannot use interval"))
+        if (isSpark40Plus) {
+          assert(e.contains(" Cannot use \"INTERVAL\""))
+        } else {
+          assert(e.contains("Cannot use interval"))
+        }
       }
     }
   }
@@ -1346,7 +1416,7 @@ class CometExecSuite extends CometTestBase {
     Seq("true", "false").foreach(aqe => {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
         spark
           .range(1000)

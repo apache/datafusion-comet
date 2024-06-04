@@ -37,7 +37,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
@@ -176,8 +176,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "10",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_EXPR_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
         withParquetTable((0 until 50).map(i => (1.toString, 2.toString, (i + 1).toLong)), "tbl") {
           val df = sql("SELECT * FROM tbl")
             .filter($"_1" === 1.toString)

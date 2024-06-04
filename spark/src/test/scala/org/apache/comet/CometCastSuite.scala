@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import scala.util.Random
+import scala.util.matching.Regex
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -33,9 +34,14 @@ import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 import org.apache.comet.expressions.{CometCast, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
   import testImplicits._
 
-  private val dataSize = 1000
+  /** Create a data generator using a fixed seed so that tests are reproducible */
+  private val gen = DataGenerator.DEFAULT
+
+  /** Number of random data items to generate in each test */
+  private val dataSize = 10000
 
   // we should eventually add more whitespace chars here as documented in
   // https://docs.oracle.com/javase/8/docs/api/java/lang/Character.html#isWhitespace-char-
@@ -49,6 +55,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val numericPattern = "0123456789deEf+-." + whitespaceChars
 
   private val datePattern = "0123456789/" + whitespaceChars
+
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   test("all valid cast combinations covered") {
@@ -478,7 +485,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast StringType to BooleanType") {
     val testValues =
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
-        generateStrings("truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
+        gen.generateStrings(dataSize, "truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
     castTest(testValues, DataTypes.BooleanType)
   }
 
@@ -519,53 +526,112 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 4).toDF("a"), DataTypes.ByteType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 4).toDF("a"), DataTypes.ByteType)
   }
 
   test("cast StringType to ShortType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 5).toDF("a"), DataTypes.ShortType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 5).toDF("a"), DataTypes.ShortType)
   }
 
   test("cast StringType to IntegerType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.IntegerType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.IntegerType)
   }
 
   test("cast StringType to LongType") {
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.LongType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
   ignore("cast StringType to FloatType") {
     // https://github.com/apache/datafusion-comet/issues/326
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.FloatType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
   }
 
   ignore("cast StringType to DoubleType") {
     // https://github.com/apache/datafusion-comet/issues/326
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.DoubleType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
   ignore("cast StringType to DecimalType(10,2)") {
     // https://github.com/apache/datafusion-comet/issues/325
-    val values = generateStrings(numericPattern, 8).toDF("a")
+    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
   test("cast StringType to BinaryType") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.BinaryType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.BinaryType)
   }
 
-  ignore("cast StringType to DateType") {
-    // https://github.com/apache/datafusion-comet/issues/327
-    castTest(generateStrings(datePattern, 8).toDF("a"), DataTypes.DateType)
+  test("cast StringType to DateType") {
+    // error message for invalid dates in Spark 3.2 not supported by Comet see below issue.
+    // https://github.com/apache/datafusion-comet/issues/440
+    assume(CometSparkSessionExtensions.isSpark33Plus)
+    val validDates = Seq(
+      "262142-01-01",
+      "262142-01-01 ",
+      "262142-01-01T ",
+      "262142-01-01T 123123123",
+      "-262143-12-31",
+      "-262143-12-31 ",
+      "-262143-12-31T",
+      "-262143-12-31T ",
+      "-262143-12-31T 123123123",
+      "2020",
+      "2020-1",
+      "2020-1-1",
+      "2020-01",
+      "2020-01-01",
+      "2020-1-01 ",
+      "2020-01-1",
+      "02020-01-01",
+      "2020-01-01T",
+      "2020-10-01T  1221213",
+      "002020-01-01  ",
+      "0002020-01-01  123344",
+      "-3638-5")
+    val invalidDates = Seq(
+      "0",
+      "202",
+      "3/",
+      "3/3/",
+      "3/3/2020",
+      "3#3#2020",
+      "2020-010-01",
+      "2020-10-010",
+      "2020-10-010T",
+      "--262143-12-31",
+      "--262143-12-31T 1234 ",
+      "abc-def-ghi",
+      "abc-def-ghi jkl",
+      "2020-mar-20",
+      "not_a_date",
+      "T2",
+      "\t\n3938\n8",
+      "8701\t",
+      "\n8757",
+      "7593\t\t\t",
+      "\t9374 \n ",
+      "\n 9850 \t",
+      "\r\n\t9840",
+      "\t9629\n",
+      "\r\n 9629 \r\n",
+      "\r\n 962 \r\n",
+      "\r\n 62 \r\n")
+
+    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
+    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
+    val fuzzDates = gen
+      .generateStrings(dataSize, datePattern, 8)
+      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
+    castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
@@ -581,7 +647,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   ignore("cast StringType to TimestampType") {
     // https://github.com/apache/datafusion-comet/issues/328
     withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ generateStrings(timestampPattern, 8)
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
+        dataSize,
+        timestampPattern,
+        8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -630,7 +699,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast BinaryType to StringType - valid UTF-8 inputs") {
-    castTest(generateStrings(numericPattern, 8).toDF("a"), DataTypes.StringType)
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.StringType)
   }
 
   // CAST from DateType
@@ -739,35 +808,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateFloats(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(
-      Float.MaxValue,
-      Float.MinPositiveValue,
-      Float.MinValue,
-      Float.NaN,
-      Float.PositiveInfinity,
-      Float.NegativeInfinity,
-      1.0f,
-      -1.0f,
-      Short.MinValue.toFloat,
-      Short.MaxValue.toFloat,
-      0.0f) ++
-      Range(0, dataSize).map(_ => r.nextFloat())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
 
   private def generateDoubles(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(
-      Double.MaxValue,
-      Double.MinPositiveValue,
-      Double.MinValue,
-      Double.NaN,
-      Double.PositiveInfinity,
-      Double.NegativeInfinity,
-      0.0d) ++
-      Range(0, dataSize).map(_ => r.nextDouble())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateDoubles(dataSize)).toDF("a")
   }
 
   private def generateBools(): DataFrame = {
@@ -775,31 +820,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateBytes(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Byte.MinValue, Byte.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt().toByte)
-    withNulls(values).toDF("a")
+    withNulls(gen.generateBytes(dataSize)).toDF("a")
   }
 
   private def generateShorts(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Short.MinValue, Short.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt().toShort)
-    withNulls(values).toDF("a")
+    withNulls(gen.generateShorts(dataSize)).toDF("a")
   }
 
   private def generateInts(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Int.MinValue, Int.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextInt())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateInts(dataSize)).toDF("a")
   }
 
   private def generateLongs(): DataFrame = {
-    val r = new Random(0)
-    val values = Seq(Long.MinValue, Long.MaxValue) ++
-      Range(0, dataSize).map(_ => r.nextLong())
-    withNulls(values).toDF("a")
+    withNulls(gen.generateLongs(dataSize)).toDF("a")
   }
 
   private def generateDecimalsPrecision10Scale2(): DataFrame = {
@@ -864,17 +897,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .drop("str")
   }
 
-  private def generateString(r: Random, chars: String, maxLen: Int): String = {
-    val len = r.nextInt(maxLen)
-    Range(0, len).map(_ => chars.charAt(r.nextInt(chars.length))).mkString
-  }
-
-  // TODO return DataFrame for consistency with other generators and include null values
-  private def generateStrings(chars: String, maxLen: Int): Seq[String] = {
-    val r = new Random(0)
-    Range(0, dataSize).map(_ => generateString(r, chars, maxLen))
-  }
-
   private def generateBinary(): DataFrame = {
     val r = new Random(0)
     val bytes = new Array[Byte](8)
@@ -907,28 +929,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO Commented out to work around scalafix since this is currently unused.
-  // private def castFallbackTestTimezone(
-  //     input: DataFrame,
-  //     toType: DataType,
-  //     expectedMessage: String): Unit = {
-  //   withTempPath { dir =>
-  //     val data = roundtripParquet(input, dir).coalesce(1)
-  //     data.createOrReplaceTempView("t")
-  //
-  //     withSQLConf(
-  //       (SQLConf.ANSI_ENABLED.key, "false"),
-  //       (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true"),
-  //       (SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Los_Angeles")) {
-  //       val df = data.withColumn("converted", col("a").cast(toType))
-  //       df.collect()
-  //       val str =
-  //         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-  //       assert(str.contains(expectedMessage))
-  //     }
-  //   }
-  // }
-
   private def castTimestampTest(input: DataFrame, toType: DataType) = {
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
@@ -948,10 +948,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
 
-    // we do not support the TryCast expression in Spark 3.2 and 3.3
-    // https://github.com/apache/datafusion-comet/issues/374
-    val testTryCast = CometSparkSessionExtensions.isSpark34Plus
-
+    // we now support the TryCast expression in Spark 3.2 and 3.3
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -962,11 +959,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df)
 
         // try_cast() should always return null for invalid inputs
-        if (testTryCast) {
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          checkSparkAnswerAndOperator(df2)
-        }
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+        checkSparkAnswerAndOperator(df2)
       }
 
       // with ANSI enabled, we should produce the same exception as Spark
@@ -987,12 +982,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             fail(s"Comet should have failed with ${e.getCause.getMessage}")
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
-            val sparkMessage = sparkException.getCause.getMessage
+            val sparkMessage =
+              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
             // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
             // removing the "Execution error: " error message prefix that is added by DataFusion
-            val cometMessage = cometException.getCause.getMessage
-              .replace("Execution error: ", "")
-            if (CometSparkSessionExtensions.isSpark34Plus) {
+            val cometMessage = cometException.getCause.getMessage.replace("Execution error: ", "")
+            if (CometSparkSessionExtensions.isSpark40Plus) {
+              // for Spark 4 we expect to sparkException carries the message
+              assert(
+                sparkException.getMessage
+                  .replace(".WITH_SUGGESTION] ", "]")
+                  .startsWith(cometMessage))
+            } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
             } else if (CometSparkSessionExtensions.isSpark33Plus) {
@@ -1025,11 +1026,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         // try_cast() should always return null for invalid inputs
-        if (testTryCast) {
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          checkSparkAnswerAndOperator(df2)
-        }
+        val df2 =
+          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+        checkSparkAnswerAndOperator(df2)
+
       }
     }
   }

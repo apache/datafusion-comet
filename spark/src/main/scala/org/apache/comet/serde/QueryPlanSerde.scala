@@ -19,11 +19,13 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -547,6 +549,27 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child)
           None
         }
+      case corr @ Corr(child1, child2, nullOnDivideByZero) =>
+        val child1Expr = exprToProto(child1, inputs, binding)
+        val child2Expr = exprToProto(child2, inputs, binding)
+        val dataType = serializeDataType(corr.dataType)
+
+        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+          val corrBuilder = ExprOuterClass.Correlation.newBuilder()
+          corrBuilder.setChild1(child1Expr.get)
+          corrBuilder.setChild2(child2Expr.get)
+          corrBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+          corrBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setCorrelation(corrBuilder)
+              .build())
+        } else {
+          withInfo(aggExpr, child1, child2)
+          None
+        }
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
@@ -567,6 +590,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported
    */
+
+  def stringToEvalMode(evalModeStr: String): ExprOuterClass.EvalMode =
+    evalModeStr.toUpperCase(Locale.ROOT) match {
+      case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
+      case "TRY" => ExprOuterClass.EvalMode.TRY
+      case "ANSI" => ExprOuterClass.EvalMode.ANSI
+      case invalid =>
+        throw new IllegalArgumentException(
+          s"Invalid eval mode '$invalid' "
+        ) // Assuming we want to catch errors strictly
+    }
+
   def exprToProto(
       expr: Expression,
       input: Seq[Attribute],
@@ -577,12 +612,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         childExpr: Option[Expr],
         evalMode: String): Option[Expr] = {
       val dataType = serializeDataType(dt)
+      val evalModeEnum = stringToEvalMode(evalMode) // Convert string to enum
 
       if (childExpr.isDefined && dataType.isDefined) {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
-        castBuilder.setEvalMode(evalMode)
+        castBuilder.setEvalMode(evalModeEnum) // Set the enum in protobuf
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
@@ -604,6 +640,52 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
     def exprToProtoInternal(expr: Expression, inputs: Seq[Attribute]): Option[Expr] = {
       SQLConf.get
+
+      def handleCast(
+          child: Expression,
+          inputs: Seq[Attribute],
+          dt: DataType,
+          timeZoneId: Option[String],
+          actualEvalModeStr: String): Option[Expr] = {
+
+        val childExpr = exprToProtoInternal(child, inputs)
+        if (childExpr.isDefined) {
+          val castSupport =
+            CometCast.isSupported(child.dataType, dt, timeZoneId, actualEvalModeStr)
+
+          def getIncompatMessage(reason: Option[String]): String =
+            "Comet does not guarantee correct results for cast " +
+              s"from ${child.dataType} to $dt " +
+              s"with timezone $timeZoneId and evalMode $actualEvalModeStr" +
+              reason.map(str => s" ($str)").getOrElse("")
+
+          castSupport match {
+            case Compatible(_) =>
+              castToProto(timeZoneId, dt, childExpr, actualEvalModeStr)
+            case Incompatible(reason) =>
+              if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+                logWarning(getIncompatMessage(reason))
+                castToProto(timeZoneId, dt, childExpr, actualEvalModeStr)
+              } else {
+                withInfo(
+                  expr,
+                  s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
+                    s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
+                None
+              }
+            case Unsupported =>
+              withInfo(
+                expr,
+                s"Unsupported cast from ${child.dataType} to $dt " +
+                  s"with timezone $timeZoneId and evalMode $actualEvalModeStr")
+              None
+          }
+        } else {
+          withInfo(expr, child)
+          None
+        }
+      }
+
       expr match {
         case a @ Alias(_, _) =>
           val r = exprToProtoInternal(a.child, inputs)
@@ -617,50 +699,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val value = cast.eval()
           exprToProtoInternal(Literal(value, dataType), inputs)
 
+        case UnaryExpression(child) if expr.prettyName == "trycast" =>
+          val timeZoneId = SQLConf.get.sessionLocalTimeZone
+          handleCast(child, inputs, expr.dataType, Some(timeZoneId), "TRY")
+
         case Cast(child, dt, timeZoneId, evalMode) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          if (childExpr.isDefined) {
-            val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
-              // Spark 3.2 & 3.3 has ansiEnabled boolean
-              if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
-            } else {
-              // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
-              evalMode.toString
-            }
-            val castSupport =
-              CometCast.isSupported(child.dataType, dt, timeZoneId, evalModeStr)
-
-            def getIncompatMessage(reason: Option[String]) =
-              "Comet does not guarantee correct results for cast " +
-                s"from ${child.dataType} to $dt " +
-                s"with timezone $timeZoneId and evalMode $evalModeStr" +
-                reason.map(str => s" ($str)").getOrElse("")
-
-            castSupport match {
-              case Compatible(_) =>
-                castToProto(timeZoneId, dt, childExpr, evalModeStr)
-              case Incompatible(reason) =>
-                if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
-                  logWarning(getIncompatMessage(reason))
-                  castToProto(timeZoneId, dt, childExpr, evalModeStr)
-                } else {
-                  withInfo(
-                    expr,
-                    s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
-                      s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
-                  None
-                }
-              case Unsupported =>
-                withInfo(
-                  expr,
-                  s"Unsupported cast from ${child.dataType} to $dt " +
-                    s"with timezone $timeZoneId and evalMode $evalModeStr")
-                None
-            }
+          val evalModeStr = if (evalMode.isInstanceOf[Boolean]) {
+            // Spark 3.2 & 3.3 has ansiEnabled boolean
+            if (evalMode.asInstanceOf[Boolean]) "ANSI" else "LEGACY"
           } else {
-            withInfo(expr, child)
-            None
+            // Spark 3.4+ has EvalMode enum with values LEGACY, ANSI, and TRY
+            evalMode.toString
           }
+          handleCast(child, inputs, dt, timeZoneId, evalModeStr)
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
@@ -1038,23 +1089,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Like(left, right, _) =>
-          // TODO escapeChar
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+        case Like(left, right, escapeChar) =>
+          if (escapeChar == '\\') {
+            val leftExpr = exprToProtoInternal(left, inputs)
+            val rightExpr = exprToProtoInternal(right, inputs)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Like.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
+            if (leftExpr.isDefined && rightExpr.isDefined) {
+              val builder = ExprOuterClass.Like.newBuilder()
+              builder.setLeft(leftExpr.get)
+              builder.setRight(rightExpr.get)
 
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setLike(builder)
-                .build())
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setLike(builder)
+                  .build())
+            } else {
+              withInfo(expr, left, right)
+              None
+            }
           } else {
-            withInfo(expr, left, right)
+            // TODO custom escape char
+            withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
             None
           }
 
@@ -1264,7 +1320,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
-                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
+                    .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
                     .build())
                 .build()
             })
@@ -1467,6 +1523,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
           val optExpr = scalarExprToProto("atan2", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
+
+        case Hex(child) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          val optExpr =
+            scalarExprToProtoWithReturnType("hex", StringType, childExpr)
+
+          optExprWithInfo(optExpr, expr, child)
 
         case e: Unhex if !isSpark32 =>
           val unHex = unhexSerde(e)
@@ -1921,11 +1984,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case UnaryMinus(child, _) =>
+        case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
             val builder = ExprOuterClass.Negative.newBuilder()
             builder.setChild(childExpr.get)
+            builder.setFailOnError(failOnError)
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
@@ -1951,18 +2015,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.
         // See https://github.com/apache/spark/pull/38151
-        case StaticInvoke(
-              _: Class[CharVarcharCodegenUtils],
-              _: StringType,
-              "readSidePadding",
-              arguments,
-              _,
-              true,
-              false,
-              true) if arguments.size == 2 =>
+        case s: StaticInvoke
+            if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
+              s.dataType.isInstanceOf[StringType] &&
+              s.functionName == "readSidePadding" &&
+              s.arguments.size == 2 &&
+              s.propagateNull &&
+              !s.returnNullable &&
+              s.isDeterministic =>
           val argsExpr = Seq(
-            exprToProtoInternal(Cast(arguments(0), StringType), inputs),
-            exprToProtoInternal(arguments(1), inputs))
+            exprToProtoInternal(Cast(s.arguments(0), StringType), inputs),
+            exprToProtoInternal(s.arguments(1), inputs))
 
           if (argsExpr.forall(_.isDefined)) {
             val builder = ExprOuterClass.ScalarFunc.newBuilder()
@@ -1971,7 +2034,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
             Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
           } else {
-            withInfo(expr, arguments: _*)
+            withInfo(expr, s.arguments: _*)
             None
           }
 
@@ -2049,6 +2112,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
           // the seed is put at the end of the arguments
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+
+        case XxHash64(children, seed) =>
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
+          }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(LongType).get)
+            .setLongVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
@@ -2166,7 +2244,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   def nullIfWhenPrimitive(expression: Expression): Expression = if (isPrimitive(expression)) {
-    new NullIf(expression, Literal.default(expression.dataType)).child
+    val zero = Literal.default(expression.dataType)
+    If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
   } else {
     expression
   }
