@@ -44,8 +44,8 @@
 
 set -e
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE_TOP_DIR="$(cd "${SOURCE_DIR}/../../" && pwd)"
+DEV_RELEASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEV_RELEASE_TOP_DIR="$(cd "${DEV_RELEASE_DIR}/../../" && pwd)"
 
 if [ "$#" -ne 2 ]; then
     echo "Usage: $0 <version> <rc>"
@@ -63,10 +63,10 @@ rc=$2
 tag="${version}-rc${rc}"
 
 echo "Attempting to create ${tarball} from tag ${tag}"
-release_hash=$(cd "${SOURCE_TOP_DIR}" && git rev-list --max-count=1 ${tag})
+release_hash=$(cd "${DEV_RELEASE_TOP_DIR}" && git rev-list --max-count=1 ${tag})
 
 release=apache-datafusion-comet-${version}
-distdir=${SOURCE_TOP_DIR}/dev/dist/${release}-rc${rc}
+distdir=${DEV_RELEASE_TOP_DIR}/dev/dist/${release}-rc${rc}
 tarname=${release}.tar.gz
 tarball=${distdir}/${tarname}
 url="https://dist.apache.org/repos/dist/dev/datafusion/${release}-rc${rc}"
@@ -115,10 +115,10 @@ echo "---------------------------------------------------------"
 # create <tarball> containing the files in git at $release_hash
 # the files in the tarball are prefixed with {version} (e.g. 4.0.1)
 mkdir -p ${distdir}
-(cd "${SOURCE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ | gzip > ${tarball})
+(cd "${DEV_RELEASE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ | gzip > ${tarball})
 
 echo "Running rat license checker on ${tarball}"
-${SOURCE_DIR}/run-rat.sh ${tarball}
+${DEV_RELEASE_DIR}/run-rat.sh ${tarball}
 
 echo "Signing tarball and creating checksums"
 gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
@@ -130,6 +130,6 @@ gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
 
 
 echo "Uploading to datafusion dist/dev to ${url}"
-svn co --depth=empty https://dist.apache.org/repos/dist/dev/datafusion ${SOURCE_TOP_DIR}/dev/dist
+svn co --depth=empty https://dist.apache.org/repos/dist/dev/datafusion ${DEV_RELEASE_TOP_DIR}/dev/dist
 svn add ${distdir}
 svn ci -m "Apache DataFusion Comet ${version} ${rc}" ${distdir}
