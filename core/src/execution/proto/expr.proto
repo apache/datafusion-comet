@@ -454,6 +454,7 @@ message Not {
 
 message Negative {
   Expr child = 1;
+  bool fail_on_error = 2;
 }
 
 message IfExpr {

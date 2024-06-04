@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark40Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -298,8 +298,10 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 }
 
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
+  private val planName =
+    if (isSpark40Plus) "approved-plans-v1_4-spark4_0" else "approved-plans-v1_4"
   override val goldenFilePath: String =
-    new File(baseResourcePath, "approved-plans-v1_4").getAbsolutePath
+    new File(baseResourcePath, planName).getAbsolutePath
 
   tpcdsQueries.foreach { q =>
     test(s"check simplified (tpcds-v1.4/$q)") {
@@ -309,8 +311,10 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 }
 
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
+  private val planName =
+    if (isSpark40Plus) "approved-plans-v2_7-spark4_0" else "approved-plans-v2_7"
   override val goldenFilePath: String =
-    new File(baseResourcePath, "approved-plans-v2_7").getAbsolutePath
+    new File(baseResourcePath, planName).getAbsolutePath
 
   tpcdsQueriesV2_7_0.foreach { q =>
     test(s"check simplified (tpcds-v2.7.0/$q)") {

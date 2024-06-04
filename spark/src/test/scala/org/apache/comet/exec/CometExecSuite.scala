@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -1055,7 +1055,11 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[AnalysisException] {
           sql("CREATE TABLE t2(name STRING, part INTERVAL) USING PARQUET PARTITIONED BY (part)")
         }.getMessage
-        assert(e.contains("Cannot use interval"))
+        if (isSpark40Plus) {
+          assert(e.contains(" Cannot use \"INTERVAL\""))
+        } else {
+          assert(e.contains("Cannot use interval"))
+        }
       }
     }
   }

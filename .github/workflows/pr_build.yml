@@ -109,10 +109,8 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   linux-test-with-old-spark:
     strategy:
@@ -237,10 +235,8 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   macos-aarch64-test-with-spark4_0:
     strategy:
@@ -277,10 +273,8 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   macos-aarch64-test-with-old-spark:
     strategy:
