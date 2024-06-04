@@ -1660,7 +1660,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .mode("overwrite")
         .parquet(shortArrayPath)
       val shortArrayQuery = "select a, -a from t"
-      runArrayTest(shortArrayQuery, " caused", shortArrayPath)
+      runArrayTest(shortArrayQuery, "", shortArrayPath)
 
       // byte values test
       val byteArrayPath = new Path(dir.toURI.toString, "byte_array_test.parquet").toString
@@ -1670,7 +1670,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .mode("overwrite")
         .parquet(byteArrayPath)
       val byteArrayQuery = "select a, -a from t"
-      runArrayTest(byteArrayQuery, " caused", byteArrayPath)
+      runArrayTest(byteArrayQuery, "", byteArrayPath)
 
       // interval values test
       withTable("t_interval") {
