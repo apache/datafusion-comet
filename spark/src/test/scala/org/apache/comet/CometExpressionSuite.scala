@@ -981,6 +981,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Chr with null character") {
+    // test compatibility with Spark, spark supports chr(0)
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
@@ -993,10 +994,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(c9 int, c4 int) using parquet")
           sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
-          checkSparkMaybeThrows(sql(s"SELECT chr(c9), chr(c4) FROM $table")) match {
+          val query = s"SELECT chr(c9), chr(c4) FROM $table"
+          checkSparkMaybeThrows(sql(query)) match {
             case (None, None) => {}
-            case (_, _) => fail("Expected no exception")
+            case (Some(e), None) => throw e
+            case (None, Some(e)) => throw e
+            case (Some(e1), Some(e2)) => throw new Exception(s"$e1, $e2")
           }
+          checkSparkAnswerAndOperator(query)
         }
       }
     }

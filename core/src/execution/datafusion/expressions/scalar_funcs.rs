@@ -58,6 +58,9 @@ use unhex::spark_unhex;
 mod hex;
 use hex::spark_hex;
 
+mod chr;
+use chr::spark_chr;
+
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
@@ -129,6 +132,10 @@ pub fn create_comet_physical_fun(
         "xxhash64" => {
             let func = Arc::new(spark_xxhash64);
             make_comet_scalar_udf!("xxhash64", func, without data_type)
+        }
+        "chr" => {
+            let func = Arc::new(spark_chr);
+            make_comet_scalar_udf!("chr", func, without data_type)
         }
         sha if sha2_functions.contains(&sha) => {
             // Spark requires hex string as the result of sha2 functions, we have to wrap the
