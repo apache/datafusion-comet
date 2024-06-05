@@ -1394,6 +1394,11 @@ impl RecordBatchStream for EmptyStream {
 #[cfg(test)]
 mod test {
     use super::*;
+    use datafusion::physical_plan::common::collect;
+    use datafusion::physical_plan::memory::MemoryExec;
+    use datafusion::prelude::SessionContext;
+    use datafusion_physical_expr::expressions::Column;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn test_slot_size() {
@@ -1421,5 +1426,33 @@ mod test {
                 let slot_size = slot_size(batch_size, data_type);
                 assert_eq!(slot_size, *expected);
             })
+    }
+
+    #[test]
+    fn test_insert_larger_batch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+        let mut b = StringBuilder::new();
+        for i in 0..10000 {
+            b.append_value(format!("{i}"));
+        }
+        let array = b.finish();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+
+        let mut batches = Vec::new();
+        batches.push(batch.clone());
+
+        let partitions = &[batches];
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+            "/tmp/data.out".to_string(),
+            "/tmp/index.out".to_string(),
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let stream = exec.execute(0, task_ctx).unwrap();
+        let rt = Runtime::new().unwrap();
+        rt.block_on(collect(stream)).unwrap();
     }
 }
