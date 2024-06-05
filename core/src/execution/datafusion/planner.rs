@@ -1397,15 +1397,17 @@ impl PhysicalPlanner {
             args.is_empty(),
         ));
 
-        match fun_name.as_str() {
-            // TODO: The <=0 check in spark_log_fun can also be used for `log` and `log10`.
-            "log2" if expr.args.len() == 1 => {
-                let first_arg = expr
-                    .args
-                    .first()
-                    .and_then(|x| self.create_expr(x, input_schema.clone()).ok());
+        let is_unary = expr.args.len() == 1
+        let unary_arg = expr
+            .args
+            .first()
+            .and_then(|x| self.create_expr(x, input_schema.clone()).ok());
 
-                spark_log_fun(scalar_expr, first_arg)
+        let log_functions = ["ln", "log2", "log10"];
+
+        match fun_name.as_str() {
+            log if log_functions.contains(&log) && is_unary => {
+                spark_log(scalar_expr, unary_arg)
             }
             _ => Ok(scalar_expr),
         }
@@ -1568,13 +1570,14 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-/// Physical expression that simulates Spark `log` expressions, which are only defined for
-/// postive numberes
-fn spark_log_fun(
+/// Modifies the physical expression for `log` functions so that it is defined as  null on numbers
+/// less than or equal to 0.  This matches Spark and Hive behavior, where values less than or
+/// equal to 0 eval to null, instead of NaN or -Infinity
+fn spark_log(
     datafusion_expr: Arc<dyn PhysicalExpr>,
-    first_arg: Option<Arc<dyn PhysicalExpr>>,
+    arg: Option<Arc<dyn PhysicalExpr>>,
 ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    match first_arg {
+    match arg {
         Some(arg) => {
             let less_than_0 = BinaryExpr::new(
                 arg,
