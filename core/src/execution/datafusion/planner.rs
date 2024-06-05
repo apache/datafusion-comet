@@ -1397,7 +1397,7 @@ impl PhysicalPlanner {
             args.is_empty(),
         ));
 
-        let is_unary = expr.args.len() == 1
+        let is_unary = expr.args.len() == 1;
         let unary_arg = expr
             .args
             .first()
@@ -1406,9 +1406,7 @@ impl PhysicalPlanner {
         let log_functions = ["ln", "log2", "log10"];
 
         match fun_name.as_str() {
-            log if log_functions.contains(&log) && is_unary => {
-                spark_log(scalar_expr, unary_arg)
-            }
+            log if log_functions.contains(&log) && is_unary => spark_log(scalar_expr, unary_arg),
             _ => Ok(scalar_expr),
         }
     }
