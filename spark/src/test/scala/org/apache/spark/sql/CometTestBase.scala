@@ -787,7 +787,7 @@ abstract class CometTestBase
       testQuery: String,
       testName: String = "test",
       tableName: String = "tbl",
-      excludedOptimizerRules: Option[String] = None): Unit = {
+      sqlConf: Seq[(String, String)] = Seq.empty): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -803,9 +803,7 @@ abstract class CometTestBase
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
-      withSQLConf(
-        "spark.sql.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse(""),
-        "spark.sql.adaptive.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse("")) {
+      withSQLConf(sqlConf: _*) {
         checkSparkAnswerAndOperator(sql(testQuery))
       }
     }
