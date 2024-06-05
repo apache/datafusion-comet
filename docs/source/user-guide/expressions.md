@@ -19,99 +19,148 @@
 
 # Supported Spark Expressions
 
-The following Spark expressions are currently available:
+The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-- Literals
-- Arithmetic Operators
-  - UnaryMinus
-  - Add/Minus/Multiply/Divide/Remainder
-- Conditional functions
-  - Case When
-  - If
-- Cast
-- Coalesce
-- BloomFilterMightContain
-- Boolean functions
-  - And
-  - Or
-  - Not
-  - EqualTo
-  - EqualNullSafe
-  - GreaterThan
-  - GreaterThanOrEqual
-  - LessThan
-  - LessThanOrEqual
-  - IsNull
-  - IsNotNull
-  - In
-- String functions
-  - Substring
-  - Coalesce
-  - StringSpace
-  - Like
-  - Contains
-  - Startswith
-  - Endswith
-  - Ascii
-  - Bit_length
-  - Octet_length
-  - Upper
-  - Lower
-  - Chr
-  - Initcap
-  - Trim/Btrim/Ltrim/Rtrim
-  - Concat_ws
-  - Repeat
-  - Length
-  - Reverse
-  - Instr
-  - Replace
-  - Translate
-- Bitwise functions
-  - Shiftright/Shiftleft
-- Date/Time functions
-  - Year/Hour/Minute/Second
-- Hash functions
-  - Md5
-  - Sha2
-  - Hash
-  - Xxhash64
-- Math functions
-  - Abs
-  - Acos
-  - Asin
-  - Atan
-  - Atan2
-  - Cos
-  - Exp
-  - Ln
-  - Log10
-  - Log2
-  - Pow
-  - Round
-  - Signum
-  - Sin
-  - Sqrt
-  - Tan
-  - Ceil
-  - Floor
-- Aggregate functions
-  - Count
-  - Sum
-  - Max
-  - Min
-  - Avg
-  - First
-  - Last
-  - BitAnd
-  - BitOr
-  - BitXor
-  - BoolAnd
-  - BoolOr
-  - CovPopulation
-  - CovSample
-  - VariancePop
-  - VarianceSamp
-  - StddevPop
-  - StddevSamp
-  - Corr
+## Arithmetic
+
+| Expression                                  | Notes                                                                               |
+| ------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Literal values of supported data types      |                                                                                     |
+| Unary Arithmetic (`+`, `-`)                 |                                                                                     |
+| Binary Arithmetic (`+`, `-`, `*`, `/`, `%`) | Some operations will throw an overflow exception even when ANSI mode is not enabled |
+
+## Conditional Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| Case When  |       |
+| If         |       |
+
+## Comparison
+
+| Expression         | Notes |
+| ------------------ | ----- |
+| EqualTo            |       |
+| EqualNullSafe      |       |
+| GreaterThan        |       |
+| GreaterThanOrEqual |       |
+| LessThan           |       |
+| LessThanOrEqual    |       |
+| IsNull             |       |
+| IsNotNull          |       |
+| In                 |       |
+
+## String Functions
+
+| Expression             | Notes                                                            |
+| ---------------------- |------------------------------------------------------------------|
+| Substring              |                                                                  |
+| StringSpace            |                                                                  |
+| Like                   |                                                                  |
+| Contains               |                                                                  |
+| Startswith             |                                                                  |
+| Endswith               |                                                                  |
+| Ascii                  |                                                                  |
+| Bit_length             |                                                                  |
+| Octet_length           |                                                                  |
+| Upper                  |                                                                  |
+| Lower                  |                                                                  |
+| Chr                    |                                                                  |
+| Initcap                |                                                                  |
+| Trim/Btrim/Ltrim/Rtrim |                                                                  |
+| Concat_ws              |                                                                  |
+| Repeat                 | Negative argument for number of times to repeat causes exception |
+| Length                 |                                                                  |
+| Reverse                |                                                                  |
+| Instr                  |                                                                  |
+| Replace                |                                                                  |
+| Translate              |                                                                  |
+
+## Date/Time Functions
+
+| Expression | Notes                    |
+| ---------- | ------------------------ |
+| Year       |                          |
+| Hour       |                          |
+| Minute     |                          |
+| Second     |                          |
+| date_part  | Only `year` is supported |
+| extract    | Only `year` is supported |
+
+## Math Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| Abs        |       |
+| Acos       |       |
+| Asin       |       |
+| Atan       |       |
+| Atan2      |       |
+| Cos        |       |
+| Exp        |       |
+| Ln         |       |
+| Log10      |       |
+| Log2       |       |
+| Pow        |       |
+| Round      |       |
+| Signum     |       |
+| Sin        |       |
+| Sqrt       |       |
+| Tan        |       |
+| Ceil       |       |
+| Floor      |       |
+
+## Hashing Functions
+
+| Expression | Notes |
+| ---------- | ----- |
+| Md5        |       |
+| Sha2       |       |
+| Hash       |       |
+| Xxhash64   |       |
+
+## Boolean Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| And        |       |
+| Or         |       |
+| Not        |       |
+
+## Bitwise Expressions
+
+| Expression           | Notes |
+| -------------------- | ----- |
+| Shiftright/Shiftleft |       |
+| BitAnd               |       |
+| BitOr                |       |
+| BitXor               |       |
+| BoolAnd              |       |
+| BoolOr               |       |
+
+## Aggregate Expressions
+
+| Expression    | Notes |
+| ------------- | ----- |
+| Count         |       |
+| Sum           |       |
+| Max           |       |
+| Min           |       |
+| Avg           |       |
+| First         |       |
+| Last          |       |
+| CovPopulation |       |
+| CovSample     |       |
+| VariancePop   |       |
+| VarianceSamp  |       |
+| StddevPop     |       |
+| StddevSamp    |       |
+| Corr          |       |
+
+## Other
+
+| Expression              | Notes                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| Cast                    | See compatibility guide for list of supported cast expressions and known issues |
+| BloomFilterMightContain |                                                                                 |
+| Coalesce                |                                                                                 |
