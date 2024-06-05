@@ -73,7 +73,7 @@ impl PhysicalExpr for UnboundColumn {
         Ok(self.datatype.clone())
     }
 
-    /// Decide whehter this expression is nullable, given the schema of the input
+    /// Decide whether this expression is nullable, given the schema of the input
     fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
         Ok(true)
     }
