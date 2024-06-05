@@ -820,7 +820,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
-          (0 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
+          (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
           withDictionary = dictionary.toBoolean) {
           checkSparkAnswerWithTol(
