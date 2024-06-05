@@ -939,6 +939,7 @@ async fn external_shuffle(
     context: Arc<TaskContext>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
+    let batch_size = context.session_config().batch_size();
     let mut repartitioner = ShuffleRepartitioner::new(
         partition_id,
         output_data_file,
@@ -947,12 +948,18 @@ async fn external_shuffle(
         partitioning,
         metrics,
         context.runtime_env(),
-        context.session_config().batch_size(),
+        batch_size,
     );
 
     while let Some(batch) = input.next().await {
         let batch = batch?;
-        repartitioner.insert_batch(batch).await?;
+        let mut start = 0;
+        while start < batch.num_rows() {
+            let end = (start + batch_size).min(batch.num_rows());
+            let batch = batch.slice(start, end - start);
+            repartitioner.insert_batch(batch).await?;
+            start = end;
+        }
     }
     repartitioner.shuffle_write().await
 }
