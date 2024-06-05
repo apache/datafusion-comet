@@ -19,8 +19,6 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.internal.SQLConf
-
 /**
  * We cannot reference Spark's EvalMode directly because the package is different between Spark
  * versions, so we copy it here.
@@ -33,12 +31,6 @@ import org.apache.spark.sql.internal.SQLConf
  */
 object CometEvalMode extends Enumeration {
   val LEGACY, ANSI, TRY = Value
-
-  def fromSQLConf(conf: SQLConf): Value = if (conf.ansiEnabled) {
-    ANSI
-  } else {
-    LEGACY
-  }
 
   def fromBoolean(ansiEnabled: Boolean): Value = if (ansiEnabled) {
     ANSI

@@ -581,6 +581,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case CometEvalMode.LEGACY => ExprOuterClass.EvalMode.LEGACY
       case CometEvalMode.TRY => ExprOuterClass.EvalMode.TRY
       case CometEvalMode.ANSI => ExprOuterClass.EvalMode.ANSI
+      case _ => throw new IllegalStateException(s"Invalid evalMode $evalMode")
     }
   }
 
@@ -679,10 +680,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
       }
 
-      val cometAnsiEnabled = CometConf.COMET_ANSI_MODE_ENABLED.get()
-      val ansiNotSupported = "ANSI mode not supported. " +
-        s"Set ${CometConf.COMET_ANSI_MODE_ENABLED.key}=true to enable it anyway."
-
       expr match {
         case a @ Alias(_, _) =>
           val r = exprToProtoInternal(a.child, inputs)
@@ -703,32 +700,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case c @ Cast(child, dt, timeZoneId, _) =>
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
-        case expr: Add if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Subtract if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Multiply if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Divide if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Remainder if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Pmod if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
-          None
-
-        case expr: Round if evalMode(expr) == CometEvalMode.ANSI && !cometAnsiEnabled =>
-          withInfo(expr, ansiNotSupported)
+        case expr if isUnsupportedAnsiExpr(expr) && !CometConf.COMET_ANSI_MODE_ENABLED.get() =>
+          withInfo(
+            expr,
+            "ANSI mode not supported. " +
+              s"Set ${CometConf.COMET_ANSI_MODE_ENABLED.key}=true to enable it anyway.")
           None
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
@@ -2223,6 +2199,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     val newExpr =
       DecimalPrecision.promote(conf.decimalOperationsAllowPrecisionLoss, expr, !conf.ansiEnabled)
     exprToProtoInternal(newExpr, input)
+  }
+
+  /** These expressions are not compatible with Spark in ANSI mode yet */
+  private def isUnsupportedAnsiExpr(expr: Expression): Boolean = expr match {
+    case expr: Add => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Subtract => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Multiply => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Divide => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Remainder => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Pmod => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Round => evalMode(expr) == CometEvalMode.ANSI
+    case _ => false
   }
 
   def scalarExprToProtoWithReturnType(
