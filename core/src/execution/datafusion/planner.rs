@@ -731,8 +731,24 @@ impl PhysicalPlanner {
                 // this approach looks like it has benefit then we may want to build a custom
                 // version of CoalesceBatchesExec that copies when needed
                 let copied = Arc::new(CopyExec::new(projection));
+
+                // keep this small to avoid error:
+                let target_batch_size = 1024;
+
+                /*
+                org.apache.comet.CometNativeException: range end index 8504 out of range for slice of length 8192
+                    at comet::errors::init::{{closure}}(__internal__:0)
+                    at std::panicking::rust_panic_with_hook(__internal__:0)
+                    at std::panicking::begin_panic_handler::{{closure}}(__internal__:0)
+                    at std::sys_common::backtrace::__rust_end_short_backtrace(__internal__:0)
+                    at rust_begin_unwind(__internal__:0)
+                    at core::panicking::panic_fmt(__internal__:0)
+                    at core::slice::index::slice_end_index_len_fail(__internal__:0)
+                    at comet::execution::datafusion::shuffle_writer::external_shuffle::{{closure}}(__internal__:0)
+                 */
+
                 let coalesced: Arc<dyn ExecutionPlan> =
-                    Arc::new(CoalesceBatchesExec::new(copied, 4196));
+                    Arc::new(CoalesceBatchesExec::new(copied, target_batch_size));
                 Ok((scans, coalesced))
             }
             OpStruct::Filter(filter) => {
