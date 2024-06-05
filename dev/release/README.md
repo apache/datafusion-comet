@@ -19,8 +19,7 @@ under the License.
 
 # Comet Release Process
 
-This documentation is for creating an official source release of Apache DataFusion Comet. It does not currently
-cover creating binary releases.
+This documentation is for creating an official source release of Apache DataFusion Comet.
 
 The release process is based on the parent Apache DataFusion project, so please refer to the
 [DataFusion Release Process](https://github.com/apache/datafusion/blob/main/dev/release/README.md) for detailed
