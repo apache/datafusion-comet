@@ -35,22 +35,18 @@ pub struct CometAbsFunc {
 
 impl CometAbsFunc {
     pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, ExecutionError> {
-        match eval_mode {
-            EvalMode::Legacy => (),
-            EvalMode::Ansi => (),
-            other => {
-                return Err(ExecutionError::GeneralError(format!(
-                    "Invalid EvalMode: \"{:?}\"",
-                    other
-                )))
-            }
+        if let EvalMode::Legacy | EvalMode::Ansi = eval_mode {
+            Ok(Self {
+                inner_abs_func: math::abs().inner(),
+                eval_mode,
+                data_type_name,
+            })
+        } else {
+            Err(ExecutionError::GeneralError(format!(
+                "Invalid EvalMode: \"{:?}\"",
+                eval_mode
+            )))
         }
-
-        Ok(Self {
-            inner_abs_func: math::abs().inner(),
-            eval_mode,
-            data_type_name,
-        })
     }
 }
 
