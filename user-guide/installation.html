@@ -381,6 +381,10 @@ under the License.
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">make release PROFILES=&quot;-Pspark-3.4 -Pscala-2.13&quot;</span>
 </pre></div>
 </div>
+<p>To build Comet from the source distribution on an isolated environment without an access to <code class="docutils literal notranslate"><span class="pre">github.com</span></code> it is necessary to disable <code class="docutils literal notranslate"><span class="pre">git-commit-id-maven-plugin</span></code>, otherwise you will face errors that there is no access to the git during the build process. In that case you may use:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">make release-nogit PROFILES=&quot;-Pspark-3.4&quot;</span>
+</pre></div>
+</div>
 </section>
 <section id="run-spark-shell-with-comet-enabled">
 <h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">¶</a></h2>
