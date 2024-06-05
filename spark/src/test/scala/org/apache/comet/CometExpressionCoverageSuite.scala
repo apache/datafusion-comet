@@ -59,14 +59,26 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
   // exclude funcs Comet has no plans to support streaming in near future
   // like spark streaming functions, java calls
-  private val outofRoadmapFuncs =
-    List("window", "session_window", "window_time", "java_method", "reflect")
+  private val outOfRoadmapFuncs =
+    List(
+      "window",
+      "session_window",
+      "window_time",
+      "java_method",
+      "reflect",
+      "current_catalog",
+      "current_user",
+      "current_schema",
+      "current_database")
+  // Spark Comet configuration to run the tests
   private val sqlConf = Seq(
     "spark.comet.exec.shuffle.enabled" -> "true",
     "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
     "spark.sql.adaptive.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
   // Tests to run manually as its syntax is different from usual or nested
+  // This can be simplified once comet supports MemoryScan, now Comet triggers from the FileScan
+  // If MemoryScan supported we can just run Spark examples as is
   val manualTests: Map[String, (String, String)] = Map(
     "!" -> ("select true a", "select ! true from tbl"),
     "%" -> ("select 1 a, 2 b", "select a % b from tbl"),
@@ -132,7 +144,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
       .filter(_.getSource.toLowerCase == "built-in")
-      .filter(f => !outofRoadmapFuncs.contains(f.getName.toLowerCase))
+      .filter(f => !outOfRoadmapFuncs.contains(f.getName.toLowerCase))
       .map(f => {
         val selectRows = queryPattern.findAllMatchIn(f.getExamples).map(_.group(0)).toList
         (FunctionInfo(f.getName, f.getGroup), selectRows.filter(_.nonEmpty))
