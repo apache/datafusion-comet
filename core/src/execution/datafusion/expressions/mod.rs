@@ -24,6 +24,9 @@ pub mod if_expr;
 mod normalize_nan;
 pub mod scalar_funcs;
 pub use normalize_nan::NormalizeNaNAndZero;
+use prost::DecodeError;
+
+use crate::{errors::CometError, execution::spark_expression};
 pub mod abs;
 pub mod avg;
 pub mod avg_decimal;
@@ -45,4 +48,22 @@ pub enum EvalMode {
     Legacy,
     Ansi,
     Try,
+}
+
+impl TryFrom<i32> for EvalMode {
+    type Error = DecodeError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match spark_expression::EvalMode::try_from(value)? {
+            spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
+            spark_expression::EvalMode::Try => Ok(EvalMode::Try),
+            spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
+        }
+    }
+}
+
+fn arithmetic_overflow_error(from_type: &str) -> CometError {
+    CometError::ArithmeticOverflow {
+        from_type: from_type.to_string(),
+    }
 }

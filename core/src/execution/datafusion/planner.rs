@@ -351,11 +351,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
-                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
-                    spark_expression::EvalMode::Try => EvalMode::Try,
-                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
-                };
+                let eval_mode = EvalMode::try_from(expr.eval_mode)?;
 
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
@@ -494,17 +490,11 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
-                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
-                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
-                    spark_expression::EvalMode::Try => {
-                        return Err(ExecutionError::GeneralError(
-                            "Invalid EvalMode: \"TRY\"".to_string(),
-                        ))
-                    }
-                };
-                let comet_abs =
-                    ScalarUDF::new_from_impl(CometAbsFunc::new(eval_mode, return_type.to_string()));
+                let eval_mode = EvalMode::try_from(expr.eval_mode)?;
+                let comet_abs = ScalarUDF::new_from_impl(CometAbsFunc::new(
+                    eval_mode,
+                    return_type.to_string(),
+                )?);
                 let scalar_def = ScalarFunctionDefinition::UDF(Arc::new(comet_abs));
 
                 let expr =

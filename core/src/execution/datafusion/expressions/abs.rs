@@ -22,15 +22,9 @@ use datafusion_common::DataFusionError;
 use datafusion_functions::math;
 use std::{any::Any, sync::Arc};
 
-use crate::errors::CometError;
+use crate::execution::operators::ExecutionError;
 
-use super::EvalMode;
-
-fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::ArithmeticOverflow {
-        from_type: from_type.to_string(),
-    }
-}
+use super::{arithmetic_overflow_error, EvalMode};
 
 #[derive(Debug)]
 pub struct CometAbsFunc {
@@ -40,12 +34,23 @@ pub struct CometAbsFunc {
 }
 
 impl CometAbsFunc {
-    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Self {
-        Self {
+    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, ExecutionError> {
+        match eval_mode {
+            EvalMode::Legacy => (),
+            EvalMode::Ansi => (),
+            other => {
+                return Err(ExecutionError::GeneralError(format!(
+                    "Invalid EvalMode: \"{:?}\"",
+                    other
+                )))
+            }
+        }
+
+        Ok(Self {
             inner_abs_func: math::abs().inner(),
             eval_mode,
             data_type_name,
-        }
+        })
     }
 }
 
@@ -67,7 +72,6 @@ impl ScalarUDFImpl for CometAbsFunc {
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
         match self.inner_abs_func.invoke(args) {
-            Ok(result) => Ok(result),
             Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), trace))
                 if msg.contains("overflow") =>
             {

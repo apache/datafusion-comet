@@ -33,6 +33,8 @@ use std::{
     sync::Arc,
 };
 
+use super::arithmetic_overflow_error;
+
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
@@ -46,12 +48,6 @@ pub struct NegativeExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
-}
-
-fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::ArithmeticOverflow {
-        from_type: from_type.to_string(),
-    }
 }
 
 macro_rules! check_overflow {
