@@ -108,6 +108,6 @@ object Meta {
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 
-  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%")
+  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%", "&", "|", "^")
 
 }
