@@ -53,7 +53,7 @@ The following Spark expressions are currently available. Any known compatibility
 ## String Functions
 
 | Expression             | Notes                                                            |
-| ---------------------- |------------------------------------------------------------------|
+| ---------------------- | ---------------------------------------------------------------- |
 | Substring              |                                                                  |
 | StringSpace            |                                                                  |
 | Like                   |                                                                  |
@@ -89,26 +89,26 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Math Expressions
 
-| Expression | Notes |
-| ---------- | ----- |
-| Abs        |       |
-| Acos       |       |
-| Asin       |       |
-| Atan       |       |
-| Atan2      |       |
-| Cos        |       |
-| Exp        |       |
-| Ln         |       |
-| Log10      |       |
-| Log2       |       |
-| Pow        |       |
-| Round      |       |
-| Signum     |       |
-| Sin        |       |
-| Sqrt       |       |
-| Tan        |       |
-| Ceil       |       |
-| Floor      |       |
+| Expression | Notes                                                               |
+| ---------- | ------------------------------------------------------------------- |
+| Abs        |                                                                     |
+| Acos       |                                                                     |
+| Asin       |                                                                     |
+| Atan       |                                                                     |
+| Atan2      |                                                                     |
+| Cos        |                                                                     |
+| Exp        |                                                                     |
+| Log        | log(0) will produce `-Infinity` unlike Spark which returns `null`   |
+| Log2       | log2(0) will produce `-Infinity` unlike Spark which returns `null`  |
+| Log10      | log10(0) will produce `-Infinity` unlike Spark which returns `null` |
+| Pow        |                                                                     |
+| Round      |                                                                     |
+| Signum     | Signum does not differentiate between `0.0` and `-0.0`              |
+| Sin        |                                                                     |
+| Sqrt       |                                                                     |
+| Tan        |                                                                     |
+| Ceil       |                                                                     |
+| Floor      |                                                                     |
 
 ## Hashing Functions
 
