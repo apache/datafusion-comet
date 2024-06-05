@@ -29,7 +29,7 @@ Comet aims to support:
 - a native Parquet implementation, including both reader and writer
 - full implementation of Spark operators, including
   Filter/Project/Aggregation/Join/Exchange etc.
-- full implementation of Spark built-in expressions
+- full implementation of Spark built-in expressions.
 - a UDF framework for users to migrate their existing UDF to native
 
 ## Architecture
