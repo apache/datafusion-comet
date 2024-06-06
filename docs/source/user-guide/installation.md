@@ -57,6 +57,12 @@ Note that the project builds for Scala 2.12 by default but can be built for Scal
 make release PROFILES="-Pspark-3.4 -Pscala-2.13"
 ```
 
+To build Comet from the source distribution on an isolated environment without an access to `github.com` it is necessary to disable `git-commit-id-maven-plugin`, otherwise you will face errors that there is no access to the git during the build process. In that case you may use:
+
+```console
+make release-nogit PROFILES="-Pspark-3.4"
+```
+
 ## Run Spark Shell with Comet enabled
 
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.

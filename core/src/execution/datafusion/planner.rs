@@ -33,7 +33,7 @@ use datafusion::{
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum, UnKnownColumn,
+            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -78,6 +78,7 @@ use crate::{
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
                 temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
+                unbound::UnboundColumn,
                 variance::Variance,
                 NormalizeNaNAndZero,
             },
@@ -239,7 +240,13 @@ impl PhysicalPlanner {
                 let field = input_schema.field(idx);
                 Ok(Arc::new(Column::new(field.name().as_str(), idx)))
             }
-            ExprStruct::Unbound(unbound) => Ok(Arc::new(UnKnownColumn::new(unbound.name.as_str()))),
+            ExprStruct::Unbound(unbound) => {
+                let data_type = to_arrow_datatype(unbound.datatype.as_ref().unwrap());
+                Ok(Arc::new(UnboundColumn::new(
+                    unbound.name.as_str(),
+                    data_type,
+                )))
+            }
             ExprStruct::IsNotNull(is_notnull) => {
                 let child = self.create_expr(is_notnull.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(IsNotNullExpr::new(child)))
