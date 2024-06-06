@@ -24,9 +24,8 @@ use datafusion::{
     physical_expr::PhysicalExpr,
 };
 use datafusion_common::{Result, ScalarValue};
-use datafusion_physical_expr::{
-    aggregate::utils::down_cast_any_ref, sort_properties::SortProperties,
-};
+use datafusion_expr::sort_properties::ExprProperties;
+use datafusion_physical_expr::aggregate::utils::down_cast_any_ref;
 use std::{
     any::Any,
     hash::{Hash, Hasher},
@@ -195,8 +194,8 @@ impl PhysicalExpr for NegativeExpr {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.arg.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.arg]
     }
 
     fn with_new_children(
@@ -255,8 +254,9 @@ impl PhysicalExpr for NegativeExpr {
     }
 
     /// The ordering of a [`NegativeExpr`] is simply the reverse of its child.
-    fn get_ordering(&self, children: &[SortProperties]) -> SortProperties {
-        -children[0]
+    fn get_properties(&self, children: &[ExprProperties]) -> Result<ExprProperties> {
+        let properties = children[0].clone().with_order(children[0].sort_properties);
+        Ok(properties)
     }
 }
 
