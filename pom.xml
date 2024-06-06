@@ -58,6 +58,7 @@ under the License.
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
+    <slf4j.version>2.0.6</slf4j.version>
     <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -167,10 +168,6 @@ under the License.
             <groupId>com.google.code.findbugs</groupId>
             <artifactId>jsr305</artifactId>
           </exclusion>
-          <exclusion>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -182,12 +179,6 @@ under the License.
         <groupId>org.apache.arrow</groupId>
         <artifactId>arrow-c-data</artifactId>
         <version>${arrow.version}</version>
-        <exclusions>
-          <exclusion>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-          </exclusion>
-        </exclusions>
       </dependency>
 
       <!-- Parquet dependencies -->
@@ -196,12 +187,6 @@ under the License.
         <artifactId>parquet-column</artifactId>
         <version>${parquet.version}</version>
         <scope>${parquet.maven.scope}</scope>
-        <exclusions>
-          <exclusion>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-          </exclusion>
-        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.parquet</groupId>
@@ -213,10 +198,6 @@ under the License.
           <exclusion>
             <groupId>javax.annotation</groupId>
             <artifactId>javax.annotation-api</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -238,10 +219,6 @@ under the License.
             <groupId>javax.annotation</groupId>
             <artifactId>javax.annotation-api</artifactId>
           </exclusion>
-          <exclusion>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-          </exclusion>
         </exclusions>
       </dependency>
 
@@ -255,6 +232,12 @@ under the License.
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
         <version>${protobuf.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+        <scope>${spark.maven.scope}</scope>
       </dependency>
 
       <!-- Shaded deps marked as provided. These are promoted to compile scope
@@ -530,6 +513,7 @@ under the License.
         <spark.version>3.2.2</spark.version>
         <spark.version.short>3.2</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <slf4j.version>1.7.30</slf4j.version>
         <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
         <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
@@ -544,6 +528,7 @@ under the License.
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <slf4j.version>1.7.32</slf4j.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
@@ -568,6 +553,7 @@ under the License.
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.9.5</semanticdb.version>
+        <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
