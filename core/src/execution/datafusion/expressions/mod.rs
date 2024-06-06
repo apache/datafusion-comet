@@ -36,5 +36,6 @@ pub mod strings;
 pub mod subquery;
 pub mod sum_decimal;
 pub mod temporal;
+pub mod unbound;
 mod utils;
 pub mod variance;
