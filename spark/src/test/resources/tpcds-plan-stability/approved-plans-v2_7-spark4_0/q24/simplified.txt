@@ -102,9 +102,9 @@ WholeStageCodegen (12)
                                             InputAdapter
                                               BroadcastExchange #7
                                                 WholeStageCodegen (6)
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      CometFilter [i_color,i_item_sk]
+                                                  Filter [i_color,i_item_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
                                                         CometScan parquet spark_catalog.default.item [i_item_sk,i_current_price,i_size,i_color,i_units,i_manager_id]
                                         InputAdapter
                                           BroadcastExchange #8

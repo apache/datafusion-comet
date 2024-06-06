@@ -25,9 +25,9 @@
    :              :     :     :     :     :              +- CometFilter (5)
    :              :     :     :     :     :                 +- CometScan parquet spark_catalog.default.store (4)
    :              :     :     :     :     +- BroadcastExchange (15)
-   :              :     :     :     :        +- * ColumnarToRow (14)
-   :              :     :     :     :           +- CometProject (13)
-   :              :     :     :     :              +- CometFilter (12)
+   :              :     :     :     :        +- * Project (14)
+   :              :     :     :     :           +- * Filter (13)
+   :              :     :     :     :              +- * ColumnarToRow (12)
    :              :     :     :     :                 +- CometScan parquet spark_catalog.default.promotion (11)
    :              :     :     :     +- ReusedExchange (18)
    :              :     :     +- BroadcastExchange (24)
@@ -40,9 +40,9 @@
    :              :              +- CometFilter (28)
    :              :                 +- CometScan parquet spark_catalog.default.customer_address (27)
    :              +- BroadcastExchange (38)
-   :                 +- * ColumnarToRow (37)
-   :                    +- CometProject (36)
-   :                       +- CometFilter (35)
+   :                 +- * Project (37)
+   :                    +- * Filter (36)
+   :                       +- * ColumnarToRow (35)
    :                          +- CometScan parquet spark_catalog.default.item (34)
    +- BroadcastExchange (65)
       +- * HashAggregate (64)
@@ -119,19 +119,19 @@ Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_ext
 Output [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [Or(Or(EqualTo(p_channel_dmail,Y),EqualTo(p_channel_email,Y)),EqualTo(p_channel_tv,Y)), IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_dmail:string,p_channel_email:string,p_channel_tv:string>
 
-(12) CometFilter
+(12) ColumnarToRow [codegen id : 2]
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
-Condition : ((((p_channel_dmail#11 = Y) OR (p_channel_email#12 = Y)) OR (p_channel_tv#13 = Y)) AND isnotnull(p_promo_sk#10))
 
-(13) CometProject
+(13) Filter [codegen id : 2]
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
-Arguments: [p_promo_sk#10], [p_promo_sk#10]
+Condition : ((((rpad(p_channel_dmail#11, 1,  ) = Y) OR (rpad(p_channel_email#12, 1,  ) = Y)) OR (rpad(p_channel_tv#13, 1,  ) = Y)) AND isnotnull(p_promo_sk#10))
 
-(14) ColumnarToRow [codegen id : 2]
-Input [1]: [p_promo_sk#10]
+(14) Project [codegen id : 2]
+Output [1]: [p_promo_sk#10]
+Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
 
 (15) BroadcastExchange
 Input [1]: [p_promo_sk#10]
@@ -224,19 +224,19 @@ Input [4]: [ss_item_sk#1, ss_ext_sales_price#5, c_current_addr_sk#16, ca_address
 Output [2]: [i_item_sk#19, i_category#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category), EqualTo(i_category,Jewelry                                           ), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_category), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_category:string>
 
-(35) CometFilter
+(35) ColumnarToRow [codegen id : 6]
 Input [2]: [i_item_sk#19, i_category#20]
-Condition : ((isnotnull(i_category#20) AND (i_category#20 = Jewelry                                           )) AND isnotnull(i_item_sk#19))
 
-(36) CometProject
+(36) Filter [codegen id : 6]
 Input [2]: [i_item_sk#19, i_category#20]
-Arguments: [i_item_sk#19], [i_item_sk#19]
+Condition : ((isnotnull(i_category#20) AND (rpad(i_category#20, 50,  ) = Jewelry                                           )) AND isnotnull(i_item_sk#19))
 
-(37) ColumnarToRow [codegen id : 6]
-Input [1]: [i_item_sk#19]
+(37) Project [codegen id : 6]
+Output [1]: [i_item_sk#19]
+Input [2]: [i_item_sk#19, i_category#20]
 
 (38) BroadcastExchange
 Input [1]: [i_item_sk#19]

@@ -50,10 +50,10 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                               InputAdapter
                                                                 BroadcastExchange #5
                                                                   WholeStageCodegen (1)
-                                                                    ColumnarToRow
-                                                                      InputAdapter
-                                                                        CometProject [i_item_sk]
-                                                                          CometFilter [i_category,i_class,i_item_sk]
+                                                                    Project [i_item_sk]
+                                                                      Filter [i_category,i_class,i_item_sk]
+                                                                        ColumnarToRow
+                                                                          InputAdapter
                                                                             CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                                           InputAdapter
                                                             ReusedExchange [d_date_sk] #4

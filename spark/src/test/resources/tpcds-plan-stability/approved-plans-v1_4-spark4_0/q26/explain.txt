@@ -15,9 +15,9 @@ TakeOrderedAndProject (30)
                :     :     :     :  +- CometFilter (2)
                :     :     :     :     +- CometScan parquet spark_catalog.default.catalog_sales (1)
                :     :     :     +- BroadcastExchange (8)
-               :     :     :        +- * ColumnarToRow (7)
-               :     :     :           +- CometProject (6)
-               :     :     :              +- CometFilter (5)
+               :     :     :        +- * Project (7)
+               :     :     :           +- * Filter (6)
+               :     :     :              +- * ColumnarToRow (5)
                :     :     :                 +- CometScan parquet spark_catalog.default.customer_demographics (4)
                :     :     +- ReusedExchange (11)
                :     +- BroadcastExchange (17)
@@ -25,9 +25,9 @@ TakeOrderedAndProject (30)
                :           +- CometFilter (15)
                :              +- CometScan parquet spark_catalog.default.item (14)
                +- BroadcastExchange (24)
-                  +- * ColumnarToRow (23)
-                     +- CometProject (22)
-                        +- CometFilter (21)
+                  +- * Project (23)
+                     +- * Filter (22)
+                        +- * ColumnarToRow (21)
                            +- CometScan parquet spark_catalog.default.promotion (20)
 
 
@@ -50,19 +50,19 @@ Input [8]: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_l
 Output [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_marital_status), IsNotNull(cd_education_status), EqualTo(cd_gender,M), EqualTo(cd_marital_status,S), EqualTo(cd_education_status,College             ), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_marital_status), IsNotNull(cd_education_status), IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_marital_status:string,cd_education_status:string>
 
-(5) CometFilter
+(5) ColumnarToRow [codegen id : 1]
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
-Condition : ((((((isnotnull(cd_gender#11) AND isnotnull(cd_marital_status#12)) AND isnotnull(cd_education_status#13)) AND (cd_gender#11 = M)) AND (cd_marital_status#12 = S)) AND (cd_education_status#13 = College             )) AND isnotnull(cd_demo_sk#10))
 
-(6) CometProject
+(6) Filter [codegen id : 1]
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
-Arguments: [cd_demo_sk#10], [cd_demo_sk#10]
+Condition : ((((((isnotnull(cd_gender#11) AND isnotnull(cd_marital_status#12)) AND isnotnull(cd_education_status#13)) AND (rpad(cd_gender#11, 1,  ) = M)) AND (rpad(cd_marital_status#12, 1,  ) = S)) AND (rpad(cd_education_status#13, 20,  ) = College             )) AND isnotnull(cd_demo_sk#10))
 
-(7) ColumnarToRow [codegen id : 1]
-Input [1]: [cd_demo_sk#10]
+(7) Project [codegen id : 1]
+Output [1]: [cd_demo_sk#10]
+Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
 
 (8) BroadcastExchange
 Input [1]: [cd_demo_sk#10]
@@ -123,19 +123,19 @@ Input [8]: [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sale
 Output [3]: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [Or(EqualTo(p_channel_email,N),EqualTo(p_channel_event,N)), IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_email:string,p_channel_event:string>
 
-(21) CometFilter
+(21) ColumnarToRow [codegen id : 4]
 Input [3]: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
-Condition : (((p_channel_email#18 = N) OR (p_channel_event#19 = N)) AND isnotnull(p_promo_sk#17))
 
-(22) CometProject
+(22) Filter [codegen id : 4]
 Input [3]: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
-Arguments: [p_promo_sk#17], [p_promo_sk#17]
+Condition : (((rpad(p_channel_email#18, 1,  ) = N) OR (rpad(p_channel_event#19, 1,  ) = N)) AND isnotnull(p_promo_sk#17))
 
-(23) ColumnarToRow [codegen id : 4]
-Input [1]: [p_promo_sk#17]
+(23) Project [codegen id : 4]
+Output [1]: [p_promo_sk#17]
+Input [3]: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
 
 (24) BroadcastExchange
 Input [1]: [p_promo_sk#17]

@@ -33,9 +33,9 @@
                   :              :     +- CometScan parquet spark_catalog.default.store_sales (18)
                   :              +- ReusedExchange (21)
                   +- BroadcastExchange (31)
-                     +- * ColumnarToRow (30)
-                        +- CometProject (29)
-                           +- CometFilter (28)
+                     +- * Project (30)
+                        +- * Filter (29)
+                           +- * ColumnarToRow (28)
                               +- CometScan parquet spark_catalog.default.time_dim (27)
 
 
@@ -161,19 +161,19 @@ Input [6]: [i_item_sk#1, i_brand_id#2, i_brand#3, ext_price#11, sold_item_sk#12,
 Output [4]: [t_time_sk#32, t_hour#33, t_minute#34, t_meal_time#35]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
-PushedFilters: [Or(EqualTo(t_meal_time,breakfast           ),EqualTo(t_meal_time,dinner              )), IsNotNull(t_time_sk)]
+PushedFilters: [IsNotNull(t_time_sk)]
 ReadSchema: struct<t_time_sk:int,t_hour:int,t_minute:int,t_meal_time:string>
 
-(28) CometFilter
+(28) ColumnarToRow [codegen id : 8]
 Input [4]: [t_time_sk#32, t_hour#33, t_minute#34, t_meal_time#35]
-Condition : (((t_meal_time#35 = breakfast           ) OR (t_meal_time#35 = dinner              )) AND isnotnull(t_time_sk#32))
 
-(29) CometProject
+(29) Filter [codegen id : 8]
 Input [4]: [t_time_sk#32, t_hour#33, t_minute#34, t_meal_time#35]
-Arguments: [t_time_sk#32, t_hour#33, t_minute#34], [t_time_sk#32, t_hour#33, t_minute#34]
+Condition : (((rpad(t_meal_time#35, 20,  ) = breakfast           ) OR (rpad(t_meal_time#35, 20,  ) = dinner              )) AND isnotnull(t_time_sk#32))
 
-(30) ColumnarToRow [codegen id : 8]
-Input [3]: [t_time_sk#32, t_hour#33, t_minute#34]
+(30) Project [codegen id : 8]
+Output [3]: [t_time_sk#32, t_hour#33, t_minute#34]
+Input [4]: [t_time_sk#32, t_hour#33, t_minute#34, t_meal_time#35]
 
 (31) BroadcastExchange
 Input [3]: [t_time_sk#32, t_hour#33, t_minute#34]

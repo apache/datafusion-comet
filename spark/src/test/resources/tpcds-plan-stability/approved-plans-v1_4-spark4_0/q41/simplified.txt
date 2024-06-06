@@ -21,9 +21,9 @@ TakeOrderedAndProject [i_product_name]
                               InputAdapter
                                 Exchange [i_manufact] #3
                                   WholeStageCodegen (1)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometHashAggregate [i_manufact]
-                                          CometProject [i_manufact]
-                                            CometFilter [i_category,i_color,i_units,i_size,i_manufact]
+                                    HashAggregate [i_manufact] [count,count]
+                                      Project [i_manufact]
+                                        Filter [i_category,i_color,i_units,i_size,i_manufact]
+                                          ColumnarToRow
+                                            InputAdapter
                                               CometScan parquet spark_catalog.default.item [i_category,i_manufact,i_size,i_color,i_units]

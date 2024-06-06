@@ -28,9 +28,9 @@ TakeOrderedAndProject (63)
             :                    :  +- CometFilter (15)
             :                    :     +- CometScan parquet spark_catalog.default.item (14)
             :                    +- BroadcastExchange (21)
-            :                       +- * ColumnarToRow (20)
-            :                          +- CometProject (19)
-            :                             +- CometFilter (18)
+            :                       +- * Project (20)
+            :                          +- * Filter (19)
+            :                             +- * ColumnarToRow (18)
             :                                +- CometScan parquet spark_catalog.default.item (17)
             :- * HashAggregate (43)
             :  +- Exchange (42)
@@ -142,19 +142,19 @@ Input [2]: [i_item_sk#9, i_manufact_id#10]
 Output [2]: [i_category#11, i_manufact_id#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category), EqualTo(i_category,Electronics                                       )]
+PushedFilters: [IsNotNull(i_category)]
 ReadSchema: struct<i_category:string,i_manufact_id:int>
 
-(18) CometFilter
+(18) ColumnarToRow [codegen id : 3]
 Input [2]: [i_category#11, i_manufact_id#12]
-Condition : (isnotnull(i_category#11) AND (i_category#11 = Electronics                                       ))
 
-(19) CometProject
+(19) Filter [codegen id : 3]
 Input [2]: [i_category#11, i_manufact_id#12]
-Arguments: [i_manufact_id#12], [i_manufact_id#12]
+Condition : (isnotnull(i_category#11) AND (rpad(i_category#11, 50,  ) = Electronics                                       ))
 
-(20) ColumnarToRow [codegen id : 3]
-Input [1]: [i_manufact_id#12]
+(20) Project [codegen id : 3]
+Output [1]: [i_manufact_id#12]
+Input [2]: [i_category#11, i_manufact_id#12]
 
 (21) BroadcastExchange
 Input [1]: [i_manufact_id#12]

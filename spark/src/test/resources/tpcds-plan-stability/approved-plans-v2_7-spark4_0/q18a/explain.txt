@@ -20,9 +20,9 @@ TakeOrderedAndProject (153)
    :              :     :     :     :     :     :  +- CometFilter (2)
    :              :     :     :     :     :     :     +- CometScan parquet spark_catalog.default.catalog_sales (1)
    :              :     :     :     :     :     +- BroadcastExchange (8)
-   :              :     :     :     :     :        +- * ColumnarToRow (7)
-   :              :     :     :     :     :           +- CometProject (6)
-   :              :     :     :     :     :              +- CometFilter (5)
+   :              :     :     :     :     :        +- * Project (7)
+   :              :     :     :     :     :           +- * Filter (6)
+   :              :     :     :     :     :              +- * ColumnarToRow (5)
    :              :     :     :     :     :                 +- CometScan parquet spark_catalog.default.customer_demographics (4)
    :              :     :     :     :     +- BroadcastExchange (15)
    :              :     :     :     :        +- * ColumnarToRow (14)
@@ -34,8 +34,8 @@ TakeOrderedAndProject (153)
    :              :     :     :           +- CometFilter (19)
    :              :     :     :              +- CometScan parquet spark_catalog.default.customer_demographics (18)
    :              :     :     +- BroadcastExchange (27)
-   :              :     :        +- * ColumnarToRow (26)
-   :              :     :           +- CometFilter (25)
+   :              :     :        +- * Filter (26)
+   :              :     :           +- * ColumnarToRow (25)
    :              :     :              +- CometScan parquet spark_catalog.default.customer_address (24)
    :              :     +- ReusedExchange (30)
    :              +- BroadcastExchange (36)
@@ -64,8 +64,8 @@ TakeOrderedAndProject (153)
    :              :     :     :     :     +- ReusedExchange (48)
    :              :     :     :     +- ReusedExchange (51)
    :              :     :     +- BroadcastExchange (57)
-   :              :     :        +- * ColumnarToRow (56)
-   :              :     :           +- CometFilter (55)
+   :              :     :        +- * Filter (56)
+   :              :     :           +- * ColumnarToRow (55)
    :              :     :              +- CometScan parquet spark_catalog.default.customer_address (54)
    :              :     +- ReusedExchange (60)
    :              +- ReusedExchange (63)
@@ -91,9 +91,9 @@ TakeOrderedAndProject (153)
    :              :     :     :     :     +- ReusedExchange (75)
    :              :     :     :     +- ReusedExchange (78)
    :              :     :     +- BroadcastExchange (85)
-   :              :     :        +- * ColumnarToRow (84)
-   :              :     :           +- CometProject (83)
-   :              :     :              +- CometFilter (82)
+   :              :     :        +- * Project (84)
+   :              :     :           +- * Filter (83)
+   :              :     :              +- * ColumnarToRow (82)
    :              :     :                 +- CometScan parquet spark_catalog.default.customer_address (81)
    :              :     +- ReusedExchange (88)
    :              +- ReusedExchange (91)
@@ -119,9 +119,9 @@ TakeOrderedAndProject (153)
    :              :     :     :     :     +- ReusedExchange (103)
    :              :     :     :     +- ReusedExchange (106)
    :              :     :     +- BroadcastExchange (113)
-   :              :     :        +- * ColumnarToRow (112)
-   :              :     :           +- CometProject (111)
-   :              :     :              +- CometFilter (110)
+   :              :     :        +- * Project (112)
+   :              :     :           +- * Filter (111)
+   :              :     :              +- * ColumnarToRow (110)
    :              :     :                 +- CometScan parquet spark_catalog.default.customer_address (109)
    :              :     +- ReusedExchange (116)
    :              +- ReusedExchange (119)
@@ -173,19 +173,19 @@ Input [9]: [cs_bill_customer_sk#1, cs_bill_cdemo_sk#2, cs_item_sk#3, cs_quantity
 Output [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_education_status), EqualTo(cd_gender,M), EqualTo(cd_education_status,College             ), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_education_status), IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_education_status:string,cd_dep_count:int>
 
-(5) CometFilter
+(5) ColumnarToRow [codegen id : 1]
 Input [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
-Condition : ((((isnotnull(cd_gender#12) AND isnotnull(cd_education_status#13)) AND (cd_gender#12 = M)) AND (cd_education_status#13 = College             )) AND isnotnull(cd_demo_sk#11))
 
-(6) CometProject
+(6) Filter [codegen id : 1]
 Input [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
-Arguments: [cd_demo_sk#11, cd_dep_count#14], [cd_demo_sk#11, cd_dep_count#14]
+Condition : ((((isnotnull(cd_gender#12) AND isnotnull(cd_education_status#13)) AND (rpad(cd_gender#12, 1,  ) = M)) AND (rpad(cd_education_status#13, 20,  ) = College             )) AND isnotnull(cd_demo_sk#11))
 
-(7) ColumnarToRow [codegen id : 1]
-Input [2]: [cd_demo_sk#11, cd_dep_count#14]
+(7) Project [codegen id : 1]
+Output [2]: [cd_demo_sk#11, cd_dep_count#14]
+Input [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
 
 (8) BroadcastExchange
 Input [2]: [cd_demo_sk#11, cd_dep_count#14]
@@ -265,15 +265,15 @@ Input [12]: [cs_item_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_
 Output [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [AL,MS,NC,ND,OK,TN,WI]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_county:string,ca_state:string,ca_country:string>
 
-(25) CometFilter
+(25) ColumnarToRow [codegen id : 4]
 Input [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
-Condition : (ca_state#23 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#21))
 
-(26) ColumnarToRow [codegen id : 4]
+(26) Filter [codegen id : 4]
 Input [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
+Condition : (rpad(ca_state#23, 2,  ) IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#21))
 
 (27) BroadcastExchange
 Input [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
@@ -406,15 +406,15 @@ Input [12]: [cs_item_sk#79, cs_quantity#80, cs_list_price#81, cs_sales_price#82,
 Output [3]: [ca_address_sk#94, ca_state#95, ca_country#96]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [AL,MS,NC,ND,OK,TN,WI]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
-(55) CometFilter
+(55) ColumnarToRow [codegen id : 12]
 Input [3]: [ca_address_sk#94, ca_state#95, ca_country#96]
-Condition : (ca_state#95 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#94))
 
-(56) ColumnarToRow [codegen id : 12]
+(56) Filter [codegen id : 12]
 Input [3]: [ca_address_sk#94, ca_state#95, ca_country#96]
+Condition : (rpad(ca_state#95, 2,  ) IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#94))
 
 (57) BroadcastExchange
 Input [3]: [ca_address_sk#94, ca_state#95, ca_country#96]
@@ -532,19 +532,19 @@ Input [12]: [cs_item_sk#152, cs_quantity#153, cs_list_price#154, cs_sales_price#
 Output [3]: [ca_address_sk#167, ca_state#168, ca_country#169]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [AL,MS,NC,ND,OK,TN,WI]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
-(82) CometFilter
+(82) ColumnarToRow [codegen id : 20]
 Input [3]: [ca_address_sk#167, ca_state#168, ca_country#169]
-Condition : (ca_state#168 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#167))
 
-(83) CometProject
+(83) Filter [codegen id : 20]
 Input [3]: [ca_address_sk#167, ca_state#168, ca_country#169]
-Arguments: [ca_address_sk#167, ca_country#169], [ca_address_sk#167, ca_country#169]
+Condition : (rpad(ca_state#168, 2,  ) IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#167))
 
-(84) ColumnarToRow [codegen id : 20]
-Input [2]: [ca_address_sk#167, ca_country#169]
+(84) Project [codegen id : 20]
+Output [2]: [ca_address_sk#167, ca_country#169]
+Input [3]: [ca_address_sk#167, ca_state#168, ca_country#169]
 
 (85) BroadcastExchange
 Input [2]: [ca_address_sk#167, ca_country#169]
@@ -662,19 +662,19 @@ Input [12]: [cs_item_sk#226, cs_quantity#227, cs_list_price#228, cs_sales_price#
 Output [2]: [ca_address_sk#241, ca_state#242]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [AL,MS,NC,ND,OK,TN,WI]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
-(110) CometFilter
+(110) ColumnarToRow [codegen id : 28]
 Input [2]: [ca_address_sk#241, ca_state#242]
-Condition : (ca_state#242 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#241))
 
-(111) CometProject
+(111) Filter [codegen id : 28]
 Input [2]: [ca_address_sk#241, ca_state#242]
-Arguments: [ca_address_sk#241], [ca_address_sk#241]
+Condition : (rpad(ca_state#242, 2,  ) IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#241))
 
-(112) ColumnarToRow [codegen id : 28]
-Input [1]: [ca_address_sk#241]
+(112) Project [codegen id : 28]
+Output [1]: [ca_address_sk#241]
+Input [2]: [ca_address_sk#241, ca_state#242]
 
 (113) BroadcastExchange
 Input [1]: [ca_address_sk#241]

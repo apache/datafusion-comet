@@ -34,8 +34,8 @@
                   :     :              +- CometFilter (20)
                   :     :                 +- CometScan parquet spark_catalog.default.customer_address (19)
                   :     +- BroadcastExchange (29)
-                  :        +- * ColumnarToRow (28)
-                  :           +- CometFilter (27)
+                  :        +- * Filter (28)
+                  :           +- * ColumnarToRow (27)
                   :              +- CometScan parquet spark_catalog.default.customer_demographics (26)
                   +- BroadcastExchange (36)
                      +- * ColumnarToRow (35)
@@ -164,15 +164,15 @@ Input [8]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, c_curre
 Output [3]: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [Or(And(EqualTo(cd_marital_status,M),EqualTo(cd_education_status,Unknown             )),And(EqualTo(cd_marital_status,W),EqualTo(cd_education_status,Advanced Degree     ))), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:string>
 
-(27) CometFilter
+(27) ColumnarToRow [codegen id : 5]
 Input [3]: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
-Condition : ((((cd_marital_status#18 = M) AND (cd_education_status#19 = Unknown             )) OR ((cd_marital_status#18 = W) AND (cd_education_status#19 = Advanced Degree     ))) AND isnotnull(cd_demo_sk#17))
 
-(28) ColumnarToRow [codegen id : 5]
+(28) Filter [codegen id : 5]
 Input [3]: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
+Condition : ((((rpad(cd_marital_status#18, 1,  ) = M) AND (rpad(cd_education_status#19, 20,  ) = Unknown             )) OR ((rpad(cd_marital_status#18, 1,  ) = W) AND (rpad(cd_education_status#19, 20,  ) = Advanced Degree     ))) AND isnotnull(cd_demo_sk#17))
 
 (29) BroadcastExchange
 Input [3]: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]

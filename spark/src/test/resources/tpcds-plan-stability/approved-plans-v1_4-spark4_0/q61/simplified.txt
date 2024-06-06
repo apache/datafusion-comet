@@ -41,10 +41,10 @@ WholeStageCodegen (15)
                                     InputAdapter
                                       BroadcastExchange #4
                                         WholeStageCodegen (2)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometProject [p_promo_sk]
-                                                CometFilter [p_channel_dmail,p_channel_email,p_channel_tv,p_promo_sk]
+                                          Project [p_promo_sk]
+                                            Filter [p_channel_dmail,p_channel_email,p_channel_tv,p_promo_sk]
+                                              ColumnarToRow
+                                                InputAdapter
                                                   CometScan parquet spark_catalog.default.promotion [p_promo_sk,p_channel_dmail,p_channel_email,p_channel_tv]
                                 InputAdapter
                                   ReusedExchange [d_date_sk] #2
@@ -66,10 +66,10 @@ WholeStageCodegen (15)
                     InputAdapter
                       BroadcastExchange #7
                         WholeStageCodegen (6)
-                          ColumnarToRow
-                            InputAdapter
-                              CometProject [i_item_sk]
-                                CometFilter [i_category,i_item_sk]
+                          Project [i_item_sk]
+                            Filter [i_category,i_item_sk]
+                              ColumnarToRow
+                                InputAdapter
                                   CometScan parquet spark_catalog.default.item [i_item_sk,i_category]
       InputAdapter
         BroadcastExchange #8

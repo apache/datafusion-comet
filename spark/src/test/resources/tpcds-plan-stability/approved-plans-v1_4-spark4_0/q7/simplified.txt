@@ -28,10 +28,10 @@ TakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
                               InputAdapter
                                 BroadcastExchange #3
                                   WholeStageCodegen (1)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometProject [cd_demo_sk]
-                                          CometFilter [cd_gender,cd_marital_status,cd_education_status,cd_demo_sk]
+                                    Project [cd_demo_sk]
+                                      Filter [cd_gender,cd_marital_status,cd_education_status,cd_demo_sk]
+                                        ColumnarToRow
+                                          InputAdapter
                                             CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
                           InputAdapter
                             ReusedExchange [d_date_sk] #2
@@ -45,8 +45,8 @@ TakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
                   InputAdapter
                     BroadcastExchange #5
                       WholeStageCodegen (4)
-                        ColumnarToRow
-                          InputAdapter
-                            CometProject [p_promo_sk]
-                              CometFilter [p_channel_email,p_channel_event,p_promo_sk]
+                        Project [p_promo_sk]
+                          Filter [p_channel_email,p_channel_event,p_promo_sk]
+                            ColumnarToRow
+                              InputAdapter
                                 CometScan parquet spark_catalog.default.promotion [p_promo_sk,p_channel_email,p_channel_event]

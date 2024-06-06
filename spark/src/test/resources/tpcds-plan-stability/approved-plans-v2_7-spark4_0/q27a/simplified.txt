@@ -29,19 +29,19 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
                                 InputAdapter
                                   BroadcastExchange #3
                                     WholeStageCodegen (1)
-                                      ColumnarToRow
-                                        InputAdapter
-                                          CometProject [cd_demo_sk]
-                                            CometFilter [cd_gender,cd_marital_status,cd_education_status,cd_demo_sk]
+                                      Project [cd_demo_sk]
+                                        Filter [cd_gender,cd_marital_status,cd_education_status,cd_demo_sk]
+                                          ColumnarToRow
+                                            InputAdapter
                                               CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
                             InputAdapter
                               ReusedExchange [d_date_sk] #2
                         InputAdapter
                           BroadcastExchange #4
                             WholeStageCodegen (3)
-                              ColumnarToRow
-                                InputAdapter
-                                  CometFilter [s_state,s_store_sk]
+                              Filter [s_state,s_store_sk]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
                     InputAdapter
                       BroadcastExchange #5
@@ -76,10 +76,10 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
                         InputAdapter
                           BroadcastExchange #7
                             WholeStageCodegen (9)
-                              ColumnarToRow
-                                InputAdapter
-                                  CometProject [s_store_sk]
-                                    CometFilter [s_state,s_store_sk]
+                              Project [s_store_sk]
+                                Filter [s_state,s_store_sk]
+                                  ColumnarToRow
+                                    InputAdapter
                                       CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
                     InputAdapter
                       ReusedExchange [i_item_sk,i_item_id] #5

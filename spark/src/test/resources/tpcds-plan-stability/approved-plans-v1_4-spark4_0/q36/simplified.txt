@@ -44,8 +44,8 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                                     InputAdapter
                                       BroadcastExchange #5
                                         WholeStageCodegen (3)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometProject [s_store_sk]
-                                                CometFilter [s_state,s_store_sk]
+                                          Project [s_store_sk]
+                                            Filter [s_state,s_store_sk]
+                                              ColumnarToRow
+                                                InputAdapter
                                                   CometScan parquet spark_catalog.default.store [s_store_sk,s_state]

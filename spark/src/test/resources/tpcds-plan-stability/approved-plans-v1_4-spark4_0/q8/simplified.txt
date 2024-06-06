@@ -65,8 +65,8 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                                             InputAdapter
                                                               BroadcastExchange #8
                                                                 WholeStageCodegen (3)
-                                                                  ColumnarToRow
-                                                                    InputAdapter
-                                                                      CometProject [c_current_addr_sk]
-                                                                        CometFilter [c_preferred_cust_flag,c_current_addr_sk]
+                                                                  Project [c_current_addr_sk]
+                                                                    Filter [c_preferred_cust_flag,c_current_addr_sk]
+                                                                      ColumnarToRow
+                                                                        InputAdapter
                                                                           CometScan parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]

@@ -74,8 +74,8 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
         InputAdapter
           BroadcastExchange #8
             WholeStageCodegen (10)
-              ColumnarToRow
-                InputAdapter
-                  CometProject [ca_address_sk]
-                    CometFilter [ca_state,ca_address_sk]
+              Project [ca_address_sk]
+                Filter [ca_state,ca_address_sk]
+                  ColumnarToRow
+                    InputAdapter
                       CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]

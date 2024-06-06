@@ -34,17 +34,17 @@ WholeStageCodegen (6)
                         InputAdapter
                           BroadcastExchange #4
                             WholeStageCodegen (2)
-                              ColumnarToRow
-                                InputAdapter
-                                  CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                              Filter [cd_demo_sk,cd_marital_status,cd_education_status]
+                                ColumnarToRow
+                                  InputAdapter
                                     CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                     InputAdapter
                       BroadcastExchange #5
                         WholeStageCodegen (3)
-                          ColumnarToRow
-                            InputAdapter
-                              CometProject [ca_address_sk,ca_state]
-                                CometFilter [ca_country,ca_address_sk,ca_state]
+                          Project [ca_address_sk,ca_state]
+                            Filter [ca_country,ca_address_sk,ca_state]
+                              ColumnarToRow
+                                InputAdapter
                                   CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                 InputAdapter
                   ReusedExchange [d_date_sk] #2

@@ -14,9 +14,9 @@ TakeOrderedAndProject (28)
                               :  +- * BroadcastHashJoin Inner BuildRight (12)
                               :     :- * Project (10)
                               :     :  +- * BroadcastHashJoin Inner BuildRight (9)
-                              :     :     :- * ColumnarToRow (4)
-                              :     :     :  +- CometProject (3)
-                              :     :     :     +- CometFilter (2)
+                              :     :     :- * Project (4)
+                              :     :     :  +- * Filter (3)
+                              :     :     :     +- * ColumnarToRow (2)
                               :     :     :        +- CometScan parquet spark_catalog.default.item (1)
                               :     :     +- BroadcastExchange (8)
                               :     :        +- * ColumnarToRow (7)
@@ -33,19 +33,19 @@ TakeOrderedAndProject (28)
 Output [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manufact_id#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [Or(And(And(In(i_category, [Books                                             ,Children                                          ,Electronics                                       ]),In(i_class, [personal                                          ,portable                                          ,reference                                         ,self-help                                         ])),In(i_brand, [exportiunivamalg #6                               ,scholaramalgamalg #7                             ,scholaramalgamalg #8                              ,scholaramalgamalg #6                              ])),And(And(In(i_category, [Men                                               ,Music                                             ,Women                                             ]),In(i_class, [accessories                                       ,classical                                         ,fragrances                                        ,pants                                             ])),In(i_brand, [amalgimporto #9                                   ,edu packscholar #9                                ,exportiimporto #9                                 ,importoamalg #9                                   ]))), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand:string,i_class:string,i_category:string,i_manufact_id:int>
 
-(2) CometFilter
+(2) ColumnarToRow [codegen id : 4]
 Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manufact_id#5]
-Condition : ((((i_category#4 IN (Books                                             ,Children                                          ,Electronics                                       ) AND i_class#3 IN (personal                                          ,portable                                          ,reference                                         ,self-help                                         )) AND i_brand#2 IN (scholaramalgamalg #7                             ,scholaramalgamalg #8                              ,exportiunivamalg #6                               ,scholaramalgamalg #6                              )) OR ((i_category#4 IN (Women                                             ,Music                                             ,Men                                               ) AND i_class#3 IN (accessories                                       ,classical                                         ,fragrances                                        ,pants                                             )) AND i_brand#2 IN (amalgimporto #9                                   ,edu packscholar #9                                ,exportiimporto #9                                 ,importoamalg #9                                   ))) AND isnotnull(i_item_sk#1))
 
-(3) CometProject
+(3) Filter [codegen id : 4]
 Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manufact_id#5]
-Arguments: [i_item_sk#1, i_manufact_id#5], [i_item_sk#1, i_manufact_id#5]
+Condition : ((((rpad(i_category#4, 50,  ) IN (Books                                             ,Children                                          ,Electronics                                       ) AND rpad(i_class#3, 50,  ) IN (personal                                          ,portable                                          ,reference                                         ,self-help                                         )) AND rpad(i_brand#2, 50,  ) IN (scholaramalgamalg #6                             ,scholaramalgamalg #7                              ,exportiunivamalg #8                               ,scholaramalgamalg #8                              )) OR ((rpad(i_category#4, 50,  ) IN (Women                                             ,Music                                             ,Men                                               ) AND rpad(i_class#3, 50,  ) IN (accessories                                       ,classical                                         ,fragrances                                        ,pants                                             )) AND rpad(i_brand#2, 50,  ) IN (amalgimporto #9                                   ,edu packscholar #9                                ,exportiimporto #9                                 ,importoamalg #9                                   ))) AND isnotnull(i_item_sk#1))
 
-(4) ColumnarToRow [codegen id : 4]
-Input [2]: [i_item_sk#1, i_manufact_id#5]
+(4) Project [codegen id : 4]
+Output [2]: [i_item_sk#1, i_manufact_id#5]
+Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manufact_id#5]
 
 (5) Scan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]

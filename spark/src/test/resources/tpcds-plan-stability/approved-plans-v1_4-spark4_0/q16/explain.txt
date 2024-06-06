@@ -35,9 +35,9 @@
                   :     :              +- CometFilter (21)
                   :     :                 +- CometScan parquet spark_catalog.default.date_dim (20)
                   :     +- BroadcastExchange (31)
-                  :        +- * ColumnarToRow (30)
-                  :           +- CometProject (29)
-                  :              +- CometFilter (28)
+                  :        +- * Project (30)
+                  :           +- * Filter (29)
+                  :              +- * ColumnarToRow (28)
                   :                 +- CometScan parquet spark_catalog.default.customer_address (27)
                   +- BroadcastExchange (38)
                      +- * ColumnarToRow (37)
@@ -166,19 +166,19 @@ Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_order_
 Output [2]: [ca_address_sk#16, ca_state#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
-(28) CometFilter
+(28) ColumnarToRow [codegen id : 9]
 Input [2]: [ca_address_sk#16, ca_state#17]
-Condition : ((isnotnull(ca_state#17) AND (ca_state#17 = GA)) AND isnotnull(ca_address_sk#16))
 
-(29) CometProject
+(29) Filter [codegen id : 9]
 Input [2]: [ca_address_sk#16, ca_state#17]
-Arguments: [ca_address_sk#16], [ca_address_sk#16]
+Condition : ((isnotnull(ca_state#17) AND (rpad(ca_state#17, 2,  ) = GA)) AND isnotnull(ca_address_sk#16))
 
-(30) ColumnarToRow [codegen id : 9]
-Input [1]: [ca_address_sk#16]
+(30) Project [codegen id : 9]
+Output [1]: [ca_address_sk#16]
+Input [2]: [ca_address_sk#16, ca_state#17]
 
 (31) BroadcastExchange
 Input [1]: [ca_address_sk#16]

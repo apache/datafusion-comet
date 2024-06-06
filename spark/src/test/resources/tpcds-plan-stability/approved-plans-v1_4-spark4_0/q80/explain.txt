@@ -40,9 +40,9 @@ TakeOrderedAndProject (107)
                :              :              +- CometFilter (24)
                :              :                 +- CometScan parquet spark_catalog.default.item (23)
                :              +- BroadcastExchange (34)
-               :                 +- * ColumnarToRow (33)
-               :                    +- CometProject (32)
-               :                       +- CometFilter (31)
+               :                 +- * Project (33)
+               :                    +- * Filter (32)
+               :                       +- * ColumnarToRow (31)
                :                          +- CometScan parquet spark_catalog.default.promotion (30)
                :- * HashAggregate (70)
                :  +- Exchange (69)
@@ -244,19 +244,19 @@ Input [8]: [ss_item_sk#1, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, 
 Output [2]: [p_promo_sk#19, p_channel_tv#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [IsNotNull(p_channel_tv), EqualTo(p_channel_tv,N), IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_channel_tv), IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_tv:string>
 
-(31) CometFilter
+(31) ColumnarToRow [codegen id : 8]
 Input [2]: [p_promo_sk#19, p_channel_tv#20]
-Condition : ((isnotnull(p_channel_tv#20) AND (p_channel_tv#20 = N)) AND isnotnull(p_promo_sk#19))
 
-(32) CometProject
+(32) Filter [codegen id : 8]
 Input [2]: [p_promo_sk#19, p_channel_tv#20]
-Arguments: [p_promo_sk#19], [p_promo_sk#19]
+Condition : ((isnotnull(p_channel_tv#20) AND (rpad(p_channel_tv#20, 1,  ) = N)) AND isnotnull(p_promo_sk#19))
 
-(33) ColumnarToRow [codegen id : 8]
-Input [1]: [p_promo_sk#19]
+(33) Project [codegen id : 8]
+Output [1]: [p_promo_sk#19]
+Input [2]: [p_promo_sk#19, p_channel_tv#20]
 
 (34) BroadcastExchange
 Input [1]: [p_promo_sk#19]

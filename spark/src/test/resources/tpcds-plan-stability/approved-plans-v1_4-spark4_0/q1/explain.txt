@@ -31,9 +31,9 @@ TakeOrderedAndProject (40)
       :     :                                   :     +- CometScan parquet spark_catalog.default.store_returns (11)
       :     :                                   +- ReusedExchange (14)
       :     +- BroadcastExchange (31)
-      :        +- * ColumnarToRow (30)
-      :           +- CometProject (29)
-      :              +- CometFilter (28)
+      :        +- * Project (30)
+      :           +- * Filter (29)
+      :              +- * ColumnarToRow (28)
       :                 +- CometScan parquet spark_catalog.default.store (27)
       +- BroadcastExchange (37)
          +- * ColumnarToRow (36)
@@ -177,19 +177,19 @@ Input [5]: [ctr_customer_sk#10, ctr_store_sk#11, ctr_total_return#12, (avg(ctr_t
 Output [2]: [s_store_sk#29, s_state#30]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_state), EqualTo(s_state,TN), IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
-(28) CometFilter
+(28) ColumnarToRow [codegen id : 7]
 Input [2]: [s_store_sk#29, s_state#30]
-Condition : ((isnotnull(s_state#30) AND (s_state#30 = TN)) AND isnotnull(s_store_sk#29))
 
-(29) CometProject
+(29) Filter [codegen id : 7]
 Input [2]: [s_store_sk#29, s_state#30]
-Arguments: [s_store_sk#29], [s_store_sk#29]
+Condition : ((isnotnull(s_state#30) AND (rpad(s_state#30, 2,  ) = TN)) AND isnotnull(s_store_sk#29))
 
-(30) ColumnarToRow [codegen id : 7]
-Input [1]: [s_store_sk#29]
+(30) Project [codegen id : 7]
+Output [1]: [s_store_sk#29]
+Input [2]: [s_store_sk#29, s_state#30]
 
 (31) BroadcastExchange
 Input [1]: [s_store_sk#29]

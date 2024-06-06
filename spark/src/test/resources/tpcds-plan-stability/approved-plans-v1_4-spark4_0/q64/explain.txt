@@ -109,9 +109,9 @@
          :                 :     :              +- CometScan parquet spark_catalog.default.income_band (91)
          :                 :     +- ReusedExchange (97)
          :                 +- BroadcastExchange (104)
-         :                    +- * ColumnarToRow (103)
-         :                       +- CometProject (102)
-         :                          +- CometFilter (101)
+         :                    +- * Project (103)
+         :                       +- * Filter (102)
+         :                          +- * ColumnarToRow (101)
          :                             +- CometScan parquet spark_catalog.default.item (100)
          +- * Sort (177)
             +- Exchange (176)
@@ -641,19 +641,19 @@ Input [19]: [ss_item_sk#1, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#
 Output [4]: [i_item_sk#73, i_current_price#74, i_color#75, i_product_name#76]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_current_price), In(i_color, [burlywood           ,floral              ,indian              ,medium              ,purple              ,spring              ]), GreaterThanOrEqual(i_current_price,64.00), LessThanOrEqual(i_current_price,74.00), GreaterThanOrEqual(i_current_price,65.00), LessThanOrEqual(i_current_price,79.00), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_current_price), GreaterThanOrEqual(i_current_price,64.00), LessThanOrEqual(i_current_price,74.00), GreaterThanOrEqual(i_current_price,65.00), LessThanOrEqual(i_current_price,79.00), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_color:string,i_product_name:string>
 
-(101) CometFilter
+(101) ColumnarToRow [codegen id : 23]
 Input [4]: [i_item_sk#73, i_current_price#74, i_color#75, i_product_name#76]
-Condition : ((((((isnotnull(i_current_price#74) AND i_color#75 IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#74 >= 64.00)) AND (i_current_price#74 <= 74.00)) AND (i_current_price#74 >= 65.00)) AND (i_current_price#74 <= 79.00)) AND isnotnull(i_item_sk#73))
 
-(102) CometProject
+(102) Filter [codegen id : 23]
 Input [4]: [i_item_sk#73, i_current_price#74, i_color#75, i_product_name#76]
-Arguments: [i_item_sk#73, i_product_name#76], [i_item_sk#73, i_product_name#76]
+Condition : ((((((isnotnull(i_current_price#74) AND rpad(i_color#75, 20,  ) IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#74 >= 64.00)) AND (i_current_price#74 <= 74.00)) AND (i_current_price#74 >= 65.00)) AND (i_current_price#74 <= 79.00)) AND isnotnull(i_item_sk#73))
 
-(103) ColumnarToRow [codegen id : 23]
-Input [2]: [i_item_sk#73, i_product_name#76]
+(103) Project [codegen id : 23]
+Output [2]: [i_item_sk#73, i_product_name#76]
+Input [4]: [i_item_sk#73, i_current_price#74, i_color#75, i_product_name#76]
 
 (104) BroadcastExchange
 Input [2]: [i_item_sk#73, i_product_name#76]

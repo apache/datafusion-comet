@@ -33,8 +33,8 @@ TakeOrderedAndProject [sumsales,ss_customer_sk]
                   InputAdapter
                     BroadcastExchange #4
                       WholeStageCodegen (5)
-                        ColumnarToRow
-                          InputAdapter
-                            CometProject [r_reason_sk]
-                              CometFilter [r_reason_desc,r_reason_sk]
+                        Project [r_reason_sk]
+                          Filter [r_reason_desc,r_reason_sk]
+                            ColumnarToRow
+                              InputAdapter
                                 CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]

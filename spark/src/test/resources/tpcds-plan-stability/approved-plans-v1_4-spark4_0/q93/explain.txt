@@ -19,9 +19,9 @@ TakeOrderedAndProject (24)
                :                 +- CometFilter (7)
                :                    +- CometScan parquet spark_catalog.default.store_returns (6)
                +- BroadcastExchange (18)
-                  +- * ColumnarToRow (17)
-                     +- CometProject (16)
-                        +- CometFilter (15)
+                  +- * Project (17)
+                     +- * Filter (16)
+                        +- * ColumnarToRow (15)
                            +- CometScan parquet spark_catalog.default.reason (14)
 
 
@@ -86,19 +86,19 @@ Input [9]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, s
 Output [2]: [r_reason_sk#12, r_reason_desc#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
-PushedFilters: [IsNotNull(r_reason_desc), EqualTo(r_reason_desc,reason 28                                                                                           ), IsNotNull(r_reason_sk)]
+PushedFilters: [IsNotNull(r_reason_desc), IsNotNull(r_reason_sk)]
 ReadSchema: struct<r_reason_sk:int,r_reason_desc:string>
 
-(15) CometFilter
+(15) ColumnarToRow [codegen id : 5]
 Input [2]: [r_reason_sk#12, r_reason_desc#13]
-Condition : ((isnotnull(r_reason_desc#13) AND (r_reason_desc#13 = reason 28                                                                                           )) AND isnotnull(r_reason_sk#12))
 
-(16) CometProject
+(16) Filter [codegen id : 5]
 Input [2]: [r_reason_sk#12, r_reason_desc#13]
-Arguments: [r_reason_sk#12], [r_reason_sk#12]
+Condition : ((isnotnull(r_reason_desc#13) AND (rpad(r_reason_desc#13, 100,  ) = reason 28                                                                                           )) AND isnotnull(r_reason_sk#12))
 
-(17) ColumnarToRow [codegen id : 5]
-Input [1]: [r_reason_sk#12]
+(17) Project [codegen id : 5]
+Output [1]: [r_reason_sk#12]
+Input [2]: [r_reason_sk#12, r_reason_desc#13]
 
 (18) BroadcastExchange
 Input [1]: [r_reason_sk#12]

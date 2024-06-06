@@ -38,9 +38,9 @@ TakeOrderedAndProject (43)
                                                       :  +- CometFilter (18)
                                                       :     +- CometScan parquet spark_catalog.default.customer_address (17)
                                                       +- BroadcastExchange (24)
-                                                         +- * ColumnarToRow (23)
-                                                            +- CometProject (22)
-                                                               +- CometFilter (21)
+                                                         +- * Project (23)
+                                                            +- * Filter (22)
+                                                               +- * ColumnarToRow (21)
                                                                   +- CometScan parquet spark_catalog.default.customer (20)
 
 
@@ -135,19 +135,19 @@ Input [2]: [ca_address_sk#11, ca_zip#12]
 Output [2]: [c_current_addr_sk#13, c_preferred_cust_flag#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
-PushedFilters: [IsNotNull(c_preferred_cust_flag), EqualTo(c_preferred_cust_flag,Y), IsNotNull(c_current_addr_sk)]
+PushedFilters: [IsNotNull(c_preferred_cust_flag), IsNotNull(c_current_addr_sk)]
 ReadSchema: struct<c_current_addr_sk:int,c_preferred_cust_flag:string>
 
-(21) CometFilter
+(21) ColumnarToRow [codegen id : 3]
 Input [2]: [c_current_addr_sk#13, c_preferred_cust_flag#14]
-Condition : ((isnotnull(c_preferred_cust_flag#14) AND (c_preferred_cust_flag#14 = Y)) AND isnotnull(c_current_addr_sk#13))
 
-(22) CometProject
+(22) Filter [codegen id : 3]
 Input [2]: [c_current_addr_sk#13, c_preferred_cust_flag#14]
-Arguments: [c_current_addr_sk#13], [c_current_addr_sk#13]
+Condition : ((isnotnull(c_preferred_cust_flag#14) AND (rpad(c_preferred_cust_flag#14, 1,  ) = Y)) AND isnotnull(c_current_addr_sk#13))
 
-(23) ColumnarToRow [codegen id : 3]
-Input [1]: [c_current_addr_sk#13]
+(23) Project [codegen id : 3]
+Output [1]: [c_current_addr_sk#13]
+Input [2]: [c_current_addr_sk#13, c_preferred_cust_flag#14]
 
 (24) BroadcastExchange
 Input [1]: [c_current_addr_sk#13]

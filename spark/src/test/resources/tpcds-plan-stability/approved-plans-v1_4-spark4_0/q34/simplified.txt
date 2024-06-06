@@ -42,10 +42,10 @@ WholeStageCodegen (7)
                               InputAdapter
                                 BroadcastExchange #5
                                   WholeStageCodegen (3)
-                                    ColumnarToRow
-                                      InputAdapter
-                                        CometProject [hd_demo_sk]
-                                          CometFilter [hd_vehicle_count,hd_buy_potential,hd_dep_count,hd_demo_sk]
+                                    Project [hd_demo_sk]
+                                      Filter [hd_vehicle_count,hd_buy_potential,hd_dep_count,hd_demo_sk]
+                                        ColumnarToRow
+                                          InputAdapter
                                             CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_buy_potential,hd_dep_count,hd_vehicle_count]
               InputAdapter
                 BroadcastExchange #6

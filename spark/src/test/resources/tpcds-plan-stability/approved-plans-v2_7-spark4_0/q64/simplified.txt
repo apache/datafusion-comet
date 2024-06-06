@@ -173,10 +173,10 @@ WholeStageCodegen (52)
                                   InputAdapter
                                     BroadcastExchange #17
                                       WholeStageCodegen (23)
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometProject [i_item_sk,i_product_name]
-                                              CometFilter [i_current_price,i_color,i_item_sk]
+                                        Project [i_item_sk,i_product_name]
+                                          Filter [i_current_price,i_color,i_item_sk]
+                                            ColumnarToRow
+                                              InputAdapter
                                                 CometScan parquet spark_catalog.default.item [i_item_sk,i_current_price,i_color,i_product_name]
               InputAdapter
                 WholeStageCodegen (50)

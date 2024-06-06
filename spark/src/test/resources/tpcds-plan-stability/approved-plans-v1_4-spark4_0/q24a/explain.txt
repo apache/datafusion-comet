@@ -34,8 +34,8 @@
                         :     :     :              +- CometFilter (16)
                         :     :     :                 +- CometScan parquet spark_catalog.default.store (15)
                         :     :     +- BroadcastExchange (25)
-                        :     :        +- * ColumnarToRow (24)
-                        :     :           +- CometFilter (23)
+                        :     :        +- * Filter (24)
+                        :     :           +- * ColumnarToRow (23)
                         :     :              +- CometScan parquet spark_catalog.default.item (22)
                         :     +- BroadcastExchange (31)
                         :        +- * ColumnarToRow (30)
@@ -145,15 +145,15 @@ Input [8]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_net_paid#5, s_stor
 Output [6]: [i_item_sk#15, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_color), EqualTo(i_color,pale                ), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_color), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_size:string,i_color:string,i_units:string,i_manager_id:int>
 
-(23) CometFilter
+(23) ColumnarToRow [codegen id : 6]
 Input [6]: [i_item_sk#15, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20]
-Condition : ((isnotnull(i_color#18) AND (i_color#18 = pale                )) AND isnotnull(i_item_sk#15))
 
-(24) ColumnarToRow [codegen id : 6]
+(24) Filter [codegen id : 6]
 Input [6]: [i_item_sk#15, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20]
+Condition : ((isnotnull(i_color#18) AND (rpad(i_color#18, 20,  ) = pale                )) AND isnotnull(i_item_sk#15))
 
 (25) BroadcastExchange
 Input [6]: [i_item_sk#15, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20]

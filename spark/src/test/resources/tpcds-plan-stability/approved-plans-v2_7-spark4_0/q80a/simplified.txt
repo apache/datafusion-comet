@@ -80,10 +80,10 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                   InputAdapter
                                                     BroadcastExchange #9
                                                       WholeStageCodegen (8)
-                                                        ColumnarToRow
-                                                          InputAdapter
-                                                            CometProject [p_promo_sk]
-                                                              CometFilter [p_channel_tv,p_promo_sk]
+                                                        Project [p_promo_sk]
+                                                          Filter [p_channel_tv,p_promo_sk]
+                                                            ColumnarToRow
+                                                              InputAdapter
                                                                 CometScan parquet spark_catalog.default.promotion [p_promo_sk,p_channel_tv]
                                   WholeStageCodegen (20)
                                     HashAggregate [cp_catalog_page_id,sum,sum,isEmpty,sum,isEmpty] [sum(UnscaledValue(cs_ext_sales_price)),sum(coalesce(cast(cr_return_amount as decimal(12,2)), 0.00)),sum((cs_net_profit - coalesce(cast(cr_net_loss as decimal(12,2)), 0.00))),channel,id,sales,returns,profit,sum,sum,isEmpty,sum,isEmpty]

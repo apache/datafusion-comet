@@ -59,9 +59,9 @@ WholeStageCodegen (9)
                             InputAdapter
                               BroadcastExchange #7
                                 WholeStageCodegen (5)
-                                  ColumnarToRow
-                                    InputAdapter
-                                      CometFilter [cd_marital_status,cd_education_status,cd_demo_sk]
+                                  Filter [cd_marital_status,cd_education_status,cd_demo_sk]
+                                    ColumnarToRow
+                                      InputAdapter
                                         CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                         InputAdapter
                           BroadcastExchange #8
