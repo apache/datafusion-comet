@@ -55,10 +55,10 @@ trait CometExprShim {
         CometEvalMode.fromBoolean(expr.failOnError)
 
     def evalMode(expr: Sum): CometEvalMode.Value =
-        CometEvalMode.fromBoolean(expr.failOnError)
+        CometEvalMode.fromBoolean(expr.useAnsiAdd)
 
     def evalMode(expr: Average): CometEvalMode.Value =
-        CometEvalMode.fromBoolean(expr.failOnError)
+        CometEvalMode.fromBoolean(expr.useAnsiAdd)
 
     def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 
