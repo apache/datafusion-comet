@@ -39,6 +39,8 @@ It must be set before the Spark context is created. You can enable or disable Co
 at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
 Once it is disabled, Comet will fallback to the default Spark shuffle manager.
 
+> **_NOTE:_** At the moment Comet Shuffle is not compatible with Spark AQE partition coalesce. To disable set `spark.sql.adaptive.coalescePartitions.enabled` to `false`.
+
 ### Shuffle Mode
 
 Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.

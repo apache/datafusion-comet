@@ -30,8 +30,8 @@ Comet Fuzz is inspired by the [SparkFuzz](https://ir.cwi.nl/pub/30222) paper fro
 
 Planned areas of improvement:
 
+- ANSI mode
 - Support for all data types, expressions, and operators supported by Comet
-- Explicit casts
 - Unary and binary arithmetic expressions
 - IF and CASE WHEN expressions
 - Complex (nested) expressions
@@ -91,7 +91,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.comet.exec.shuffle.mode=auto \
     --jars $COMET_JAR \
-    --driver-class-path $COMET_JAR \
+    --conf spark.driver.extraClassPath=$COMET_JAR \
+    --conf spark.executor.extraClassPath=$COMET_JAR \
     --class org.apache.comet.fuzz.Main \
     target/comet-fuzz-spark3.4_2.12-0.1.0-SNAPSHOT-jar-with-dependencies.jar \
     run --num-files=2 --filename=queries.sql
