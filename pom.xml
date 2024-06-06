@@ -626,7 +626,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.8.8</version>
+                    <version>4.8.15</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>
