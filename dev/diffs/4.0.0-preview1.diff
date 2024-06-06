@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index bd384e42b0e..a8a8988378b 100644
+index a4b1b2c3c9f..a2315d2a95b 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -147,6 +147,8 @@
@@ -11,7 +11,7 @@ index bd384e42b0e..a8a8988378b 100644
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
-@@ -2843,6 +2845,25 @@
+@@ -2848,6 +2850,25 @@
          <artifactId>arpack</artifactId>
          <version>${netlib.ludovic.dev.version}</version>
        </dependency>
@@ -38,7 +38,7 @@ index bd384e42b0e..a8a8988378b 100644
        <dependency>
          <groupId>org.apache.datasketches</groupId>
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
-index 59d798e6e62..270768842c9 100644
+index 19f6303be36..31e1d27700f 100644
 --- a/sql/core/pom.xml
 +++ b/sql/core/pom.xml
 @@ -77,6 +77,10 @@
@@ -311,7 +311,7 @@ index 760ee802608..db4dc90475e 100644
        sql(
          """
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
-index 10d6f045db3..03a63fd2860 100644
+index 16a493b5290..3f0b70e2d59 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 @@ -42,7 +42,7 @@ import org.apache.spark.sql.catalyst.trees.DataFrameQueryContext
@@ -323,7 +323,7 @@ index 10d6f045db3..03a63fd2860 100644
  import org.apache.spark.sql.execution.streaming.MemoryStream
  import org.apache.spark.sql.expressions.UserDefinedFunction
  import org.apache.spark.sql.functions._
-@@ -2375,7 +2375,7 @@ class DatasetSuite extends QueryTest
+@@ -2360,7 +2360,7 @@ class DatasetSuite extends QueryTest
  
      // Assert that no extra shuffle introduced by cogroup.
      val exchanges = collect(df3.queryExecution.executedPlan) {
@@ -1083,7 +1083,7 @@ index 3aaf61ffba4..93752e2a535 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 4e1e171c8a8..3582bd17c82 100644
+index a7efd0aa75e..fa65bda2051 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -28,11 +28,13 @@ import org.apache.spark.SparkException
@@ -1624,10 +1624,10 @@ index 795e9f46a8d..5306c94a686 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 02e1c70cc8c..8b61d0ad2a7 100644
+index 4fb8faa43a3..984fd1a9892 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1334,7 +1334,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1297,7 +1297,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
