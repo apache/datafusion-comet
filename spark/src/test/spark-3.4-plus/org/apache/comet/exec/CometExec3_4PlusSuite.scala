@@ -23,7 +23,6 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
-
 import org.apache.comet.CometConf
 
 /**

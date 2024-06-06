@@ -1,0 +1,6 @@
+.idea
+target
+spark-warehouse
+queries.sql
+results*.md
+test*.parquet

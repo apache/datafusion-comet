@@ -35,10 +35,5 @@ trait ValueSetter<T: TypeTrait> {
     fn append_value(&mut self, v: &T::Native);
 }
 
-mod vector;
-
 mod buffer;
 pub use buffer::*;
-
-mod mutable_vector;
-pub use mutable_vector::*;

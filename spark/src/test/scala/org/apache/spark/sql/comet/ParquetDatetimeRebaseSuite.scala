@@ -27,6 +27,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 // This test checks if Comet reads ancient dates & timestamps that are before 1582, as if they are
 // read according to the `LegacyBehaviorPolicy.CORRECTED` mode (i.e., no rebase) in Spark.
@@ -48,7 +49,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
           val df = spark.read.parquet(file)
 
           // Parquet file written by 2.4.5 should throw exception for both Spark and Comet
-          if (exceptionOnRebase || sparkVersion == "2_4_5") {
+          // For Spark 4.0+, Parquet file written by 2.4.5 should not throw exception
+          if ((exceptionOnRebase || sparkVersion == "2_4_5") && (!isSpark40Plus || sparkVersion != "2_4_5")) {
             intercept[SparkException](df.collect())
           } else {
             checkSparkNoRebaseAnswer(df)
@@ -70,7 +72,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
             val df = spark.read.parquet(file)
 
             // Parquet file written by 2.4.5 should throw exception for both Spark and Comet
-            if (exceptionOnRebase || sparkVersion == "2_4_5") {
+            // For Spark 4.0+, Parquet file written by 2.4.5 should not throw exception
+            if ((exceptionOnRebase || sparkVersion == "2_4_5") && (!isSpark40Plus || sparkVersion != "2_4_5")) {
               intercept[SparkException](df.collect())
             } else {
               checkSparkNoRebaseAnswer(df)
@@ -93,7 +96,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
             val df = spark.read.parquet(file)
 
             // Parquet file written by 2.4.5 should throw exception for both Spark and Comet
-            if (exceptionOnRebase || sparkVersion == "2_4_5") {
+            // For Spark 4.0+, Parquet file written by 2.4.5 should not throw exception
+            if ((exceptionOnRebase || sparkVersion == "2_4_5") && (!isSpark40Plus || sparkVersion != "2_4_5")) {
               intercept[SparkException](df.collect())
             } else {
               checkSparkNoRebaseAnswer(df)

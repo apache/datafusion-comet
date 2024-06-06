@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
@@ -588,6 +590,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported
    */
+
+  def stringToEvalMode(evalModeStr: String): ExprOuterClass.EvalMode =
+    evalModeStr.toUpperCase(Locale.ROOT) match {
+      case "LEGACY" => ExprOuterClass.EvalMode.LEGACY
+      case "TRY" => ExprOuterClass.EvalMode.TRY
+      case "ANSI" => ExprOuterClass.EvalMode.ANSI
+      case invalid =>
+        throw new IllegalArgumentException(
+          s"Invalid eval mode '$invalid' "
+        ) // Assuming we want to catch errors strictly
+    }
+
   def exprToProto(
       expr: Expression,
       input: Seq[Attribute],
@@ -598,12 +612,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         childExpr: Option[Expr],
         evalMode: String): Option[Expr] = {
       val dataType = serializeDataType(dt)
+      val evalModeEnum = stringToEvalMode(evalMode) // Convert string to enum
 
       if (childExpr.isDefined && dataType.isDefined) {
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
-        castBuilder.setEvalMode(evalMode)
+        castBuilder.setEvalMode(evalModeEnum) // Set the enum in protobuf
 
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
@@ -1305,7 +1320,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .newBuilder()
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
-                    .setEvalMode("LEGACY") // year is not affected by ANSI mode
+                    .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
                     .build())
                 .build()
             })
@@ -1508,6 +1523,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
           val optExpr = scalarExprToProto("atan2", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
+
+        case Hex(child) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          val optExpr =
+            scalarExprToProtoWithReturnType("hex", StringType, childExpr)
+
+          optExprWithInfo(optExpr, expr, child)
 
         case e: Unhex if !isSpark32 =>
           val unHex = unhexSerde(e)
@@ -1962,11 +1984,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case UnaryMinus(child, _) =>
+        case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
             val builder = ExprOuterClass.Negative.newBuilder()
             builder.setChild(childExpr.get)
+            builder.setFailOnError(failOnError)
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
@@ -2090,6 +2113,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // the seed is put at the end of the arguments
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
+        case XxHash64(children, seed) =>
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
+          }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(LongType).get)
+            .setLongVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
             withInfo(expr, "non literal numBits is not supported")
@@ -2131,10 +2169,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val trimCast = Cast(trimStr.get, StringType)
         val trimExpr = exprToProtoInternal(trimCast, inputs)
         val optExpr = scalarExprToProto(trimType, srcExpr, trimExpr)
-        optExprWithInfo(optExpr, expr, null, srcCast, trimCast)
+        optExprWithInfo(optExpr, expr, srcCast, trimCast)
       } else {
         val optExpr = scalarExprToProto(trimType, srcExpr)
-        optExprWithInfo(optExpr, expr, null, srcCast)
+        optExprWithInfo(optExpr, expr, srcCast)
       }
     }
 
@@ -2206,7 +2244,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   def nullIfWhenPrimitive(expression: Expression): Expression = if (isPrimitive(expression)) {
-    new NullIf(expression, Literal.default(expression.dataType)).child
+    val zero = Literal.default(expression.dataType)
+    If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
   } else {
     expression
   }
