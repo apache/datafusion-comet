@@ -594,6 +594,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("like with custom escape") {
+    val table = "names"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      sql(s"insert into $table values(2,'Michael_Rose')")
+      sql(s"insert into $table values(3,'Robert_R_Williams')")
+
+      // Filter column having values that include underscores
+      val queryDefaultEscape = sql("select id from names where name like '%\\_%'")
+      checkSparkAnswerAndOperator(queryDefaultEscape)
+
+      val queryCustomEscape = sql("select id from names where name like '%$_%' escape '$'")
+      checkAnswer(queryCustomEscape, Row(2) :: Row(3) :: Nil)
+
+    }
+  }
+
   test("contains") {
     assume(!isSpark32)
 
@@ -1044,6 +1062,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hex") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "hex.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+
+        withParquetTable(path.toString, "tbl") {
+          // _9 and _10 (uint8 and uint16) not supported
+          checkSparkAnswerAndOperator(
+            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+        }
+      }
+    }
+  }
+
   test("unhex") {
     // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
     // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
@@ -1468,6 +1502,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |select
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
               |from test
               |""".stripMargin)
@@ -1490,14 +1525,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
-          // TODO: Add a Row generator in the data gen class and replace th following code
-          val col = dataGen.generateStrings(randomNumRows, timestampPattern, 6)
-          val colA = dataGen.generateInts(randomNumRows)
-          val colB = dataGen.generateFloats(randomNumRows)
-          val data = col.zip(colA).zip(colB).map { case ((a, b), c) => (a, b, c) }
-          data
-            .toDF("col", "a", "b")
-            .write
+          val tableSchema = spark.table(table).schema
+          val rows = dataGen.generateRows(
+            randomNumRows,
+            tableSchema,
+            Some(() => dataGen.generateString(timestampPattern, 6)))
+          val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), tableSchema)
+          data.write
             .mode("append")
             .insertInto(table)
           // with random generated data
@@ -1506,6 +1540,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |select
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
               |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
               |from test
               |""".stripMargin)
@@ -1513,5 +1548,103 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("unary negative integer overflow test") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
 
+    def checkOverflow(query: String, dtype: String): Unit = {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(dtype + " overflow"))
+          assert(cometException.getMessage.contains(dtype + " overflow"))
+        case (None, None) => assert(true) // got same outputs
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not " + ex.getMessage)
+        case (Some(_), None) =>
+          fail("Spark threw an exception but Comet did not")
+      }
+    }
+
+    def runArrayTest(query: String, dtype: String, path: String): Unit = {
+      withParquetTable(path, "t") {
+        withAnsiMode(enabled = false) {
+          checkSparkAnswerAndOperator(sql(query))
+        }
+        withAnsiMode(enabled = true) {
+          checkOverflow(query, dtype)
+        }
+      }
+    }
+
+    withTempDir { dir =>
+      // Array values test
+      val arrayPath = new Path(dir.toURI.toString, "array_test.parquet").toString
+      Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(arrayPath)
+      val arrayQuery = "select a, -a from t"
+      runArrayTest(arrayQuery, "integer", arrayPath)
+
+      // long values test
+      val longArrayPath = new Path(dir.toURI.toString, "long_array_test.parquet").toString
+      Seq(Long.MaxValue, Long.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(longArrayPath)
+      val longArrayQuery = "select a, -a from t"
+      runArrayTest(longArrayQuery, "long", longArrayPath)
+
+      // short values test
+      val shortArrayPath = new Path(dir.toURI.toString, "short_array_test.parquet").toString
+      Seq(Short.MaxValue, Short.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(shortArrayPath)
+      val shortArrayQuery = "select a, -a from t"
+      runArrayTest(shortArrayQuery, "", shortArrayPath)
+
+      // byte values test
+      val byteArrayPath = new Path(dir.toURI.toString, "byte_array_test.parquet").toString
+      Seq(Byte.MaxValue, Byte.MinValue)
+        .toDF("a")
+        .write
+        .mode("overwrite")
+        .parquet(byteArrayPath)
+      val byteArrayQuery = "select a, -a from t"
+      runArrayTest(byteArrayQuery, "", byteArrayPath)
+
+      // interval values test
+      withTable("t_interval") {
+        spark.sql("CREATE TABLE t_interval(a STRING) USING PARQUET")
+        spark.sql("INSERT INTO t_interval VALUES ('INTERVAL 10000000000 YEAR')")
+        withAnsiMode(enabled = true) {
+          spark
+            .sql("SELECT CAST(a AS INTERVAL) AS a FROM t_interval")
+            .createOrReplaceTempView("t_interval_casted")
+          checkOverflow("SELECT a, -a FROM t_interval_casted", "interval")
+        }
+      }
+
+      withTable("t") {
+        sql("create table t(a int) using parquet")
+        sql("insert into t values (-2147483648)")
+        withAnsiMode(enabled = true) {
+          checkOverflow("select a, -a from t", "integer")
+        }
+      }
+
+      withTable("t_float") {
+        sql("create table t_float(a float) using parquet")
+        sql("insert into t_float values (3.4128235E38)")
+        withAnsiMode(enabled = true) {
+          checkOverflow("select a, -a from t_float", "float")
+        }
+      }
+    }
+  }
 }

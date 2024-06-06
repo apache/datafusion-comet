@@ -40,9 +40,11 @@ allowed_expr="(^org/$|^org/apache/$"
 # we have to allow the directories that lead to the org/apache/comet dir
 # We allow all the classes under the following packages:
 #   * org.apache.comet
+#   * org.apache.spark.comet
 #   * org.apache.spark.sql.comet
 #   * org.apache.arrow.c
 allowed_expr+="|^org/apache/comet/"
+allowed_expr+="|^org/apache/spark/comet/"
 allowed_expr+="|^org/apache/spark/sql/comet/"
 allowed_expr+="|^org/apache/arrow/c/"
 #   * whatever in the "META-INF" directory

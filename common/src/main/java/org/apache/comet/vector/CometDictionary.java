@@ -26,20 +26,11 @@ import org.apache.spark.unsafe.types.UTF8String;
 public class CometDictionary implements AutoCloseable {
   private static final int DECIMAL_BYTE_WIDTH = 16;
 
-  private final CometPlainVector values;
+  private CometPlainVector values;
   private final int numValues;
 
-  /** Decoded dictionary values. Only one of the following is set. */
-  private byte[] bytes;
-
-  private short[] shorts;
-  private int[] ints;
-  private long[] longs;
-  private float[] floats;
-  private double[] doubles;
-  private boolean[] booleans;
+  /** Decoded dictionary values. We only need to copy values for decimal type. */
   private ByteArrayWrapper[] binaries;
-  private UTF8String[] strings;
 
   public CometDictionary(CometPlainVector values) {
     this.values = values;
@@ -47,44 +38,60 @@ public class CometDictionary implements AutoCloseable {
     initialize();
   }
 
+  public void setDictionaryVector(CometPlainVector values) {
+    this.values = values;
+    if (values.numValues() != numValues) {
+      throw new IllegalArgumentException("Mismatched dictionary size");
+    }
+  }
+
   public ValueVector getValueVector() {
     return values.getValueVector();
   }
 
   public boolean decodeToBoolean(int index) {
-    return booleans[index];
+    return values.getBoolean(index);
   }
 
   public byte decodeToByte(int index) {
-    return bytes[index];
+    return values.getByte(index);
   }
 
   public short decodeToShort(int index) {
-    return shorts[index];
+    return values.getShort(index);
   }
 
   public int decodeToInt(int index) {
-    return ints[index];
+    return values.getInt(index);
   }
 
   public long decodeToLong(int index) {
-    return longs[index];
+    return values.getLong(index);
   }
 
   public float decodeToFloat(int index) {
-    return floats[index];
+    return values.getFloat(index);
   }
 
   public double decodeToDouble(int index) {
-    return doubles[index];
+    return values.getDouble(index);
   }
 
   public byte[] decodeToBinary(int index) {
-    return binaries[index].bytes;
+    switch (values.getValueVector().getMinorType()) {
+      case VARBINARY:
+      case FIXEDSIZEBINARY:
+        return values.getBinary(index);
+      case DECIMAL:
+        return binaries[index].bytes;
+      default:
+        throw new IllegalArgumentException(
+            "Invalid Arrow minor type: " + values.getValueVector().getMinorType());
+    }
   }
 
   public UTF8String decodeToUTF8String(int index) {
-    return strings[index];
+    return values.getUTF8String(index);
   }
 
   @Override
@@ -94,65 +101,10 @@ public class CometDictionary implements AutoCloseable {
 
   private void initialize() {
     switch (values.getValueVector().getMinorType()) {
-      case BIT:
-        booleans = new boolean[numValues];
-        for (int i = 0; i < numValues; i++) {
-          booleans[i] = values.getBoolean(i);
-        }
-        break;
-      case TINYINT:
-        bytes = new byte[numValues];
-        for (int i = 0; i < numValues; i++) {
-          bytes[i] = values.getByte(i);
-        }
-        break;
-      case SMALLINT:
-        shorts = new short[numValues];
-        for (int i = 0; i < numValues; i++) {
-          shorts[i] = values.getShort(i);
-        }
-        break;
-      case INT:
-      case DATEDAY:
-        ints = new int[numValues];
-        for (int i = 0; i < numValues; i++) {
-          ints[i] = values.getInt(i);
-        }
-        break;
-      case BIGINT:
-      case TIMESTAMPMICRO:
-      case TIMESTAMPMICROTZ:
-        longs = new long[numValues];
-        for (int i = 0; i < numValues; i++) {
-          longs[i] = values.getLong(i);
-        }
-        break;
-      case FLOAT4:
-        floats = new float[numValues];
-        for (int i = 0; i < numValues; i++) {
-          floats[i] = values.getFloat(i);
-        }
-        break;
-      case FLOAT8:
-        doubles = new double[numValues];
-        for (int i = 0; i < numValues; i++) {
-          doubles[i] = values.getDouble(i);
-        }
-        break;
-      case VARBINARY:
-      case FIXEDSIZEBINARY:
-        binaries = new ByteArrayWrapper[numValues];
-        for (int i = 0; i < numValues; i++) {
-          binaries[i] = new ByteArrayWrapper(values.getBinary(i));
-        }
-        break;
-      case VARCHAR:
-        strings = new UTF8String[numValues];
-        for (int i = 0; i < numValues; i++) {
-          strings[i] = values.getUTF8String(i);
-        }
-        break;
       case DECIMAL:
+        // We only need to copy values for decimal type as random access
+        // to the dictionary is not efficient for decimal (it needs to copy
+        // the value to a new byte array everytime).
         binaries = new ByteArrayWrapper[numValues];
         for (int i = 0; i < numValues; i++) {
           // Need copying here since we re-use byte array for decimal
@@ -161,9 +113,6 @@ public class CometDictionary implements AutoCloseable {
           binaries[i] = new ByteArrayWrapper(bytes);
         }
         break;
-      default:
-        throw new IllegalArgumentException(
-            "Invalid Arrow minor type: " + values.getValueVector().getMinorType());
     }
   }
 

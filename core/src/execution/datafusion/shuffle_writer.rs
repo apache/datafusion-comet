@@ -62,7 +62,7 @@ use tokio::task;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
-    execution::datafusion::spark_hash::{create_hashes, pmod},
+    execution::datafusion::spark_hash::{create_murmur3_hashes, pmod},
 };
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
@@ -673,7 +673,7 @@ impl ShuffleRepartitioner {
 
                 // Hash arrays and compute buckets based on number of partitions
                 let partition_ids = &mut self.partition_ids[..arrays[0].len()];
-                create_hashes(&arrays, hashes_buf)?
+                create_murmur3_hashes(&arrays, hashes_buf)?
                     .iter()
                     .enumerate()
                     .for_each(|(idx, hash)| {

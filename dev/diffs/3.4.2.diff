@@ -2526,7 +2526,7 @@ index 07361cfdce9..25b0dc3ef7e 100644
 +        val v = System.getenv("ENABLE_COMET")
 +        if (v != null && v.toBoolean) {
 +          conf
-+            .set("spark.sql.extensions", "org.apache.spark.CometSparkSessionExtensions")
++            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
 +
 +          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")

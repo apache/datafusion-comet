@@ -32,6 +32,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -43,7 +44,7 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
-import org.apache.comet.shims.{ShimCometScanExec, ShimFileFormat}
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -271,7 +272,7 @@ case class CometScanExec(
       selectedPartitions
         .flatMap { p =>
           p.files.map { f =>
-            PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+            getPartitionedFile(f, p)
           }
         }
         .groupBy { f =>
@@ -358,7 +359,7 @@ case class CometScanExec(
               // SPARK-39634: Allow file splitting in combination with row index generation once
               // the fix for PARQUET-2161 is available.
               !isNeededForSchema(requiredSchema)
-            PartitionedFileUtil.splitFiles(
+            super.splitFiles(
               sparkSession = relation.sparkSession,
               file = file,
               filePath = filePath,
@@ -409,7 +410,7 @@ case class CometScanExec(
         Map.empty)
     } else {
       newFileScanRDD(
-        fsRelation.sparkSession,
+        fsRelation,
         readFile,
         partitions,
         new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
