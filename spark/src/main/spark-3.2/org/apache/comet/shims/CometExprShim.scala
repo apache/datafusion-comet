@@ -20,6 +20,7 @@ package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
 
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
@@ -44,13 +45,24 @@ trait CometExprShim {
     def evalMode(expr: Divide): CometEvalMode.Value =
         CometEvalMode.fromBoolean(expr.failOnError)
 
+    def evalMode(expr: IntegralDivide): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
     def evalMode(expr: Remainder): CometEvalMode.Value =
         CometEvalMode.fromBoolean(expr.failOnError)
 
     def evalMode(expr: Pmod): CometEvalMode.Value =
         CometEvalMode.fromBoolean(expr.failOnError)
 
+    def evalMode(expr: Sum): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
+    def evalMode(expr: Average): CometEvalMode.Value =
+        CometEvalMode.fromBoolean(expr.failOnError)
+
     def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 
     def evalMode(r: Round): CometEvalMode.Value = CometEvalMode.LEGACY
+
+    def evalMode(r: BRound): CometEvalMode.Value = CometEvalMode.LEGACY
 }

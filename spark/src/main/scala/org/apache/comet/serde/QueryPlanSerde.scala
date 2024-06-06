@@ -2207,9 +2207,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case expr: Subtract => evalMode(expr) == CometEvalMode.ANSI
     case expr: Multiply => evalMode(expr) == CometEvalMode.ANSI
     case expr: Divide => evalMode(expr) == CometEvalMode.ANSI
+    case expr: IntegralDivide => evalMode(expr) == CometEvalMode.ANSI
     case expr: Remainder => evalMode(expr) == CometEvalMode.ANSI
     case expr: Pmod => evalMode(expr) == CometEvalMode.ANSI
     case expr: Round => evalMode(expr) == CometEvalMode.ANSI
+    case expr: BRound => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Sum => evalMode(expr) == CometEvalMode.ANSI
+    case expr: Average => evalMode(expr) == CometEvalMode.ANSI
     case _ => false
   }
 
