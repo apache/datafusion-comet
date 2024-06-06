@@ -57,6 +57,7 @@ under the License.
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
+    <semanticdb.version>4.8.8</semanticdb.version>
     <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -542,6 +543,7 @@ under the License.
         <spark.version>4.0.0-preview1</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <semanticdb.version>4.9.5</semanticdb.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
@@ -626,7 +628,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.8.15</version>
+                    <version>${semanticdb.version}</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>
