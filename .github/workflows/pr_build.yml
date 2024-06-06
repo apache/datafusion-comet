@@ -97,15 +97,6 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -223,15 +214,6 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -261,15 +243,6 @@ jobs:
           jdk-version: ${{ matrix.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
