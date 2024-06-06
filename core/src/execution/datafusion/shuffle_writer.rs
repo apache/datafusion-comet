@@ -575,6 +575,8 @@ struct ShuffleRepartitioner {
     hashes_buf: Vec<u32>,
     /// Partition ids for each row in the current batch
     partition_ids: Vec<u64>,
+    /// The configured batch size
+    batch_size: usize,
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -642,17 +644,41 @@ impl ShuffleRepartitioner {
             reservation,
             hashes_buf,
             partition_ids,
+            batch_size,
         }
+    }
+
+    /// Shuffles rows in input batch into corresponding partition buffer.
+    /// This function will slice input batch according to configured batch size and then
+    /// shuffle rows into corresponding partition buffer.
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let mut start = 0;
+        while start < batch.num_rows() {
+            let end = (start + self.batch_size).min(batch.num_rows());
+            let batch = batch.slice(start, end - start);
+            self.partitioning_batch(batch).await?;
+            start = end;
+        }
+        Ok(())
     }
 
     /// Shuffles rows in input batch into corresponding partition buffer.
     /// This function first calculates hashes for rows and then takes rows in same
     /// partition as a record batch which is appended into partition buffer.
-    async fn insert_batch(&mut self, input: RecordBatch) -> Result<()> {
+    /// This should not be called directly. Use `insert_batch` instead.
+    async fn partitioning_batch(&mut self, input: RecordBatch) -> Result<()> {
         if input.num_rows() == 0 {
             // skip empty batch
             return Ok(());
         }
+
+        if input.num_rows() > self.batch_size {
+            return Err(DataFusionError::Internal(
+                "Input batch size exceeds configured batch size. Call `insert_batch` instead."
+                    .to_string(),
+            ));
+        }
+
         let _timer = self.metrics.baseline.elapsed_compute().timer();
 
         // NOTE: in shuffle writer exec, the output_rows metrics represents the
@@ -939,7 +965,6 @@ async fn external_shuffle(
     context: Arc<TaskContext>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
-    let batch_size = context.session_config().batch_size();
     let mut repartitioner = ShuffleRepartitioner::new(
         partition_id,
         output_data_file,
@@ -948,18 +973,11 @@ async fn external_shuffle(
         partitioning,
         metrics,
         context.runtime_env(),
-        batch_size,
+        context.session_config().batch_size(),
     );
 
     while let Some(batch) = input.next().await {
-        let batch = batch?;
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + batch_size).min(batch.num_rows());
-            let batch = batch.slice(start, end - start);
-            repartitioner.insert_batch(batch).await?;
-            start = end;
-        }
+        repartitioner.insert_batch(batch?).await?;
     }
     repartitioner.shuffle_write().await
 }
