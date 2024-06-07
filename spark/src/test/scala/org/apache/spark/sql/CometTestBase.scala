@@ -69,7 +69,6 @@ abstract class CometTestBase
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    conf.set(CometConf.COMET_ANSI_MODE_ENABLED.key, "true")
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
