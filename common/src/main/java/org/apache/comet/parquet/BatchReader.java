@@ -285,6 +285,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     missingColumns = new boolean[columns.size()];
     List<String[]> paths = requestedSchema.getPaths();
     StructField[] nonPartitionFields = sparkSchema.fields();
+    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
       Preconditions.checkState(

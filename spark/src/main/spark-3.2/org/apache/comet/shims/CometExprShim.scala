@@ -33,7 +33,7 @@ trait CometExprShim {
     }
 
     protected def isTimestampNTZType(dt: DataType): Boolean = dt match {
-        // `TimestampNTZType` is private in Spark 3.2.
+        // `TimestampNTZType` is private
         case dt if dt.typeName == "timestamp_ntz" => true
         case _ => false
     }

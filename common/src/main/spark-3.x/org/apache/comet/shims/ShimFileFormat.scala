@@ -19,6 +19,8 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.types.{LongType, StructField, StructType}
+
 object ShimFileFormat {
 
   // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use FileFormat.ROW_INDEX
@@ -32,4 +34,20 @@ object ShimFileFormat {
 
   // TODO: remove after dropping Spark 3.2 support and use FileFormat.OPTION_RETURNING_BATCH
   val OPTION_RETURNING_BATCH = "returning_batch"
+
+  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use
+  //       RowIndexUtil.findRowIndexColumnIndexInSchema
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
+    sparkSchema.fields.zipWithIndex.find { case (field: StructField, _: Int) =>
+      field.name == ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+    } match {
+      case Some((field: StructField, idx: Int)) =>
+        if (field.dataType != LongType) {
+          throw new RuntimeException(
+            s"${ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME} must be of LongType")
+        }
+        idx
+      case _ => -1
+    }
+  }
 }

@@ -21,6 +21,8 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
+import org.apache.spark.sql.types.StructType
 
 object ShimFileFormat {
   // A name for a temporary column that holds row indexes computed by the file format reader
@@ -28,4 +30,7 @@ object ShimFileFormat {
   val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
 
   val OPTION_RETURNING_BATCH = FileFormat.OPTION_RETURNING_BATCH
+
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
 }
