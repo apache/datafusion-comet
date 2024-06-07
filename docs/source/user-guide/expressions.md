@@ -21,71 +21,108 @@
 
 The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-## Arithmetic
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied. See the License for the
+// specific language governing permissions and limitations
+// under the License.
 
-| Expression                                  | Notes                                                                               |
-| ------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Literal values of supported data types      |                                                                                     |
-| Unary Arithmetic (`+`, `-`)                 |                                                                                     |
-| Binary Arithmetic (`+`, `-`, `*`, `/`, `%`) | Some operations will throw an overflow exception even when ANSI mode is not enabled |
+## Literal Values
+
+| Expression                             | Notes |
+| -------------------------------------- | ----- |
+| Literal values of supported data types |       |
+
+## Unary Arithmetic
+
+| Expression       | Notes |
+| ---------------- | ----- |
+| UnaryMinus (`-`) |       |
+
+## Binary Arithmeticx
+
+| Expression      | Notes |
+| --------------- | ----- |
+| Add (`+`)       |       |
+| Subtract (`-`)  |       |
+| Multiply (`*`)  |       |
+| Divide (`/`)    |       |
+| Remainder (`%`) |       |
 
 ## Conditional Expressions
 
 | Expression | Notes |
 | ---------- | ----- |
-| Case When  |       |
+| CaseWhen   |       |
 | If         |       |
 
 ## Comparison
 
-| Expression         | Notes |
-| ------------------ | ----- |
-| EqualTo            |       |
-| EqualNullSafe      |       |
-| GreaterThan        |       |
-| GreaterThanOrEqual |       |
-| LessThan           |       |
-| LessThanOrEqual    |       |
-| IsNull             |       |
-| IsNotNull          |       |
-| In                 |       |
+| Expression                | Notes |
+| ------------------------- | ----- |
+| EqualTo (`=`)             |       |
+| EqualNullSafe (`<=>`)     |       |
+| GreaterThan (`>`)         |       |
+| GreaterThanOrEqual (`>=`) |       |
+| LessThan (`<`)            |       |
+| LessThanOrEqual (`<=`)    |       |
+| IsNull (`IS NULL`)        |       |
+| IsNotNull (`IS NOT NULL`) |       |
+| In (`IN`)                 |       |
 
 ## String Functions
 
-| Expression             | Notes                                                            |
-| ---------------------- | ---------------------------------------------------------------- |
-| Substring              |                                                                  |
-| StringSpace            |                                                                  |
-| Like                   |                                                                  |
-| Contains               |                                                                  |
-| Startswith             |                                                                  |
-| Endswith               |                                                                  |
-| Ascii                  |                                                                  |
-| Bit_length             |                                                                  |
-| Octet_length           |                                                                  |
-| Upper                  |                                                                  |
-| Lower                  |                                                                  |
-| Chr                    |                                                                  |
-| Initcap                |                                                                  |
-| Trim/Btrim/Ltrim/Rtrim |                                                                  |
-| Concat_ws              |                                                                  |
-| Repeat                 | Negative argument for number of times to repeat causes exception |
-| Length                 |                                                                  |
-| Reverse                |                                                                  |
-| Instr                  |                                                                  |
-| Replace                |                                                                  |
-| Translate              |                                                                  |
+| Expression      | Notes                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| Ascii           |                                                                                                             |
+| BitLength       |                                                                                                             |
+| Chr             |                                                                                                             |
+| ConcatWs        |                                                                                                             |
+| Contains        |                                                                                                             |
+| EndsWith        |                                                                                                             |
+| InitCap         |                                                                                                             |
+| Instr           |                                                                                                             |
+| Length          |                                                                                                             |
+| Like            |                                                                                                             |
+| Lower           |                                                                                                             |
+| OctetLength     |                                                                                                             |
+| Repeat          | Negative argument for number of times to repeat causes exception                                            |
+| Replace         |                                                                                                             |
+| Reverse         |                                                                                                             |
+| RLike           | Disabled by default. Uses Rust regular expression engine which is not compatible with Java's regexp engine. |
+| StartsWith      |                                                                                                             |
+| StringSpace     |                                                                                                             |
+| StringTrim      |                                                                                                             |
+| StringTrimBoth  |                                                                                                             |
+| StringTrimLeft  |                                                                                                             |
+| StringTrimRight |                                                                                                             |
+| Substring       |                                                                                                             |
+| Translate       |                                                                                                             |
+| Upper           |                                                                                                             |
 
 ## Date/Time Functions
 
-| Expression | Notes                    |
-| ---------- | ------------------------ |
-| Year       |                          |
-| Hour       |                          |
-| Minute     |                          |
-| Second     |                          |
-| date_part  | Only `year` is supported |
-| extract    | Only `year` is supported |
+| Expression     | Notes                    |
+| -------------- | ------------------------ |
+| DatePart       | Only `year` is supported |
+| Extract        | Only `year` is supported |
+| Hour           |                          |
+| Minute         |                          |
+| Second         |                          |
+| TruncDate      |                          |
+| TruncTimestamp |                          |
+| Year           |                          |
 
 ## Math Expressions
 
@@ -96,8 +133,10 @@ The following Spark expressions are currently available. Any known compatibility
 | Asin       |                                                                     |
 | Atan       |                                                                     |
 | Atan2      |                                                                     |
+| Ceil       |                                                                     |
 | Cos        |                                                                     |
 | Exp        |                                                                     |
+| Floor      |                                                                     |
 | Log        | log(0) will produce `-Infinity` unlike Spark which returns `null`   |
 | Log2       | log2(0) will produce `-Infinity` unlike Spark which returns `null`  |
 | Log10      | log10(0) will produce `-Infinity` unlike Spark which returns `null` |
@@ -107,17 +146,15 @@ The following Spark expressions are currently available. Any known compatibility
 | Sin        |                                                                     |
 | Sqrt       |                                                                     |
 | Tan        |                                                                     |
-| Ceil       |                                                                     |
-| Floor      |                                                                     |
 
 ## Hashing Functions
 
 | Expression | Notes |
 | ---------- | ----- |
 | Md5        |       |
-| Sha2       |       |
 | Hash       |       |
-| Xxhash64   |       |
+| Sha2       |       |
+| XxHash64   |       |
 
 ## Boolean Expressions
 
@@ -131,31 +168,36 @@ The following Spark expressions are currently available. Any known compatibility
 
 | Expression           | Notes |
 | -------------------- | ----- |
-| Shiftright/Shiftleft |       |
-| BitAnd               |       |
-| BitOr                |       |
-| BitXor               |       |
-| BoolAnd              |       |
-| BoolOr               |       |
+| ShiftLeft (`<<`)     |       |
+| ShiftRight (`>>`)    |       |
+| BitAnd (`&`)         |       |
+| BitOr (`\|`)         |       |
+| BitXor (`^`)         |       |
+| BitwiseNot (`~`)     |       |
+| BoolAnd (`bool_and`) |       |
+| BoolOr (`bool_or`)   |       |
 
 ## Aggregate Expressions
 
 | Expression    | Notes |
 | ------------- | ----- |
-| Count         |       |
-| Sum           |       |
-| Max           |       |
-| Min           |       |
 | Avg           |       |
-| First         |       |
-| Last          |       |
+| BitAndAgg     |       |
+| BitOrAgg      |       |
+| BitXorAgg     |       |
+| Corr          |       |
+| Count         |       |
 | CovPopulation |       |
 | CovSample     |       |
-| VariancePop   |       |
-| VarianceSamp  |       |
+| First         |       |
+| Last          |       |
+| Max           |       |
+| Min           |       |
 | StddevPop     |       |
 | StddevSamp    |       |
-| Corr          |       |
+| Sum           |       |
+| VariancePop   |       |
+| VarianceSamp  |       |
 
 ## Other
 
@@ -163,4 +205,5 @@ The following Spark expressions are currently available. Any known compatibility
 | ----------------------- | ------------------------------------------------------------------------------- |
 | Cast                    | See compatibility guide for list of supported cast expressions and known issues |
 | BloomFilterMightContain |                                                                                 |
+| ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
