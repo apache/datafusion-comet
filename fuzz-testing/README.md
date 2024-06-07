@@ -32,7 +32,6 @@ Planned areas of improvement:
 
 - ANSI mode
 - Support for all data types, expressions, and operators supported by Comet
-- Unary and binary arithmetic expressions
 - IF and CASE WHEN expressions
 - Complex (nested) expressions
 - Literal scalar values in queries

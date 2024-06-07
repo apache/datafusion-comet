@@ -106,4 +106,8 @@ object Meta {
     Function("stddev_samp", 1),
     Function("corr", 2))
 
+  val unaryArithmeticOps: Seq[String] = Seq("+", "-")
+
+  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%", "&", "|", "^")
+
 }
