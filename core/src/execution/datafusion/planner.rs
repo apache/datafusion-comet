@@ -70,11 +70,8 @@ use crate::{
                 correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
-<<<<<<< HEAD
                 regexp::RLike,
-=======
                 negative,
->>>>>>> apache/main
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
