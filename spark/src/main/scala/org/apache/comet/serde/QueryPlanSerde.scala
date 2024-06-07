@@ -1987,13 +1987,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val builder = ExprOuterClass.Negative.newBuilder()
+            val builder = ExprOuterClass.UnaryMinus.newBuilder()
             builder.setChild(childExpr.get)
             builder.setFailOnError(failOnError)
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
-                .setNegative(builder)
+                .setUnaryMinus(builder)
                 .build())
           } else {
             withInfo(expr, child)
