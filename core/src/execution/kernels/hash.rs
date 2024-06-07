@@ -22,6 +22,7 @@ use arrow_array::{
     downcast_dictionary_array, downcast_primitive_array, Array, ArrayAccessor, ArrayRef,
     ArrowPrimitiveType, PrimitiveArray,
 };
+use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
 use std::fmt::Debug;
 
 pub fn hash(src: &[ArrayRef], dst: &mut [u64]) {
@@ -167,5 +168,20 @@ impl Hashable for f32 {
 impl Hashable for f64 {
     fn create_hash(&self, state: &RandomState) -> u64 {
         state.hash_one(u64::from_ne_bytes(self.to_ne_bytes()))
+    }
+}
+
+impl Hashable for IntervalDayTime {
+    fn create_hash(&self, state: &RandomState) -> u64 {
+        state.hash_one(self.days);
+        state.hash_one(self.milliseconds)
+    }
+}
+
+impl Hashable for IntervalMonthDayNano {
+    fn create_hash(&self, state: &RandomState) -> u64 {
+        state.hash_one(self.months);
+        state.hash_one(self.days);
+        state.hash_one(self.nanoseconds)
     }
 }

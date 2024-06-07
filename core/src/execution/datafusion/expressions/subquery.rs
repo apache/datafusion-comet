@@ -199,7 +199,7 @@ impl PhysicalExpr for Subquery {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
         vec![]
     }
 

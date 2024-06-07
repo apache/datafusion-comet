@@ -111,8 +111,8 @@ macro_rules! make_predicate_function {
                 Ok(ColumnarValue::Array(Arc::new(array)))
             }
 
-            fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-                vec![self.left.clone(), self.right.clone()]
+            fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+                vec![&self.left, &self.right]
             }
 
             fn with_new_children(
@@ -221,8 +221,8 @@ impl PhysicalExpr for SubstringExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
@@ -286,8 +286,8 @@ impl PhysicalExpr for StringSpaceExec {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(
