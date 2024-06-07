@@ -66,32 +66,33 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## String Functions
 
-| Expression      | Notes                                                                                                       |
-| --------------- | ----------------------------------------------------------------------------------------------------------- |
-| Ascii           |                                                                                                             |
-| BitLength       |                                                                                                             |
-| Chr             |                                                                                                             |
-| ConcatWs        |                                                                                                             |
-| Contains        |                                                                                                             |
-| EndsWith        |                                                                                                             |
-| InitCap         |                                                                                                             |
-| Instr           |                                                                                                             |
-| Length          |                                                                                                             |
-| Like            |                                                                                                             |
-| Lower           |                                                                                                             |
-| OctetLength     |                                                                                                             |
-| Repeat          | Negative argument for number of times to repeat causes exception                                            |
-| Replace         |                                                                                                             |
-| Reverse         |                                                                                                             |
-| StartsWith      |                                                                                                             |
-| StringSpace     |                                                                                                             |
-| StringTrim      |                                                                                                             |
-| StringTrimBoth  |                                                                                                             |
-| StringTrimLeft  |                                                                                                             |
-| StringTrimRight |                                                                                                             |
-| Substring       |                                                                                                             |
-| Translate       |                                                                                                             |
-| Upper           |                                                                                                             |
+| Expression      | Notes                                                              |
+| --------------- | ------------------------------------------------------------------ |
+| Ascii           |                                                                    |
+| BitLength       |                                                                    |
+| Chr             |                                                                    |
+| ConcatWs        |                                                                    |
+| Contains        |                                                                    |
+| EndsWith        |                                                                    |
+| InitCap         |                                                                    |
+| Instr           |                                                                    |
+| Length          |                                                                    |
+| Like            |                                                                    |
+| Lower           |                                                                    |
+| OctetLength     |                                                                    |
+| Repeat          | Negative argument for number of times to repeat causes exception   |
+| Replace         |                                                                    |
+| Reverse         |                                                                    |
+| RLike           | RLike is disabled by default. See compatibility guide for details. |
+| StartsWith      |                                                                    |
+| StringSpace     |                                                                    |
+| StringTrim      |                                                                    |
+| StringTrimBoth  |                                                                    |
+| StringTrimLeft  |                                                                    |
+| StringTrimRight |                                                                    |
+| Substring       |                                                                    |
+| Translate       |                                                                    |
+| Upper           |                                                                    |
 
 ## Date/Time Functions
 
@@ -190,4 +191,3 @@ The following Spark expressions are currently available. Any known compatibility
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
-
