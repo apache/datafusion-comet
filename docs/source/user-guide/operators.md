@@ -35,3 +35,4 @@ not supported by Comet will fall back to regular Spark execution.
 | BroadcastHashJoinExec                        |       |
 | Shuffle                                      |       |
 | Expand                                       |       |
+| Union                                        |       |
