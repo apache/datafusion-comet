@@ -304,19 +304,53 @@ under the License.
 -->
 <section id="supported-spark-operators">
 <h1>Supported Spark Operators<a class="headerlink" href="#supported-spark-operators" title="Link to this heading">¶</a></h1>
-<p>The following Spark operators are currently available:</p>
-<ul class="simple">
-<li><p>FileSourceScanExec/BatchScanExec for Parquet</p></li>
-<li><p>Projection</p></li>
-<li><p>Filter</p></li>
-<li><p>Sort</p></li>
-<li><p>Hash Aggregate</p></li>
-<li><p>Limit</p></li>
-<li><p>Sort-merge Join</p></li>
-<li><p>Hash Join</p></li>
-<li><p>Shuffle</p></li>
-<li><p>Expand</p></li>
-</ul>
+<p>The following Spark operators are currently replaced with native versions. Query stages that contain any operators
+not supported by Comet will fall back to regular Spark execution.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Operator</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>FileSourceScanExec/BatchScanExec for Parquet</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Projection</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Filter</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Sort</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Hash Aggregate</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Limit</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sort-merge Join</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Hash Join</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BroadcastHashJoinExec</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Shuffle</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Expand</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Union</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
 </section>
 
 

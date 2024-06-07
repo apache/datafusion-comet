@@ -255,9 +255,79 @@ under the License.
               
               <div class="toc-item">
                 
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
 
 <nav id="bd-toc-nav">
-    
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#literal-values">
+   Literal Values
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#unary-arithmetic">
+   Unary Arithmetic
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#binary-arithmeticx">
+   Binary Arithmeticx
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#conditional-expressions">
+   Conditional Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#comparison">
+   Comparison
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#string-functions">
+   String Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#date-time-functions">
+   Date/Time Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#math-expressions">
+   Math Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#hashing-functions">
+   Hashing Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#boolean-expressions">
+   Boolean Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#bitwise-expressions">
+   Bitwise Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#aggregate-expressions">
+   Aggregate Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#other">
+   Other
+  </a>
+ </li>
+</ul>
+
 </nav>
               </div>
               
@@ -304,130 +374,478 @@ under the License.
 -->
 <section id="supported-spark-expressions">
 <h1>Supported Spark Expressions<a class="headerlink" href="#supported-spark-expressions" title="Link to this heading">¶</a></h1>
-<p>The following Spark expressions are currently available:</p>
-<ul class="simple">
-<li><p>Literals</p></li>
-<li><p>Arithmetic Operators</p>
-<ul>
-<li><p>UnaryMinus</p></li>
-<li><p>Add/Minus/Multiply/Divide/Remainder</p></li>
-</ul>
-</li>
-<li><p>Conditional functions</p>
-<ul>
-<li><p>Case When</p></li>
-<li><p>If</p></li>
-</ul>
-</li>
-<li><p>Cast</p></li>
-<li><p>Coalesce</p></li>
-<li><p>BloomFilterMightContain</p></li>
-<li><p>Boolean functions</p>
-<ul>
-<li><p>And</p></li>
-<li><p>Or</p></li>
-<li><p>Not</p></li>
-<li><p>EqualTo</p></li>
-<li><p>EqualNullSafe</p></li>
-<li><p>GreaterThan</p></li>
-<li><p>GreaterThanOrEqual</p></li>
-<li><p>LessThan</p></li>
-<li><p>LessThanOrEqual</p></li>
-<li><p>IsNull</p></li>
-<li><p>IsNotNull</p></li>
-<li><p>In</p></li>
-</ul>
-</li>
-<li><p>String functions</p>
-<ul>
-<li><p>Substring</p></li>
-<li><p>Coalesce</p></li>
-<li><p>StringSpace</p></li>
-<li><p>Like</p></li>
-<li><p>Contains</p></li>
-<li><p>Startswith</p></li>
-<li><p>Endswith</p></li>
-<li><p>Ascii</p></li>
-<li><p>Bit_length</p></li>
-<li><p>Octet_length</p></li>
-<li><p>Upper</p></li>
-<li><p>Lower</p></li>
-<li><p>Chr</p></li>
-<li><p>Initcap</p></li>
-<li><p>Trim/Btrim/Ltrim/Rtrim</p></li>
-<li><p>Concat_ws</p></li>
-<li><p>Repeat</p></li>
-<li><p>Length</p></li>
-<li><p>Reverse</p></li>
-<li><p>Instr</p></li>
-<li><p>Replace</p></li>
-<li><p>Translate</p></li>
-</ul>
-</li>
-<li><p>Bitwise functions</p>
-<ul>
-<li><p>Shiftright/Shiftleft</p></li>
-</ul>
-</li>
-<li><p>Date/Time functions</p>
-<ul>
-<li><p>Year/Hour/Minute/Second</p></li>
-</ul>
-</li>
-<li><p>Hash functions</p>
-<ul>
-<li><p>Md5</p></li>
-<li><p>Sha2</p></li>
-<li><p>Hash</p></li>
-<li><p>Xxhash64</p></li>
-</ul>
-</li>
-<li><p>Math functions</p>
-<ul>
-<li><p>Abs</p></li>
-<li><p>Acos</p></li>
-<li><p>Asin</p></li>
-<li><p>Atan</p></li>
-<li><p>Atan2</p></li>
-<li><p>Cos</p></li>
-<li><p>Exp</p></li>
-<li><p>Ln</p></li>
-<li><p>Log10</p></li>
-<li><p>Log2</p></li>
-<li><p>Pow</p></li>
-<li><p>Round</p></li>
-<li><p>Signum</p></li>
-<li><p>Sin</p></li>
-<li><p>Sqrt</p></li>
-<li><p>Tan</p></li>
-<li><p>Ceil</p></li>
-<li><p>Floor</p></li>
-</ul>
-</li>
-<li><p>Aggregate functions</p>
-<ul>
-<li><p>Count</p></li>
-<li><p>Sum</p></li>
-<li><p>Max</p></li>
-<li><p>Min</p></li>
-<li><p>Avg</p></li>
-<li><p>First</p></li>
-<li><p>Last</p></li>
-<li><p>BitAnd</p></li>
-<li><p>BitOr</p></li>
-<li><p>BitXor</p></li>
-<li><p>BoolAnd</p></li>
-<li><p>BoolOr</p></li>
-<li><p>CovPopulation</p></li>
-<li><p>CovSample</p></li>
-<li><p>VariancePop</p></li>
-<li><p>VarianceSamp</p></li>
-<li><p>StddevPop</p></li>
-<li><p>StddevSamp</p></li>
-<li><p>Corr</p></li>
-</ul>
-</li>
-</ul>
+<p>The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.</p>
+<section id="literal-values">
+<h2>Literal Values<a class="headerlink" href="#literal-values" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Literal values of supported data types</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="unary-arithmetic">
+<h2>Unary Arithmetic<a class="headerlink" href="#unary-arithmetic" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>UnaryMinus (<code class="docutils literal notranslate"><span class="pre">-</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="binary-arithmeticx">
+<h2>Binary Arithmeticx<a class="headerlink" href="#binary-arithmeticx" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Add (<code class="docutils literal notranslate"><span class="pre">+</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Subtract (<code class="docutils literal notranslate"><span class="pre">-</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Multiply (<code class="docutils literal notranslate"><span class="pre">*</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Divide (<code class="docutils literal notranslate"><span class="pre">/</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Remainder (<code class="docutils literal notranslate"><span class="pre">%</span></code>)</p></td>
+<td><p>Comet produces <code class="docutils literal notranslate"><span class="pre">NaN</span></code> instead of <code class="docutils literal notranslate"><span class="pre">NULL</span></code> for <code class="docutils literal notranslate"><span class="pre">%</span> <span class="pre">-0.0</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="conditional-expressions">
+<h2>Conditional Expressions<a class="headerlink" href="#conditional-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CaseWhen</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>If</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="comparison">
+<h2>Comparison<a class="headerlink" href="#comparison" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>EqualTo (<code class="docutils literal notranslate"><span class="pre">=</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>EqualNullSafe (<code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>GreaterThan (<code class="docutils literal notranslate"><span class="pre">&gt;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>GreaterThanOrEqual (<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>LessThan (<code class="docutils literal notranslate"><span class="pre">&lt;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>LessThanOrEqual (<code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>IsNull (<code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>IsNotNull (<code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>In (<code class="docutils literal notranslate"><span class="pre">IN</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="string-functions">
+<h2>String Functions<a class="headerlink" href="#string-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Ascii</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitLength</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Chr</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ConcatWs</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Contains</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>EndsWith</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>InitCap</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Instr</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Length</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Like</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Lower</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>OctetLength</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Repeat</p></td>
+<td><p>Negative argument for number of times to repeat causes exception</p></td>
+</tr>
+<tr class="row-odd"><td><p>Replace</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Reverse</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StartsWith</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringSpace</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringTrim</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringTrimBoth</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringTrimLeft</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringTrimRight</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Substring</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Translate</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Upper</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="date-time-functions">
+<h2>Date/Time Functions<a class="headerlink" href="#date-time-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>DatePart</p></td>
+<td><p>Only <code class="docutils literal notranslate"><span class="pre">year</span></code> is supported</p></td>
+</tr>
+<tr class="row-odd"><td><p>Extract</p></td>
+<td><p>Only <code class="docutils literal notranslate"><span class="pre">year</span></code> is supported</p></td>
+</tr>
+<tr class="row-even"><td><p>Hour</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Minute</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Second</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>TruncDate</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>TruncTimestamp</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Year</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="math-expressions">
+<h2>Math Expressions<a class="headerlink" href="#math-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Abs</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Acos</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Asin</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Atan</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Atan2</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Ceil</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Cos</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Exp</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Floor</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Log</p></td>
+<td><p>log(0) will produce <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> unlike Spark which returns <code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Log2</p></td>
+<td><p>log2(0) will produce <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> unlike Spark which returns <code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Log10</p></td>
+<td><p>log10(0) will produce <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> unlike Spark which returns <code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Pow</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Round</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Signum</p></td>
+<td><p>Signum does not differentiate between <code class="docutils literal notranslate"><span class="pre">0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Sin</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sqrt</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Tan</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="hashing-functions">
+<h2>Hashing Functions<a class="headerlink" href="#hashing-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Md5</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Hash</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sha2</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>XxHash64</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="boolean-expressions">
+<h2>Boolean Expressions<a class="headerlink" href="#boolean-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>And</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Or</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Not</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="bitwise-expressions">
+<h2>Bitwise Expressions<a class="headerlink" href="#bitwise-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ShiftLeft (<code class="docutils literal notranslate"><span class="pre">&lt;&lt;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ShiftRight (<code class="docutils literal notranslate"><span class="pre">&gt;&gt;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BitAnd (<code class="docutils literal notranslate"><span class="pre">&amp;</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitOr (<code class="docutils literal notranslate"><span class="pre">|</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BitXor (<code class="docutils literal notranslate"><span class="pre">^</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitwiseNot (<code class="docutils literal notranslate"><span class="pre">~</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BoolAnd (<code class="docutils literal notranslate"><span class="pre">bool_and</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BoolOr (<code class="docutils literal notranslate"><span class="pre">bool_or</span></code>)</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="aggregate-expressions">
+<h2>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Avg</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitAndAgg</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BitOrAgg</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitXorAgg</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Corr</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Count</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>CovPopulation</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>CovSample</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>First</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Last</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Max</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Min</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StddevPop</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StddevSamp</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sum</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>VariancePop</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>VarianceSamp</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="other">
+<h2>Other<a class="headerlink" href="#other" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Cast</p></td>
+<td><p>See compatibility guide for list of supported cast expressions and known issues</p></td>
+</tr>
+<tr class="row-odd"><td><p>BloomFilterMightContain</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ScalarSubquery</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Coalesce</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>NormalizeNaNAndZero</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
 </section>
 
 
