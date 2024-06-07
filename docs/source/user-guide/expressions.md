@@ -83,7 +83,6 @@ The following Spark expressions are currently available. Any known compatibility
 | Repeat          | Negative argument for number of times to repeat causes exception                                            |
 | Replace         |                                                                                                             |
 | Reverse         |                                                                                                             |
-| RLike           | Disabled by default. Uses Rust regular expression engine which is not compatible with Java's regexp engine. |
 | StartsWith      |                                                                                                             |
 | StringSpace     |                                                                                                             |
 | StringTrim      |                                                                                                             |
