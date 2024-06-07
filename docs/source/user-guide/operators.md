@@ -32,5 +32,6 @@ not supported by Comet will fall back to regular Spark execution.
 | Limit                                        |       |
 | Sort-merge Join                              |       |
 | Hash Join                                    |       |
+| BroadcastHashJoinExec                        |       |
 | Shuffle                                      |       |
 | Expand                                       |       |
