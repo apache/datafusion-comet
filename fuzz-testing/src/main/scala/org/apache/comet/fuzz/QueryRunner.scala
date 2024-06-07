@@ -19,7 +19,7 @@
 
 package org.apache.comet.fuzz
 
-import java.io.{BufferedWriter, FileWriter, PrintWriter}
+import java.io.{BufferedWriter, FileWriter, PrintWriter, StringWriter}
 
 import scala.io.Source
 
@@ -111,9 +111,11 @@ object QueryRunner {
                 showSQL(w, sql)
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
                 w.write("```\n")
-                val p = new PrintWriter(w)
+                val sw = new StringWriter()
+                val p = new PrintWriter(sw)
                 e.printStackTrace(p)
                 p.close()
+                w.write(s"${sw.toString}\n")
                 w.write("```\n")
             }
 
