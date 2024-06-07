@@ -16,21 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.comet.shims
 
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.spark.sql.catalyst.expressions._
+package org.apache.comet.expressions
 
 /**
- * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
+ * We cannot reference Spark's EvalMode directly because the package is different between Spark
+ * versions, so we copy it here.
+ *
+ * Expression evaluation modes.
+ *   - LEGACY: the default evaluation mode, which is compliant to Hive SQL.
+ *   - ANSI: a evaluation mode which is compliant to ANSI SQL standard.
+ *   - TRY: a evaluation mode for `try_*` functions. It is identical to ANSI evaluation mode
+ *     except for returning null result on errors.
  */
-trait CometExprShim {
-    /**
-     * Returns a tuple of expressions for the `unhex` function.
-     */
-    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
-        (unhex.child, Literal(false))
-    }
+object CometEvalMode extends Enumeration {
+  val LEGACY, ANSI, TRY = Value
 
-    protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
+  def fromBoolean(ansiEnabled: Boolean): Value = if (ansiEnabled) {
+    ANSI
+  } else {
+    LEGACY
+  }
+
+  def fromString(str: String): CometEvalMode.Value = CometEvalMode.withName(str)
 }

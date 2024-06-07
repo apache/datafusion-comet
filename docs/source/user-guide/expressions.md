@@ -19,99 +19,174 @@
 
 # Supported Spark Expressions
 
-The following Spark expressions are currently available:
+The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-- Literals
-- Arithmetic Operators
-  - UnaryMinus
-  - Add/Minus/Multiply/Divide/Remainder
-- Conditional functions
-  - Case When
-  - If
-- Cast
-- Coalesce
-- BloomFilterMightContain
-- Boolean functions
-  - And
-  - Or
-  - Not
-  - EqualTo
-  - EqualNullSafe
-  - GreaterThan
-  - GreaterThanOrEqual
-  - LessThan
-  - LessThanOrEqual
-  - IsNull
-  - IsNotNull
-  - In
-- String functions
-  - Substring
-  - Coalesce
-  - StringSpace
-  - Like
-  - Contains
-  - Startswith
-  - Endswith
-  - Ascii
-  - Bit_length
-  - Octet_length
-  - Upper
-  - Lower
-  - Chr
-  - Initcap
-  - Trim/Btrim/Ltrim/Rtrim
-  - Concat_ws
-  - Repeat
-  - Length
-  - Reverse
-  - Instr
-  - Replace
-  - Translate
-- Bitwise functions
-  - Shiftright/Shiftleft
-- Date/Time functions
-  - Year/Hour/Minute/Second
-- Hash functions
-  - Md5
-  - Sha2
-  - Hash
-  - Xxhash64
-- Math functions
-  - Abs
-  - Acos
-  - Asin
-  - Atan
-  - Atan2
-  - Cos
-  - Exp
-  - Ln
-  - Log10
-  - Log2
-  - Pow
-  - Round
-  - Signum
-  - Sin
-  - Sqrt
-  - Tan
-  - Ceil
-  - Floor
-- Aggregate functions
-  - Count
-  - Sum
-  - Max
-  - Min
-  - Avg
-  - First
-  - Last
-  - BitAnd
-  - BitOr
-  - BitXor
-  - BoolAnd
-  - BoolOr
-  - CovPopulation
-  - CovSample
-  - VariancePop
-  - VarianceSamp
-  - StddevPop
-  - StddevSamp
-  - Corr
+## Literal Values
+
+| Expression                             | Notes |
+| -------------------------------------- | ----- |
+| Literal values of supported data types |       |
+
+## Unary Arithmetic
+
+| Expression       | Notes |
+| ---------------- | ----- |
+| UnaryMinus (`-`) |       |
+
+## Binary Arithmeticx
+
+| Expression      | Notes                                               |
+| --------------- | --------------------------------------------------- |
+| Add (`+`)       |                                                     |
+| Subtract (`-`)  |                                                     |
+| Multiply (`*`)  |                                                     |
+| Divide (`/`)    |                                                     |
+| Remainder (`%`) | Comet produces `NaN` instead of `NULL` for `% -0.0` |
+
+## Conditional Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| CaseWhen   |       |
+| If         |       |
+
+## Comparison
+
+| Expression                | Notes |
+| ------------------------- | ----- |
+| EqualTo (`=`)             |       |
+| EqualNullSafe (`<=>`)     |       |
+| GreaterThan (`>`)         |       |
+| GreaterThanOrEqual (`>=`) |       |
+| LessThan (`<`)            |       |
+| LessThanOrEqual (`<=`)    |       |
+| IsNull (`IS NULL`)        |       |
+| IsNotNull (`IS NOT NULL`) |       |
+| In (`IN`)                 |       |
+
+## String Functions
+
+| Expression      | Notes                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| Ascii           |                                                                                                             |
+| BitLength       |                                                                                                             |
+| Chr             |                                                                                                             |
+| ConcatWs        |                                                                                                             |
+| Contains        |                                                                                                             |
+| EndsWith        |                                                                                                             |
+| InitCap         |                                                                                                             |
+| Instr           |                                                                                                             |
+| Length          |                                                                                                             |
+| Like            |                                                                                                             |
+| Lower           |                                                                                                             |
+| OctetLength     |                                                                                                             |
+| Repeat          | Negative argument for number of times to repeat causes exception                                            |
+| Replace         |                                                                                                             |
+| Reverse         |                                                                                                             |
+| StartsWith      |                                                                                                             |
+| StringSpace     |                                                                                                             |
+| StringTrim      |                                                                                                             |
+| StringTrimBoth  |                                                                                                             |
+| StringTrimLeft  |                                                                                                             |
+| StringTrimRight |                                                                                                             |
+| Substring       |                                                                                                             |
+| Translate       |                                                                                                             |
+| Upper           |                                                                                                             |
+
+## Date/Time Functions
+
+| Expression     | Notes                    |
+| -------------- | ------------------------ |
+| DatePart       | Only `year` is supported |
+| Extract        | Only `year` is supported |
+| Hour           |                          |
+| Minute         |                          |
+| Second         |                          |
+| TruncDate      |                          |
+| TruncTimestamp |                          |
+| Year           |                          |
+
+## Math Expressions
+
+| Expression | Notes                                                               |
+| ---------- | ------------------------------------------------------------------- |
+| Abs        |                                                                     |
+| Acos       |                                                                     |
+| Asin       |                                                                     |
+| Atan       |                                                                     |
+| Atan2      |                                                                     |
+| Ceil       |                                                                     |
+| Cos        |                                                                     |
+| Exp        |                                                                     |
+| Floor      |                                                                     |
+| Log        | log(0) will produce `-Infinity` unlike Spark which returns `null`   |
+| Log2       | log2(0) will produce `-Infinity` unlike Spark which returns `null`  |
+| Log10      | log10(0) will produce `-Infinity` unlike Spark which returns `null` |
+| Pow        |                                                                     |
+| Round      |                                                                     |
+| Signum     | Signum does not differentiate between `0.0` and `-0.0`              |
+| Sin        |                                                                     |
+| Sqrt       |                                                                     |
+| Tan        |                                                                     |
+
+## Hashing Functions
+
+| Expression | Notes |
+| ---------- | ----- |
+| Md5        |       |
+| Hash       |       |
+| Sha2       |       |
+| XxHash64   |       |
+
+## Boolean Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| And        |       |
+| Or         |       |
+| Not        |       |
+
+## Bitwise Expressions
+
+| Expression           | Notes |
+| -------------------- | ----- |
+| ShiftLeft (`<<`)     |       |
+| ShiftRight (`>>`)    |       |
+| BitAnd (`&`)         |       |
+| BitOr (`\|`)         |       |
+| BitXor (`^`)         |       |
+| BitwiseNot (`~`)     |       |
+| BoolAnd (`bool_and`) |       |
+| BoolOr (`bool_or`)   |       |
+
+## Aggregate Expressions
+
+| Expression    | Notes |
+| ------------- | ----- |
+| Avg           |       |
+| BitAndAgg     |       |
+| BitOrAgg      |       |
+| BitXorAgg     |       |
+| Corr          |       |
+| Count         |       |
+| CovPopulation |       |
+| CovSample     |       |
+| First         |       |
+| Last          |       |
+| Max           |       |
+| Min           |       |
+| StddevPop     |       |
+| StddevSamp    |       |
+| Sum           |       |
+| VariancePop   |       |
+| VarianceSamp  |       |
+
+## Other
+
+| Expression              | Notes                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| Cast                    | See compatibility guide for list of supported cast expressions and known issues |
+| BloomFilterMightContain |                                                                                 |
+| ScalarSubquery          |                                                                                 |
+| Coalesce                |                                                                                 |
+| NormalizeNaNAndZero     |                                                                                 |
