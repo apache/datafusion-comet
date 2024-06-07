@@ -1552,7 +1552,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }

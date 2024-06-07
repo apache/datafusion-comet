@@ -700,11 +700,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case c @ Cast(child, dt, timeZoneId, _) =>
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
-        case expr if isUnsupportedAnsiExpr(expr) && !CometConf.COMET_ANSI_MODE_ENABLED.get() =>
-          withInfo(
-            expr,
-            "ANSI mode not supported. " +
-              s"Set ${CometConf.COMET_ANSI_MODE_ENABLED.key}=true to enable it anyway.")
+        case expr if isUnsupportedAnsiExpr(expr) =>
+          withInfo(expr, "ANSI mode not supported")
           None
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
