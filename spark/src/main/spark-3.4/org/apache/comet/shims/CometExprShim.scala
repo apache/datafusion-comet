@@ -28,11 +28,11 @@ trait CometExprShim {
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
-    def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(unhex.failOnError))
     }
 
-    def evalMode(c: Cast): CometEvalMode.Value =
+    protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 }
 

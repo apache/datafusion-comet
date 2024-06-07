@@ -28,9 +28,9 @@ trait CometExprShim {
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
-    def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
 
-    def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
+    protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 }
