@@ -22,15 +22,15 @@
 The following Spark operators are currently replaced with native versions. Query stages that contain any operators
 not supported by Comet will fall back to regular Spark execution.
 
-| Operator                                     | Notes                                  |
-| -------------------------------------------- | -------------------------------------- |
-| FileSourceScanExec/BatchScanExec for Parquet |                                        |
-| Projection                                   |                                        |
-| Filter                                       |                                        |
-| Sort                                         |                                        |
-| Hash Aggregate                               |                                        |
-| Limit                                        |                                        |
-| Sort-merge Join                              | Sort-merge join is disabled by default |
-| Hash Join                                    |                                        |
-| Shuffle                                      |                                        |
-| Expand                                       |                                        |
+| Operator                                     | Notes |
+| -------------------------------------------- | ----- |
+| FileSourceScanExec/BatchScanExec for Parquet |       |
+| Projection                                   |       |
+| Filter                                       |       |
+| Sort                                         |       |
+| Hash Aggregate                               |       |
+| Limit                                        |       |
+| Sort-merge Join                              |       |
+| Hash Join                                    |       |
+| Shuffle                                      |       |
+| Expand                                       |       |
