@@ -985,10 +985,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        SQLConf.ANSI_ENABLED.key -> "true",
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test0"
         withTable(table) {
