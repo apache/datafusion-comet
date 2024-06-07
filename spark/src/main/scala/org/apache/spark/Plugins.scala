@@ -23,9 +23,9 @@ import java.{util => ju}
 import java.util.Collections
 
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
+import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
-import org.apache.spark.resource.ResourceProfile
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -40,9 +40,7 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  *
  * To enable this plugin, set the config "spark.plugins" to `org.apache.spark.CometPlugin`.
  */
-class CometDriverPlugin extends DriverPlugin with Logging {
-  import CometDriverPlugin._
-
+class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPlugin {
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
 
@@ -52,14 +50,10 @@ class CometDriverPlugin extends DriverPlugin with Logging {
       } else {
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
         val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key)
-        val memoryOverheadFactor =
-          sc.getConf.getDouble(
-            EXECUTOR_MEMORY_OVERHEAD_FACTOR,
-            EXECUTOR_MEMORY_OVERHEAD_FACTOR_DEFAULT)
+        val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
+        val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
-        Math.max(
-          (executorMemory * memoryOverheadFactor).toInt,
-          ResourceProfile.MEMORY_OVERHEAD_MIN_MIB)
+        Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
       val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
@@ -98,12 +92,6 @@ class CometDriverPlugin extends DriverPlugin with Logging {
         conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
     )
   }
-}
-
-object CometDriverPlugin {
-  // `org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD_FACTOR` was added since Spark 3.3.0
-  val EXECUTOR_MEMORY_OVERHEAD_FACTOR = "spark.executor.memoryOverheadFactor"
-  val EXECUTOR_MEMORY_OVERHEAD_FACTOR_DEFAULT = 0.1
 }
 
 /**

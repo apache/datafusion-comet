@@ -29,12 +29,17 @@ pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
 pub mod correlation;
 pub mod covariance;
+<<<<<<< HEAD
 pub mod regexp;
+=======
+pub mod negative;
+>>>>>>> apache/main
 pub mod stats;
 pub mod stddev;
 pub mod strings;
 pub mod subquery;
 pub mod sum_decimal;
 pub mod temporal;
+pub mod unbound;
 mod utils;
 pub mod variance;

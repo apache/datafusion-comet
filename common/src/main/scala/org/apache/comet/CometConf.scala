@@ -29,6 +29,8 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.shims.ShimCometConf
+
 /**
  * Configurations for a Comet application. Mostly inspired by [[SQLConf]] in Spark.
  *
@@ -41,7 +43,7 @@ import org.apache.spark.sql.internal.SQLConf
  * which retrieves the config value from the thread-local [[SQLConf]] object. Alternatively, you
  * can also explicitly pass a [[SQLConf]] object to the `get` method.
  */
-object CometConf {
+object CometConf extends ShimCometConf {
 
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
@@ -361,7 +363,7 @@ object CometConf {
         "column to a long column, a float column to a double column, etc. This is automatically" +
         "enabled when reading from Iceberg tables.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
   val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.rowToColumnar.enabled")
@@ -382,12 +384,13 @@ object CometConf {
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
   val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
+    .internal()
     .doc(
       "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
         "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
         "support for ANSI mode. This should not be used in production.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
