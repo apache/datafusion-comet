@@ -1594,7 +1594,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       dataTypes.foreach { case (fileName, df, dtype) =>
         val path = new Path(dir.toURI.toString, fileName).toString
         df.write.mode("overwrite").parquet(path)
-        val query = s"select a, -a from t"
+        val query = "select a, -a from t"
         runArrayTest(query, dtype, path)
       }
 
