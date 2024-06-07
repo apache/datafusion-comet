@@ -1645,6 +1645,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkOverflow("select a, -a from t_float", "float")
         }
       }
+
+      // scalar tests
+      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+        withSQLConf(
+          "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          for (n <- Seq("2147483647", "-2147483648")) {
+            checkOverflow(s"select -(cast(${n} as int)) FROM tbl", "integer")
+          }
+          for (n <- Seq("32767", "-32768")) {
+            checkOverflow(s"select -(cast(${n} as short)) FROM tbl", "")
+          }
+          for (n <- Seq("127", "-128")) {
+            checkOverflow(s"select -(cast(${n} as byte)) FROM tbl", "")
+          }
+          for (n <- Seq("9223372036854775807", "-9223372036854775808")) {
+            checkOverflow(s"select -(cast(${n} as long)) FROM tbl", "long")
+          }
+          for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
+            checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
+          }
+        }
+      }
     }
   }
 }
