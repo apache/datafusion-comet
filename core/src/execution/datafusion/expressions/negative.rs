@@ -18,15 +18,15 @@
 use crate::errors::CometError;
 use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeType};
 use arrow_array::RecordBatch;
+use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Schema};
 use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
 use datafusion_common::{Result, ScalarValue};
-use datafusion_physical_expr::{
-    aggregate::utils::down_cast_any_ref, sort_properties::SortProperties,
-};
+use datafusion_expr::sort_properties::ExprProperties;
+use datafusion_physical_expr::aggregate::utils::down_cast_any_ref;
 use std::{
     any::Any,
     hash::{Hash, Hasher},
@@ -63,7 +63,7 @@ macro_rules! check_overflow {
         for i in 0..typed_array.len() {
             if typed_array.value(i) == $min_val {
                 if $type_name == "byte" || $type_name == "short" {
-                    let value = typed_array.value(i).to_string() + " caused";
+                    let value = format!("{:?} caused", typed_array.value(i));
                     return Err(arithmetic_overflow_error(value.as_str()).into());
                 }
                 return Err(arithmetic_overflow_error($type_name).into());
@@ -135,7 +135,7 @@ impl PhysicalExpr for NegativeExpr {
                             arrow::datatypes::IntervalUnit::DayTime => check_overflow!(
                                 array,
                                 arrow::array::IntervalDayTimeArray,
-                                i64::MIN,
+                                IntervalDayTime::MIN,
                                 "interval"
                             ),
                             arrow::datatypes::IntervalUnit::MonthDayNano => {
@@ -195,8 +195,8 @@ impl PhysicalExpr for NegativeExpr {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.arg.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.arg]
     }
 
     fn with_new_children(
@@ -255,8 +255,9 @@ impl PhysicalExpr for NegativeExpr {
     }
 
     /// The ordering of a [`NegativeExpr`] is simply the reverse of its child.
-    fn get_ordering(&self, children: &[SortProperties]) -> SortProperties {
-        -children[0]
+    fn get_properties(&self, children: &[ExprProperties]) -> Result<ExprProperties> {
+        let properties = children[0].clone().with_order(children[0].sort_properties);
+        Ok(properties)
     }
 }
 

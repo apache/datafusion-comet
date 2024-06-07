@@ -19,7 +19,6 @@ use std::{
     any::Any,
     cmp::min,
     fmt::{Debug, Write},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -35,17 +34,15 @@ use arrow_array::{Array, ArrowNativeTypeOp, Decimal128Array, StringArray};
 use arrow_schema::DataType;
 use datafusion::{
     execution::FunctionRegistry,
-    logical_expr::{
-        BuiltinScalarFunction, ScalarFunctionDefinition, ScalarFunctionImplementation,
-        ScalarUDFImpl, Signature, Volatility,
-    },
+    functions::math::round::round,
+    logical_expr::{ScalarFunctionImplementation, ScalarUDFImpl, Signature, Volatility},
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
     cast::{as_binary_array, as_generic_string_array},
     exec_err, internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
-use datafusion_physical_expr::{math_expressions, udf::ScalarUDF};
+use datafusion_expr::ScalarUDF;
 use num::{
     integer::{div_ceil, div_floor},
     BigInt, Signed, ToPrimitive,
@@ -66,9 +63,7 @@ macro_rules! make_comet_scalar_udf {
             $data_type.clone(),
             Arc::new(move |args| $func(args, &$data_type)),
         );
-        Ok(ScalarFunctionDefinition::UDF(Arc::new(
-            ScalarUDF::new_from_impl(scalar_func),
-        )))
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
     ($name:expr, $func:expr, without $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
@@ -77,9 +72,7 @@ macro_rules! make_comet_scalar_udf {
             $data_type,
             $func,
         );
-        Ok(ScalarFunctionDefinition::UDF(Arc::new(
-            ScalarUDF::new_from_impl(scalar_func),
-        )))
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
 }
 
@@ -88,7 +81,7 @@ pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,
-) -> Result<ScalarFunctionDefinition, DataFusionError> {
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
     let sha2_functions = ["sha224", "sha256", "sha384", "sha512"];
     match fun_name {
         "ceil" => {
@@ -140,13 +133,11 @@ pub fn create_comet_physical_fun(
             let spark_func_name = "spark".to_owned() + sha;
             make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
         }
-        _ => {
-            if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
-                Ok(ScalarFunctionDefinition::BuiltIn(fun))
-            } else {
-                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
-            }
-        }
+        _ => registry.udf(fun_name).map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Function {fun_name} not found in the registry: {e}",
+            ))
+        }),
     }
 }
 
@@ -509,9 +500,7 @@ fn spark_round(
                 make_decimal_array(array, precision, scale, &f)
             }
             DataType::Float32 | DataType::Float64 => {
-                Ok(ColumnarValue::Array(math_expressions::round(&[
-                    array.clone()
-                ])?))
+                Ok(ColumnarValue::Array(round(&[array.clone()])?))
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -534,7 +523,7 @@ fn spark_round(
                 make_decimal_scalar(a, precision, scale, &f)
             }
             ScalarValue::Float32(_) | ScalarValue::Float64(_) => Ok(ColumnarValue::Scalar(
-                ScalarValue::try_from_array(&math_expressions::round(&[a.to_array()?])?, 0)?,
+                ScalarValue::try_from_array(&round(&[a.to_array()?])?, 0)?,
             )),
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },

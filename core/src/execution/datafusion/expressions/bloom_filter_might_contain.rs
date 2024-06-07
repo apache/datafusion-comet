@@ -129,8 +129,8 @@ impl PhysicalExpr for BloomFilterMightContain {
             })
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.bloom_filter_expr.clone(), self.value_expr.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.bloom_filter_expr, &self.value_expr]
     }
 
     fn with_new_children(
