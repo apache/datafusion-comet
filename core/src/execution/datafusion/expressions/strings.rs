@@ -143,8 +143,6 @@ make_predicate_function!(EndsWith, ends_with_dyn, ends_with_utf8_scalar_dyn);
 
 make_predicate_function!(Contains, contains_dyn, contains_utf8_scalar_dyn);
 
-// make_predicate_function!(RLike, rlike_dyn, rlike_utf8_scalar_dyn);
-
 #[derive(Debug, Hash)]
 pub struct SubstringExec {
     pub child: Arc<dyn PhysicalExpr>,
