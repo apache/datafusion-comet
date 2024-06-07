@@ -55,7 +55,7 @@ object CometCast {
       fromType: DataType,
       toType: DataType,
       timeZoneId: Option[String],
-      evalMode: String): SupportLevel = {
+      evalMode: CometEvalMode.Value): SupportLevel = {
 
     if (fromType == toType) {
       return Compatible()
@@ -102,7 +102,7 @@ object CometCast {
   private def canCastFromString(
       toType: DataType,
       timeZoneId: Option[String],
-      evalMode: String): SupportLevel = {
+      evalMode: CometEvalMode.Value): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible()

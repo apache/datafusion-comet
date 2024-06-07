@@ -18,6 +18,7 @@
  */
 package org.apache.comet.shims
 
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
 
 /**
@@ -30,4 +31,7 @@ trait CometExprShim {
     def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
+
+    def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 }
+
