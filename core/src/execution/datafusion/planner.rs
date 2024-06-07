@@ -563,7 +563,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(NotExpr::new(child)))
             }
-            ExprStruct::Negative(expr) => {
+            ExprStruct::UnaryMinus(expr) => {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let result = negative::create_negate_expr(child, expr.fail_on_error);
