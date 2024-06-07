@@ -110,7 +110,8 @@ test_source_distribution() {
   pushd core
     RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
   popd
-  ./mvnw install -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true
+  # test with the latest supported version of Spark
+  ./mvnw verify -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true
 }
 
 TEST_SUCCESS=no

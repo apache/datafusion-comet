@@ -5,7 +5,6 @@
 core/Cargo.lock
 core/testdata/backtrace.txt
 core/testdata/stacktrace.txt
-dev/copyright/scala-header.txt
 docs/spark_builtin_expr_coverage.txt
 docs/source/contributor-guide/benchmark-results/**/*.json
 rust-toolchain

@@ -32,12 +32,12 @@ RELEASE_DIR=$(cd "$(dirname "$BASH_SOURCE")"; pwd)
 # generate the rat report
 $RAT $1 > rat.txt
 python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
-cat filtered_rat.txt
 UNAPPROVED=`cat filtered_rat.txt  | grep "NOT APPROVED" | wc -l`
 
 if [ "0" -eq "${UNAPPROVED}" ]; then
   echo "No unapproved licenses"
 else
   echo "${UNAPPROVED} unapproved licences. Check rat report: rat.txt"
+  cat filtered_rat.txt
   exit 1
 fi
