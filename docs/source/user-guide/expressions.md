@@ -52,13 +52,13 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Binary Arithmeticx
 
-| Expression      | Notes |
-| --------------- | ----- |
-| Add (`+`)       |       |
-| Subtract (`-`)  |       |
-| Multiply (`*`)  |       |
-| Divide (`/`)    |       |
-| Remainder (`%`) |       |
+| Expression      | Notes                                               |
+| --------------- | --------------------------------------------------- |
+| Add (`+`)       |                                                     |
+| Subtract (`-`)  |                                                     |
+| Multiply (`*`)  |                                                     |
+| Divide (`/`)    |                                                     |
+| Remainder (`%`) | Comet produces `NaN` instead of `NULL` for `% -0.0` |
 
 ## Conditional Expressions
 
@@ -207,3 +207,4 @@ The following Spark expressions are currently available. Any known compatibility
 | BloomFilterMightContain |                                                                                 |
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
+| NormalizeNaNAndZero     |                                                                                 |
