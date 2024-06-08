@@ -742,9 +742,9 @@ impl PlainDecoding for Int96TimestampMicrosType {
 
                 // TODO: optimize this further as checking value one by one is not very efficient
                 unsafe {
-                    let micros = (day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64
-                        * MICROS_PER_DAY
-                        + nanos.read_unaligned() / 1000;
+                    let micros = ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
+                        .wrapping_mul(MICROS_PER_DAY)
+                        .wrapping_add(nanos.read_unaligned() / 1000);
 
                     if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                         panic!(
@@ -769,8 +769,9 @@ impl PlainDecoding for Int96TimestampMicrosType {
                 let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
                 let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
 
-                let micros = (day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64 * MICROS_PER_DAY
-                    + nanos.read_unaligned() / 1000;
+                let micros = ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
+                    .wrapping_mul(MICROS_PER_DAY)
+                    .wrapping_add(nanos.read_unaligned() / 1000);
 
                 bit::memcpy_value(
                     &micros,
