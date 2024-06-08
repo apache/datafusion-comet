@@ -101,8 +101,9 @@ impl ScalarUDFImpl for ChrFunc {
 /// The make_scalar_function function is a higher-order function that:
 /// - Takes a function inner designed to operate on arrays.
 /// - Wraps this function in a closure that can accept a mix of scalar and array inputs.
-/// - Converts scalar inputs to arrays, calls the inner function, and then converts the result back to a scalar if the original inputs were all scalars.
-/// 
+/// - Converts scalar inputs to arrays, calls the inner function, and then converts the result back
+///   to a scalar if the original inputs were all scalars.
+///
 /// taken from datafusion utils
 
 fn make_scalar_function<F>(inner: F) -> impl Fn(&[ColumnarValue]) -> Result<ColumnarValue>
