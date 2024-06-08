@@ -38,19 +38,19 @@ pub use copy::*;
 pub enum ExecutionError {
     /// Simple error
     #[allow(dead_code)]
-    #[error("General execution error with reason {0}.")]
+    #[error("General execution error with reason: {0}.")]
     GeneralError(String),
 
     /// Error when deserializing an operator.
-    #[error("Fail to deserialize to native operator with reason {0}.")]
+    #[error("Fail to deserialize to native operator with reason: {0}.")]
     DeserializeError(String),
 
     /// Error when processing Arrow array.
-    #[error("Fail to process Arrow array with reason {0}.")]
+    #[error("Fail to process Arrow array with reason: {0}.")]
     ArrowError(String),
 
     /// DataFusion error
-    #[error("Error from DataFusion {0}.")]
+    #[error("Error from DataFusion: {0}.")]
     DataFusionError(String),
 }
 

@@ -1382,7 +1382,7 @@ impl PhysicalPlanner {
 
 impl From<DataFusionError> for ExecutionError {
     fn from(value: DataFusionError) -> Self {
-        ExecutionError::DataFusionError(value.to_string())
+        ExecutionError::DataFusionError(value.message().to_string())
     }
 }
 
@@ -1554,6 +1554,7 @@ mod tests {
         spark_operator,
     };
 
+    use crate::execution::operators::ExecutionError;
     use spark_expression::expr::ExprStruct::*;
     use spark_operator::{operator::OpStruct, Operator};
 
@@ -1741,6 +1742,14 @@ mod tests {
         let stream = datafusion_plan.execute(0, task_ctx.clone()).unwrap();
         let output = collect(stream).await.unwrap();
         assert!(output.is_empty());
+    }
+
+    #[tokio::test()]
+    async fn from_datafusion_error_to_comet() {
+        let err_msg = "exec error";
+        let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
+        let comet_err: ExecutionError = err.into();
+        assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }
 
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to
