@@ -28,9 +28,9 @@ use arrow::{
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
 use datafusion_common::{cast::as_int64_array, exec_err, DataFusionError, Result};
 
-/// chr(65) = 'A'
-
-// Compatible with Apache Spark's Chr function
+/// Returns the ASCII character having the binary equivalent to the input expression.
+/// E.g., chr(65) = 'A'.
+/// Compatible with Apache Spark's Chr function
 pub fn spark_chr(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let chr_func = ChrFunc::default();
     chr_func.invoke(args)
