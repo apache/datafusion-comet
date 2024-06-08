@@ -16,16 +16,20 @@
 # under the License.
 
 [package]
-name = "comet"
+name = "datafusion-comet"
 version = "0.1.0"
+homepage = "https://datafusion.apache.org/comet"
+repository = "https://github.com/apache/datafusion-comet"
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
+description = "Apache DataFusion Comet: High performance accelerator for Apache Spark"
+readme = "README.md"
+license = "Apache-2.0"
 edition = "2021"
 include = [
     "benches/*.rs",
     "src/**/*.rs",
     "Cargo.toml",
 ]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 parquet-format = "4.0.0" # This must be kept in sync with that from parquet crate
