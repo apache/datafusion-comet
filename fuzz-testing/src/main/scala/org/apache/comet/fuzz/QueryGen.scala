@@ -42,11 +42,13 @@ object QueryGen {
     val uniqueQueries = mutable.HashSet[String]()
 
     for (_ <- 0 until numQueries) {
-      val sql = r.nextInt().abs % 4 match {
+      val sql = r.nextInt().abs % 6 match {
         case 0 => generateJoin(r, spark, numFiles)
         case 1 => generateAggregate(r, spark, numFiles)
         case 2 => generateScalar(r, spark, numFiles)
         case 3 => generateCast(r, spark, numFiles)
+        case 4 => generateUnaryArithmetic(r, spark, numFiles)
+        case 5 => generateBinaryArithmetic(r, spark, numFiles)
       }
       if (!uniqueQueries.contains(sql)) {
         uniqueQueries += sql
@@ -90,6 +92,33 @@ object QueryGen {
     s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
       s"ORDER BY ${args.mkString(", ")};"
+  }
+
+  private def generateUnaryArithmetic(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val op = Utils.randomChoice(Meta.unaryArithmeticOps, r)
+    val a = Utils.randomChoice(table.columns, r)
+
+    // Example SELECT a, -a FROM test0
+    s"SELECT $a, $op$a " +
+      s"FROM $tableName " +
+      s"ORDER BY $a;"
+  }
+
+  private def generateBinaryArithmetic(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val op = Utils.randomChoice(Meta.binaryArithmeticOps, r)
+    val a = Utils.randomChoice(table.columns, r)
+    val b = Utils.randomChoice(table.columns, r)
+
+    // Example SELECT a, b, a+b FROM test0
+    s"SELECT $a, $b, $a $op $b " +
+      s"FROM $tableName " +
+      s"ORDER BY $a, $b;"
   }
 
   private def generateCast(r: Random, spark: SparkSession, numFiles: Int): String = {

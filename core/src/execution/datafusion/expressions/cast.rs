@@ -19,6 +19,7 @@ use std::{
     any::Any,
     fmt::{Debug, Display, Formatter},
     hash::{Hash, Hasher},
+    num::Wrapping,
     sync::Arc,
 };
 
@@ -1565,7 +1566,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
     let mut date_segments = [1, 1, 1];
     let mut sign = 1;
     let mut current_segment = 0;
-    let mut current_segment_value = 0;
+    let mut current_segment_value = Wrapping(0);
     let mut current_segment_digits = 0;
     let bytes = date_str.as_bytes();
 
@@ -1592,16 +1593,16 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
                 return return_result(date_str, eval_mode);
             }
             //if valid update corresponding segment with the current segment value.
-            date_segments[current_segment as usize] = current_segment_value;
-            current_segment_value = 0;
+            date_segments[current_segment as usize] = current_segment_value.0;
+            current_segment_value = Wrapping(0);
             current_segment_digits = 0;
             current_segment += 1;
         } else if !b.is_ascii_digit() {
             return return_result(date_str, eval_mode);
         } else {
             //increment value of current segment by the next digit
-            let parsed_value = (b - b'0') as i32;
-            current_segment_value = current_segment_value * 10 + parsed_value;
+            let parsed_value = Wrapping((b - b'0') as i32);
+            current_segment_value = current_segment_value * Wrapping(10) + parsed_value;
             current_segment_digits += 1;
         }
         j += 1;
@@ -1617,7 +1618,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
         return return_result(date_str, eval_mode);
     }
 
-    date_segments[current_segment as usize] = current_segment_value;
+    date_segments[current_segment as usize] = current_segment_value.0;
 
     match NaiveDate::from_ymd_opt(
         sign * date_segments[0],
@@ -1831,6 +1832,8 @@ mod tests {
             Some(" 202 "),
             Some("\n 2020-\r8 "),
             Some("2020-01-01T"),
+            // Overflows i32
+            Some("-4607172990231812908"),
         ]));
 
         for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
@@ -1852,7 +1855,8 @@ mod tests {
                     None,
                     None,
                     None,
-                    Some(18262)
+                    Some(18262),
+                    None
                 ]
             );
         }
