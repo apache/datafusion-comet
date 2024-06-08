@@ -95,6 +95,7 @@ message HashJoin {
   repeated spark.spark_expression.Expr right_join_keys = 2;
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
+  BuildSide build_side = 5;
 }
 
 message SortMergeJoin {
@@ -113,4 +114,9 @@ enum JoinType {
   RightSemi = 5;
   LeftAnti = 6;
   RightAnti = 7;
+}
+
+enum BuildSide {
+  BuildLeft = 0;
+  BuildRight = 1;
 }
