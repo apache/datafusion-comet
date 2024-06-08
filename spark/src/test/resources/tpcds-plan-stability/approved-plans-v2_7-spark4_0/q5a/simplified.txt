@@ -112,48 +112,13 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                             HashAggregate [channel,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                               HashAggregate [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                                 InputAdapter
-                                  Exchange [channel,id] #13
-                                    WholeStageCodegen (15)
-                                      HashAggregate [channel,id,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
-                                        InputAdapter
-                                          Union
-                                            WholeStageCodegen (10)
-                                              HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                                InputAdapter
-                                                  Exchange [s_store_id] #14
-                                                    WholeStageCodegen (9)
-                                                      HashAggregate [s_store_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                                        ColumnarToRow
-                                                          InputAdapter
-                                                            CometProject [sales_price,profit,return_amt,net_loss,s_store_id]
-                                                              CometBroadcastHashJoin [store_sk,s_store_sk]
-                                                                CometProject [store_sk,sales_price,profit,return_amt,net_loss]
-                                                                  CometBroadcastHashJoin [date_sk,d_date_sk]
-                                                                    CometUnion
-                                                                      CometProject [ss_store_sk,ss_sold_date_sk,ss_ext_sales_price,ss_net_profit] [store_sk,date_sk,sales_price,profit,return_amt,net_loss]
-                                                                        CometFilter [ss_store_sk]
-                                                                          CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                                            ReusedSubquery [d_date_sk] #1
-                                                                      CometProject [sr_store_sk,sr_returned_date_sk,sr_return_amt,sr_net_loss] [store_sk,date_sk,sales_price,profit,return_amt,net_loss]
-                                                                        CometFilter [sr_store_sk]
-                                                                          CometScan parquet spark_catalog.default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
-                                                                            ReusedSubquery [d_date_sk] #1
-                                                                    ReusedExchange [d_date_sk] #5
-                                                                ReusedExchange [s_store_sk,s_store_id] #6
-                                            WholeStageCodegen (12)
-                                              HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                                InputAdapter
-                                                  ReusedExchange [cp_catalog_page_id,sum,sum,sum,sum] #7
-                                            WholeStageCodegen (14)
-                                              HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                                InputAdapter
-                                                  ReusedExchange [web_site_id,sum,sum,sum,sum] #9
+                                  ReusedExchange [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] #2
                   WholeStageCodegen (26)
                     HashAggregate [sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),channel,id,sum(sales),sum(returns),sum(profit),sum,isEmpty,sum,isEmpty,sum,isEmpty]
                       InputAdapter
-                        Exchange #15
+                        Exchange #13
                           WholeStageCodegen (25)
                             HashAggregate [sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                               HashAggregate [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                                 InputAdapter
-                                  ReusedExchange [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] #13
+                                  ReusedExchange [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] #2
