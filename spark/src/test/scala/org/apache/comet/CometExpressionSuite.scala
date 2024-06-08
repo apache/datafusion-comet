@@ -1564,7 +1564,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(dtype + " overflow"))
           assert(cometException.getMessage.contains(dtype + " overflow"))
-        case (None, None) => assert(true) // got same outputs
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not " + ex.getMessage)
         case (Some(_), None) =>
