@@ -11,3 +11,7 @@ dependency-reduced-pom.xml
 core/src/execution/generated
 prebuild
 .flattened-pom.xml
+rat.txt
+filtered_rat.txt
+dev/dist
+apache-rat-*.jar
