@@ -27,6 +27,7 @@ import org.apache.parquet.schema.LogicalTypeAnnotation.*;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
+import org.apache.spark.package$;
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException;
 import org.apache.spark.sql.types.*;
 
@@ -169,6 +170,7 @@ public class TypeUtil {
         break;
       case INT96:
         if (sparkType == TimestampNTZType$.MODULE$) {
+          if (isSpark40Plus()) return;
           convertErrorForTimestampNTZ(typeName.name());
         } else if (sparkType == DataTypes.TimestampType) {
           return;
@@ -218,7 +220,8 @@ public class TypeUtil {
     // Throw an exception if the Parquet type is TimestampLTZ and the Catalyst type is TimestampNTZ.
     // This is to avoid mistakes in reading the timestamp values.
     if (((TimestampLogicalTypeAnnotation) logicalTypeAnnotation).isAdjustedToUTC()
-        && sparkType == TimestampNTZType$.MODULE$) {
+        && sparkType == TimestampNTZType$.MODULE$
+        && !isSpark40Plus()) {
       convertErrorForTimestampNTZ("int64 time(" + logicalTypeAnnotation + ")");
     }
   }
@@ -277,5 +280,9 @@ public class TypeUtil {
     return logicalTypeAnnotation instanceof IntLogicalTypeAnnotation
         && !((IntLogicalTypeAnnotation) logicalTypeAnnotation).isSigned()
         && ((IntLogicalTypeAnnotation) logicalTypeAnnotation).getBitWidth() == bitWidth;
+  }
+
+  private static boolean isSpark40Plus() {
+    return package$.MODULE$.SPARK_VERSION().compareTo("4.0") >= 0;
   }
 }

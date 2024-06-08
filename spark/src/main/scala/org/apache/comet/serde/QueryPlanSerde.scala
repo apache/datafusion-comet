@@ -63,7 +63,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2.
     case dt if isTimestampNTZType(dt) => true
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
@@ -2246,7 +2245,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2/3.3.
     case dt if isTimestampNTZType(dt) => true
     case _ => false
   }
