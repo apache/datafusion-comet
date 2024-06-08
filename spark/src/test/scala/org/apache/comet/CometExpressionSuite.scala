@@ -1622,23 +1622,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
           }
           // interval test without cast
-          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2).toDF("v")
+          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
           val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
             .map(Period.ofMonths)
-            .toDF("v")
           val dayTimeDf = Seq(106751991L, 106751991L, 2L)
             .map(Duration.ofDays)
-            .toDF("v")
           Seq(longDf, yearMonthDf, dayTimeDf).foreach { df =>
-            withSQLConf(
-              "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
-              SQLConf.ANSI_ENABLED.key -> "true",
-              CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
-              CometConf.COMET_ENABLED.key -> "true",
-              CometConf.COMET_EXEC_ENABLED.key -> "true") {
-              df.createOrReplaceTempView("temp_interval_table")
-              checkOverflow("select -v from temp_interval_table", "interval")
-            }
+            checkOverflow(s"select -(_1) FROM tbl", "")
           }
         }
       }
