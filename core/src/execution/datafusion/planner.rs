@@ -35,6 +35,7 @@ use datafusion::{
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
+    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
@@ -91,7 +92,7 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, JoinType, Operator},
+        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
@@ -965,7 +966,7 @@ impl PhysicalPlanner {
                     join.join_type,
                     &join.condition,
                 )?;
-                let join = Arc::new(HashJoinExec::try_new(
+                let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
                     join_params.right,
                     join_params.join_on,
@@ -977,7 +978,15 @@ impl PhysicalPlanner {
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     false,
                 )?);
-                Ok((scans, join))
+
+                // If the hash join is build right, we need to swap the left and right
+                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
+                    hash_join
+                } else {
+                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
+                };
+
+                Ok((scans, hash_join))
             }
         }
     }

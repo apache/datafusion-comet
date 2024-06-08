@@ -121,6 +121,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("HashJoin without join filter") {
     withSQLConf(
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -149,24 +150,35 @@ class CometJoinSuite extends CometTestBase {
           // Left join: build left
           // sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
 
-          // TODO: DataFusion HashJoin doesn't support build right yet.
           // Inner join: build right
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          //
+          val df4 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df4)
+
           // Left join: build right
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          //
+          val df5 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df5)
+
           // Right join: build right
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          //
+          val df6 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df6)
+
           // Full join: build right
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          //
-          // val left = sql("SELECT * FROM tbl_a")
-          // val right = sql("SELECT * FROM tbl_b")
-          //
+          val df7 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df7)
+
           // Left semi and anti joins are only supported with build right in Spark.
-          // left.join(right, left("_2") === right("_1"), "leftsemi")
+          val left = sql("SELECT * FROM tbl_a")
+          val right = sql("SELECT * FROM tbl_b")
+
+          val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
+          checkSparkAnswerAndOperator(df8)
+
+          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
           // left.join(right, left("_2") === right("_1"), "leftanti")
         }
       }
