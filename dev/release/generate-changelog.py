@@ -83,7 +83,7 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
             performance.append((pull, commit))
         elif 'enhancement' in labels or cc_type == 'feat':
             enhancements.append((pull, commit))
-        elif 'documentation' in labels or cc_type == 'docs':
+        elif 'documentation' in labels or cc_type == 'docs' or cc_type == 'doc':
             docs.append((pull, commit))
         else:
             other.append((pull, commit))
