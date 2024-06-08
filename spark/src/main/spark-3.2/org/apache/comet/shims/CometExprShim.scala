@@ -18,6 +18,7 @@
  */
 package org.apache.comet.shims
 
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.DataType
 
@@ -28,7 +29,7 @@ trait CometExprShim {
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
-    def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
 
@@ -37,4 +38,7 @@ trait CometExprShim {
         case dt if dt.typeName == "timestamp_ntz" => true
         case _ => false
     }
+
+    protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 }
+
