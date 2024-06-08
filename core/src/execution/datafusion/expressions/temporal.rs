@@ -100,7 +100,7 @@ impl PhysicalExpr for HourExec {
                         Microsecond,
                         Some(self.timezone.clone().into()),
                     )),
-                );
+                )?;
                 let result = date_part(&array, DatePart::Hour)?;
 
                 Ok(ColumnarValue::Array(result))
@@ -194,7 +194,7 @@ impl PhysicalExpr for MinuteExec {
                         Microsecond,
                         Some(self.timezone.clone().into()),
                     )),
-                );
+                )?;
                 let result = date_part(&array, DatePart::Minute)?;
 
                 Ok(ColumnarValue::Array(result))
@@ -288,7 +288,7 @@ impl PhysicalExpr for SecondExec {
                         Microsecond,
                         Some(self.timezone.clone().into()),
                     )),
-                );
+                )?;
                 let result = date_part(&array, DatePart::Second)?;
 
                 Ok(ColumnarValue::Array(result))
@@ -489,7 +489,7 @@ impl PhysicalExpr for TimestampTruncExec {
                     ts,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                );
+                )?;
                 let result = timestamp_trunc_dyn(&ts, format)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -498,7 +498,7 @@ impl PhysicalExpr for TimestampTruncExec {
                     ts,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                );
+                )?;
                 let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
