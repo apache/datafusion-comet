@@ -65,7 +65,7 @@ message Expr {
     CaseWhen caseWhen = 38;
     In in = 39;
     Not not = 40;
-    Negative negative = 41;
+    UnaryMinus unary_minus = 41;
     BitwiseShiftRight bitwiseShiftRight = 42;
     BitwiseShiftLeft bitwiseShiftLeft = 43;
     IfExpr if = 44;
@@ -452,7 +452,7 @@ message Not {
   Expr child = 1;
 }
 
-message Negative {
+message UnaryMinus {
   Expr child = 1;
   bool fail_on_error = 2;
 }

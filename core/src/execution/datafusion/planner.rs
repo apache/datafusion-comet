@@ -17,7 +17,7 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::{
@@ -51,6 +51,7 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use datafusion_physical_expr::udf::ScalarUDF;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -502,10 +503,7 @@ impl PhysicalPlanner {
                     eval_mode,
                     return_type.to_string(),
                 )?);
-                let scalar_def = ScalarFunctionDefinition::UDF(Arc::new(comet_abs));
-
-                let expr =
-                    ScalarFunctionExpr::new("abs", scalar_def, args, return_type, None, false);
+                let expr = ScalarFunctionExpr::new("abs", math::abs(), args, return_type);
                 Ok(Arc::new(expr))
             }
             ExprStruct::CaseWhen(case_when) => {
@@ -573,7 +571,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(NotExpr::new(child)))
             }
-            ExprStruct::Negative(expr) => {
+            ExprStruct::UnaryMinus(expr) => {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let result = negative::create_negate_expr(child, expr.fail_on_error);
@@ -693,8 +691,6 @@ impl PhysicalPlanner {
                     fun_expr,
                     vec![left, right],
                     data_type,
-                    None,
-                    false,
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -1212,26 +1208,18 @@ impl PhysicalPlanner {
                 }
             }
             AggExprStruct::First(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(FirstValue::new(
-                    child,
-                    "first",
-                    datatype,
-                    vec![],
-                    vec![],
-                )))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let func = datafusion_expr::AggregateUDF::new_from_impl(FirstValue::new());
+
+                create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
+                    .map_err(|e| e.into())
             }
             AggExprStruct::Last(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(LastValue::new(
-                    child,
-                    "last",
-                    datatype,
-                    vec![],
-                    vec![],
-                )))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let func = datafusion_expr::AggregateUDF::new_from_impl(LastValue::new());
+
+                create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
@@ -1376,21 +1364,11 @@ impl PhysicalPlanner {
 
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
-            None => {
-                // If no data type is provided from Spark, we'll use DF's return type from the
-                // scalar function
-                // Note this assumes the `fun_name` is a defined function in DF. Otherwise, it'll
-                // throw error.
-
-                if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
-                    fun.return_type(&input_expr_types)?
-                } else {
-                    self.session_ctx
-                        .udf(fun_name)?
-                        .inner()
-                        .return_type(&input_expr_types)?
-                }
-            }
+            None => self
+                .session_ctx
+                .udf(fun_name)?
+                .inner()
+                .return_type(&input_expr_types)?,
         };
 
         let fun_expr =
@@ -1401,8 +1379,6 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             data_type,
-            None,
-            args.is_empty(),
         ));
 
         Ok(scalar_expr)
@@ -1447,7 +1423,7 @@ fn expr_to_columns(
     let mut left_field_indices: Vec<usize> = vec![];
     let mut right_field_indices: Vec<usize> = vec![];
 
-    expr.apply(&mut |expr| {
+    expr.apply(&mut |expr: &Arc<dyn PhysicalExpr>| {
         Ok({
             if let Some(column) = expr.as_any().downcast_ref::<Column>() {
                 if column.index() > left_field_len + right_field_len {
