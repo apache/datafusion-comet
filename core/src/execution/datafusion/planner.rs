@@ -503,7 +503,7 @@ impl PhysicalPlanner {
                     eval_mode,
                     return_type.to_string(),
                 )?);
-                let expr = ScalarFunctionExpr::new("abs", math::abs(), args, return_type);
+                let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
                 Ok(Arc::new(expr))
             }
             ExprStruct::CaseWhen(case_when) => {
