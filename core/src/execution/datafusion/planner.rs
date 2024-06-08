@@ -24,9 +24,7 @@ use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    logical_expr::{
-        BuiltinScalarFunction, Operator as DataFusionOperator, ScalarFunctionDefinition,
-    },
+    logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
@@ -51,8 +49,8 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_expr::ScalarUDF;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
-use datafusion_physical_expr::udf::ScalarUDF;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -359,7 +357,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = EvalMode::try_from(expr.eval_mode)?;
+                let eval_mode = expr.eval_mode.try_into()?;
 
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
@@ -498,11 +496,11 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let eval_mode = EvalMode::try_from(expr.eval_mode)?;
-                let comet_abs = ScalarUDF::new_from_impl(CometAbsFunc::new(
+                let eval_mode = expr.eval_mode.try_into()?;
+                let comet_abs = Arc::new(ScalarUDF::new_from_impl(CometAbsFunc::new(
                     eval_mode,
                     return_type.to_string(),
-                )?);
+                )?));
                 let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
                 Ok(Arc::new(expr))
             }
