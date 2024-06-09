@@ -107,7 +107,9 @@ fn handle_chr_fn(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         }
         ColumnarValue::Scalar(ScalarValue::Int64(Some(value))) => {
             match core::char::from_u32(value as u32) {
-                Some(ch) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(ch.to_string())))),
+                Some(ch) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                    ch.to_string(),
+                )))),
                 None => exec_err!("requested character too large for encoding."),
             }
         }
