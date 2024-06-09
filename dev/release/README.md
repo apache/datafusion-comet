@@ -46,7 +46,7 @@ It is recommended that you set up a virtual Python environment and then install 
 ```shell
 python3 -m venv venv
 source venv/bin/activate
-pip3 install -r requirements.in
+pip3 install -r requirements.txt
 ```
 
 To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script 
