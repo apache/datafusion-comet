@@ -443,11 +443,12 @@ macro_rules! make_int_variant_impl {
     ($ty: ident, $native_ty: ty, $type_size: expr) => {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let src_ptr = src.data.as_ptr() as *const u8;
+                assert!(src.offset % 4 == 0);
+                let src_ptr = src.data.as_ptr() as *const i32;
                 let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut $native_ty;
                 unsafe {
                     for i in 0..num {
-                        let ptr = src_ptr.add(src.offset + i * 4) as *const u32;
+                        let ptr = src_ptr.add(src.offset/4 + i) as *const i32;
                         dst_ptr
                             .add(dst.num_values + i)
                             .write_unaligned(ptr.read_unaligned() as $native_ty);
