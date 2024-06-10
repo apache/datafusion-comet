@@ -185,6 +185,7 @@ impl convert::From<Box<dyn Any + Send>> for CometError {
         }
     }
 }
+
 impl From<DataFusionError> for CometError {
     fn from(value: DataFusionError) -> Self {
         CometError::DataFusion {
@@ -193,6 +194,7 @@ impl From<DataFusionError> for CometError {
         }
     }
 }
+
 impl From<CometError> for DataFusionError {
     fn from(value: CometError) -> Self {
         match value {
