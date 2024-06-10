@@ -413,6 +413,10 @@ under the License.
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. By default, this config is 10.0. Note that this config is only used when ‘spark.comet.columnar.shuffle.enabled’ is true.</p></td>
 <td><p>10.0</p></td>
 </tr>
+<tr class="row-odd"><td><p>spark.comet.xxhash64.enabled</p></td>
+<td><p>The xxhash64 implementation is not optimized yet and may cause performance issues.</p></td>
+<td><p>false</p></td>
+</tr>
 </tbody>
 </table>
 </section>
