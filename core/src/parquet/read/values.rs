@@ -446,9 +446,10 @@ macro_rules! make_int_variant_impl {
                 assert!(src.offset % 4 == 0);
                 let src_ptr = src.data.as_ptr() as *const i32;
                 let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut $native_ty;
+                let offset_i32 = src.offset / 4;
                 unsafe {
                     for i in 0..num {
-                        let ptr = src_ptr.add(src.offset/4 + i) as *const i32;
+                        let ptr = src_ptr.add(offset_i32 + i) as *const i32;
                         dst_ptr
                             .add(dst.num_values + i)
                             .write_unaligned(ptr.read_unaligned() as $native_ty);
