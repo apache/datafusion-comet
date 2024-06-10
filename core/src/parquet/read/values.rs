@@ -455,10 +455,8 @@ macro_rules! make_int_variant_impl {
 
                 while num - i >= 32 {
                     unsafe {
-                        //let in_slice = std::slice::from_raw_parts(in_ptr, 32);
                         for _ in 0..32 {
                             copy_nonoverlapping(
-                                //in_slice[n..].as_ptr() as *const $native_ty,
                                 &src_data[src_offset..] as *const [u8] as *const u8
                                     as *const $native_ty,
                                 &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
