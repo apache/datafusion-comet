@@ -451,8 +451,6 @@ macro_rules! make_int_variant_impl {
                 let mut dst_offset = dst.num_values * $type_size;
 
                 let mut i = 0;
-                let mut in_ptr = &src_data[src_offset..] as *const [u8] as *const u8 as *const u32;
-
                 while num - i >= 32 {
                     unsafe {
                         for _ in 0..32 {
@@ -466,7 +464,6 @@ macro_rules! make_int_variant_impl {
                             src_offset += 4;
                             dst_offset += $type_size;
                         }
-                        in_ptr = in_ptr.offset(32);
                     }
                 }
 
