@@ -391,12 +391,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
           val pageSize = SparkEnv.get.memoryManager.pageSizeBytes
 
           val sorter = UnsafeExternalRowSorter.createWithRecordComparator(
-<<<<<<< HEAD
-            //StructType.fromAttributes(outputAttributes),
             StructType(outputAttributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))),
-=======
-            fromAttributes(outputAttributes),
->>>>>>> apache/main
             recordComparatorSupplier,
             prefixComparator,
             prefixComputer,

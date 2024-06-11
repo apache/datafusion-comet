@@ -448,13 +448,6 @@ under the License.
     </profile>
 
     <profile>
-      <id>release-centos7</id>
-      <properties>
-        <jni.dir>${project.basedir}/../core/target/x86_64-unknown-linux-gnu/release</jni.dir>
-      </properties>
-    </profile>
-
-    <profile>
       <id>Win-x86</id>
       <activation>
         <os>
