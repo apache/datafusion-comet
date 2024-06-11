@@ -586,10 +586,10 @@ fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
         let u32_value = i32_value as u32;
         let u32_bytes = u32_value.to_le_bytes();
 
-        dst[i * 2] = u32_bytes[0];
-        dst[i * 2 + 1] = u32_bytes[1];
-        dst[i * 2 + 2] = u32_bytes[2];
-        dst[i * 2 + 3] = u32_bytes[3];
+        dst[i * 4] = u32_bytes[0];
+        dst[i * 4 + 1] = u32_bytes[1];
+        dst[i * 4 + 2] = u32_bytes[2];
+        dst[i * 4 + 3] = u32_bytes[3];
     }
 }
 
