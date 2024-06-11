@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{marker::PhantomData, mem, ptr::copy_nonoverlapping};
+use std::{marker::PhantomData, mem};
 
 use arrow::buffer::Buffer;
 use bytes::Buf;
@@ -438,41 +438,160 @@ impl PlainDictDecoding for BoolType {
     }
 }
 
-// Shared implementation for int variants such as Int8 and Int16
-macro_rules! make_int_variant_impl {
-    ($ty: ident, $native_ty: ty, $type_size: expr) => {
-        impl PlainDecoding for $ty {
-            fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let src_data = &src.data;
-                let dst_slice = dst.value_buffer.as_slice_mut();
-                let mut dst_offset = dst.num_values * $type_size;
-                for _ in 0..num {
-                    unsafe {
-                        copy_nonoverlapping(
-                            &src_data[src.offset..] as *const [u8] as *const u8
-                                as *const $native_ty,
-                            &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
-                            1,
-                        );
-                    }
-                    src.offset += 4; // Parquet stores Int8/Int16 using 4 bytes
-                    dst_offset += $type_size;
-                }
-            }
+impl PlainDecoding for Int8Type {
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let dst_slice = dst.value_buffer.as_slice_mut();
+        let dst_offset = dst.num_values;
+        copy_i32_to_i8(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
 
-            fn skip(src: &mut PlainDecoderInner, num: usize) {
-                let num_bytes = 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-                src.offset += num_bytes;
-            }
-        }
-    };
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
 }
 
-make_int_variant_impl!(Int8Type, i8, 1);
-make_int_variant_impl!(UInt8Type, u8, 2);
-make_int_variant_impl!(Int16Type, i16, 2);
-make_int_variant_impl!(UInt16Type, u16, 4);
-make_int_variant_impl!(UInt32Type, u32, 8);
+impl PlainDecoding for UInt8Type {
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let dst_slice = dst.value_buffer.as_slice_mut();
+        let dst_offset = dst.num_values;
+        copy_i32_to_u8(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+}
+
+impl PlainDecoding for Int16Type {
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let dst_slice = dst.value_buffer.as_slice_mut();
+        let dst_offset = dst.num_values * 2;
+        copy_i32_to_i16(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+}
+
+impl PlainDecoding for UInt16Type {
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let dst_slice = dst.value_buffer.as_slice_mut();
+        let dst_offset = dst.num_values * 2;
+        copy_i32_to_u16(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+}
+
+impl PlainDecoding for UInt32Type {
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let dst_slice = dst.value_buffer.as_slice_mut();
+        let dst_offset = dst.num_values * 4;
+        copy_i32_to_u32(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+    }
+
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        src.offset += 4 * num;
+    }
+}
+
+fn copy_i32_to_i8(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(src.len() >= num * 4, "Source slice is too small");
+    debug_assert!(dst.len() >= num * 1, "Destination slice is too small");
+
+    for i in 0..num {
+        let i32_value =
+            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+
+        // Downcast to i8, potentially losing data
+        let i8_value = i32_value as i8;
+        let i8_bytes = i8_value.to_le_bytes();
+
+        dst[i] = i8_bytes[0];
+    }
+}
+
+fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(src.len() >= num * 4, "Source slice is too small");
+    debug_assert!(dst.len() >= num * 1, "Destination slice is too small");
+
+    for i in 0..num {
+        let i32_value =
+            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+
+        // Downcast to u8, potentially losing data
+        let u8_value = i32_value as u8;
+        let u8_bytes = u8_value.to_le_bytes();
+
+        dst[i] = u8_bytes[0];
+    }
+}
+
+fn copy_i32_to_i16(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(src.len() >= num * 4, "Source slice is too small");
+    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
+
+    for i in 0..num {
+        let i32_value =
+            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+
+        // Downcast to i16, potentially losing data
+        let i16_value = i32_value as i16;
+        let i16_bytes = i16_value.to_le_bytes();
+
+        dst[i * 2] = i16_bytes[0];
+        dst[i * 2 + 1] = i16_bytes[1];
+    }
+}
+
+fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(src.len() >= num * 4, "Source slice is too small");
+    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
+
+    for i in 0..num {
+        let i32_value =
+            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+
+        // Downcast to u16, potentially losing data
+        let u16_value = i32_value as u16;
+        let u16_bytes = u16_value.to_le_bytes();
+
+        dst[i * 2] = u16_bytes[0];
+        dst[i * 2 + 1] = u16_bytes[1];
+    }
+}
+
+fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(src.len() >= num * 4, "Source slice is too small");
+    debug_assert!(dst.len() >= num * 4, "Destination slice is too small");
+
+    for i in 0..num {
+        let i32_value =
+            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+
+        // Downcast to u32, potentially losing data
+        let u32_value = i32_value as u32;
+        let u32_bytes = u32_value.to_le_bytes();
+
+        dst[i * 2] = u32_bytes[0];
+        dst[i * 2 + 1] = u32_bytes[1];
+        dst[i * 2 + 2] = u32_bytes[2];
+        dst[i * 2 + 3] = u32_bytes[3];
+    }
+}
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
@@ -976,5 +1095,35 @@ impl Decoder for DictDecoder {
 
     fn encoding(&self) -> Encoding {
         Encoding::RLE_DICTIONARY
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use parquet::data_type::AsBytes;
+
+    #[test]
+    fn test_i32_to_i8() {
+        let source =
+            hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
+                .unwrap();
+        let expected = hex::decode("8adb1834301dab37f1").unwrap();
+        let num = source.len() / 4;
+        let mut dest: Vec<u8> = vec![b' '; num];
+        copy_i32_to_i8(&source.as_bytes(), dest.as_mut_slice(), num);
+        assert_eq!(expected.as_bytes(), dest.as_bytes());
+    }
+
+    #[test]
+    fn test_i32_to_i16() {
+        let source =
+            hex::decode("8a0e0000db93ffff1826000034f4ffff300200001d2b0000abe3ffff378dfffff1470000")
+                .unwrap();
+        let expected = hex::decode("8a0edb93182634f430021d2babe3378df147").unwrap();
+        let num = source.len() / 4;
+        let mut dest: Vec<u8> = vec![b' '; num * 2];
+        copy_i32_to_i16(&source.as_bytes(), dest.as_mut_slice(), num);
+        assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 }
