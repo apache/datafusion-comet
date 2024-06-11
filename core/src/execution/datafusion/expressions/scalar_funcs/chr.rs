@@ -44,10 +44,18 @@ pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
         .iter()
         .map(|integer: Option<i64>| {
             integer
-                .map(|integer| match core::char::from_u32(integer as u32) {
-                    Some(integer) => Ok(integer.to_string()),
-                    None => {
-                        exec_err!("requested character too large for encoding.")
+                .map(|integer| {
+                    let adjusted_integer = if integer >= 0 { integer % 256 } else { integer };
+
+                    match core::char::from_u32(adjusted_integer as u32) {
+                        Some(integer) => Ok(integer.to_string()),
+                        None => {
+                            if integer < 0 {
+                                Ok("".to_string())
+                            } else {
+                                exec_err!("requested character not compatible for encoding.")
+                            }
+                        }
                     }
                 })
                 .transpose()
@@ -110,7 +118,7 @@ fn handle_chr_fn(args: &[ColumnarValue]) -> Result<ColumnarValue> {
                 Some(ch) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
                     ch.to_string(),
                 )))),
-                None => exec_err!("requested character too large for encoding."),
+                None => exec_err!("requested character was incompatible for encoding."),
             }
         }
         ColumnarValue::Scalar(ScalarValue::Int64(None)) => {
