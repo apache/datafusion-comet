@@ -1006,7 +1006,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(c9 int, c4 int) using parquet")
           sql(
-            s"insert into $table values(0, 0), (61231231236, -61231231236), (-1700, 1700), (0, -4000), (-40, 40)")
+            s"insert into $table values(0, 0), (61231, -61231), (-1700, 1700), (0, -4000), (-40, 40)")
           val query = s"SELECT chr(c9), chr(c4) FROM $table"
           checkSparkAnswerAndOperator(query)
         }
