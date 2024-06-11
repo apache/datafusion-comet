@@ -572,7 +572,7 @@ under the License.
 <!--        <additional.3_5.test.source>spark-3.5</additional.3_5.test.source>-->
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
-        <shims.extraVerSrc>not-needed</shims.extraVerSrc>
+        <shims.extraVerSrc>not-needed-yet</shims.extraVerSrc>
       </properties>
     </profile>
 
@@ -588,6 +588,7 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <shims.extraVerSrc>not-needed-yet</shims.extraVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
