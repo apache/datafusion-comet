@@ -35,32 +35,23 @@ Here are the steps, using the 0.1.0 release as an example:
 
 - Create a release branch from the latest commit in main (e.g. `git checkout -b release-0.1.0`) and push to the Apache repo
 - Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
-- Generate a changelog for all changes since the previous release tag and the release branch and create a PR against the main branch to add this
+- Generate a changelog for all changes between the previous release tag and the release branch and create a PR against the main branch to add this
 - Cherry-pick the changelog PR into the release branch
-- Tag the release branch with `0.1.0-rc1` and push to the Apache repo
+- Tag the release branch with a release candidate tag (`0.1.0-rc1`) and push to the Apache repo
 - Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`
 
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
 
-- Run the create-tarball script on the release branch to create the source tarball and upload it to the dev subversion repository
+- Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to the dev subversion repository
 - Start an email voting thread
 - Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository
 - Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
   a version such as `COMET-0.1.0`
 - Delete old release candidates and releases from the subversion repositories
-- Push a release tag (e.g. 0.1.0) to the Apache repository
+- Push a release tag (`0.1.0`) to the Apache repository
 - Reply to the vote thread to close the vote and announce the release
-
-## Publishing JAR Files to Maven
-
-The process for publishing JAR files to Maven is not defined yet.
-
-## Publishing to crates.io
-
-We may choose to publish the `datafusion-comet` to crates.io so that other Rust projects can leverage the
-Spark-compatible operators and expressions outside of Spark.
 
 ## Verifying Release Candidates
 
@@ -82,6 +73,17 @@ existing Spark jobs and report any functional issues or performance regressions.
 Another way of verifying the release is to follow the
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) and compare
 performance with the previous release.
+
+## Publishing Binary Releases
+
+### Publishing JAR Files to Maven
+
+The process for publishing JAR files to Maven is not defined yet.
+
+### Publishing to crates.io
+
+We may choose to publish the `datafusion-comet` to crates.io so that other Rust projects can leverage the
+Spark-compatible operators and expressions outside of Spark.
 
 ## Post Release Activities
 
