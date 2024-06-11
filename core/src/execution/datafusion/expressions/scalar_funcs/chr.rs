@@ -48,7 +48,7 @@ pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
                     let adjusted_integer = if integer >= 0 { integer % 256 } else { integer };
 
                     match core::char::from_u32(adjusted_integer as u32) {
-                        Some(integer) => Ok(integer.to_string()),
+                        Some(ch) => Ok(ch.to_string()),
                         None => {
                             if integer < 0 {
                                 Ok("".to_string())
