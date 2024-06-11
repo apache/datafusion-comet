@@ -1627,8 +1627,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .map(Period.ofMonths)
           val dayTimeDf = Seq(106751991L, 106751991L, 2L)
             .map(Duration.ofDays)
-          Seq(longDf, yearMonthDf, dayTimeDf).foreach { df =>
-            checkOverflow(s"select -(_1) FROM tbl", "")
+          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
+            checkOverflow("select -(_1) FROM tbl", "")
           }
         }
       }
