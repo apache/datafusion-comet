@@ -170,7 +170,7 @@ public class TypeUtil {
         break;
       case INT96:
         if (sparkType == TimestampNTZType$.MODULE$) {
-          if (isSpark40Plus()) return;
+          if (isSpark40Plus()) return; // Spark 4.0+ supports Timestamp NTZ with INT96
           convertErrorForTimestampNTZ(typeName.name());
         } else if (sparkType == DataTypes.TimestampType) {
           return;
