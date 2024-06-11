@@ -34,7 +34,7 @@ trait CometExprShim {
     }
 
     protected def isTimestampNTZType(dt: DataType): Boolean =
-        dt.typeName == "timestamp_ntz" => true // `TimestampNTZType` is private
+        dt.typeName == "timestamp_ntz" // `TimestampNTZType` is private
 
     protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 }
