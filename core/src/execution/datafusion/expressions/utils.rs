@@ -128,7 +128,7 @@ pub fn array_with_timezone(
 
 fn datetime_cast_err(value: i64) -> ArrowError {
     ArrowError::CastError(format!(
-        "Cannot convert TimestampMicrosecondType {value} to datetime. Comet only supports dates between of Jan 1, 262145 BCE to Dec 31, 262143 CE",
+        "Cannot convert TimestampMicrosecondType {value} to datetime. Comet only supports dates between Jan 1, 262145 BCE and Dec 31, 262143 CE",
     ))
 }
 
