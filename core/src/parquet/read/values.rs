@@ -456,7 +456,7 @@ impl PlainDecoding for UInt8Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
         let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values;
+        let dst_offset = dst.num_values * 2;
         copy_i32_to_u8(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
@@ -484,7 +484,7 @@ impl PlainDecoding for UInt16Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
         let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 2;
+        let dst_offset = dst.num_values * 4;
         copy_i32_to_u16(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
@@ -498,9 +498,9 @@ impl PlainDecoding for UInt32Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
         let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 4;
+        let dst_offset = dst.num_values * 8;
         copy_i32_to_u32(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+        src.offset += 8 * num;
     }
 
     fn skip(src: &mut PlainDecoderInner, num: usize) {
@@ -569,8 +569,10 @@ fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
         let u16_value = i32_value as u16;
         let u16_bytes = u16_value.to_le_bytes();
 
-        dst[i * 2] = u16_bytes[0];
-        dst[i * 2 + 1] = u16_bytes[1];
+        dst[i * 4] = u16_bytes[0];
+        dst[i * 4 + 1] = u16_bytes[1];
+        dst[i * 4 + 2] = 0;
+        dst[i * 4 + 3] = 0;
     }
 }
 
@@ -586,10 +588,14 @@ fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
         let u32_value = i32_value as u32;
         let u32_bytes = u32_value.to_le_bytes();
 
-        dst[i * 4] = u32_bytes[0];
-        dst[i * 4 + 1] = u32_bytes[1];
-        dst[i * 4 + 2] = u32_bytes[2];
-        dst[i * 4 + 3] = u32_bytes[3];
+        dst[i * 8] = u32_bytes[0];
+        dst[i * 8 + 1] = u32_bytes[1];
+        dst[i * 8 + 2] = u32_bytes[2];
+        dst[i * 8 + 3] = u32_bytes[3];
+        dst[i * 8 + 4] = 0;
+        dst[i * 8 + 5] = 0;
+        dst[i * 8 + 6] = 0;
+        dst[i * 8 + 7] = 0;
     }
 }
 
@@ -1115,6 +1121,18 @@ mod test {
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
+    // #[test]
+    // fn test_i32_to_u8() {
+    //     let source =
+    //         hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
+    //             .unwrap();
+    //     let expected = hex::decode("8adb1834301dab37f1").unwrap();
+    //     let num = source.len() / 4;
+    //     let mut dest: Vec<u8> = vec![b' '; num * 2];
+    //     copy_i32_to_i8(&source.as_bytes(), dest.as_mut_slice(), num);
+    //     assert_eq!(expected.as_bytes(), dest.as_bytes());
+    // }
+
     #[test]
     fn test_i32_to_i16() {
         let source =
@@ -1124,6 +1142,35 @@ mod test {
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
         copy_i32_to_i16(&source.as_bytes(), dest.as_mut_slice(), num);
+        assert_eq!(expected.as_bytes(), dest.as_bytes());
+    }
+
+    #[test]
+    fn test_i32_to_u16() {
+        let source = hex::decode(
+            "ff7f0000008000000180000002800000038000000480000005800000068000000780000008800000",
+        )
+        .unwrap();
+        let expected = hex::decode(
+            "ff7f0000008000000180000002800000038000000480000005800000068000000780000008800000",
+        )
+        .unwrap();
+        let num = source.len() / 4;
+        let mut dest: Vec<u8> = vec![b' '; num * 4];
+        copy_i32_to_u16(&source.as_bytes(), dest.as_mut_slice(), num);
+        assert_eq!(expected.as_bytes(), dest.as_bytes());
+    }
+
+    #[test]
+    fn test_i32_to_u32() {
+        let source = hex::decode(
+            "ffffff7f000000800100008002000080030000800400008005000080060000800700008008000080",
+        )
+        .unwrap();
+        let expected = hex::decode("ffffff7f00000000000000800000000001000080000000000200008000000000030000800000000004000080000000000500008000000000060000800000000007000080000000000800008000000000").unwrap();
+        let num = source.len() / 4;
+        let mut dest: Vec<u8> = vec![b' '; num * 8];
+        copy_i32_to_u32(&source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 }
