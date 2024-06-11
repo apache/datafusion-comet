@@ -1,0 +1,16 @@
+*.gitignore
+*.dockerignore
+.github/pull_request_template.md
+.gitmodules
+core/Cargo.lock
+core/testdata/backtrace.txt
+core/testdata/stacktrace.txt
+docs/spark_builtin_expr_coverage.txt
+docs/source/contributor-guide/benchmark-results/**/*.json
+rust-toolchain
+spark/src/test/resources/tpcds-query-results/*.out
+spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/explain.txt
+spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/simplified.txt
+spark/src/test/resources/tpch-query-results/*.out
+spark/src/test/resources/tpch-extended/q1.sql
+spark/inspections/CometTPC*results.txt

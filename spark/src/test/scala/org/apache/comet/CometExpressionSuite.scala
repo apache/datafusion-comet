@@ -982,6 +982,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Chr with null character") {
+    // test compatibility with Spark, spark supports chr(0)
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test0"
+        withTable(table) {
+          sql(s"create table $table(c9 int, c4 int) using parquet")
+          sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
+          val query = s"SELECT chr(c9), chr(c4) FROM $table"
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
   test("InitCap") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1491,6 +1508,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
@@ -1523,6 +1541,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {

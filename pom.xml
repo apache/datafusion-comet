@@ -53,7 +53,7 @@ under the License.
     <protobuf.version>3.19.6</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
-    <arrow.version>14.0.2</arrow.version>
+    <arrow.version>16.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
@@ -120,6 +120,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -138,7 +143,7 @@ under the License.
           <!-- Comet uses arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -258,7 +263,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -284,7 +289,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -324,6 +329,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -339,6 +349,10 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -399,6 +413,11 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
+          </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -922,6 +941,7 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <exclude>dev/release/rat_exclude_files.txt</exclude>
           </excludes>
         </configuration>
       </plugin>

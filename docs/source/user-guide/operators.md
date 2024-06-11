@@ -19,15 +19,20 @@
 
 # Supported Spark Operators
 
-The following Spark operators are currently available:
+The following Spark operators are currently replaced with native versions. Query stages that contain any operators
+not supported by Comet will fall back to regular Spark execution.
 
-- FileSourceScanExec/BatchScanExec for Parquet
-- Projection
-- Filter
-- Sort
-- Hash Aggregate
-- Limit
-- Sort-merge Join
-- Hash Join
-- Shuffle
-- Expand
+| Operator                                     | Notes |
+| -------------------------------------------- | ----- |
+| FileSourceScanExec/BatchScanExec for Parquet |       |
+| Projection                                   |       |
+| Filter                                       |       |
+| Sort                                         |       |
+| Hash Aggregate                               |       |
+| Limit                                        |       |
+| Sort-merge Join                              |       |
+| Hash Join                                    |       |
+| BroadcastHashJoinExec                        |       |
+| Shuffle                                      |       |
+| Expand                                       |       |
+| Union                                        |       |
