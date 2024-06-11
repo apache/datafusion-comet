@@ -510,7 +510,7 @@ impl PlainDecoding for UInt32Type {
 
 fn copy_i32_to_i8(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 1, "Destination slice is too small");
+    debug_assert!(dst.len() >= num, "Destination slice is too small");
 
     for i in 0..num {
         let i32_value =
