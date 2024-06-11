@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
+
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
