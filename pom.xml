@@ -563,6 +563,7 @@ under the License.
     </profile>
 
     <profile>
+      <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
       <id>spark-4.0</id>
       <properties>
         <!-- Use Scala 2.13 by default -->
