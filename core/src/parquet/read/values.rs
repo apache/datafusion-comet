@@ -500,7 +500,7 @@ impl PlainDecoding for UInt32Type {
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values * 8;
         copy_i32_to_u32(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 8 * num;
+        src.offset += 4 * num;
     }
 
     fn skip(src: &mut PlainDecoderInner, num: usize) {
@@ -579,7 +579,7 @@ fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
 
 fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 4, "Destination slice is too small");
+    debug_assert!(dst.len() >= num * 8, "Destination slice is too small");
 
     for i in 0..num {
         let i32_value =
