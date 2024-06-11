@@ -45,16 +45,14 @@ pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
         .map(|integer: Option<i64>| {
             integer
                 .map(|integer| {
+                    if integer < 0 {
+                        return Ok("".to_string()); // Return empty string for negative integers
+                    }
                     let adjusted_integer = if integer >= 0 { integer % 256 } else { integer };
-
                     match core::char::from_u32(adjusted_integer as u32) {
                         Some(ch) => Ok(ch.to_string()),
                         None => {
-                            if integer < 0 {
-                                Ok("".to_string())
-                            } else {
-                                exec_err!("requested character not compatible for encoding.")
-                            }
+                            exec_err!("requested character not compatible for encoding.")
                         }
                     }
                 })
