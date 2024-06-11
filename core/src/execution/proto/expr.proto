@@ -480,6 +480,7 @@ message BitwiseNot {
 
 message Abs {
   Expr child = 1;
+  EvalMode eval_mode = 2;
 }
 
 message Subquery {

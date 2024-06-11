@@ -1476,15 +1476,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, _) =>
+        case Abs(child, failOnErr) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val abs =
-              ExprOuterClass.Abs
-                .newBuilder()
-                .setChild(childExpr.get)
-                .build()
-            Some(Expr.newBuilder().setAbs(abs).build())
+            val evalModeStr =
+              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+            val absBuilder = ExprOuterClass.Abs.newBuilder()
+            absBuilder.setChild(childExpr.get)
+            absBuilder.setEvalMode(evalModeStr)
+            Some(Expr.newBuilder().setAbs(absBuilder).build())
           } else {
             withInfo(expr, child)
             None
