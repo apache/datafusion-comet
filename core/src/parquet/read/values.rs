@@ -727,6 +727,17 @@ const INT96_SRC_BYTE_WIDTH: usize = 12;
 // We convert INT96 to micros and store using i64
 const INT96_DST_BYTE_WIDTH: usize = 8;
 
+fn int96_to_microsecond(v: &[u8]) -> i64 {
+    let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
+    let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
+
+    unsafe {
+        ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
+            .wrapping_mul(MICROS_PER_DAY)
+            .wrapping_add(nanos.read_unaligned() / 1000)
+    }
+}
+
 /// Decode timestamps represented as INT96 into i64 with micros precision
 impl PlainDecoding for Int96TimestampMicrosType {
     #[inline]
@@ -736,52 +747,36 @@ impl PlainDecoding for Int96TimestampMicrosType {
         if !src.read_options.use_legacy_date_timestamp_or_ntz {
             let mut offset = src.offset;
             for _ in 0..num {
-                let v = &src_data[offset..offset + INT96_SRC_BYTE_WIDTH];
-                let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
-                let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
-
                 // TODO: optimize this further as checking value one by one is not very efficient
-                unsafe {
-                    let micros = ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
-                        .wrapping_mul(MICROS_PER_DAY)
-                        .wrapping_add(nanos.read_unaligned() / 1000);
+                let micros = int96_to_microsecond(&src_data[offset..offset + INT96_SRC_BYTE_WIDTH]);
 
-                    if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
-                        panic!(
-                            "Encountered timestamp value {}, which is before 1582-10-15 (counting \
+                if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
+                    panic!(
+                        "Encountered timestamp value {}, which is before 1582-10-15 (counting \
                          backwards from Unix eopch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                          or a Proleptic Gregorian calendar is used.",
-                            micros
-                        );
-                    }
-
-                    offset += INT96_SRC_BYTE_WIDTH;
+                        micros
+                    );
                 }
+
+                offset += INT96_SRC_BYTE_WIDTH;
             }
         }
 
         let mut offset = src.offset;
         let mut dst_offset = INT96_DST_BYTE_WIDTH * dst.num_values;
-        unsafe {
-            for _ in 0..num {
-                let v = &src_data[offset..offset + INT96_SRC_BYTE_WIDTH];
-                let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
-                let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
+        for _ in 0..num {
+            let micros = int96_to_microsecond(&src_data[offset..offset + INT96_SRC_BYTE_WIDTH]);
 
-                let micros = ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
-                    .wrapping_mul(MICROS_PER_DAY)
-                    .wrapping_add(nanos.read_unaligned() / 1000);
+            bit::memcpy_value(
+                &micros,
+                INT96_DST_BYTE_WIDTH,
+                &mut dst.value_buffer[dst_offset..],
+            );
 
-                bit::memcpy_value(
-                    &micros,
-                    INT96_DST_BYTE_WIDTH,
-                    &mut dst.value_buffer[dst_offset..],
-                );
-
-                offset += INT96_SRC_BYTE_WIDTH;
-                dst_offset += INT96_DST_BYTE_WIDTH;
-            }
+            offset += INT96_SRC_BYTE_WIDTH;
+            dst_offset += INT96_DST_BYTE_WIDTH;
         }
 
         src.offset = offset;
