@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use byteorder::{LittleEndian, ReadBytesExt};
+
 fn hash_(data: &[u8], seed: u32) -> u32 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -45,17 +47,19 @@ const MURMUR_R: i32 = 47;
 unsafe fn murmur_hash2_64a(data_bytes: &[u8], seed: u64) -> u64 {
     let len = data_bytes.len();
     let len_64 = (len / 8) * 8;
-    let data_bytes_64 =
-        std::slice::from_raw_parts(&data_bytes[0..len_64] as *const [u8] as *const u64, len / 8);
+    let num_u64 = len / 8;
 
     let mut h = seed ^ (MURMUR_PRIME.wrapping_mul(data_bytes.len() as u64));
-    for v in data_bytes_64 {
-        let mut k = *v;
+    let mut offset = 0;
+    for _ in 0..num_u64 {
+        let mut buf = &data_bytes[offset..offset + 8];
+        let mut k = buf.read_u64::<LittleEndian>().unwrap();
         k = k.wrapping_mul(MURMUR_PRIME);
         k ^= k >> MURMUR_R;
         k = k.wrapping_mul(MURMUR_PRIME);
         h ^= k;
         h = h.wrapping_mul(MURMUR_PRIME);
+        offset += 8;
     }
 
     let data2 = &data_bytes[len_64..];
@@ -106,16 +110,12 @@ unsafe fn crc32_hash(bytes: &[u8], seed: u32) -> u32 {
     let num_words = num_bytes / u32_num_bytes;
     num_bytes %= u32_num_bytes;
 
-    let bytes_u32: &[u32] = std::slice::from_raw_parts(
-        &bytes[0..num_words * u32_num_bytes] as *const [u8] as *const u32,
-        num_words,
-    );
-
     let mut offset = 0;
     let mut hash = seed;
-    while offset < num_words {
-        hash = _mm_crc32_u32(hash, bytes_u32[offset]);
-        offset += 1;
+    for _ in 0..num_words {
+        let mut buf = &bytes[offset..offset + 4];
+        hash = _mm_crc32_u32(hash, buf.read_u32::<LittleEndian>().unwrap());
+        offset += 4;
     }
 
     offset = num_words * u32_num_bytes;
