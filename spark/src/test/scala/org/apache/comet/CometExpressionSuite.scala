@@ -1598,6 +1598,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         runArrayTest(query, dtype, path)
       }
 
+      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+        withAnsiMode(enabled = true) {
+          // interval test without cast
+          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
+          val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
+            .map(Period.ofMonths)
+          val dayTimeDf = Seq(106751991L, 106751991L, 2L)
+            .map(Duration.ofDays)
+          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
+            checkOverflow("select -(_1) FROM tbl", "")
+          }
+        }
+      }
+
       // scalar tests
       withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
         withSQLConf(
@@ -1620,15 +1634,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
           for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
             checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
-          }
-          // interval test without cast
-          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
-          val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
-            .map(Period.ofMonths)
-          val dayTimeDf = Seq(106751991L, 106751991L, 2L)
-            .map(Duration.ofDays)
-          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
-            checkOverflow("select -(_1) FROM tbl", "")
           }
         }
       }
