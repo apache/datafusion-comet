@@ -526,7 +526,7 @@ fn copy_i32_to_i8(src: &[u8], dst: &mut [u8], num: usize) {
 
 fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 1, "Destination slice is too small");
+    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
 
     for i in 0..num {
         let i32_value =
@@ -536,7 +536,8 @@ fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
         let u8_value = i32_value as u8;
         let u8_bytes = u8_value.to_le_bytes();
 
-        dst[i] = u8_bytes[0];
+        dst[i * 2] = u8_bytes[0];
+        dst[i * 2 + 1] = 0;
     }
 }
 
@@ -1121,17 +1122,17 @@ mod test {
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
-    // #[test]
-    // fn test_i32_to_u8() {
-    //     let source =
-    //         hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
-    //             .unwrap();
-    //     let expected = hex::decode("8adb1834301dab37f1").unwrap();
-    //     let num = source.len() / 4;
-    //     let mut dest: Vec<u8> = vec![b' '; num * 2];
-    //     copy_i32_to_i8(&source.as_bytes(), dest.as_mut_slice(), num);
-    //     assert_eq!(expected.as_bytes(), dest.as_bytes());
-    // }
+    #[test]
+    fn test_i32_to_u8() {
+        let source =
+            hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
+                .unwrap();
+        let expected = hex::decode("8a00db001800340030001d00ab003700f100").unwrap();
+        let num = source.len() / 4;
+        let mut dest: Vec<u8> = vec![b' '; num * 2];
+        copy_i32_to_u8(&source.as_bytes(), dest.as_mut_slice(), num);
+        assert_eq!(expected.as_bytes(), dest.as_bytes());
+    }
 
     #[test]
     fn test_i32_to_i16() {
