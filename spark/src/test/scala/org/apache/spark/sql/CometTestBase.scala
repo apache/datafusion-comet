@@ -48,7 +48,6 @@ import org.apache.spark.sql.types.StructType
 import org.apache.comet._
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
-import org.apache.comet.shims.ShimCometSparkSessionExtensions.supportsExtendedExplainInfo
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -788,7 +787,7 @@ abstract class CometTestBase
       testQuery: String,
       testName: String = "test",
       tableName: String = "tbl",
-      excludedOptimizerRules: Option[String] = None): Unit = {
+      sqlConf: Seq[(String, String)] = Seq.empty): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -804,9 +803,7 @@ abstract class CometTestBase
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
-      withSQLConf(
-        "spark.sql.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse(""),
-        "spark.sql.adaptive.optimizer.excludedRules" -> excludedOptimizerRules.getOrElse("")) {
+      withSQLConf(sqlConf: _*) {
         checkSparkAnswerAndOperator(sql(testQuery))
       }
     }

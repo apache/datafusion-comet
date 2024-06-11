@@ -443,49 +443,21 @@ macro_rules! make_int_variant_impl {
     ($ty: ident, $native_ty: ty, $type_size: expr) => {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let num_bytes = 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-
                 let src_data = &src.data;
-                let mut src_offset = src.offset;
                 let dst_slice = dst.value_buffer.as_slice_mut();
                 let mut dst_offset = dst.num_values * $type_size;
-
-                let mut i = 0;
-                let mut in_ptr = &src_data[src_offset..] as *const [u8] as *const u8 as *const u32;
-
-                while num - i >= 32 {
-                    unsafe {
-                        let in_slice = std::slice::from_raw_parts(in_ptr, 32);
-
-                        for n in 0..32 {
-                            copy_nonoverlapping(
-                                in_slice[n..].as_ptr() as *const $native_ty,
-                                &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
-                                1,
-                            );
-                            i += 1;
-                            dst_offset += $type_size;
-                        }
-                        in_ptr = in_ptr.offset(32);
-                    }
-                }
-
-                src_offset += i * 4;
-
-                (0..(num - i)).for_each(|_| {
+                for _ in 0..num {
                     unsafe {
                         copy_nonoverlapping(
-                            &src_data[src_offset..] as *const [u8] as *const u8
+                            &src_data[src.offset..] as *const [u8] as *const u8
                                 as *const $native_ty,
                             &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
                             1,
                         );
                     }
-                    src_offset += 4;
+                    src.offset += 4; // Parquet stores Int8/Int16 using 4 bytes
                     dst_offset += $type_size;
-                });
-
-                src.offset += num_bytes;
+                }
             }
 
             fn skip(src: &mut PlainDecoderInner, num: usize) {

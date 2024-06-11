@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 import scala.collection.mutable.ListBuffer
@@ -27,6 +28,8 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.shims.ShimCometConf
 
 /**
  * Configurations for a Comet application. Mostly inspired by [[SQLConf]] in Spark.
@@ -40,7 +43,7 @@ import org.apache.spark.sql.internal.SQLConf
  * which retrieves the config value from the thread-local [[SQLConf]] object. Alternatively, you
  * can also explicitly pass a [[SQLConf]] object to the `get` method.
  */
-object CometConf {
+object CometConf extends ShimCometConf {
 
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
@@ -131,14 +134,17 @@ object CometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.enabled")
-      .doc(
-        "Whether to enable Arrow-based columnar shuffle for Comet and Spark regular operators. " +
-          "If this is enabled, Comet prefers columnar shuffle than native shuffle. " +
-          "By default, this config is true.")
-      .booleanConf
-      .createWithDefault(true)
+  val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
+    .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
+      "is enabled. Available modes are 'native', 'jvm', and 'auto'. " +
+      "'native' is for native shuffle which has best performance in general. " +
+      "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
+      "'auto' is for Comet to choose the best shuffle mode based on the query plan. " +
+      "By default, this config is 'jvm'.")
+    .stringConf
+    .transform(_.toLowerCase(Locale.ROOT))
+    .checkValues(Set("native", "jvm", "auto"))
+    .createWithDefault("jvm")
 
   val COMET_SHUFFLE_ENFORCE_MODE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.enforceMode.enabled")
@@ -357,7 +363,7 @@ object CometConf {
         "column to a long column, a float column to a double column, etc. This is automatically" +
         "enabled when reading from Iceberg tables.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
   val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.rowToColumnar.enabled")
@@ -378,12 +384,13 @@ object CometConf {
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
   val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
+    .internal()
     .doc(
       "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
         "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
         "support for ANSI mode. This should not be used in production.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
@@ -391,6 +398,12 @@ object CometConf {
         "Comet is not currently fully compatible with Spark for all cast operations. " +
           "Set this config to true to allow them anyway. See compatibility guide " +
           "for more information.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_XXHASH64_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.xxhash64.enabled")
+      .doc("The xxhash64 implementation is not optimized yet and may cause performance issues.")
       .booleanConf
       .createWithDefault(false)
 

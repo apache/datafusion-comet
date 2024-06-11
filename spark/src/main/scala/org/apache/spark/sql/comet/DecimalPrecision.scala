@@ -108,6 +108,7 @@ object DecimalPrecision {
     }
   }
 
+  // TODO: consider to use `org.apache.spark.sql.types.DecimalExpression` for Spark 3.5+
   object DecimalExpression {
     def unapply(e: Expression): Option[(Int, Int)] = e.dataType match {
       case t: DecimalType => Some((t.precision, t.scale))

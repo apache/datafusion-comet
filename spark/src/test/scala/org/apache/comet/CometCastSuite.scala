@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import scala.util.Random
+import scala.util.matching.Regex
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -30,9 +31,10 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
-import org.apache.comet.expressions.{CometCast, Compatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
   import testImplicits._
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
@@ -53,6 +55,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val numericPattern = "0123456789deEf+-." + whitespaceChars
 
   private val datePattern = "0123456789/" + whitespaceChars
+
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   test("all valid cast combinations covered") {
@@ -73,7 +76,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else {
               val testIgnored =
                 tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
-              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
                 case Compatible(_) =>
                   if (testIgnored) {
                     fail(
@@ -567,9 +570,68 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.BinaryType)
   }
 
-  ignore("cast StringType to DateType") {
-    // https://github.com/apache/datafusion-comet/issues/327
-    castTest(gen.generateStrings(dataSize, datePattern, 8).toDF("a"), DataTypes.DateType)
+  test("cast StringType to DateType") {
+    // error message for invalid dates in Spark 3.2 not supported by Comet see below issue.
+    // https://github.com/apache/datafusion-comet/issues/440
+    assume(CometSparkSessionExtensions.isSpark33Plus)
+    val validDates = Seq(
+      "262142-01-01",
+      "262142-01-01 ",
+      "262142-01-01T ",
+      "262142-01-01T 123123123",
+      "-262143-12-31",
+      "-262143-12-31 ",
+      "-262143-12-31T",
+      "-262143-12-31T ",
+      "-262143-12-31T 123123123",
+      "2020",
+      "2020-1",
+      "2020-1-1",
+      "2020-01",
+      "2020-01-01",
+      "2020-1-01 ",
+      "2020-01-1",
+      "02020-01-01",
+      "2020-01-01T",
+      "2020-10-01T  1221213",
+      "002020-01-01  ",
+      "0002020-01-01  123344",
+      "-3638-5")
+    val invalidDates = Seq(
+      "0",
+      "202",
+      "3/",
+      "3/3/",
+      "3/3/2020",
+      "3#3#2020",
+      "2020-010-01",
+      "2020-10-010",
+      "2020-10-010T",
+      "--262143-12-31",
+      "--262143-12-31T 1234 ",
+      "abc-def-ghi",
+      "abc-def-ghi jkl",
+      "2020-mar-20",
+      "not_a_date",
+      "T2",
+      "\t\n3938\n8",
+      "8701\t",
+      "\n8757",
+      "7593\t\t\t",
+      "\t9374 \n ",
+      "\n 9850 \t",
+      "\r\n\t9840",
+      "\t9629\n",
+      "\r\n 9629 \r\n",
+      "\r\n 962 \r\n",
+      "\r\n 62 \r\n")
+
+    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
+    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
+    val fuzzDates = gen
+      .generateStrings(dataSize, datePattern, 8)
+      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
+    castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
 
   test("cast StringType to TimestampType disabled by default") {
@@ -920,12 +982,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             fail(s"Comet should have failed with ${e.getCause.getMessage}")
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
-            val sparkMessage = sparkException.getCause.getMessage
-            // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
-            // removing the "Execution error: " error message prefix that is added by DataFusion
+            val sparkMessage =
+              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
             val cometMessage = cometException.getCause.getMessage
-              .replace("Execution error: ", "")
-            if (CometSparkSessionExtensions.isSpark34Plus) {
+            if (CometSparkSessionExtensions.isSpark40Plus) {
+              // for Spark 4 we expect to sparkException carries the message
+              assert(
+                sparkException.getMessage
+                  .replace(".WITH_SUGGESTION] ", "]")
+                  .startsWith(cometMessage))
+            } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
             } else if (CometSparkSessionExtensions.isSpark33Plus) {

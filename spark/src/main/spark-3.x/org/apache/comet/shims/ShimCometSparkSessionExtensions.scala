@@ -24,8 +24,6 @@ import org.apache.spark.sql.execution.{LimitExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
-  import org.apache.comet.shims.ShimCometSparkSessionExtensions._
-
   /**
    * TODO: delete after dropping Spark 3.2.0 support and directly call scan.pushedAggregate
    */
@@ -45,9 +43,7 @@ trait ShimCometSparkSessionExtensions {
    *       SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
    */
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
-}
 
-object ShimCometSparkSessionExtensions {
   private def getOffsetOpt(plan: SparkPlan): Option[Int] = plan.getClass.getDeclaredFields
     .filter(_.getName == "offset")
     .map { a => a.setAccessible(true); a.get(plan) }

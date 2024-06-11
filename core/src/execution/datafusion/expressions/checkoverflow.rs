@@ -165,8 +165,8 @@ impl PhysicalExpr for CheckOverflow {
         }
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.child.clone()]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
     }
 
     fn with_new_children(

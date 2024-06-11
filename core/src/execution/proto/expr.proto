@@ -65,7 +65,7 @@ message Expr {
     CaseWhen caseWhen = 38;
     In in = 39;
     Not not = 40;
-    Negative negative = 41;
+    UnaryMinus unary_minus = 41;
     BitwiseShiftRight bitwiseShiftRight = 42;
     BitwiseShiftLeft bitwiseShiftLeft = 43;
     IfExpr if = 44;
@@ -96,6 +96,7 @@ message AggExpr {
     CovPopulation covPopulation = 13;
     Variance variance = 14;
     Stddev stddev = 15;
+    Correlation correlation = 16;
   }
 }
 
@@ -186,6 +187,13 @@ message Stddev {
   StatisticsType stats_type = 4;
 }
 
+message Correlation {
+  Expr child1 = 1;
+  Expr child2 = 2;
+  bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
+}
+
 message Literal {
   oneof value {
     bool bool_val = 1;
@@ -241,12 +249,18 @@ message Remainder {
   DataType return_type = 4;
 }
 
+enum EvalMode {
+  LEGACY = 0;
+  TRY = 1;
+  ANSI = 2;
+}
+
 message Cast {
   Expr child = 1;
   DataType datatype = 2;
   string timezone = 3;
-  // LEGACY, ANSI, or TRY
-  string eval_mode = 4;
+  EvalMode eval_mode = 4; 
+  
 }
 
 message Equal {
@@ -438,8 +452,9 @@ message Not {
   Expr child = 1;
 }
 
-message Negative {
+message UnaryMinus {
   Expr child = 1;
+  bool fail_on_error = 2;
 }
 
 message IfExpr {
@@ -465,6 +480,7 @@ message BitwiseNot {
 
 message Abs {
   Expr child = 1;
+  EvalMode eval_mode = 2;
 }
 
 message Subquery {

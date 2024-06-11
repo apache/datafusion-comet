@@ -25,7 +25,7 @@ import scala.io.Source
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
-import org.apache.comet.expressions.{CometCast, Compatible, Incompatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -72,7 +72,7 @@ object GenerateDocs {
             if (Cast.canCast(fromType, toType) && fromType != toType) {
               val fromTypeName = fromType.typeName.replace("(10,2)", "")
               val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
                 case Compatible(notes) =>
                   val notesStr = notes.getOrElse("").trim
                   w.write(s"| $fromTypeName | $toTypeName | $notesStr |\n".getBytes)
@@ -89,7 +89,7 @@ object GenerateDocs {
             if (Cast.canCast(fromType, toType) && fromType != toType) {
               val fromTypeName = fromType.typeName.replace("(10,2)", "")
               val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
                 case Incompatible(notes) =>
                   val notesStr = notes.getOrElse("").trim
                   w.write(s"| $fromTypeName | $toTypeName  | $notesStr |\n".getBytes)

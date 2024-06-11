@@ -17,26 +17,24 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    functions::math,
-    logical_expr::{
-        BuiltinScalarFunction, Operator as DataFusionOperator, ScalarFunctionDefinition,
-    },
+    logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
             FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NegativeExpr, NotExpr, Sum, UnKnownColumn,
+            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
+    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
@@ -52,6 +50,8 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_expr::ScalarUDF;
+use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -65,10 +65,12 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::{Cast, EvalMode},
+                cast::Cast,
                 checkoverflow::CheckOverflow,
+                correlation::Correlation,
                 covariance::Covariance,
                 if_expr::IfExpr,
+                negative,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
@@ -76,6 +78,7 @@ use crate::{
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
                 temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
+                unbound::UnboundColumn,
                 variance::Variance,
                 NormalizeNaNAndZero,
             },
@@ -89,10 +92,12 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, JoinType, Operator},
+        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
+
+use super::expressions::{abs::CometAbsFunc, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -237,7 +242,13 @@ impl PhysicalPlanner {
                 let field = input_schema.field(idx);
                 Ok(Arc::new(Column::new(field.name().as_str(), idx)))
             }
-            ExprStruct::Unbound(unbound) => Ok(Arc::new(UnKnownColumn::new(unbound.name.as_str()))),
+            ExprStruct::Unbound(unbound) => {
+                let data_type = to_arrow_datatype(unbound.datatype.as_ref().unwrap());
+                Ok(Arc::new(UnboundColumn::new(
+                    unbound.name.as_str(),
+                    data_type,
+                )))
+            }
             ExprStruct::IsNotNull(is_notnull) => {
                 let child = self.create_expr(is_notnull.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(IsNotNullExpr::new(child)))
@@ -347,16 +358,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match expr.eval_mode.as_str() {
-                    "ANSI" => EvalMode::Ansi,
-                    "TRY" => EvalMode::Try,
-                    "LEGACY" => EvalMode::Legacy,
-                    other => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Invalid Cast EvalMode: \"{other}\""
-                        )))
-                    }
-                };
+                let eval_mode = expr.eval_mode.try_into()?;
+
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
             ExprStruct::Hour(expr) => {
@@ -394,7 +397,8 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 // Spark Substring's start is 1-based when start > 0
                 let start = expr.start - i32::from(expr.start > 0);
-                let len = expr.len;
+                // substring negative len is treated as 0 in Spark
+                let len = std::cmp::max(expr.len, 0);
 
                 Ok(Arc::new(SubstringExec::new(
                     child,
@@ -493,10 +497,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let scalar_def = ScalarFunctionDefinition::UDF(math::abs());
-
-                let expr =
-                    ScalarFunctionExpr::new("abs", scalar_def, args, return_type, None, false);
+                let eval_mode = expr.eval_mode.try_into()?;
+                let comet_abs = Arc::new(ScalarUDF::new_from_impl(CometAbsFunc::new(
+                    eval_mode,
+                    return_type.to_string(),
+                )?));
+                let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
                 Ok(Arc::new(expr))
             }
             ExprStruct::CaseWhen(case_when) => {
@@ -564,9 +570,11 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(NotExpr::new(child)))
             }
-            ExprStruct::Negative(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NegativeExpr::new(child)))
+            ExprStruct::UnaryMinus(expr) => {
+                let child: Arc<dyn PhysicalExpr> =
+                    self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                let result = negative::create_negate_expr(child, expr.fail_on_error);
+                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -682,8 +690,6 @@ impl PhysicalPlanner {
                     fun_expr,
                     vec![left, right],
                     data_type,
-                    None,
-                    false,
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -777,7 +783,7 @@ impl PhysicalPlanner {
                     .iter()
                     .enumerate()
                     .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
+                        self.create_expr(expr, aggregate.schema())
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
@@ -835,14 +841,13 @@ impl PhysicalPlanner {
                 }
 
                 // Consumes the first input source for the scan
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                    && inputs.is_empty()
-                {
-                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                    None
-                } else {
-                    Some(inputs.remove(0))
-                };
+                let input_source =
+                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                        None
+                    } else {
+                        Some(inputs.remove(0))
+                    };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan = ScanExec::new(self.exec_context_id, input_source, fields)?;
@@ -964,7 +969,7 @@ impl PhysicalPlanner {
                     join.join_type,
                     &join.condition,
                 )?;
-                let join = Arc::new(HashJoinExec::try_new(
+                let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
                     join_params.right,
                     join_params.join_on,
@@ -976,7 +981,15 @@ impl PhysicalPlanner {
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     false,
                 )?);
-                Ok((scans, join))
+
+                // If the hash join is build right, we need to swap the left and right
+                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
+                    hash_join
+                } else {
+                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
+                };
+
+                Ok((scans, hash_join))
             }
         }
     }
@@ -1202,26 +1215,18 @@ impl PhysicalPlanner {
                 }
             }
             AggExprStruct::First(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(FirstValue::new(
-                    child,
-                    "first",
-                    datatype,
-                    vec![],
-                    vec![],
-                )))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let func = datafusion_expr::AggregateUDF::new_from_impl(FirstValue::new());
+
+                create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
+                    .map_err(|e| e.into())
             }
             AggExprStruct::Last(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(LastValue::new(
-                    child,
-                    "last",
-                    datatype,
-                    vec![],
-                    vec![],
-                )))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let func = datafusion_expr::AggregateUDF::new_from_impl(LastValue::new());
+
+                create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
@@ -1310,6 +1315,18 @@ impl PhysicalPlanner {
                     ))),
                 }
             }
+            AggExprStruct::Correlation(expr) => {
+                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
+                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(Correlation::new(
+                    child1,
+                    child2,
+                    "correlation",
+                    datatype,
+                    expr.null_on_divide_by_zero,
+                )))
+            }
         }
     }
 
@@ -1354,21 +1371,11 @@ impl PhysicalPlanner {
 
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
-            None => {
-                // If no data type is provided from Spark, we'll use DF's return type from the
-                // scalar function
-                // Note this assumes the `fun_name` is a defined function in DF. Otherwise, it'll
-                // throw error.
-
-                if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
-                    fun.return_type(&input_expr_types)?
-                } else {
-                    self.session_ctx
-                        .udf(fun_name)?
-                        .inner()
-                        .return_type(&input_expr_types)?
-                }
-            }
+            None => self
+                .session_ctx
+                .udf(fun_name)?
+                .inner()
+                .return_type(&input_expr_types)?,
         };
 
         let fun_expr =
@@ -1379,8 +1386,6 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             data_type,
-            None,
-            args.is_empty(),
         ));
 
         Ok(scalar_expr)
@@ -1389,7 +1394,7 @@ impl PhysicalPlanner {
 
 impl From<DataFusionError> for ExecutionError {
     fn from(value: DataFusionError) -> Self {
-        ExecutionError::DataFusionError(value.to_string())
+        ExecutionError::DataFusionError(value.message().to_string())
     }
 }
 
@@ -1425,7 +1430,7 @@ fn expr_to_columns(
     let mut left_field_indices: Vec<usize> = vec![];
     let mut right_field_indices: Vec<usize> = vec![];
 
-    expr.apply(&mut |expr| {
+    expr.apply(&mut |expr: &Arc<dyn PhysicalExpr>| {
         Ok({
             if let Some(column) = expr.as_any().downcast_ref::<Column>() {
                 if column.index() > left_field_len + right_field_len {
@@ -1561,6 +1566,7 @@ mod tests {
         spark_operator,
     };
 
+    use crate::execution::operators::ExecutionError;
     use spark_expression::expr::ExprStruct::*;
     use spark_operator::{operator::OpStruct, Operator};
 
@@ -1748,6 +1754,14 @@ mod tests {
         let stream = datafusion_plan.execute(0, task_ctx.clone()).unwrap();
         let output = collect(stream).await.unwrap();
         assert!(output.is_empty());
+    }
+
+    #[tokio::test()]
+    async fn from_datafusion_error_to_comet() {
+        let err_msg = "exec error";
+        let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
+        let comet_err: ExecutionError = err.into();
+        assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }
 
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to

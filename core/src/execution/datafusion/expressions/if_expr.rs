@@ -110,12 +110,8 @@ impl PhysicalExpr for IfExpr {
         Ok(ColumnarValue::Array(current_value))
     }
 
-    fn children(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![
-            self.if_expr.clone(),
-            self.true_expr.clone(),
-            self.false_expr.clone(),
-        ]
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.if_expr, &self.true_expr, &self.false_expr]
     }
 
     fn with_new_children(
@@ -225,8 +221,8 @@ mod tests {
         let true_expr = lit(123i32);
         let false_expr = lit(999i32);
 
-        let expr = if_fn(if_expr, true_expr, false_expr);
-        let children = expr.unwrap().children();
+        let expr = if_fn(if_expr, true_expr, false_expr).unwrap();
+        let children = expr.children();
         assert_eq!(children.len(), 3);
         assert_eq!(children[0].to_string(), "true");
         assert_eq!(children[1].to_string(), "123");

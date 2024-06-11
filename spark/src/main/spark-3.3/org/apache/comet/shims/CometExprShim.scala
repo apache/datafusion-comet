@@ -18,6 +18,7 @@
  */
 package org.apache.comet.shims
 
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
 
 /**
@@ -25,9 +26,11 @@ import org.apache.spark.sql.catalyst.expressions._
  */
 trait CometExprShim {
     /**
-      * Returns a tuple of expressions for the `unhex` function.
-      */
-    def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+     * Returns a tuple of expressions for the `unhex` function.
+     */
+    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(false))
     }
+
+    protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
 }

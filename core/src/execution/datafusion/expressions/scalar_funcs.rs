@@ -19,11 +19,10 @@ use std::{
     any::Any,
     cmp::min,
     fmt::{Debug, Write},
-    str::FromStr,
     sync::Arc,
 };
 
-use crate::execution::datafusion::spark_hash::create_hashes;
+use crate::execution::datafusion::spark_hash::{create_murmur3_hashes, create_xxhash64_hashes};
 use arrow::{
     array::{
         ArrayRef, AsArray, Decimal128Builder, Float32Array, Float64Array, GenericStringArray,
@@ -35,17 +34,15 @@ use arrow_array::{Array, ArrowNativeTypeOp, Decimal128Array, StringArray};
 use arrow_schema::DataType;
 use datafusion::{
     execution::FunctionRegistry,
-    logical_expr::{
-        BuiltinScalarFunction, ScalarFunctionDefinition, ScalarFunctionImplementation,
-        ScalarUDFImpl, Signature, Volatility,
-    },
+    functions::math::round::round,
+    logical_expr::{ScalarFunctionImplementation, ScalarUDFImpl, Signature, Volatility},
     physical_plan::ColumnarValue,
 };
 use datafusion_common::{
     cast::{as_binary_array, as_generic_string_array},
     exec_err, internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
-use datafusion_physical_expr::{math_expressions, udf::ScalarUDF};
+use datafusion_expr::ScalarUDF;
 use num::{
     integer::{div_ceil, div_floor},
     BigInt, Signed, ToPrimitive,
@@ -55,6 +52,12 @@ use unicode_segmentation::UnicodeSegmentation;
 mod unhex;
 use unhex::spark_unhex;
 
+mod hex;
+use hex::spark_hex;
+
+mod chr;
+use chr::spark_chr;
+
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
@@ -63,9 +66,7 @@ macro_rules! make_comet_scalar_udf {
             $data_type.clone(),
             Arc::new(move |args| $func(args, &$data_type)),
         );
-        Ok(ScalarFunctionDefinition::UDF(Arc::new(
-            ScalarUDF::new_from_impl(scalar_func),
-        )))
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
     ($name:expr, $func:expr, without $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
@@ -74,9 +75,7 @@ macro_rules! make_comet_scalar_udf {
             $data_type,
             $func,
         );
-        Ok(ScalarFunctionDefinition::UDF(Arc::new(
-            ScalarUDF::new_from_impl(scalar_func),
-        )))
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
 }
 
@@ -85,7 +84,7 @@ pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,
-) -> Result<ScalarFunctionDefinition, DataFusionError> {
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
     let sha2_functions = ["sha224", "sha256", "sha384", "sha512"];
     match fun_name {
         "ceil" => {
@@ -108,6 +107,10 @@ pub fn create_comet_physical_fun(
         "make_decimal" => {
             make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
         }
+        "hex" => {
+            let func = Arc::new(spark_hex);
+            make_comet_scalar_udf!("hex", func, without data_type)
+        }
         "unhex" => {
             let func = Arc::new(spark_unhex);
             make_comet_scalar_udf!("unhex", func, without data_type)
@@ -119,6 +122,14 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_murmur3_hash);
             make_comet_scalar_udf!("murmur3_hash", func, without data_type)
         }
+        "xxhash64" => {
+            let func = Arc::new(spark_xxhash64);
+            make_comet_scalar_udf!("xxhash64", func, without data_type)
+        }
+        "chr" => {
+            let func = Arc::new(spark_chr);
+            make_comet_scalar_udf!("chr", func, without data_type)
+        }
         sha if sha2_functions.contains(&sha) => {
             // Spark requires hex string as the result of sha2 functions, we have to wrap the
             // result of digest functions as hex string
@@ -129,13 +140,11 @@ pub fn create_comet_physical_fun(
             let spark_func_name = "spark".to_owned() + sha;
             make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
         }
-        _ => {
-            if let Ok(fun) = BuiltinScalarFunction::from_str(fun_name) {
-                Ok(ScalarFunctionDefinition::BuiltIn(fun))
-            } else {
-                Ok(ScalarFunctionDefinition::UDF(registry.udf(fun_name)?))
-            }
-        }
+        _ => registry.udf(fun_name).map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Function {fun_name} not found in the registry: {e}",
+            ))
+        }),
     }
 }
 
@@ -498,9 +507,7 @@ fn spark_round(
                 make_decimal_array(array, precision, scale, &f)
             }
             DataType::Float32 | DataType::Float64 => {
-                Ok(ColumnarValue::Array(math_expressions::round(&[
-                    array.clone()
-                ])?))
+                Ok(ColumnarValue::Array(round(&[array.clone()])?))
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -523,7 +530,7 @@ fn spark_round(
                 make_decimal_scalar(a, precision, scale, &f)
             }
             ScalarValue::Float32(_) | ScalarValue::Float64(_) => Ok(ColumnarValue::Scalar(
-                ScalarValue::try_from_array(&math_expressions::round(&[a.to_array()?])?, 0)?,
+                ScalarValue::try_from_array(&round(&[a.to_array()?])?, 0)?,
             )),
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -653,7 +660,7 @@ fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
                     }
                 })
                 .collect::<Vec<ArrayRef>>();
-            create_hashes(&arrays, &mut hashes)?;
+            create_murmur3_hashes(&arrays, &mut hashes)?;
             if num_rows == 1 {
                 Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(
                     hashes[0] as i32,
@@ -666,6 +673,49 @@ fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
         _ => {
             internal_err!(
                 "The seed of function murmur3_hash must be an Int32 scalar value, but got: {:?}.",
+                seed
+            )
+        }
+    }
+}
+
+fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    let length = args.len();
+    let seed = &args[length - 1];
+    match seed {
+        ColumnarValue::Scalar(ScalarValue::Int64(Some(seed))) => {
+            // iterate over the arguments to find out the length of the array
+            let num_rows = args[0..args.len() - 1]
+                .iter()
+                .find_map(|arg| match arg {
+                    ColumnarValue::Array(array) => Some(array.len()),
+                    ColumnarValue::Scalar(_) => None,
+                })
+                .unwrap_or(1);
+            let mut hashes: Vec<u64> = vec![0_u64; num_rows];
+            hashes.fill(*seed as u64);
+            let arrays = args[0..args.len() - 1]
+                .iter()
+                .map(|arg| match arg {
+                    ColumnarValue::Array(array) => array.clone(),
+                    ColumnarValue::Scalar(scalar) => {
+                        scalar.clone().to_array_of_size(num_rows).unwrap()
+                    }
+                })
+                .collect::<Vec<ArrayRef>>();
+            create_xxhash64_hashes(&arrays, &mut hashes)?;
+            if num_rows == 1 {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(
+                    hashes[0] as i64,
+                ))))
+            } else {
+                let hashes: Vec<i64> = hashes.into_iter().map(|x| x as i64).collect();
+                Ok(ColumnarValue::Array(Arc::new(Int64Array::from(hashes))))
+            }
+        }
+        _ => {
+            internal_err!(
+                "The seed of function xxhash64 must be an Int64 scalar value, but got: {:?}.",
                 seed
             )
         }
