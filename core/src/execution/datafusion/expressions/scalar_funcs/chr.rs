@@ -112,15 +112,18 @@ fn handle_chr_fn(args: &[ColumnarValue]) -> Result<ColumnarValue> {
             Ok(ColumnarValue::Array(array))
         }
         ColumnarValue::Scalar(ScalarValue::Int64(Some(value))) => {
-            match core::char::from_u32(value as u32) {
-                Some(ch) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                    ch.to_string(),
-                )))),
-                None => exec_err!("requested character was incompatible for encoding."),
+            if value < 0 {
+                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                    "".to_string(),
+                ))))
+            } else {
+                match core::char::from_u32((value % 256) as u32) {
+                    Some(ch) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                        ch.to_string(),
+                    )))),
+                    None => exec_err!("requested character was incompatible for encoding."),
+                }
             }
-        }
-        ColumnarValue::Scalar(ScalarValue::Int64(None)) => {
-            Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
         }
         _ => exec_err!("The argument must be an Int64 array or scalar."),
     }

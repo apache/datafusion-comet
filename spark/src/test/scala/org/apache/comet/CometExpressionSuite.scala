@@ -1068,6 +1068,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+
+    withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        for (n <- Seq("0", "-0", "0.5", "-0.5", "555", "-555", "null")) {
+          checkSparkAnswerAndOperator(s"select chr(cast(${n} as int)) FROM tbl")
+        }
+      }
+    }
   }
 
   test("InitCap") {
