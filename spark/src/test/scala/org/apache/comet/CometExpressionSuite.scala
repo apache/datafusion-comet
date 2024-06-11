@@ -19,6 +19,9 @@
 
 package org.apache.comet
 
+import scala.reflect.ClassTag
+import scala.reflect.runtime.universe.TypeTag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -848,6 +851,57 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  test("abs Overflow ansi mode") {
+
+    def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withParquetTable(data, "tbl") {
+        checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
+            assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+
+    def testAbsAnsi[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+      }
+    }
+
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+      testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
+      testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
+      testAbsAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)))
+      testAbsAnsi(Seq((Float.MaxValue, Float.MinValue)))
+      testAbsAnsi(Seq((Double.MaxValue, Double.MinValue)))
+    }
+  }
+
+  test("abs Overflow legacy mode") {
+
+    def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl") {
+          checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+        }
+      }
+    }
+
+    testAbsLegacyOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+    testAbsLegacyOverflow(Seq((Short.MaxValue, Short.MinValue)))
+    testAbsLegacyOverflow(Seq((Int.MaxValue, Int.MinValue)))
+    testAbsLegacyOverflow(Seq((Long.MaxValue, Long.MinValue)))
+    testAbsLegacyOverflow(Seq((Float.MaxValue, Float.MinValue)))
+    testAbsLegacyOverflow(Seq((Double.MaxValue, Double.MinValue)))
   }
 
   test("ceil and floor") {
