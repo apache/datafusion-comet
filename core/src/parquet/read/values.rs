@@ -182,25 +182,6 @@ make_plain_dict_impl! { Int8Type, UInt8Type, Int16Type, UInt16Type, Int32Type, U
 make_plain_dict_impl! { Int32DateType, Int64Type, FloatType, FLBAType }
 make_plain_dict_impl! { DoubleType, Int64TimestampMillisType, Int64TimestampMicrosType }
 
-impl PlainDecoding for Int32To64Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_ptr = src.data.as_ptr() as *const i32;
-        let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut i64;
-        unsafe {
-            for i in 0..num {
-                dst_ptr
-                    .add(dst.num_values + i)
-                    .write_unaligned(src_ptr.add(src.offset + i).read_unaligned() as i64);
-            }
-        }
-        src.offset += 4 * num;
-    }
-
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num;
-    }
-}
-
 impl PlainDictDecoding for Int32To64Type {
     fn decode_dict_one(
         idx: usize,
@@ -461,6 +442,7 @@ macro_rules! impl_plain_decoding_int {
 
 impl_plain_decoding_int!(Int8Type, copy_i32_to_i8, true);
 impl_plain_decoding_int!(Int16Type, copy_i32_to_i16, true);
+impl_plain_decoding_int!(Int32To64Type, copy_i32_to_i64, true);
 impl_plain_decoding_int!(UInt8Type, copy_i32_to_u8, false);
 impl_plain_decoding_int!(UInt16Type, copy_i32_to_u16, false);
 impl_plain_decoding_int!(UInt32Type, copy_i32_to_u32, false);
@@ -523,6 +505,7 @@ macro_rules! generate_cast_to_signed {
 
 generate_cast_to_signed!(copy_i32_to_i8, i32, i8, 0_i8);
 generate_cast_to_signed!(copy_i32_to_i16, i32, i16, 0_i16);
+generate_cast_to_signed!(copy_i32_to_i64, i32, i64, 0_i64);
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
