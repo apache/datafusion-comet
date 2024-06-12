@@ -17,15 +17,9 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Comet Source Release Process
+# Aapche DataFusion Comet: Source Release Process
 
 This documentation is for creating an official source release of Apache DataFusion Comet.
-
-The release process is based on the parent Apache DataFusion project, so please refer to the
-[DataFusion Release Process](https://github.com/apache/datafusion/blob/main/dev/release/README.md) for detailed
-instructions if you are not familiar with the release process here.
-
-Here is a brief overview of the steps involved in creating a release:
 
 ## Creating the Release Candidate
 
