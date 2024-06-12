@@ -92,35 +92,78 @@ Create a PR against the main branch to update the Rust crate version to `0.2.0` 
 
 This part of the process can mostly only be performed by a PMC member.
 
-- Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to the dev subversion repository
-- Start an email voting thread
-- Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository
-- Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
-  a version such as `COMET-0.1.0`
-- Delete old release candidates and releases from the subversion repositories
-- Push a release tag (`0.1.0`) to the Apache repository
-- Reply to the vote thread to close the vote and announce the release
+### Create the Release Candidate Tarball
 
-## Verifying Release Candidates
-
-The vote email will link to this section of this document, so this is where we will need to provide instructions for
-verifying a release candidate.
-
-The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification
-process. It checks the hashes and runs the build. It does not run the test suite because this takes a long time
-for this project and the test suites already run in CI before we create the release candidate, so running them
-again is somewhat redundant.
+Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to the dev subversion repository
 
 ```shell
-./dev/release/verify-release-candidate.sh 0.1.0 1
+GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
 ```
 
-We hope that users will verify the release beyond running this script by testing the release candidate with their
-existing Spark jobs and report any functional issues or performance regressions.
+### Start an Email Voting Thread
 
-Another way of verifying the release is to follow the
-[Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) and compare
-performance with the previous release.
+Send the email that is generated in the previous step to `dev@datafusion.apache.org`.
+
+### Publish the Release Tarball
+
+Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository.
+
+```shell
+./dev/release/create-tarball.sh 0.1.0 1
+```
+
+Push a release tag (`0.1.0`) to the Apache repository.
+
+```shell
+git fetch apache
+git checkout 0.1.0-rc1 
+git tag 0.1.0
+git push apache 0.1.0 
+```
+
+Reply to the vote thread to close the vote and announce the release.
+
+## Post Release Admin
+
+Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
+a version such as `COMET-0.1.0`.
+
+### Delete old RCs and Releases
+
+See the ASF documentation on [when to archive](https://www.apache.org/legal/release-policy.html#when-to-archive)
+for more information.
+
+#### Deleting old release candidates from `dev` svn
+
+Release candidates should be deleted once the release is published.
+
+Get a list of DataFusion Comet release candidates:
+
+```shell
+svn ls https://dist.apache.org/repos/dist/dev/datafusion | grep comet
+```
+
+Delete a release candidate:
+
+```shell
+svn delete -m "delete old DataFusion Comet RC" https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.1.0-rc1/
+```
+
+#### Deleting old releases from `release` svn
+
+Only the latest release should be available. Delete old releases after publishing the new release.
+
+Get a list of DataFusion releases:
+
+```shell
+svn ls https://dist.apache.org/repos/dist/release/datafusion | grep comet
+```
+
+Delete a release:
+
+```shell
+svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion-comet/datafusion-comet-0.0.0
+```
 
 ## Publishing Binary Releases
 
