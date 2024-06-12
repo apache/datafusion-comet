@@ -31,21 +31,25 @@ Here is a brief overview of the steps involved in creating a release:
 
 This part of the process can be performed by any committer.
 
-Here are the steps, using the 0.1.0 release as an example:
+Here are the steps, using the 0.1.0 release as an example.
 
-- Create a release branch from the latest commit in main (e.g. `git checkout -b release-0.1.0`) and push to the Apache repo
-- Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
-- Generate a changelog for all changes since the previous release tag and the release branch and create a PR against the main branch to add this
-- Cherry-pick the changelog PR into the release branch
-- Tag the release branch with `0.1.0-rc1` and push to the Apache repo
-- Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`
+### Create Release Branch
+
+Create a release branch from the latest commit in main and push to the Apache repo:
+
+```shell
+get fetch apache
+git checkout main
+git checkout -b branch-0.1
+git push apache branch-0.1
+```
+
+Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
 
 ### Generating the Change Log
 
-We haven't yet defined how tagging and branching will work for the source releases. This project is more complex 
-than DataFusion core because it consists of a Maven project and a Cargo project. However, generating a change log 
-to cover changes between any two commits or tags can be performed by running the provided `generate-changelog.py` 
-script.
+Generate a change log to cover changes between the previous release and the release branch HEAD by running 
+the provided `generate-changelog.py` script.
 
 It is recommended that you set up a virtual Python environment and then install the dependencies:
 
@@ -55,14 +59,32 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
-To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script 
-providing two commit ids or tags followed by the version number of the release being created. The following 
-example generates a change log of all changes between the first commit and the current HEAD revision.
+To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script
+providing two commit ids or tags followed by the version number of the release being created. The following
+example generates a change log of all changes between the previous version and the current release branch HEAD revision.
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 HEAD 0.1.0 > ../changelog/0.1.0.md
+python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 branch-0.1 0.0.0 > ../changelog/0.1.0.md
 ```
+
+Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the 
+commit into the release branch.
+
+### Tag the Release Candidate
+
+Tag the release branch with `0.1.0-rc1` and push to the Apache repo
+
+```shell
+git checkout branch-0.1
+git pull
+git tag 0.1.0-rc1
+git push apache 0.1.0-rc1
+````
+
+### Update Version in main
+ 
+Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`.
 
 ## Publishing the Release Candidate
 
