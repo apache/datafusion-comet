@@ -35,12 +35,6 @@ use datafusion::{
     error::{DataFusionError, Result},
 };
 
-const PRIME64_1: u64 = 0x9E3779B185EBCA87;
-const PRIME64_2: u64 = 0xC2B2AE3D27D4EB4F;
-const PRIME64_3: u64 = 0x165667B19E3779F9;
-const PRIME64_4: u64 = 0x85EBCA77C2B2AE63;
-const PRIME64_5: u64 = 0x27D4EB2F165667C5;
-
 #[inline]
 pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
     #[inline]
