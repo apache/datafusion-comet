@@ -512,15 +512,14 @@ fn copy_i32_to_i8(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
     debug_assert!(dst.len() >= num, "Destination slice is too small");
 
-    for i in 0..num {
-        let i32_value =
-            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-
-        // Downcast to i8, potentially losing data
-        let i8_value = i32_value as i8;
-        let i8_bytes = i8_value.to_le_bytes();
-
-        dst[i] = i8_bytes[0];
+    let src_ptr = src.as_ptr() as *const i32;
+    let dst_ptr = dst.as_mut_ptr() as *mut i8;
+    unsafe {
+        for i in 0..num {
+            dst_ptr
+                .add(i)
+                .write_unaligned(src_ptr.add(i).read_unaligned() as i8);
+        }
     }
 }
 
@@ -528,52 +527,48 @@ fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
     debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
 
-    for i in 0..num {
-        let i32_value =
-            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-
-        // Downcast to u8, potentially losing data
-        let u8_value = i32_value as u8;
-        let u8_bytes = u8_value.to_le_bytes();
-
-        dst[i * 2] = u8_bytes[0];
-        dst[i * 2 + 1] = 0;
+    let src_ptr = src.as_ptr() as *const i32;
+    let dst_ptr = dst.as_mut_ptr() as *mut u8;
+    unsafe {
+        for i in 0..num {
+            dst_ptr
+                .add(2 * i)
+                .write_unaligned(src_ptr.add(i).read_unaligned() as u8);
+            // write zero
+            dst_ptr.add(2 * i + 1).write_unaligned(0_u8);
+        }
     }
 }
 
-fn copy_i32_to_i16(src: &[u8], dst: &mut [u8], num: usize) {
+pub fn copy_i32_to_i16(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
     debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
 
-    for i in 0..num {
-        let i32_value =
-            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-
-        // Downcast to i16, potentially losing data
-        let i16_value = i32_value as i16;
-        let i16_bytes = i16_value.to_le_bytes();
-
-        dst[i * 2] = i16_bytes[0];
-        dst[i * 2 + 1] = i16_bytes[1];
+    let src_ptr = src.as_ptr() as *const i32;
+    let dst_ptr = dst.as_mut_ptr() as *mut i16;
+    unsafe {
+        for i in 0..num {
+            dst_ptr
+                .add(i)
+                .write_unaligned(src_ptr.add(i).read_unaligned() as i16);
+        }
     }
 }
 
-fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
+pub fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
+    debug_assert!(dst.len() >= num * 4, "Destination slice is too small");
 
-    for i in 0..num {
-        let i32_value =
-            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-
-        // Downcast to u16, potentially losing data
-        let u16_value = i32_value as u16;
-        let u16_bytes = u16_value.to_le_bytes();
-
-        dst[i * 4] = u16_bytes[0];
-        dst[i * 4 + 1] = u16_bytes[1];
-        dst[i * 4 + 2] = 0;
-        dst[i * 4 + 3] = 0;
+    let src_ptr = src.as_ptr() as *const i32;
+    let dst_ptr = dst.as_mut_ptr() as *mut u16;
+    unsafe {
+        for i in 0..num {
+            dst_ptr
+                .add(2 * i)
+                .write_unaligned(src_ptr.add(i).read_unaligned() as u16);
+            // write zeroes
+            dst_ptr.add(2 * i + 1).write_unaligned(0_u16);
+        }
     }
 }
 
@@ -581,22 +576,16 @@ fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(src.len() >= num * 4, "Source slice is too small");
     debug_assert!(dst.len() >= num * 8, "Destination slice is too small");
 
-    for i in 0..num {
-        let i32_value =
-            i32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-
-        // Downcast to u32, potentially losing data
-        let u32_value = i32_value as u32;
-        let u32_bytes = u32_value.to_le_bytes();
-
-        dst[i * 8] = u32_bytes[0];
-        dst[i * 8 + 1] = u32_bytes[1];
-        dst[i * 8 + 2] = u32_bytes[2];
-        dst[i * 8 + 3] = u32_bytes[3];
-        dst[i * 8 + 4] = 0;
-        dst[i * 8 + 5] = 0;
-        dst[i * 8 + 6] = 0;
-        dst[i * 8 + 7] = 0;
+    let src_ptr = src.as_ptr() as *const i32;
+    let dst_ptr = dst.as_mut_ptr() as *mut u32;
+    unsafe {
+        for i in 0..num {
+            dst_ptr
+                .add(2 * i)
+                .write_unaligned(src_ptr.add(i).read_unaligned() as u32);
+            // write zeroes
+            dst_ptr.add(2 * i + 1).write_unaligned(0_u32);
+        }
     }
 }
 

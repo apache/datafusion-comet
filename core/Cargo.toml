@@ -137,3 +137,7 @@ harness = false
 [[bench]]
 name = "shuffle_writer"
 harness = false
+
+[[bench]]
+name = "parquet_decode"
+harness = false
