@@ -19,6 +19,7 @@
 mod common;
 
 use arrow_array::ArrayRef;
+use comet::execution::datafusion::spark_hash::create_xxhash64_hashes;
 use comet::execution::kernels::hash;
 use common::*;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -95,6 +96,16 @@ fn criterion_benchmark(c: &mut Criterion) {
             });
         },
     );
+    group.bench_function(BenchmarkId::new("xxhash64", BATCH_SIZE), |b| {
+        let input = vec![a3.clone(), a4.clone()];
+        let mut dst = vec![0; BATCH_SIZE];
+
+        b.iter(|| {
+            for _ in 0..NUM_ITER {
+                create_xxhash64_hashes(&input, &mut dst).unwrap();
+            }
+        });
+    });
 }
 
 fn config() -> Criterion {
