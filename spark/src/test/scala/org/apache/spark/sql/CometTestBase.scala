@@ -402,7 +402,9 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      .withRowGroupSize(rowGroupSize)
+      // TODO we need to shim this and use withRowGroupSize(Long) with later hadoop versions to remove
+      // the deprecated warning here
+      .withRowGroupSize(rowGroupSize.toInt)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
