@@ -438,12 +438,16 @@ impl PlainDictDecoding for BoolType {
     }
 }
 
-macro_rules! impl_plain_decoding_signed {
-    ($dst_type:ty, $copy_fn:ident) => {
+macro_rules! impl_plain_decoding_int {
+    ($dst_type:ty, $copy_fn:ident, $is_signed:expr) => {
         impl PlainDecoding for $dst_type {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
                 let dst_slice = dst.value_buffer.as_slice_mut();
-                let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>();
+                let dst_offset = if $is_signed {
+                    dst.num_values * std::mem::size_of::<$dst_type>()
+                } else {
+                    dst.num_values * std::mem::size_of::<$dst_type>() * 2
+                };
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
                 src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
             }
@@ -455,29 +459,11 @@ macro_rules! impl_plain_decoding_signed {
     };
 }
 
-impl_plain_decoding_signed!(Int8Type, copy_i32_to_i8);
-impl_plain_decoding_signed!(Int16Type, copy_i32_to_i16);
-
-macro_rules! impl_plain_decoding_unsigned {
-    ($dst_type:ty, $copy_fn:ident) => {
-        impl PlainDecoding for $dst_type {
-            fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let dst_slice = dst.value_buffer.as_slice_mut();
-                let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>() * 2;
-                $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-            }
-
-            fn skip(src: &mut PlainDecoderInner, num: usize) {
-                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-            }
-        }
-    };
-}
-
-impl_plain_decoding_unsigned!(UInt8Type, copy_i32_to_u8);
-impl_plain_decoding_unsigned!(UInt16Type, copy_i32_to_u16);
-impl_plain_decoding_unsigned!(UInt32Type, copy_i32_to_u32);
+impl_plain_decoding_int!(Int8Type, copy_i32_to_i8, true);
+impl_plain_decoding_int!(Int16Type, copy_i32_to_i16, true);
+impl_plain_decoding_int!(UInt8Type, copy_i32_to_u8, false);
+impl_plain_decoding_int!(UInt16Type, copy_i32_to_u16, false);
+impl_plain_decoding_int!(UInt32Type, copy_i32_to_u32, false);
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
