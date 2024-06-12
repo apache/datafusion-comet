@@ -953,6 +953,7 @@ under the License.
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
+            <exclude>dev/release/requirements.txt</exclude>
           </excludes>
         </configuration>
       </plugin>
