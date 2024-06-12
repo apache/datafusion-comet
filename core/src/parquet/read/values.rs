@@ -420,15 +420,11 @@ impl PlainDictDecoding for BoolType {
 }
 
 macro_rules! impl_plain_decoding_int {
-    ($dst_type:ty, $copy_fn:ident, $is_signed:expr) => {
+    ($dst_type:ty, $copy_fn:ident, $type_width:expr) => {
         impl PlainDecoding for $dst_type {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
                 let dst_slice = dst.value_buffer.as_slice_mut();
-                let dst_offset = if $is_signed {
-                    dst.num_values * std::mem::size_of::<$dst_type>()
-                } else {
-                    dst.num_values * std::mem::size_of::<$dst_type>() * 2
-                };
+                let dst_offset = dst.num_values * $type_width;
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
                 src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
             }
@@ -440,12 +436,15 @@ macro_rules! impl_plain_decoding_int {
     };
 }
 
-impl_plain_decoding_int!(Int8Type, copy_i32_to_i8, true);
-impl_plain_decoding_int!(Int16Type, copy_i32_to_i16, true);
-impl_plain_decoding_int!(Int32To64Type, copy_i32_to_i64, true);
-impl_plain_decoding_int!(UInt8Type, copy_i32_to_u8, false);
-impl_plain_decoding_int!(UInt16Type, copy_i32_to_u16, false);
-impl_plain_decoding_int!(UInt32Type, copy_i32_to_u32, false);
+impl_plain_decoding_int!(Int8Type, copy_i32_to_i8, 1);
+impl_plain_decoding_int!(Int16Type, copy_i32_to_i16, 2);
+impl_plain_decoding_int!(Int32To64Type, copy_i32_to_i64, 4);
+
+// unsigned type require double the width and zeroes are written for the second half
+// perhaps because they are implemented as the next size up signed type?
+impl_plain_decoding_int!(UInt8Type, copy_i32_to_u8, 2);
+impl_plain_decoding_int!(UInt16Type, copy_i32_to_u16, 4);
+impl_plain_decoding_int!(UInt32Type, copy_i32_to_u32, 8);
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
