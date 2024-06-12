@@ -235,12 +235,14 @@ public class TypeUtil {
   }
 
   private static boolean canReadAsIntDecimal(ColumnDescriptor descriptor, DataType dt) {
-    if (!DecimalType.is32BitDecimalType(dt)) return false;
+    if (!DecimalType.is32BitDecimalType(dt) && !(isSpark40Plus() && dt instanceof DecimalType))
+      return false;
     return isDecimalTypeMatched(descriptor, dt);
   }
 
   private static boolean canReadAsLongDecimal(ColumnDescriptor descriptor, DataType dt) {
-    if (!DecimalType.is64BitDecimalType(dt)) return false;
+    if (!DecimalType.is64BitDecimalType(dt) && !(isSpark40Plus() && dt instanceof DecimalType))
+      return false;
     return isDecimalTypeMatched(descriptor, dt);
   }
 
@@ -264,7 +266,9 @@ public class TypeUtil {
       DecimalLogicalTypeAnnotation decimalType = (DecimalLogicalTypeAnnotation) typeAnnotation;
       // It's OK if the required decimal precision is larger than or equal to the physical decimal
       // precision in the Parquet metadata, as long as the decimal scale is the same.
-      return decimalType.getPrecision() <= d.precision() && decimalType.getScale() == d.scale();
+      return decimalType.getPrecision() <= d.precision()
+          && (decimalType.getScale() == d.scale()
+              || (isSpark40Plus() && decimalType.getScale() <= d.scale()));
     }
     return false;
   }

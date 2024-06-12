@@ -54,7 +54,7 @@ fn bench(c: &mut Criterion) {
         );
         b.iter(|| {
             let cd = ColumnDescriptor::new(t.clone(), 0, 0, ColumnPath::from(Vec::new()));
-            let promition_info = TypePromotionInfo::new(PhysicalType::INT32, -1);
+            let promition_info = TypePromotionInfo::new(PhysicalType::INT32, -1, -1);
             let mut column_reader = TestColumnReader::new(
                 cd,
                 promition_info,

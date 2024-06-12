@@ -1895,20 +1895,10 @@ index 4fb8faa43a3..984fd1a9892 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index a329d3fdc3c..437cf699887 100644
+index a329d3fdc3c..d29523a41f7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -1024,7 +1024,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-     testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
-   }
- 
--  test("SPARK-34212 Parquet should read decimals correctly") {
-+  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
-     def readParquet(schema: String, path: File): DataFrame = {
-       spark.read.schema(schema).parquet(path.toString)
-     }
-@@ -1042,7 +1043,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1042,7 +1042,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema2, path), df)
        }
  
@@ -1918,7 +1908,7 @@ index a329d3fdc3c..437cf699887 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1066,7 +1068,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1066,7 +1067,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
