@@ -440,10 +440,9 @@ impl PlainDictDecoding for BoolType {
 
 impl PlainDecoding for Int8Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values;
-        copy_i32_to_i8(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        copy_i32_to_i8(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
 
@@ -454,10 +453,9 @@ impl PlainDecoding for Int8Type {
 
 impl PlainDecoding for UInt8Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values * 2;
-        copy_i32_to_u8(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        copy_i32_to_u8(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
 
@@ -468,10 +466,9 @@ impl PlainDecoding for UInt8Type {
 
 impl PlainDecoding for Int16Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values * 2;
-        copy_i32_to_i16(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        copy_i32_to_i16(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
 
@@ -482,10 +479,9 @@ impl PlainDecoding for Int16Type {
 
 impl PlainDecoding for UInt16Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values * 4;
-        copy_i32_to_u16(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        copy_i32_to_u16(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
     }
 
@@ -496,10 +492,9 @@ impl PlainDecoding for UInt16Type {
 
 impl PlainDecoding for UInt32Type {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_data = &src.data;
         let dst_slice = dst.value_buffer.as_slice_mut();
         let dst_offset = dst.num_values * 8;
-        copy_i32_to_u32(&src_data[src.offset..], &mut dst_slice[dst_offset..], num);
+        copy_i32_to_u32(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
         src.offset += 4 * num;
     }
 
@@ -508,86 +503,64 @@ impl PlainDecoding for UInt32Type {
     }
 }
 
-fn copy_i32_to_i8(src: &[u8], dst: &mut [u8], num: usize) {
-    debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num, "Destination slice is too small");
+macro_rules! generate_cast_to_unsigned {
+    ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
+        pub fn $name(src: &[u8], dst: &mut [u8], num: usize) {
+            debug_assert!(
+                src.len() >= num * std::mem::size_of::<$src_type>(),
+                "Source slice is too small"
+            );
+            debug_assert!(
+                dst.len() >= num * std::mem::size_of::<$dst_type>() * 2,
+                "Destination slice is too small"
+            );
 
-    let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr() as *mut i8;
-    unsafe {
-        for i in 0..num {
-            dst_ptr
-                .add(i)
-                .write_unaligned(src_ptr.add(i).read_unaligned() as i8);
+            let src_ptr = src.as_ptr() as *const $src_type;
+            let dst_ptr = dst.as_mut_ptr() as *mut $dst_type;
+            unsafe {
+                for i in 0..num {
+                    dst_ptr
+                        .add(2 * i)
+                        .write_unaligned(src_ptr.add(i).read_unaligned() as $dst_type);
+                    // write zeroes
+                    dst_ptr.add(2 * i + 1).write_unaligned($zero_value);
+                }
+            }
         }
-    }
+    };
 }
 
-fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
-    debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
+generate_cast_to_unsigned!(copy_i32_to_u8, i32, u8, 0_u8);
+generate_cast_to_unsigned!(copy_i32_to_u16, i32, u16, 0_u16);
+generate_cast_to_unsigned!(copy_i32_to_u32, i32, u32, 0_u32);
 
-    let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr();
-    unsafe {
-        for i in 0..num {
-            dst_ptr
-                .add(2 * i)
-                .write_unaligned(src_ptr.add(i).read_unaligned() as u8);
-            // write zero
-            dst_ptr.add(2 * i + 1).write_unaligned(0_u8);
+macro_rules! generate_cast_to_signed {
+    ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
+        pub fn $name(src: &[u8], dst: &mut [u8], num: usize) {
+            debug_assert!(
+                src.len() >= num * std::mem::size_of::<$src_type>(),
+                "Source slice is too small"
+            );
+            debug_assert!(
+                dst.len() >= num * std::mem::size_of::<$dst_type>(),
+                "Destination slice is too small"
+            );
+
+            let src_ptr = src.as_ptr() as *const $src_type;
+            let dst_ptr = dst.as_mut_ptr() as *mut $dst_type;
+            unsafe {
+                for i in 0..num {
+                    dst_ptr
+                        .add(i)
+                        .write_unaligned(src_ptr.add(i).read_unaligned() as $dst_type);
+                }
+            }
         }
-    }
+    };
 }
 
-pub fn copy_i32_to_i16(src: &[u8], dst: &mut [u8], num: usize) {
-    debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
-
-    let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr() as *mut i16;
-    unsafe {
-        for i in 0..num {
-            dst_ptr
-                .add(i)
-                .write_unaligned(src_ptr.add(i).read_unaligned() as i16);
-        }
-    }
-}
-
-pub fn copy_i32_to_u16(src: &[u8], dst: &mut [u8], num: usize) {
-    debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 4, "Destination slice is too small");
-
-    let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr() as *mut u16;
-    unsafe {
-        for i in 0..num {
-            dst_ptr
-                .add(2 * i)
-                .write_unaligned(src_ptr.add(i).read_unaligned() as u16);
-            // write zeroes
-            dst_ptr.add(2 * i + 1).write_unaligned(0_u16);
-        }
-    }
-}
-
-fn copy_i32_to_u32(src: &[u8], dst: &mut [u8], num: usize) {
-    debug_assert!(src.len() >= num * 4, "Source slice is too small");
-    debug_assert!(dst.len() >= num * 8, "Destination slice is too small");
-
-    let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr() as *mut u32;
-    unsafe {
-        for i in 0..num {
-            dst_ptr
-                .add(2 * i)
-                .write_unaligned(src_ptr.add(i).read_unaligned() as u32);
-            // write zeroes
-            dst_ptr.add(2 * i + 1).write_unaligned(0_u32);
-        }
-    }
-}
+generate_cast_to_signed!(copy_i32_to_i8, i32, i8, 0_i8);
+generate_cast_to_signed!(copy_i32_to_i16, i32, i16, 0_i16);
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
