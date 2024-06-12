@@ -1476,15 +1476,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, _) =>
+        case Abs(child, failOnErr) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val abs =
-              ExprOuterClass.Abs
-                .newBuilder()
-                .setChild(childExpr.get)
-                .build()
-            Some(Expr.newBuilder().setAbs(abs).build())
+            val evalModeStr =
+              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+            val absBuilder = ExprOuterClass.Abs.newBuilder()
+            absBuilder.setChild(childExpr.get)
+            absBuilder.setEvalMode(evalModeStr)
+            Some(Expr.newBuilder().setAbs(absBuilder).build())
           } else {
             withInfo(expr, child)
             None
@@ -2101,19 +2101,27 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
         case XxHash64(children, seed) =>
-          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-          if (firstUnSupportedInput.isDefined) {
-            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-            return None
+          if (CometConf.COMET_XXHASH64_ENABLED.get()) {
+            val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+            if (firstUnSupportedInput.isDefined) {
+              withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+              return None
+            }
+            val exprs = children.map(exprToProtoInternal(_, inputs))
+            val seedBuilder = ExprOuterClass.Literal
+              .newBuilder()
+              .setDatatype(serializeDataType(LongType).get)
+              .setLongVal(seed)
+            val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+            // the seed is put at the end of the arguments
+            scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+          } else {
+            withInfo(
+              expr,
+              "xxhash64 is disabled by default. " +
+                s"Set ${CometConf.COMET_XXHASH64_ENABLED.key}=true to enable it.")
+            None
           }
-          val exprs = children.map(exprToProtoInternal(_, inputs))
-          val seedBuilder = ExprOuterClass.Literal
-            .newBuilder()
-            .setDatatype(serializeDataType(LongType).get)
-            .setLongVal(seed)
-          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-          // the seed is put at the end of the arguments
-          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {

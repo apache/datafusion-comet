@@ -40,6 +40,30 @@ Here are the steps, using the 0.1.0 release as an example:
 - Tag the release branch with `0.1.0-rc1` and push to the Apache repo
 - Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`
 
+### Generating the Change Log
+
+We haven't yet defined how tagging and branching will work for the source releases. This project is more complex 
+than DataFusion core because it consists of a Maven project and a Cargo project. However, generating a change log 
+to cover changes between any two commits or tags can be performed by running the provided `generate-changelog.py` 
+script.
+
+It is recommended that you set up a virtual Python environment and then install the dependencies:
+
+```shell
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
+```
+
+To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script 
+providing two commit ids or tags followed by the version number of the release being created. The following 
+example generates a change log of all changes between the first commit and the current HEAD revision.
+
+```shell
+export GITHUB_TOKEN=<your-token-here>
+python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 HEAD 0.1.0 > ../changelog/0.1.0.md
+```
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
