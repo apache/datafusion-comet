@@ -43,7 +43,7 @@ Create and merge a PR against the release branch to update the Maven version fro
 
 ### Generate the Change Log
 
-Generate a change log to cover changes between the previous release and the release branch HEAD by running 
+Generate a change log to cover changes between the previous release and the release branch HEAD by running
 the provided `generate-changelog.py` script.
 
 It is recommended that you set up a virtual Python environment and then install the dependencies:
@@ -63,7 +63,7 @@ export GITHUB_TOKEN=<your-token-here>
 python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 branch-0.1 0.0.0 > ../changelog/0.1.0.md
 ```
 
-Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the 
+Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
 commit into the release branch.
 
 ### Tag the Release Candidate
@@ -76,10 +76,10 @@ git checkout branch-0.1
 git reset --hard apache/branch-0.1
 git tag 0.1.0-rc1
 git push apache 0.1.0-rc1
-````
+```
 
 ### Update Version in main
- 
+
 Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`.
 
 ## Publishing the Release Candidate
@@ -110,9 +110,9 @@ Push a release tag (`0.1.0`) to the Apache repository.
 
 ```shell
 git fetch apache
-git checkout 0.1.0-rc1 
+git checkout 0.1.0-rc1
 git tag 0.1.0
-git push apache 0.1.0 
+git push apache 0.1.0
 ```
 
 Reply to the vote thread to close the vote and announce the release.
