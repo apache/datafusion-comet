@@ -438,70 +438,46 @@ impl PlainDictDecoding for BoolType {
     }
 }
 
-impl PlainDecoding for Int8Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values;
-        copy_i32_to_i8(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
+macro_rules! impl_plain_decoding_signed {
+    ($dst_type:ty, $copy_fn:ident) => {
+        impl PlainDecoding for $dst_type {
+            fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+                let dst_slice = dst.value_buffer.as_slice_mut();
+                let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>();
+                $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
+                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+            }
 
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
+            fn skip(src: &mut PlainDecoderInner, num: usize) {
+                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+            }
+        }
+    };
 }
 
-impl PlainDecoding for UInt8Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 2;
-        copy_i32_to_u8(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
+impl_plain_decoding_signed!(Int8Type, copy_i32_to_i8);
+impl_plain_decoding_signed!(Int16Type, copy_i32_to_i16);
 
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
+macro_rules! impl_plain_decoding_unsigned {
+    ($dst_type:ty, $copy_fn:ident) => {
+        impl PlainDecoding for $dst_type {
+            fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+                let dst_slice = dst.value_buffer.as_slice_mut();
+                let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>() * 2;
+                $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
+                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+            }
+
+            fn skip(src: &mut PlainDecoderInner, num: usize) {
+                src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
+            }
+        }
+    };
 }
 
-impl PlainDecoding for Int16Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 2;
-        copy_i32_to_i16(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
-
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
-}
-
-impl PlainDecoding for UInt16Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 4;
-        copy_i32_to_u16(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
-
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-    }
-}
-
-impl PlainDecoding for UInt32Type {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let dst_slice = dst.value_buffer.as_slice_mut();
-        let dst_offset = dst.num_values * 8;
-        copy_i32_to_u32(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
-        src.offset += 4 * num;
-    }
-
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num;
-    }
-}
+impl_plain_decoding_unsigned!(UInt8Type, copy_i32_to_u8);
+impl_plain_decoding_unsigned!(UInt16Type, copy_i32_to_u16);
+impl_plain_decoding_unsigned!(UInt32Type, copy_i32_to_u32);
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
