@@ -48,8 +48,7 @@ pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
                     if integer < 0 {
                         return Ok("".to_string()); // Return empty string for negative integers
                     }
-                    let adjusted_integer = if integer >= 0 { integer % 256 } else { integer };
-                    match core::char::from_u32(adjusted_integer as u32) {
+                    match core::char::from_u32((integer % 256) as u32) {
                         Some(ch) => Ok(ch.to_string()),
                         None => {
                             exec_err!("requested character not compatible for encoding.")
