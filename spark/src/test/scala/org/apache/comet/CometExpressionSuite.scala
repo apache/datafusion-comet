@@ -20,8 +20,10 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
+
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -29,9 +31,8 @@ import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
-import java.sql.Timestamp
+import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
