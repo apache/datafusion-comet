@@ -528,7 +528,7 @@ fn copy_i32_to_u8(src: &[u8], dst: &mut [u8], num: usize) {
     debug_assert!(dst.len() >= num * 2, "Destination slice is too small");
 
     let src_ptr = src.as_ptr() as *const i32;
-    let dst_ptr = dst.as_mut_ptr() as *mut u8;
+    let dst_ptr = dst.as_mut_ptr();
     unsafe {
         for i in 0..num {
             dst_ptr
