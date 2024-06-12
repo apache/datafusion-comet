@@ -158,28 +158,30 @@ class CometSparkSessionExtensions
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[AttributeReference],
+                attrs: Seq[_],
                 requiredSchema,
                 _,
                 _,
                 _,
                 _,
                 _,
-                _) if isSchemaSupported(requiredSchema) && isSchemaSupported(partitionSchema) =>
+                _)
+              if isSchemaSupported(requiredSchema) && isSchemaSupported(partitionSchema) && attrs
+                .forall(_.isInstanceOf[AttributeReference]) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
 
           // data source v1 not supported case
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[AttributeReference],
+                attrs: Seq[_],
                 requiredSchema,
                 _,
                 _,
                 _,
                 _,
                 _,
-                _) =>
+                _) if attrs.forall(_.isInstanceOf[AttributeReference]) =>
             val info1 = createMessage(
               !isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
