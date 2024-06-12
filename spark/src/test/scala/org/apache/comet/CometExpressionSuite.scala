@@ -20,10 +20,8 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
-
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -31,8 +29,9 @@ import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-
 import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
+
+import java.sql.Timestamp
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -229,9 +228,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case None =>
                 Row(null, null, null)
               case Some(i) =>
-                val hour = new java.sql.Timestamp(i).toLocalDateTime.getHour
-                val minute = new java.sql.Timestamp(i).toLocalDateTime.getMinute
-                val second = new java.sql.Timestamp(i).toLocalDateTime.getSecond
+                val timestamp = new Timestamp(i).toLocalDateTime
+                val hour = timestamp.getHour
+                val minute = timestamp.getMinute
+                val second = timestamp.getSecond
 
                 Row(hour, minute, second)
             })
