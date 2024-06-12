@@ -402,7 +402,7 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      .withRowGroupSize(rowGroupSize.toInt)
+      .withRowGroupSize(rowGroupSize)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
