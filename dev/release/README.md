@@ -40,6 +40,7 @@ Create a release branch from the latest commit in main and push to the Apache re
 ```shell
 get fetch apache
 git checkout main
+git reset --hard apache/main
 git checkout -b branch-0.1
 git push apache branch-0.1
 ```
@@ -76,8 +77,9 @@ commit into the release branch.
 Tag the release branch with `0.1.0-rc1` and push to the Apache repo
 
 ```shell
+git fetch apache
 git checkout branch-0.1
-git pull
+git reset --hard apache/branch-0.1
 git tag 0.1.0-rc1
 git push apache 0.1.0-rc1
 ````
