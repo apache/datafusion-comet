@@ -16,7 +16,6 @@
 // under the License.
 
 pub(crate) mod bit_packing;
-pub mod hash_util;
 pub mod jni;
 pub mod memory;
 
