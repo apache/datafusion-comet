@@ -172,16 +172,14 @@ abstract class CometTestBase
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
     val wrapped = wrapCometRowToColumnar(plan)
     wrapped.foreach {
-      case _: CometScanExec | _: CometBatchScanExec => true
-      case _: CometSinkPlaceHolder | _: CometScanWrapper => false
-      case _: CometRowToColumnarExec => false
-      case _: CometExec | _: CometShuffleExchangeExec => true
-      case _: CometBroadcastExchangeExec => true
-      case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter => true
+      case _: CometScanExec | _: CometBatchScanExec =>
+      case _: CometSinkPlaceHolder | _: CometScanWrapper =>
+      case _: CometRowToColumnarExec =>
+      case _: CometExec | _: CometShuffleExchangeExec =>
+      case _: CometBroadcastExchangeExec =>
+      case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter =>
       case op =>
-        if (excludedClasses.exists(c => c.isAssignableFrom(op.getClass))) {
-          true
-        } else {
+        if (!excludedClasses.exists(c => c.isAssignableFrom(op.getClass))) {
           assert(
             false,
             s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
