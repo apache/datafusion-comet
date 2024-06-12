@@ -24,11 +24,9 @@ use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    logical_expr::Operator as DataFusionOperator,
-    functions::math,
     logical_expr::{
-        expr::find_df_window_func, BuiltinScalarFunction, Operator as DataFusionOperator,
-        ScalarFunctionDefinition, WindowFrame, WindowFrameBound, WindowFrameUnits,
+        expr::find_df_window_func, Operator as DataFusionOperator, WindowFrame, WindowFrameBound,
+        WindowFrameUnits,
     },
     physical_expr::{
         execution_props::ExecutionProps,
@@ -99,9 +97,9 @@ use crate::{
         },
         spark_operator::{
             lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-            upper_window_frame_bound::UpperFrameBoundStruct, JoinType, Operator, WindowFrameType,
+            upper_window_frame_bound::UpperFrameBoundStruct, BuildSide, JoinType, Operator,
+            WindowFrameType,
         },
-        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
