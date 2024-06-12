@@ -229,7 +229,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case None =>
                 Row(null, null, null)
               case Some(i) =>
-                val timestamp = new Timestamp(i).toLocalDateTime
+                val timestamp = new java.sql.Timestamp(i).toLocalDateTime
                 val hour = timestamp.getHour
                 val minute = timestamp.getMinute
                 val second = timestamp.getSecond
