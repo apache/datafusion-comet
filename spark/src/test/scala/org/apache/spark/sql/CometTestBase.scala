@@ -402,7 +402,7 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      // TODO we need to shim this and use withRowGroupSize(Long) with later hadoop versions to remove
+      // TODO we need to shim this and use withRowGroupSize(Long) with later parquet-hadoop versions to remove
       // the deprecated warning here
       .withRowGroupSize(rowGroupSize.toInt)
       .withPageSize(pageSize)
