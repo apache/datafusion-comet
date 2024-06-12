@@ -324,7 +324,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
                   datafusionMessage = dfMessage.getOrElse("")),
                 group = func.group)
 
-            case e =>
+            case e: Throwable =>
               CoverageResult(
                 q,
                 CoverageResultStatus.Failed,
