@@ -112,7 +112,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("murmur3", BATCH_SIZE), |b| {
         let inputs = &[
             ColumnarValue::Array(a3.clone()),
-            ColumnarValue::Array(a3.clone()),
+            ColumnarValue::Array(a4.clone()),
             ColumnarValue::Scalar(ScalarValue::Int32(Some(42))),
         ];
         b.iter(|| {
