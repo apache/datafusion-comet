@@ -44,6 +44,7 @@ pub struct Covariance {
     expr1: Arc<dyn PhysicalExpr>,
     expr2: Arc<dyn PhysicalExpr>,
     stats_type: StatsType,
+    null_on_divide_by_zero: bool,
 }
 
 impl Covariance {
@@ -54,6 +55,7 @@ impl Covariance {
         name: impl Into<String>,
         data_type: DataType,
         stats_type: StatsType,
+        null_on_divide_by_zero: bool,
     ) -> Self {
         // the result of covariance just support FLOAT64 data type.
         assert!(matches!(data_type, DataType::Float64));
@@ -62,6 +64,7 @@ impl Covariance {
             expr1,
             expr2,
             stats_type,
+            null_on_divide_by_zero,
         }
     }
 }
@@ -77,7 +80,7 @@ impl AggregateExpr for Covariance {
     }
 
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(CovarianceAccumulator::try_new(self.stats_type)?))
+        Ok(Box::new(CovarianceAccumulator::try_new(self.stats_type, self.null_on_divide_by_zero)?))
     }
 
     fn state_fields(&self) -> Result<Vec<Field>> {
@@ -123,6 +126,7 @@ impl PartialEq<dyn Any> for Covariance {
                     && self.expr1.eq(&x.expr1)
                     && self.expr2.eq(&x.expr2)
                     && self.stats_type == x.stats_type
+                    && self.null_on_divide_by_zero == x.null_on_divide_by_zero
             })
             .unwrap_or(false)
     }
@@ -136,17 +140,19 @@ pub struct CovarianceAccumulator {
     mean2: f64,
     count: f64,
     stats_type: StatsType,
+    null_on_divide_by_zero: bool,
 }
 
 impl CovarianceAccumulator {
     /// Creates a new `CovarianceAccumulator`
-    pub fn try_new(s_type: StatsType) -> Result<Self> {
+    pub fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             algo_const: 0_f64,
             mean1: 0_f64,
             mean2: 0_f64,
             count: 0_f64,
             stats_type: s_type,
+            null_on_divide_by_zero,
         })
     }
 
@@ -287,22 +293,24 @@ impl Accumulator for CovarianceAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
+        if self.count == 0.0 {
+            return Ok(ScalarValue::Float64(None));
+        }
+
         let count = match self.stats_type {
             StatsType::Population => self.count,
-            StatsType::Sample => {
-                if self.count > 0.0 {
-                    self.count - 1.0
+            StatsType::Sample if self.count > 1.0 => self.count - 1.0,
+            StatsType::Sample => { // self.count == 1.0
+                return if self.null_on_divide_by_zero {
+                    Ok(ScalarValue::Float64(None))
                 } else {
-                    self.count
-                }
+                    Ok(ScalarValue::Float64(Some(f64::NAN)))
+                };
             }
         };
 
-        if count == 0.0 {
-            Ok(ScalarValue::Float64(None))
-        } else {
-            Ok(ScalarValue::Float64(Some(self.algo_const / count)))
-        }
+        let result = self.algo_const / count;
+        Ok(ScalarValue::Float64(Some(result)))
     }
 
     fn size(&self) -> usize {

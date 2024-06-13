@@ -92,11 +92,10 @@ message AggExpr {
     BitAndAgg bitAndAgg = 9;
     BitOrAgg bitOrAgg = 10;
     BitXorAgg bitXorAgg = 11;
-    CovSample covSample = 12;
-    CovPopulation covPopulation = 13;
-    Variance variance = 14;
-    Stddev stddev = 15;
-    Correlation correlation = 16;
+    Covariance covariance = 12;
+    Variance variance = 13;
+    Stddev stddev = 14;
+    Correlation correlation = 15;
   }
 }
 
@@ -159,18 +158,12 @@ message BitXorAgg {
   DataType datatype = 2;
 }
 
-message CovSample {
+message Covariance {
   Expr child1 = 1;
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
   DataType datatype = 4;
-}
-
-message CovPopulation {
-  Expr child1 = 1;
-  Expr child2 = 2;
-  bool null_on_divide_by_zero = 3;
-  DataType datatype = 4;
+  StatisticsType stats_type = 5;
 }
 
 message Variance {

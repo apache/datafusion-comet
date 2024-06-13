@@ -1243,29 +1243,32 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
             }
-            AggExprStruct::CovSample(expr) => {
+            AggExprStruct::Covariance(expr) => {
                 let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
                 let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Covariance::new(
-                    child1,
-                    child2,
-                    "covariance",
-                    datatype,
-                    StatsType::Sample,
-                )))
-            }
-            AggExprStruct::CovPopulation(expr) => {
-                let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
-                let child2 = self.create_expr(expr.child2.as_ref().unwrap(), schema.clone())?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Covariance::new(
-                    child1,
-                    child2,
-                    "covariance_pop",
-                    datatype,
-                    StatsType::Population,
-                )))
+                match expr.stats_type {
+                    0 => Ok(Arc::new(Covariance::new(
+                        child1,
+                        child2,
+                        "covariance",
+                        datatype,
+                        StatsType::Sample,
+                        expr.null_on_divide_by_zero,
+                    ))),
+                    1 => Ok(Arc::new(Covariance::new(
+                        child1,
+                        child2,
+                        "covariance_pop",
+                        datatype,
+                        StatsType::Population,
+                        expr.null_on_divide_by_zero,
+                    ))),
+                    stats_type => Err(ExecutionError::GeneralError(format!(
+                        "Unknown StatisticsType {:?} for Variance",
+                        stats_type
+                    ))),
+                }
             }
             AggExprStruct::Variance(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;

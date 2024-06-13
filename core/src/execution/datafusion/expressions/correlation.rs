@@ -150,7 +150,7 @@ impl CorrelationAccumulator {
     /// Creates a new `CorrelationAccumulator`
     pub fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
-            covar: CovarianceAccumulator::try_new(StatsType::Population)?,
+            covar: CovarianceAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
             stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
             stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
             null_on_divide_by_zero,
