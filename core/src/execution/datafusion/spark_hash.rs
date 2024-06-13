@@ -481,7 +481,7 @@ pub(crate) fn create_murmur3_hashes<'a>(
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
-pub(crate) fn create_xxhash64_hashes<'a>(
+pub fn create_xxhash64_hashes<'a>(
     arrays: &[ArrayRef],
     hashes_buffer: &'a mut [u64],
 ) -> Result<&'a mut [u64]> {

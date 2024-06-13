@@ -636,7 +636,7 @@ fn spark_decimal_div(
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
 
-fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];
     match seed {
