@@ -142,3 +142,64 @@ impl PhysicalExpr for RLike {
         self.hash(&mut s);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+    use arrow_array::builder::{StringBuilder, StringDictionaryBuilder};
+    use arrow_array::{Array, BooleanArray, RecordBatch};
+    use arrow_array::types::Int32Type;
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
+    use datafusion_common::{DataFusionError, ScalarValue};
+    use datafusion_expr::ColumnarValue;
+    use datafusion_physical_expr::expressions::Literal;
+    use datafusion_physical_expr_common::expressions::column::Column;
+    use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+    use super::*;
+
+    #[test]
+    fn test_string_input() -> Result<(), DataFusionError> {
+        do_test(0, "5[0-9]5", 10)
+    }
+
+    #[test]
+    fn test_dict_encoded_string_input() -> Result<(), DataFusionError> {
+        do_test(1, "5[0-9]5", 10)
+    }
+
+    fn do_test(column: usize, pattern: &str, expected_count: usize) -> Result<(), DataFusionError> {
+        let batch = create_utf8_batch()?;
+        let child_expr = Arc::new(Column::new("foo", column));
+        let pattern_expr = Arc::new(Literal::new(ScalarValue::Utf8(Some(pattern.to_string()))));
+        let rlike  = RLike::new(child_expr, pattern_expr);
+        if let ColumnarValue::Array(array) = rlike.evaluate(&batch).unwrap() {
+            let array = array.as_any().downcast_ref::<BooleanArray>().expect("boolean array");
+            assert_eq!(expected_count, array.true_count());
+        } else {
+            unreachable!()
+        }
+        Ok(())
+    }
+
+    fn create_utf8_batch() -> Result<RecordBatch, ArrowError> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Utf8, true),
+            Field::new("b", DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)), true)
+        ]));
+        let mut string_builder = StringBuilder::new();
+        let mut string_dict_builder = StringDictionaryBuilder::<Int32Type>::new();
+        for i in 0..1000 {
+            if i % 10 == 0 {
+                string_builder.append_null();
+                string_dict_builder.append_null();
+            } else {
+                string_builder.append_value(format!("{}", i));
+                string_dict_builder.append_value(format!("{}", i));
+            }
+        }
+        let string_array = string_builder.finish();
+        let string_dict_array2 = string_dict_builder.finish();
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(string_array), Arc::new(string_dict_array2)])
+    }
+
+}
