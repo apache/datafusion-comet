@@ -878,6 +878,7 @@ dependencies = [
  "futures",
  "half",
  "hashbrown",
+ "hex",
  "itertools 0.11.0",
  "jni",
  "lazy_static",

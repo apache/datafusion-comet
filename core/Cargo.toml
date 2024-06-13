@@ -93,6 +93,7 @@ criterion = "0.5.1"
 jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "7"
+hex = "0.4.3"
 
 [features]
 default = []
@@ -135,4 +136,8 @@ harness = false
 
 [[bench]]
 name = "shuffle_writer"
+harness = false
+
+[[bench]]
+name = "parquet_decode"
 harness = false
