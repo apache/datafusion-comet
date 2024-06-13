@@ -19,14 +19,14 @@
 mod common;
 
 use arrow_array::ArrayRef;
+use comet::execution::datafusion::expressions::scalar_funcs::spark_murmur3_hash;
 use comet::execution::datafusion::spark_hash::create_xxhash64_hashes;
 use comet::execution::kernels::hash;
 use common::*;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::sync::Arc;
 use datafusion_common::ScalarValue;
 use datafusion_expr::ColumnarValue;
-use comet::execution::datafusion::expressions::scalar_funcs::spark_murmur3_hash;
+use std::sync::Arc;
 
 const BATCH_SIZE: usize = 1024 * 8;
 const NUM_ITER: usize = 10;
@@ -110,7 +110,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     });
     group.bench_function(BenchmarkId::new("murmur3", BATCH_SIZE), |b| {
-        let inputs = &[ColumnarValue::Array(a3.clone()), ColumnarValue::Array(a3.clone()), ColumnarValue::Scalar(ScalarValue::Int32(Some(42)))];
+        let inputs = &[
+            ColumnarValue::Array(a3.clone()),
+            ColumnarValue::Array(a3.clone()),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(42))),
+        ];
         b.iter(|| {
             for _ in 0..NUM_ITER {
                 spark_murmur3_hash(inputs).unwrap();
