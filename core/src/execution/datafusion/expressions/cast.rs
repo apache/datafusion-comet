@@ -1913,4 +1913,17 @@ mod tests {
         let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
         assert!(result.is_err())
     }
+
+    #[test]
+    fn test_cast_invalid_timezone() {
+        let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
+        let cast = Cast::new(
+            Arc::new(Column::new("a", 0)),
+            DataType::Date32,
+            EvalMode::Legacy,
+            "Not a valid timezone".to_owned(),
+        );
+        let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
+        assert!(result.is_err())
+    }
 }
