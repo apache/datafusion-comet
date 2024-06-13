@@ -80,7 +80,10 @@ impl AggregateExpr for Covariance {
     }
 
     fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(CovarianceAccumulator::try_new(self.stats_type, self.null_on_divide_by_zero)?))
+        Ok(Box::new(CovarianceAccumulator::try_new(
+            self.stats_type,
+            self.null_on_divide_by_zero,
+        )?))
     }
 
     fn state_fields(&self) -> Result<Vec<Field>> {
@@ -300,7 +303,8 @@ impl Accumulator for CovarianceAccumulator {
         let count = match self.stats_type {
             StatsType::Population => self.count,
             StatsType::Sample if self.count > 1.0 => self.count - 1.0,
-            StatsType::Sample => { // self.count == 1.0
+            StatsType::Sample => {
+                // self.count == 1.0
                 return if self.null_on_divide_by_zero {
                     Ok(ScalarValue::Float64(None))
                 } else {
