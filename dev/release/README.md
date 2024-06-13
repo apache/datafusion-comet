@@ -29,7 +29,17 @@ Here are the steps, using the 0.1.0 release as an example.
 
 ### Create Release Branch
 
-Create a release branch from the latest commit in main and push to the Apache repo:
+This document assumes that GitHub remotes are set up as follows:
+
+```shell
+$ git remote -v
+apache	git@github.com:apache/datafusion-comet.git (fetch)
+apache	git@github.com:apache/datafusion-comet.git (push)
+origin	git@github.com:yourgithubid/datafusion-comet.git (fetch)
+origin	git@github.com:yourgithubid/datafusion-comet.git (push)
+```
+
+Create a release branch from the latest commit in main and push to the `apache` repo:
 
 ```shell
 get fetch apache
@@ -68,7 +78,7 @@ commit into the release branch.
 
 ### Tag the Release Candidate
 
-Tag the release branch with `0.1.0-rc1` and push to the Apache repo
+Tag the release branch with `0.1.0-rc1` and push to the `apache` repo
 
 ```shell
 git fetch apache
@@ -106,7 +116,7 @@ Once the vote passes, run the release-tarball script to move the tarball to the 
 ./dev/release/create-tarball.sh 0.1.0 1
 ```
 
-Push a release tag (`0.1.0`) to the Apache repository.
+Push a release tag (`0.1.0`) to the `apache` repository.
 
 ```shell
 git fetch apache
