@@ -24,17 +24,17 @@ use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    functions::math,
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
-            FirstValue, InListExpr, IsNotNullExpr, IsNullExpr, LastValue,
-            Literal as DataFusionLiteral, Max, Min, NotExpr, Sum,
+            FirstValue, IsNotNullExpr, IsNullExpr, LastValue, Literal as DataFusionLiteral, Max,
+            Min, NotExpr, Sum,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
+    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         filter::FilterExec,
@@ -50,6 +50,7 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_expr::ScalarUDF;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -64,7 +65,7 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::{Cast, EvalMode},
+                cast::Cast,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
                 covariance::Covariance,
@@ -92,10 +93,12 @@ use crate::{
             agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
             ScalarFunc,
         },
-        spark_operator::{operator::OpStruct, JoinType, Operator},
+        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
         spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
+
+use super::expressions::{abs::CometAbsFunc, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -356,11 +359,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = match spark_expression::EvalMode::try_from(expr.eval_mode)? {
-                    spark_expression::EvalMode::Legacy => EvalMode::Legacy,
-                    spark_expression::EvalMode::Try => EvalMode::Try,
-                    spark_expression::EvalMode::Ansi => EvalMode::Ansi,
-                };
+                let eval_mode = expr.eval_mode.try_into()?;
 
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
@@ -505,7 +504,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let expr = ScalarFunctionExpr::new("abs", math::abs(), args, return_type);
+                let eval_mode = expr.eval_mode.try_into()?;
+                let comet_abs = Arc::new(ScalarUDF::new_from_impl(CometAbsFunc::new(
+                    eval_mode,
+                    return_type.to_string(),
+                )?));
+                let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
                 Ok(Arc::new(expr))
             }
             ExprStruct::CaseWhen(case_when) => {
@@ -547,18 +551,7 @@ impl PhysicalPlanner {
                     .map(|x| self.create_expr(x, input_schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // if schema contains any dictionary type, we should use InListExpr instead of
-                // in_list as it doesn't handle value being dictionary type correctly
-                let contains_dict_type = input_schema
-                    .fields()
-                    .iter()
-                    .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)));
-                if contains_dict_type {
-                    // TODO: remove the fallback when https://github.com/apache/arrow-datafusion/issues/9530 is fixed
-                    Ok(Arc::new(InListExpr::new(value, list, expr.negated, None)))
-                } else {
-                    in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
-                }
+                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
@@ -972,7 +965,7 @@ impl PhysicalPlanner {
                     join.join_type,
                     &join.condition,
                 )?;
-                let join = Arc::new(HashJoinExec::try_new(
+                let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
                     join_params.right,
                     join_params.join_on,
@@ -984,7 +977,15 @@ impl PhysicalPlanner {
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     false,
                 )?);
-                Ok((scans, join))
+
+                // If the hash join is build right, we need to swap the left and right
+                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
+                    hash_join
+                } else {
+                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
+                };
+
+                Ok((scans, hash_join))
             }
         }
     }
@@ -1389,7 +1390,7 @@ impl PhysicalPlanner {
 
 impl From<DataFusionError> for ExecutionError {
     fn from(value: DataFusionError) -> Self {
-        ExecutionError::DataFusionError(value.to_string())
+        ExecutionError::DataFusionError(value.message().to_string())
     }
 }
 
@@ -1561,6 +1562,7 @@ mod tests {
         spark_operator,
     };
 
+    use crate::execution::operators::ExecutionError;
     use spark_expression::expr::ExprStruct::*;
     use spark_operator::{operator::OpStruct, Operator};
 
@@ -1748,6 +1750,14 @@ mod tests {
         let stream = datafusion_plan.execute(0, task_ctx.clone()).unwrap();
         let output = collect(stream).await.unwrap();
         assert!(output.is_empty());
+    }
+
+    #[tokio::test()]
+    async fn from_datafusion_error_to_comet() {
+        let err_msg = "exec error";
+        let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
+        let comet_err: ExecutionError = err.into();
+        assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }
 
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to

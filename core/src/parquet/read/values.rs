@@ -443,49 +443,21 @@ macro_rules! make_int_variant_impl {
     ($ty: ident, $native_ty: ty, $type_size: expr) => {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let num_bytes = 4 * num; // Parquet stores Int8/Int16 using 4 bytes
-
                 let src_data = &src.data;
-                let mut src_offset = src.offset;
                 let dst_slice = dst.value_buffer.as_slice_mut();
                 let mut dst_offset = dst.num_values * $type_size;
-
-                let mut i = 0;
-                let mut in_ptr = &src_data[src_offset..] as *const [u8] as *const u8 as *const u32;
-
-                while num - i >= 32 {
-                    unsafe {
-                        let in_slice = std::slice::from_raw_parts(in_ptr, 32);
-
-                        for n in 0..32 {
-                            copy_nonoverlapping(
-                                in_slice[n..].as_ptr() as *const $native_ty,
-                                &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
-                                1,
-                            );
-                            i += 1;
-                            dst_offset += $type_size;
-                        }
-                        in_ptr = in_ptr.offset(32);
-                    }
-                }
-
-                src_offset += i * 4;
-
-                (0..(num - i)).for_each(|_| {
+                for _ in 0..num {
                     unsafe {
                         copy_nonoverlapping(
-                            &src_data[src_offset..] as *const [u8] as *const u8
+                            &src_data[src.offset..] as *const [u8] as *const u8
                                 as *const $native_ty,
                             &mut dst_slice[dst_offset] as *mut u8 as *mut $native_ty,
                             1,
                         );
                     }
-                    src_offset += 4;
+                    src.offset += 4; // Parquet stores Int8/Int16 using 4 bytes
                     dst_offset += $type_size;
-                });
-
-                src.offset += num_bytes;
+                }
             }
 
             fn skip(src: &mut PlainDecoderInner, num: usize) {
@@ -755,6 +727,17 @@ const INT96_SRC_BYTE_WIDTH: usize = 12;
 // We convert INT96 to micros and store using i64
 const INT96_DST_BYTE_WIDTH: usize = 8;
 
+fn int96_to_microsecond(v: &[u8]) -> i64 {
+    let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
+    let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
+
+    unsafe {
+        ((day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64)
+            .wrapping_mul(MICROS_PER_DAY)
+            .wrapping_add(nanos.read_unaligned() / 1000)
+    }
+}
+
 /// Decode timestamps represented as INT96 into i64 with micros precision
 impl PlainDecoding for Int96TimestampMicrosType {
     #[inline]
@@ -764,51 +747,36 @@ impl PlainDecoding for Int96TimestampMicrosType {
         if !src.read_options.use_legacy_date_timestamp_or_ntz {
             let mut offset = src.offset;
             for _ in 0..num {
-                let v = &src_data[offset..offset + INT96_SRC_BYTE_WIDTH];
-                let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
-                let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
-
                 // TODO: optimize this further as checking value one by one is not very efficient
-                unsafe {
-                    let micros = (day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64
-                        * MICROS_PER_DAY
-                        + nanos.read_unaligned() / 1000;
+                let micros = int96_to_microsecond(&src_data[offset..offset + INT96_SRC_BYTE_WIDTH]);
 
-                    if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
-                        panic!(
-                            "Encountered timestamp value {}, which is before 1582-10-15 (counting \
+                if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
+                    panic!(
+                        "Encountered timestamp value {}, which is before 1582-10-15 (counting \
                          backwards from Unix eopch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                          or a Proleptic Gregorian calendar is used.",
-                            micros
-                        );
-                    }
-
-                    offset += INT96_SRC_BYTE_WIDTH;
+                        micros
+                    );
                 }
+
+                offset += INT96_SRC_BYTE_WIDTH;
             }
         }
 
         let mut offset = src.offset;
         let mut dst_offset = INT96_DST_BYTE_WIDTH * dst.num_values;
-        unsafe {
-            for _ in 0..num {
-                let v = &src_data[offset..offset + INT96_SRC_BYTE_WIDTH];
-                let nanos = &v[..INT96_DST_BYTE_WIDTH] as *const [u8] as *const u8 as *const i64;
-                let day = &v[INT96_DST_BYTE_WIDTH..] as *const [u8] as *const u8 as *const i32;
+        for _ in 0..num {
+            let micros = int96_to_microsecond(&src_data[offset..offset + INT96_SRC_BYTE_WIDTH]);
 
-                let micros = (day.read_unaligned() - JULIAN_DAY_OF_EPOCH) as i64 * MICROS_PER_DAY
-                    + nanos.read_unaligned() / 1000;
+            bit::memcpy_value(
+                &micros,
+                INT96_DST_BYTE_WIDTH,
+                &mut dst.value_buffer[dst_offset..],
+            );
 
-                bit::memcpy_value(
-                    &micros,
-                    INT96_DST_BYTE_WIDTH,
-                    &mut dst.value_buffer[dst_offset..],
-                );
-
-                offset += INT96_SRC_BYTE_WIDTH;
-                dst_offset += INT96_DST_BYTE_WIDTH;
-            }
+            offset += INT96_SRC_BYTE_WIDTH;
+            dst_offset += INT96_DST_BYTE_WIDTH;
         }
 
         src.offset = offset;

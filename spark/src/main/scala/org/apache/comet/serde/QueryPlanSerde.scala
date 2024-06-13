@@ -25,7 +25,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
@@ -46,7 +46,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isC
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.shims.CometExprShim
 import org.apache.comet.shims.ShimQueryPlanSerde
 
@@ -1498,15 +1498,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, _) =>
+        case Abs(child, failOnErr) =>
           val childExpr = exprToProtoInternal(child, inputs)
           if (childExpr.isDefined) {
-            val abs =
-              ExprOuterClass.Abs
-                .newBuilder()
-                .setChild(childExpr.get)
-                .build()
-            Some(Expr.newBuilder().setAbs(abs).build())
+            val evalModeStr =
+              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+            val absBuilder = ExprOuterClass.Abs.newBuilder()
+            absBuilder.setChild(childExpr.get)
+            absBuilder.setEvalMode(evalModeStr)
+            Some(Expr.newBuilder().setAbs(absBuilder).build())
           } else {
             withInfo(expr, child)
             None
@@ -2123,19 +2123,27 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
         case XxHash64(children, seed) =>
-          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-          if (firstUnSupportedInput.isDefined) {
-            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-            return None
+          if (CometConf.COMET_XXHASH64_ENABLED.get()) {
+            val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+            if (firstUnSupportedInput.isDefined) {
+              withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+              return None
+            }
+            val exprs = children.map(exprToProtoInternal(_, inputs))
+            val seedBuilder = ExprOuterClass.Literal
+              .newBuilder()
+              .setDatatype(serializeDataType(LongType).get)
+              .setLongVal(seed)
+            val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+            // the seed is put at the end of the arguments
+            scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+          } else {
+            withInfo(
+              expr,
+              "xxhash64 is disabled by default. " +
+                s"Set ${CometConf.COMET_XXHASH64_ENABLED.key}=true to enable it.")
+            None
           }
-          val exprs = children.map(exprToProtoInternal(_, inputs))
-          val seedBuilder = ExprOuterClass.Literal
-            .newBuilder()
-            .setDatatype(serializeDataType(LongType).get)
-            .setLongVal(seed)
-          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-          // the seed is put at the end of the arguments
-          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
@@ -2490,10 +2498,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        if (join.buildSide == BuildRight) {
-          // DataFusion HashJoin assumes build side is always left.
-          // TODO: support BuildRight
-          withInfo(join, "BuildRight is not supported")
+        if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+          withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
         }
 
@@ -2530,6 +2536,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .setJoinType(joinType)
             .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+            .setBuildSide(
+              if (join.buildSide == BuildLeft) BuildSide.BuildLeft else BuildSide.BuildRight)
           condition.foreach(joinBuilder.setCondition)
           Some(result.setHashJoin(joinBuilder).build())
         } else {

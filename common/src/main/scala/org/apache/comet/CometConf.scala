@@ -401,11 +401,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+<<<<<<< HEAD
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
       .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
         "Set this config to true to allow them anyway using Rust's regular expression engine. " +
         "See compatibility guide for more information.")
+=======
+  val COMET_XXHASH64_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.xxhash64.enabled")
+      .doc("The xxhash64 implementation is not optimized yet and may cause performance issues.")
+>>>>>>> apache/main
       .booleanConf
       .createWithDefault(false)
 

@@ -780,7 +780,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to LongType") {
     assume(CometSparkSessionExtensions.isSpark33Plus)
-    castTest(generateTimestamps(), DataTypes.LongType)
+    castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
   ignore("cast TimestampType to FloatType") {
@@ -884,6 +884,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
   }
 
+  // Extended values are Timestamps that are outside dates supported chrono::DateTime and
+  // therefore not supported by operations using it.
+  private def generateTimestampsExtended(): DataFrame = {
+    val values = Seq("290000-12-31T01:00:00+02:00")
+    generateTimestamps().unionByName(
+      values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
+  }
+
   private def generateTimestamps(): DataFrame = {
     val values =
       Seq(
@@ -984,9 +992,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // both systems threw an exception so we make sure they are the same
             val sparkMessage =
               if (sparkException.getCause != null) sparkException.getCause.getMessage else null
-            // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
-            // removing the "Execution error: " error message prefix that is added by DataFusion
-            val cometMessage = cometException.getCause.getMessage.replace("Execution error: ", "")
+            val cometMessage = cometException.getCause.getMessage
             if (CometSparkSessionExtensions.isSpark40Plus) {
               // for Spark 4 we expect to sparkException carries the message
               assert(

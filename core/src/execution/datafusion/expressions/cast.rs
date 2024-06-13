@@ -52,6 +52,8 @@ use crate::{
     },
 };
 
+use super::EvalMode;
+
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
 static CAST_OPTIONS: CastOptions = CastOptions {
@@ -60,13 +62,6 @@ static CAST_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_tz_format(TIMESTAMP_FORMAT)
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
-
-#[derive(Debug, Hash, PartialEq, Clone, Copy)]
-pub enum EvalMode {
-    Legacy,
-    Ansi,
-    Try,
-}
 
 #[derive(Debug, Hash)]
 pub struct Cast {
