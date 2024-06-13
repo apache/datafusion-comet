@@ -20,6 +20,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -704,6 +705,9 @@ impl PhysicalPlanner {
         spark_plan: &'a Operator,
         inputs: &mut Vec<Arc<GlobalRef>>,
     ) -> Result<(Vec<ScanExec>, Arc<dyn ExecutionPlan>), ExecutionError> {
+
+        println!("create plan coalesce={}", self.session_ctx.copied_config().coalesce_batches());
+
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
@@ -767,6 +771,8 @@ impl PhysicalPlanner {
                         schema.clone(),
                     )?,
                 );
+                let aggregate = self.coalesce_batches(aggregate);
+
                 let result_exprs: PhyExprResult = agg
                     .result_exprs
                     .iter()
@@ -947,6 +953,8 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
+                let join = self.coalesce_batches(join);
+
                 Ok((scans, join))
             }
             OpStruct::HashJoin(join) => {
@@ -978,9 +986,26 @@ impl PhysicalPlanner {
                     swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
                 };
 
+                let hash_join = self.coalesce_batches(hash_join);
+
                 Ok((scans, hash_join))
             }
         }
+    }
+
+    /// Wrap an ExecutionPlan in a CoalesceBatchesExec if the session context has
+    /// the coalesce_batches option enabled
+    fn coalesce_batches(&self, exec: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let exec: Arc<dyn ExecutionPlan> =
+            if self.session_ctx.copied_config().coalesce_batches() {
+                Arc::new(CoalesceBatchesExec::new(
+                    exec,
+                    self.session_ctx.copied_config().batch_size(),
+                ))
+            } else {
+                exec
+            };
+        exec
     }
 
     fn parse_join_parameters(
