@@ -309,8 +309,7 @@ impl Accumulator for CovarianceAccumulator {
             }
         };
 
-        let result = self.algo_const / count;
-        Ok(ScalarValue::Float64(Some(result)))
+        Ok(ScalarValue::Float64(Some(self.algo_const / count)))
     }
 
     fn size(&self) -> usize {
