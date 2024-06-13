@@ -419,7 +419,7 @@ impl PlainDictDecoding for BoolType {
     }
 }
 
-macro_rules! impl_plain_decoding_int {
+macro_rules! make_int_variant_impl {
     ($dst_type:ty, $copy_fn:ident, $type_width:expr) => {
         impl PlainDecoding for $dst_type {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
@@ -436,15 +436,15 @@ macro_rules! impl_plain_decoding_int {
     };
 }
 
-impl_plain_decoding_int!(Int8Type, copy_i32_to_i8, 1);
-impl_plain_decoding_int!(Int16Type, copy_i32_to_i16, 2);
-impl_plain_decoding_int!(Int32To64Type, copy_i32_to_i64, 4);
+make_int_variant_impl!(Int8Type, copy_i32_to_i8, 1);
+make_int_variant_impl!(Int16Type, copy_i32_to_i16, 2);
+make_int_variant_impl!(Int32To64Type, copy_i32_to_i64, 4);
 
 // unsigned type require double the width and zeroes are written for the second half
 // perhaps because they are implemented as the next size up signed type?
-impl_plain_decoding_int!(UInt8Type, copy_i32_to_u8, 2);
-impl_plain_decoding_int!(UInt16Type, copy_i32_to_u16, 4);
-impl_plain_decoding_int!(UInt32Type, copy_i32_to_u32, 8);
+make_int_variant_impl!(UInt8Type, copy_i32_to_u8, 2);
+make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
+make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
@@ -478,7 +478,7 @@ generate_cast_to_unsigned!(copy_i32_to_u16, i32, u16, 0_u16);
 generate_cast_to_unsigned!(copy_i32_to_u32, i32, u32, 0_u32);
 
 macro_rules! generate_cast_to_signed {
-    ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
+    ($name: ident, $src_type:ty, $dst_type:ty) => {
         pub fn $name(src: &[u8], dst: &mut [u8], num: usize) {
             debug_assert!(
                 src.len() >= num * std::mem::size_of::<$src_type>(),
@@ -502,9 +502,9 @@ macro_rules! generate_cast_to_signed {
     };
 }
 
-generate_cast_to_signed!(copy_i32_to_i8, i32, i8, 0_i8);
-generate_cast_to_signed!(copy_i32_to_i16, i32, i16, 0_i16);
-generate_cast_to_signed!(copy_i32_to_i64, i32, i64, 0_i64);
+generate_cast_to_signed!(copy_i32_to_i8, i32, i8);
+generate_cast_to_signed!(copy_i32_to_i16, i32, i16);
+generate_cast_to_signed!(copy_i32_to_i64, i32, i64);
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
