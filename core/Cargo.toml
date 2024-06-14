@@ -137,6 +137,6 @@ harness = false
 name = "shuffle_writer"
 harness = false
 
-[[regexp]]
+[[bench]]
 name = "regexp"
 harness = false
