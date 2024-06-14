@@ -691,11 +691,12 @@ mod tests {
 
     #[test]
     fn test_xxhash64() {
-        // check_xxhash64("12345678123456781234567812345678", 42_u64);
+        // TODO fuzz testing
+        check_xxhash64("12345678123456781234567812345678", 42_u64);
         check_xxhash64("12345678123456781234567812345678a", 42_u64);
-        // check_xxhash64("12345678123456781234567812345678aab", 42_u64);
-        // check_xxhash64("a", 42_u64);
-        // check_xxhash64("aab", 42_u64);
+        check_xxhash64("12345678123456781234567812345678aab", 42_u64);
+        check_xxhash64("a", 42_u64);
+        check_xxhash64("aab", 42_u64);
     }
 
     fn check_xxhash64(data: &str, seed: u64) {
