@@ -17,29 +17,44 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Comet Release Process
+# Aapche DataFusion Comet: Source Release Process
 
 This documentation is for creating an official source release of Apache DataFusion Comet.
-
-The release process is based on the parent Apache DataFusion project, so please refer to the
-[DataFusion Release Process](https://github.com/apache/datafusion/blob/main/dev/release/README.md) for detailed
-instructions if you are not familiar with the release process here.
-
-Here is a brief overview of the steps involved in creating a release:
 
 ## Creating the Release Candidate
 
 This part of the process can be performed by any committer.
 
-- Create and merge a PR to update the version number & update the changelog
-- Push a release candidate tag (e.g. 0.1.0-rc1) to the Apache repository
+Here are the steps, using the 0.1.0 release as an example.
 
-### Generating the Change Log
+### Create Release Branch
 
-We haven't yet defined how tagging and branching will work for the source releases. This project is more complex 
-than DataFusion core because it consists of a Maven project and a Cargo project. However, generating a change log 
-to cover changes between any two commits or tags can be performed by running the provided `generate-changelog.py` 
-script.
+This document assumes that GitHub remotes are set up as follows:
+
+```shell
+$ git remote -v
+apache	git@github.com:apache/datafusion-comet.git (fetch)
+apache	git@github.com:apache/datafusion-comet.git (push)
+origin	git@github.com:yourgithubid/datafusion-comet.git (fetch)
+origin	git@github.com:yourgithubid/datafusion-comet.git (push)
+```
+
+Create a release branch from the latest commit in main and push to the `apache` repo:
+
+```shell
+get fetch apache
+git checkout main
+git reset --hard apache/main
+git checkout -b branch-0.1
+git push apache branch-0.1
+```
+
+Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
+
+### Generate the Change Log
+
+Generate a change log to cover changes between the previous release and the release branch HEAD by running
+the provided `generate-changelog.py` script.
 
 It is recommended that you set up a virtual Python environment and then install the dependencies:
 
@@ -49,57 +64,121 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
-To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script 
-providing two commit ids or tags followed by the version number of the release being created. The following 
-example generates a change log of all changes between the first commit and the current HEAD revision.
+To generate the changelog, set the `GITHUB_TOKEN` environment variable to a valid token and then run the script
+providing two commit ids or tags followed by the version number of the release being created. The following
+example generates a change log of all changes between the previous version and the current release branch HEAD revision.
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 HEAD 0.1.0 > ../changelog/0.1.0.md
+python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 branch-0.1 0.0.0 > ../changelog/0.1.0.md
 ```
+
+Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
+commit into the release branch.
+
+### Tag the Release Candidate
+
+Tag the release branch with `0.1.0-rc1` and push to the `apache` repo
+
+```shell
+git fetch apache
+git checkout branch-0.1
+git reset --hard apache/branch-0.1
+git tag 0.1.0-rc1
+git push apache 0.1.0-rc1
+```
+
+### Update Version in main
+
+Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`.
 
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
 
-- Run the create-tarball script to create the source tarball and upload it to the dev subversion repository
-- Start an email voting thread
-- Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository
-- Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
-  a version such as `COMET-0.1.0`
-- Delete old release candidates and releases from the subversion repositories
-- Push a release tag (e.g. 0.1.0) to the Apache repository
-- Reply to the vote thread to close the vote and announce the release
+### Create the Release Candidate Tarball
 
-## Publishing JAR Files to Maven
+Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to the dev subversion repository
+
+```shell
+GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
+```
+
+### Start an Email Voting Thread
+
+Send the email that is generated in the previous step to `dev@datafusion.apache.org`.
+
+### Publish the Release Tarball
+
+Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository.
+
+```shell
+./dev/release/create-tarball.sh 0.1.0 1
+```
+
+Push a release tag (`0.1.0`) to the `apache` repository.
+
+```shell
+git fetch apache
+git checkout 0.1.0-rc1
+git tag 0.1.0
+git push apache 0.1.0
+```
+
+Reply to the vote thread to close the vote and announce the release.
+
+## Post Release Admin
+
+Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
+a version such as `COMET-0.1.0`.
+
+### Delete old RCs and Releases
+
+See the ASF documentation on [when to archive](https://www.apache.org/legal/release-policy.html#when-to-archive)
+for more information.
+
+#### Deleting old release candidates from `dev` svn
+
+Release candidates should be deleted once the release is published.
+
+Get a list of DataFusion Comet release candidates:
+
+```shell
+svn ls https://dist.apache.org/repos/dist/dev/datafusion | grep comet
+```
+
+Delete a release candidate:
+
+```shell
+svn delete -m "delete old DataFusion Comet RC" https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.1.0-rc1/
+```
+
+#### Deleting old releases from `release` svn
+
+Only the latest release should be available. Delete old releases after publishing the new release.
+
+Get a list of DataFusion releases:
+
+```shell
+svn ls https://dist.apache.org/repos/dist/release/datafusion | grep comet
+```
+
+Delete a release:
+
+```shell
+svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion-comet/datafusion-comet-0.0.0
+```
+
+## Publishing Binary Releases
+
+### Publishing JAR Files to Maven
 
 The process for publishing JAR files to Maven is not defined yet.
 
-## Publishing to crates.io
+### Publishing to crates.io
 
 We may choose to publish the `datafusion-comet` to crates.io so that other Rust projects can leverage the
 Spark-compatible operators and expressions outside of Spark.
-
-## Verifying Release Candidates
-
-The vote email will link to this section of this document, so this is where we will need to provide instructions for
-verifying a release candidate.
-
-The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification
-process. It checks the hashes and runs the build. It does not run the test suite because this takes a long time
-for this project and the test suites already run in CI before we create the release candidate, so running them
-again is somewhat redundant.
-
-```shell
-./dev/release/verify-release-candidate.sh 0.1.0 1
-```
-
-We hope that users will verify the release beyond running this script by testing the release candidate with their
-existing Spark jobs and report any functional issues or performance regressions.
-
-Another way of verifying the release is to follow the
-[Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) and compare
-performance with the previous release.
 
 ## Post Release Activities
 
