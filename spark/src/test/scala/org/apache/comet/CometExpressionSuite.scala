@@ -1054,6 +1054,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Chr with negative and large value") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test0"
+        withTable(table) {
+          sql(s"create table $table(c9 int, c4 int) using parquet")
+          sql(
+            s"insert into $table values(0, 0), (61231, -61231), (-1700, 1700), (0, -4000), (-40, 40), (256, 512)")
+          val query = s"SELECT chr(c9), chr(c4) FROM $table"
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+
+    withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        for (n <- Seq("0", "-0", "0.5", "-0.5", "555", "-555", "null")) {
+          checkSparkAnswerAndOperator(s"select chr(cast(${n} as int)) FROM tbl")
+        }
+      }
+    }
+  }
+
   test("InitCap") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
