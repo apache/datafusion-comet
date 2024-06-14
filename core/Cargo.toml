@@ -16,16 +16,20 @@
 # under the License.
 
 [package]
-name = "comet"
+name = "datafusion-comet"
 version = "0.1.0"
+homepage = "https://datafusion.apache.org/comet"
+repository = "https://github.com/apache/datafusion-comet"
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
+description = "Apache DataFusion Comet: High performance accelerator for Apache Spark"
+readme = "README.md"
+license = "Apache-2.0"
 edition = "2021"
 include = [
     "benches/*.rs",
     "src/**/*.rs",
     "Cargo.toml",
 ]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 parquet-format = "4.0.0" # This must be kept in sync with that from parquet crate
@@ -67,12 +71,12 @@ itertools = "0.11.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 paste = "1.0.14"
-datafusion-common = { git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1" }
-datafusion = { default-features = false, git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1", features = ["unicode_expressions", "crypto_expressions"] }
-datafusion-functions = { git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1", features = ["crypto_expressions"] }
-datafusion-expr = { git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1", default-features = false }
-datafusion-physical-expr-common = { git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1", default-features = false }
-datafusion-physical-expr = { git = "https://github.com/apache/arrow-datafusion.git", tag = "39.0.0-rc1", default-features = false }
+datafusion-common = { version = "39.0.0" }
+datafusion = { default-features = false, version = "39.0.0", features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-functions = { version = "39.0.0", features = ["crypto_expressions"] }
+datafusion-expr = { version = "39.0.0", default-features = false }
+datafusion-physical-expr-common = { version = "39.0.0", default-features = false }
+datafusion-physical-expr = { version = "39.0.0", default-features = false }
 unicode-segmentation = "^1.10.1"
 once_cell = "1.18.0"
 regex = "1.9.6"
@@ -89,6 +93,7 @@ criterion = "0.5.1"
 jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "7"
+hex = "0.4.3"
 
 [features]
 default = []
@@ -131,4 +136,8 @@ harness = false
 
 [[bench]]
 name = "shuffle_writer"
+harness = false
+
+[[bench]]
+name = "parquet_decode"
 harness = false

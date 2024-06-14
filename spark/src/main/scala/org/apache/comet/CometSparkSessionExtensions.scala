@@ -25,7 +25,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
@@ -158,7 +157,7 @@ class CometSparkSessionExtensions
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[AttributeReference],
+                _: Seq[_],
                 requiredSchema,
                 _,
                 _,
@@ -172,7 +171,7 @@ class CometSparkSessionExtensions
           // data source v1 not supported case
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[AttributeReference],
+                _: Seq[_],
                 requiredSchema,
                 _,
                 _,

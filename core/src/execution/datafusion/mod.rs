@@ -21,5 +21,5 @@ pub mod expressions;
 mod operators;
 pub mod planner;
 pub mod shuffle_writer;
-mod spark_hash;
+pub mod spark_hash;
 mod util;

@@ -19,6 +19,11 @@
 
 package org.apache.comet
 
+import java.time.{Duration, Period}
+
+import scala.reflect.ClassTag
+import scala.reflect.runtime.universe.TypeTag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -224,9 +229,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case None =>
                 Row(null, null, null)
               case Some(i) =>
-                val hour = new java.sql.Timestamp(i).getHours
-                val minute = new java.sql.Timestamp(i).getMinutes
-                val second = new java.sql.Timestamp(i).getSeconds
+                val timestamp = new java.sql.Timestamp(i).toLocalDateTime
+                val hour = timestamp.getHour
+                val minute = timestamp.getMinute
+                val second = timestamp.getSecond
 
                 Row(hour, minute, second)
             })
@@ -850,6 +856,57 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("abs Overflow ansi mode") {
+
+    def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withParquetTable(data, "tbl") {
+        checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
+            assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+
+    def testAbsAnsi[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+      }
+    }
+
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+      testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
+      testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
+      testAbsAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)))
+      testAbsAnsi(Seq((Float.MaxValue, Float.MinValue)))
+      testAbsAnsi(Seq((Double.MaxValue, Double.MinValue)))
+    }
+  }
+
+  test("abs Overflow legacy mode") {
+
+    def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl") {
+          checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
+        }
+      }
+    }
+
+    testAbsLegacyOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
+    testAbsLegacyOverflow(Seq((Short.MaxValue, Short.MinValue)))
+    testAbsLegacyOverflow(Seq((Int.MaxValue, Int.MinValue)))
+    testAbsLegacyOverflow(Seq((Long.MaxValue, Long.MinValue)))
+    testAbsLegacyOverflow(Seq((Float.MaxValue, Float.MinValue)))
+    testAbsLegacyOverflow(Seq((Double.MaxValue, Double.MinValue)))
+  }
+
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf(
@@ -975,6 +1032,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(
             s"insert into $table values('65'), ('66'), ('67'), ('68'), ('65'), ('66'), ('67'), ('68')")
           checkSparkAnswerAndOperator(s"SELECT chr(col) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("Chr with null character") {
+    // test compatibility with Spark, spark supports chr(0)
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test0"
+        withTable(table) {
+          sql(s"create table $table(c9 int, c4 int) using parquet")
+          sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
+          val query = s"SELECT chr(c9), chr(c4) FROM $table"
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
@@ -1489,6 +1563,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
@@ -1521,6 +1596,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
@@ -1562,7 +1638,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(dtype + " overflow"))
           assert(cometException.getMessage.contains(dtype + " overflow"))
-        case (None, None) => assert(true) // got same outputs
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not " + ex.getMessage)
         case (Some(_), None) =>
@@ -1583,66 +1659,56 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     withTempDir { dir =>
       // Array values test
-      val arrayPath = new Path(dir.toURI.toString, "array_test.parquet").toString
-      Seq(Int.MaxValue, Int.MinValue).toDF("a").write.mode("overwrite").parquet(arrayPath)
-      val arrayQuery = "select a, -a from t"
-      runArrayTest(arrayQuery, "integer", arrayPath)
+      val dataTypes = Seq(
+        ("array_test.parquet", Seq(Int.MaxValue, Int.MinValue).toDF("a"), "integer"),
+        ("long_array_test.parquet", Seq(Long.MaxValue, Long.MinValue).toDF("a"), "long"),
+        ("short_array_test.parquet", Seq(Short.MaxValue, Short.MinValue).toDF("a"), ""),
+        ("byte_array_test.parquet", Seq(Byte.MaxValue, Byte.MinValue).toDF("a"), ""))
 
-      // long values test
-      val longArrayPath = new Path(dir.toURI.toString, "long_array_test.parquet").toString
-      Seq(Long.MaxValue, Long.MinValue)
-        .toDF("a")
-        .write
-        .mode("overwrite")
-        .parquet(longArrayPath)
-      val longArrayQuery = "select a, -a from t"
-      runArrayTest(longArrayQuery, "long", longArrayPath)
+      dataTypes.foreach { case (fileName, df, dtype) =>
+        val path = new Path(dir.toURI.toString, fileName).toString
+        df.write.mode("overwrite").parquet(path)
+        val query = "select a, -a from t"
+        runArrayTest(query, dtype, path)
+      }
 
-      // short values test
-      val shortArrayPath = new Path(dir.toURI.toString, "short_array_test.parquet").toString
-      Seq(Short.MaxValue, Short.MinValue)
-        .toDF("a")
-        .write
-        .mode("overwrite")
-        .parquet(shortArrayPath)
-      val shortArrayQuery = "select a, -a from t"
-      runArrayTest(shortArrayQuery, "", shortArrayPath)
-
-      // byte values test
-      val byteArrayPath = new Path(dir.toURI.toString, "byte_array_test.parquet").toString
-      Seq(Byte.MaxValue, Byte.MinValue)
-        .toDF("a")
-        .write
-        .mode("overwrite")
-        .parquet(byteArrayPath)
-      val byteArrayQuery = "select a, -a from t"
-      runArrayTest(byteArrayQuery, "", byteArrayPath)
-
-      // interval values test
-      withTable("t_interval") {
-        spark.sql("CREATE TABLE t_interval(a STRING) USING PARQUET")
-        spark.sql("INSERT INTO t_interval VALUES ('INTERVAL 10000000000 YEAR')")
+      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
         withAnsiMode(enabled = true) {
-          spark
-            .sql("SELECT CAST(a AS INTERVAL) AS a FROM t_interval")
-            .createOrReplaceTempView("t_interval_casted")
-          checkOverflow("SELECT a, -a FROM t_interval_casted", "interval")
+          // interval test without cast
+          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
+          val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
+            .map(Period.ofMonths)
+          val dayTimeDf = Seq(106751991L, 106751991L, 2L)
+            .map(Duration.ofDays)
+          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
+            checkOverflow("select -(_1) FROM tbl", "")
+          }
         }
       }
 
-      withTable("t") {
-        sql("create table t(a int) using parquet")
-        sql("insert into t values (-2147483648)")
-        withAnsiMode(enabled = true) {
-          checkOverflow("select a, -a from t", "integer")
-        }
-      }
-
-      withTable("t_float") {
-        sql("create table t_float(a float) using parquet")
-        sql("insert into t_float values (3.4128235E38)")
-        withAnsiMode(enabled = true) {
-          checkOverflow("select a, -a from t_float", "float")
+      // scalar tests
+      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+        withSQLConf(
+          "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          for (n <- Seq("2147483647", "-2147483648")) {
+            checkOverflow(s"select -(cast(${n} as int)) FROM tbl", "integer")
+          }
+          for (n <- Seq("32767", "-32768")) {
+            checkOverflow(s"select -(cast(${n} as short)) FROM tbl", "")
+          }
+          for (n <- Seq("127", "-128")) {
+            checkOverflow(s"select -(cast(${n} as byte)) FROM tbl", "")
+          }
+          for (n <- Seq("9223372036854775807", "-9223372036854775808")) {
+            checkOverflow(s"select -(cast(${n} as long)) FROM tbl", "long")
+          }
+          for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
+            checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
+          }
         }
       }
     }

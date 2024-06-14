@@ -154,9 +154,10 @@ pub enum CometError {
     #[error("{msg}")]
     Panic { msg: String },
 
-    #[error(transparent)]
+    #[error("{msg}")]
     DataFusion {
-        #[from]
+        msg: String,
+        #[source]
         source: DataFusionError,
     },
 
@@ -191,10 +192,19 @@ impl convert::From<Box<dyn Any + Send>> for CometError {
     }
 }
 
+impl From<DataFusionError> for CometError {
+    fn from(value: DataFusionError) -> Self {
+        CometError::DataFusion {
+            msg: value.message().to_string(),
+            source: value,
+        }
+    }
+}
+
 impl From<CometError> for DataFusionError {
     fn from(value: CometError) -> Self {
         match value {
-            CometError::DataFusion { source } => source,
+            CometError::DataFusion { msg: _, source } => source,
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
