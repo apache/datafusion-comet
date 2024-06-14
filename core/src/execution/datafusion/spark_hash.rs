@@ -171,7 +171,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
         seed.wrapping_add(PRIME_5)
     };
 
-    hash = hash.wrapping_add(total_len as u64);
+    hash = hash.wrapping_add(total_len);
 
     // process u64s
     while offset_u64 * 8 + 8 < length_bytes {
