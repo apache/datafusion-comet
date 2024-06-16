@@ -115,8 +115,7 @@ object CometCast {
         // https://github.com/apache/datafusion-comet/issues/326
         Unsupported
       case _: DecimalType =>
-        // https://github.com/apache/datafusion-comet/issues/325
-        Unsupported
+        Compatible()
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))

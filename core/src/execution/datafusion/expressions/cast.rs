@@ -17,25 +17,29 @@
 
 use std::{
     any::Any,
+    cmp::max,
     fmt::{Debug, Display, Formatter},
     hash::{Hash, Hasher},
     num::Wrapping,
     sync::Arc,
 };
 
+use arrow_buffer::ArrowNativeType;
+
 use arrow::{
     compute::{cast_with_options, CastOptions},
     datatypes::{
-        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type,
-        TimestampMicrosecondType,
+        i256, ArrowPrimitiveType, Decimal128Type, Decimal256Type, DecimalType, Float32Type,
+        Float64Type, TimestampMicrosecondType,
     },
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
 use arrow_array::{
     types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, ArrowNativeTypeOp, BooleanArray, Decimal128Array, Float32Array, Float64Array,
+    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -468,6 +472,27 @@ macro_rules! cast_decimal_to_int32_up {
     }};
 }
 
+macro_rules! cast_utf8_to_decimal {
+    ($array:expr, $precision:expr, $scale:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+        let len = $array.len();
+        let mut cast_array = PrimitiveArray::<$array_type>::builder(len)
+            .with_precision_and_scale($precision, $scale)?;
+        for i in 0..len {
+            if $array.is_null(i) {
+                cast_array.append_null()
+            } else if let Some(cast_value) =
+                $cast_method($array.value(i).trim(), $precision, $scale, $eval_mode)?
+            {
+                cast_array.append_value(cast_value);
+            } else {
+                cast_array.append_null()
+            }
+        }
+        let result: CometResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
+        result?
+    }};
+}
+
 impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
@@ -549,6 +574,12 @@ impl Cast {
                 DataType::LargeUtf8,
                 DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
             ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode),
+            (DataType::Utf8, DataType::Decimal128(_, _) | DataType::Decimal256(_, _)) => {
+                Self::cast_string_to_decimal::<i32>(to_type, &array, self.eval_mode)
+            }
+            (DataType::LargeUtf8, DataType::Decimal128(_, _) | DataType::Decimal256(_, _)) => {
+                Self::cast_string_to_decimal::<i64>(to_type, &array, self.eval_mode)
+            }
             (DataType::Float64, DataType::Utf8) => {
                 Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)
             }
@@ -759,6 +790,44 @@ impl Cast {
                 )
             }
             _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
+        };
+        Ok(cast_array)
+    }
+
+    fn cast_string_to_decimal<OffsetSize: OffsetSizeTrait>(
+        to_type: &DataType,
+        array: &ArrayRef,
+        eval_mode: EvalMode,
+    ) -> CometResult<ArrayRef> {
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<OffsetSize>>()
+            .expect("cast_string_to_decimal expected a string array");
+        let cast_array: ArrayRef = match to_type {
+            DataType::Decimal128(precision, scale) => {
+                cast_utf8_to_decimal!(
+                    string_array,
+                    *precision,
+                    *scale,
+                    eval_mode,
+                    Decimal128Type,
+                    cast_string_to_decimal128
+                )
+            }
+            DataType::Decimal256(precision, scale) => {
+                cast_utf8_to_decimal!(
+                    string_array,
+                    *precision,
+                    *scale,
+                    eval_mode,
+                    Decimal256Type,
+                    cast_string_to_decimal256
+                )
+            }
+            dt => unreachable!(
+                "{}",
+                format!("invalid decimal type {dt} in cast from string")
+            ),
         };
         Ok(cast_array)
     }
@@ -1208,6 +1277,260 @@ fn do_cast_string_to_int<
     Ok(Some(result))
 }
 
+fn cast_string_to_decimal128(
+    str: &str,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> CometResult<Option<i128>> {
+    let cast = match parse_decimal::<Decimal128Type>(str, precision, scale) {
+        Some(v) => v,
+        None => {
+            if eval_mode == EvalMode::Ansi {
+                let type_name = format!("DECIMAL({},{})", precision, scale);
+                return none_or_err(eval_mode, &type_name, str);
+            } else {
+                return Ok(None);
+            }
+        }
+    };
+    Ok(Some(cast))
+}
+
+fn cast_string_to_decimal256(
+    str: &str,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> CometResult<Option<i256>> {
+    let cast = match parse_decimal::<Decimal256Type>(str, precision, scale) {
+        Some(v) => v,
+        None => {
+            if eval_mode == EvalMode::Ansi {
+                let type_name = format!("DECIMAL({},{})", precision, scale);
+                return none_or_err(eval_mode, &type_name, str);
+            } else {
+                return Ok(None);
+            }
+        }
+    };
+    Ok(Some(cast))
+}
+
+/// Copied from arrow-rs, modified to replicate Spark's behavior
+pub fn parse_decimal<T: DecimalType>(s: &str, precision: u8, scale: i8) -> Option<T::Native> {
+    let mut result: <T as ArrowPrimitiveType>::Native = T::Native::usize_as(0);
+    let mut fractionals = 0;
+    let mut digits: u8 = 0;
+    let mut exponent: i8 = 0;
+    let mut leading_zeros: i8 = 0;
+    let mut has_exponent = false;
+    let mut has_negative_exp = false;
+    let base = T::Native::usize_as(10);
+
+    let bs = s.as_bytes();
+    let (bs, negative) = match bs.first() {
+        Some(b'-') => (&bs[1..], true),
+        Some(b'+') => (&bs[1..], false),
+        _ => (bs, false),
+    };
+
+    if bs.is_empty() {
+        return None;
+    }
+
+    let mut bs = bs.iter();
+    while let Some(b) = bs.next() {
+        match b {
+            b'0'..=b'9' => {
+                if digits == 0 && *b == b'0' {
+                    leading_zeros += 1;
+                    continue;
+                }
+                digits += 1;
+                result = result.mul_wrapping(base);
+                result = result.add_wrapping(T::Native::usize_as((b - b'0') as usize));
+            }
+            b'.' => {
+                while let Some(b) = bs.next() {
+                    if *b == b'e' || *b == b'E' {
+                        match parse_exponent(
+                            bs.by_ref(),
+                            &mut digits,
+                            &mut fractionals,
+                            &mut leading_zeros,
+                            &mut has_exponent,
+                            &mut has_negative_exp,
+                        ) {
+                            None => {
+                                return None;
+                            }
+                            Some(v) => {
+                                exponent = v;
+                                continue;
+                            }
+                        }
+                    }
+                    if !b.is_ascii_digit() {
+                        return None;
+                    }
+                    fractionals += 1;
+                    digits += 1;
+                    result = result.mul_wrapping(base);
+                    result = result.add_wrapping(T::Native::usize_as((b - b'0') as usize));
+                }
+
+                // +00. is a valid decimal value in Spark but +. is invalid.
+                if digits == 0 && leading_zeros == 0 {
+                    return None;
+                }
+            }
+            b'e' | b'E' => match parse_exponent(
+                &mut bs,
+                &mut digits,
+                &mut fractionals,
+                &mut leading_zeros,
+                &mut has_exponent,
+                &mut has_negative_exp,
+            ) {
+                None => {
+                    return None;
+                }
+                Some(v) => {
+                    exponent = v;
+                    continue;
+                }
+            },
+            _ => {
+                return None;
+            }
+        }
+    }
+
+    result = adjust_decimal_scale::<T>(
+        result,
+        precision,
+        scale,
+        base,
+        exponent,
+        fractionals,
+        digits,
+        has_exponent,
+        has_negative_exp,
+    )?;
+
+    return Some(if negative {
+        result.neg_wrapping()
+    } else {
+        result
+    });
+}
+
+fn parse_exponent(
+    bs: &mut std::slice::Iter<u8>,
+    digits: &mut u8,
+    fractionals: &mut i8,
+    leading_zeros: &mut i8,
+    has_exponent: &mut bool,
+    has_negative_exp: &mut bool,
+) -> Option<i8> {
+    if *digits == 0 && *leading_zeros == 0 {
+        return None;
+    }
+
+    let mut exponent: i8 = 0;
+    let mut has_exp_digits = false;
+    *has_exponent = true;
+
+    for b in bs.by_ref() {
+        if *b == b'-' {
+            if *has_negative_exp || has_exp_digits {
+                return None;
+            }
+            *has_negative_exp = true;
+            continue;
+        } else if *b == b'+' {
+            if has_exp_digits {
+                return None;
+            }
+            continue;
+        }
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        exponent = exponent.checked_mul(10)?.checked_add((b - b'0') as i8)?;
+        has_exp_digits = true;
+    }
+
+    if !has_exp_digits {
+        return None;
+    }
+    if !*has_negative_exp {
+        let cur_fractional = *fractionals as i8;
+        *fractionals = max(0, *fractionals - exponent);
+        exponent = max(0, exponent - cur_fractional);
+    } else {
+        *fractionals += exponent;
+    }
+    *digits += exponent.abs() as u8;
+
+    return Some(exponent);
+}
+
+fn adjust_decimal_scale<T: DecimalType + ArrowPrimitiveType>(
+    result: T::Native,
+    precision: u8,
+    scale: i8,
+    base: T::Native,
+    exponent: i8,
+    fractionals: i8,
+    digits: u8,
+    has_exponent: bool,
+    has_negative_exp: bool,
+) -> Option<T::Native> {
+    let mut res = result;
+
+    match fractionals.cmp(&scale) {
+        std::cmp::Ordering::Less => {
+            let drop = scale - fractionals;
+            if drop as u8 + digits > precision {
+                if res == T::Native::usize_as(0) && (exponent as u8) < 38 {
+                    return Some(res);
+                }
+                return None;
+            }
+            if has_exponent {
+                res = if !has_negative_exp {
+                    res.mul_wrapping(base.pow_wrapping(exponent as _))
+                } else {
+                    res.div_wrapping(base.pow_wrapping(exponent.abs() as _))
+                };
+            }
+            res = res.mul_wrapping(base.pow_wrapping(drop as _));
+        }
+        std::cmp::Ordering::Greater => {
+            // Since the fractional part is greater than the scale, we need to round the result
+            let diff = fractionals - scale;
+            let divisor = base.pow_wrapping(diff as _);
+            let quotient = res.div_wrapping(divisor);
+            let remainder = res.sub_wrapping(quotient.mul_wrapping(divisor));
+            if remainder >= T::Native::usize_as(5).mul_wrapping(base.pow_wrapping((diff - 1) as _))
+            {
+                res = quotient.add_wrapping(T::Native::usize_as(1));
+            } else {
+                res = quotient;
+            }
+        }
+        std::cmp::Ordering::Equal => {
+            if digits > precision {
+                return None;
+            }
+        }
+    }
+
+    return Some(res);
+}
+
 /// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
 #[inline]
 fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
@@ -1641,9 +1964,48 @@ mod tests {
     use arrow_array::StringArray;
     use arrow_schema::TimeUnit;
 
+    use super::{cast_string_to_decimal128, cast_string_to_i8, EvalMode};
     use datafusion_physical_expr::expressions::Column;
 
     use super::*;
+
+    #[test]
+    fn test_cast_string_to_decimal128() {
+        //basic
+        assert_eq!(
+            cast_string_to_decimal128("127.00", 5, 2, EvalMode::Legacy).unwrap(),
+            Some(12700_i128)
+        );
+        //negative
+        assert_eq!(
+            cast_string_to_decimal128("-127.00", 5, 2, EvalMode::Legacy).unwrap(),
+            Some(-12700_i128)
+        );
+        //invalid
+        assert_eq!(
+            cast_string_to_decimal128("127.00.00", 5, 2, EvalMode::Legacy).unwrap(),
+            None
+        );
+        //invalid with ANSI mode
+        assert!(cast_string_to_decimal128("127.00.00", 5, 2, EvalMode::Ansi).is_err());
+        //exponential
+        assert_eq!(
+            cast_string_to_decimal128("1.2e2", 5, 2, EvalMode::Legacy).unwrap(),
+            Some(12000_i128)
+        );
+        //exponential negative
+        assert_eq!(
+            cast_string_to_decimal128("1.2e-2", 5, 2, EvalMode::Legacy).unwrap(),
+            Some(1_i128)
+        );
+        //invalid exponential
+        assert_eq!(
+            cast_string_to_decimal128("1.2e", 5, 2, EvalMode::Legacy).unwrap(),
+            None
+        );
+        //invalid exponential with ANSI mode
+        assert!(cast_string_to_decimal128("1.2e", 5, 2, EvalMode::Ansi).is_err());
+    }
 
     #[test]
     fn timestamp_parser_test() {
