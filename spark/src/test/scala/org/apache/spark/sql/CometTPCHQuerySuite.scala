@@ -50,7 +50,7 @@ import org.apache.comet.shims.ShimCometTPCHQuerySuite
  *     ./mvnw -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
  * }}}
  */
-class CometTPCHQuerySuite extends QueryTest with CometTPCBase with ShimCometTPCHQuerySuite {
+class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuerySuite {
 
   private val tpchDataPath = sys.env.get("SPARK_TPCH_DATA")
 
@@ -273,40 +273,7 @@ class CometTPCHQuerySuite extends QueryTest with CometTPCBase with ShimCometTPCH
     ignore("skipped because env `SPARK_TPCH_DATA` is not set") {}
   }
 
-  // TODO: remove once Spark 3.2 & 3.3 is no longer supported
+  // TODO: remove once Spark 3.3 is no longer supported
   private def shouldRegenerateGoldenFiles: Boolean =
     System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
-}
-
-/**
- * `TPCBase` doesn't exist in Spark 3.2. TODO: remove once Spark 3.2 is no longer supported
- */
-trait CometTPCBase extends SharedSparkSession {
-  protected def injectStats: Boolean = false
-
-  override protected def sparkConf: SparkConf = {
-    if (injectStats) {
-      super.sparkConf
-        .set(SQLConf.MAX_TO_STRING_FIELDS, Int.MaxValue)
-        .set(SQLConf.CBO_ENABLED, true)
-        .set(SQLConf.PLAN_STATS_ENABLED, true)
-        .set(SQLConf.JOIN_REORDER_ENABLED, true)
-    } else {
-      super.sparkConf.set(SQLConf.MAX_TO_STRING_FIELDS, Int.MaxValue)
-    }
-  }
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    createTables()
-  }
-
-  override def afterAll(): Unit = {
-    dropTables()
-    super.afterAll()
-  }
-
-  protected def createTables(): Unit
-
-  protected def dropTables(): Unit
 }

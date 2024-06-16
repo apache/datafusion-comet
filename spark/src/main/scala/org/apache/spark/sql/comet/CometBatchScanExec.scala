@@ -144,11 +144,5 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     }
   }
 
-  // Intentionally omitting the return type as it is different depending on Spark version
-  // Spark 3.2.x Seq[InputPartition]
-  // Spark 3.3.x Seq[Seq[InputPartition]]
-  // TODO: add back the return type after dropping Spark 3.2.0 support
-  @transient override lazy val partitions = wrappedScan.partitions
-
   override def supportsColumnar: Boolean = true
 }

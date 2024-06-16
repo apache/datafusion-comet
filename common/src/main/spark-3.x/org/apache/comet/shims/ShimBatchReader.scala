@@ -24,7 +24,7 @@ import org.apache.spark.sql.execution.datasources.PartitionedFile
 
 object ShimBatchReader {
 
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly call PartitionedFile
+  // TODO: remove after dropping Spark 3.3 support and directly call PartitionedFile
   def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
     classOf[PartitionedFile].getDeclaredConstructors
       .map(c =>

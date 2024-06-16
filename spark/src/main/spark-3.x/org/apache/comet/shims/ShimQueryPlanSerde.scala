@@ -45,7 +45,7 @@ trait ShimQueryPlanSerde {
     }
   }
 
-  // TODO: delete after drop Spark 3.2/3.3 support
+  // TODO: delete after drop Spark 3.3 support
   // This method is used to check if the aggregate function is in legacy mode.
   // EvalMode is an enum object in Spark 3.4.
   def isLegacyMode(aggregate: DeclarativeAggregate): Boolean = {
@@ -61,10 +61,5 @@ trait ShimQueryPlanSerde {
     } else {
       "legacy".equalsIgnoreCase(evalMode.head.toString)
     }
-  }
-
-  // TODO: delete after drop Spark 3.2 support
-  def isBloomFilterMightContain(binary: BinaryExpression): Boolean = {
-    binary.getClass.getName == "org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain"
   }
 }

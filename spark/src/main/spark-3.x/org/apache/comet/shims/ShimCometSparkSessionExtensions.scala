@@ -25,16 +25,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 trait ShimCometSparkSessionExtensions {
   /**
-   * TODO: delete after dropping Spark 3.2.0 support and directly call scan.pushedAggregate
-   */
-  def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.getClass.getDeclaredFields
-    .filter(_.getName == "pushedAggregate")
-    .map { a => a.setAccessible(true); a }
-    .flatMap(_.get(scan).asInstanceOf[Option[Aggregation]])
-    .headOption
-
-  /**
-   * TODO: delete after dropping Spark 3.2 and 3.3 support
+   * TODO: delete after dropping Spark 3.3 support
    */
   def getOffset(limit: LimitExec): Int = getOffsetOpt(limit).getOrElse(0)
 

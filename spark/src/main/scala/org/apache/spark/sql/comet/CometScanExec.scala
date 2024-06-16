@@ -150,7 +150,7 @@ case class CometScanExec(
 
   lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +
-      (ShimFileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
+      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =
       relation.fileFormat.buildReaderWithPartitionValues(
         sparkSession = relation.sparkSession,

@@ -571,9 +571,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to DateType") {
-    // error message for invalid dates in Spark 3.2 not supported by Comet see below issue.
-    // https://github.com/apache/datafusion-comet/issues/440
-    assume(CometSparkSessionExtensions.isSpark33Plus)
     val validDates = Seq(
       "262142-01-01",
       "262142-01-01 ",
@@ -956,7 +953,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
 
-    // we now support the TryCast expression in Spark 3.2 and 3.3
+    // we now support the TryCast expression in Spark 3.3
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -1014,19 +1011,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 assert(cometMessage.contains("cannot be represented as"))
               } else {
                 assert(cometMessageModified == sparkMessage)
-              }
-            } else {
-              // for Spark 3.2 we just make sure we are seeing a similar type of error
-              if (sparkMessage.contains("causes overflow")) {
-                assert(cometMessage.contains("due to an overflow"))
-              } else if (sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("cannot be represented as"))
-              } else {
-                // assume that this is an invalid input message in the form:
-                // `invalid input syntax for type numeric: -9223372036854775809`
-                // we just check that the Comet message contains the same literal value
-                val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
-                assert(cometMessage.contains(sparkInvalidValue))
               }
             }
         }

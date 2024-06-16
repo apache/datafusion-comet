@@ -46,7 +46,7 @@ The `QueryPlanSerde` object has a method `exprToProto`, which is responsible for
 For example, the `unhex` function looks like this:
 
 ```scala
-case e: Unhex if !isSpark32 =>
+case e: Unhex =>
   val unHex = unhexSerde(e)
 
   val childExpr = exprToProtoInternal(unHex._1, inputs)
@@ -59,7 +59,6 @@ case e: Unhex if !isSpark32 =>
 
 A few things to note here:
 
-* The `isSpark32` check is used to fall back to Spark's implementation of `unhex` in Spark 3.2. This is somewhat context specific, because in this case, due to a bug in Spark 3.2 for `unhex`, we want to use the Spark implementation and not a Comet implementation that would behave differently if correct.
 * The function is recursively called on child expressions, so you'll need to make sure that the child expressions are also converted to protobuf.
 * `scalarExprToProtoWithReturnType` is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.
 
@@ -71,8 +70,6 @@ For example, this is the test case for the `unhex` expression:
 
 ```scala
 test("unhex") {
-  assume(!isSpark32, "unhex function has incorrect behavior in 3.2")  // used to skip the test in Spark 3.2
-
   val table = "unhex_table"
   withTable(table) {
     sql(s"create table $table(col string) using parquet")
@@ -172,7 +169,7 @@ pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
 
 1. Shims that exist in `spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala` for each Spark version. These shims are used to provide compatibility between different Spark versions.
-2. Variables that correspond to the Spark version, such as `isSpark32`, which can be used to conditionally execute code based on the Spark version.
+2. Variables that correspond to the Spark version, such as `isSpark33Plus`, which can be used to conditionally execute code based on the Spark version.
 
 ## Shimming to Support Different Spark Versions
 
