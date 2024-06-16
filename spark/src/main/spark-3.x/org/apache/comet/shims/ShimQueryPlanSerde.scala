@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression}
+import org.apache.spark.sql.catalyst.expressions.BinaryArithmetic
 import org.apache.spark.sql.catalyst.expressions.aggregate.DeclarativeAggregate
 
 trait ShimQueryPlanSerde {
