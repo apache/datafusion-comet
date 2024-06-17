@@ -401,12 +401,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_XXHASH64_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.xxhash64.enabled")
-      .doc("The xxhash64 implementation is not optimized yet and may cause performance issues.")
-      .booleanConf
-      .createWithDefault(false)
-
 }
 
 object ConfigHelpers {
