@@ -1,58 +1,90 @@
-Query: q1. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q1. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q1: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
 Query: q2. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
 Query: q2: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Project)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q3. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q3. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q3: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q4. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q4. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q4: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q5. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q5. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q5: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Expand is not native because the following children are not native (Union)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Expand)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q6. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q6: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q8. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q8. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q8: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+HashAggregate is not native because the following children are not native (SortMergeJoin)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (ObjectHashAggregate)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 getstructfield is not supported
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
@@ -60,870 +92,1255 @@ xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable
 Query: q9. Comet Exec: Enabled (CometFilter)
 Query: q9: ExplainInfo:
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (HashAggregate)
 getstructfield is not supported
 
-Query: q10. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q10. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q10: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (SortMergeJoin)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q11. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q11. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q11: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q12. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q12. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q12: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q13. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q13. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q13: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 
-Query: q14a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q14a. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q14a: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
+BroadcastHashJoin is not native because the following children are not native (SortMergeJoin, BroadcastExchange)
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Expand is not native because the following children are not native (Union)
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Expand)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (Project, Project, Project)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q14b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q14b. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q14b: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
+BroadcastHashJoin is not native because the following children are not native (SortMergeJoin, BroadcastExchange)
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q15. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q15. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q15: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q16. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q16. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q16: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 
-Query: q17. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q17. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q17: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q18. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q18. Comet Exec: Enabled (CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q18: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q19. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q19. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q19: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q20. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q20. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q20: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q21. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q21. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q21: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q22. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22. Comet Exec: Enabled (CometHashAggregate, CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q22: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q23a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q23a. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q23a: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
-Union disabled because not all child plans are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Project)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+Union is not enabled because the following children are not native (Project, Project)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q23b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q23b. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q23b: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (SortMergeJoin, BroadcastExchange)
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Project)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q24a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24a. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q24a: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
 
-Query: q24b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24b. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q24b: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
 
-Query: q25. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q25. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q25: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q26. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q26. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q26: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q27. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q27. Comet Exec: Enabled (CometHashAggregate, CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q27: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q28. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q28: ExplainInfo:
-Broadcast is not enabled: no reason available
+BroadcastNestedLoopJoin is not native because the following children are not native (BroadcastNestedLoopJoin, BroadcastExchange)
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 
-Query: q29. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q29. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q29: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q30. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q30. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q30: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (Project, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q31. Comet Exec: Enabled (CometFilter)
+Query: q31. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q31: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 
-Query: q32. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q32. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q32: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q33. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q33. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q33: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q34. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q34. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q34: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q35. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q35. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q35: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (SortMergeJoin)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q36. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q36. Comet Exec: Enabled (CometHashAggregate, CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q36: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q37. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q37. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q37: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q38. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q38. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q38: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 
-Query: q39a. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q39a. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q39a: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 
-Query: q39b. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q39b. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q39b: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 
-Query: q40. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q40. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q40: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q41. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q41: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q42. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q42. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q42: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q43. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q43. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q43: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q44. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
 Query: q44: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (Project, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q45. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q45. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q45: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (BroadcastHashJoin)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (Filter)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q46. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q46. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q46: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q47. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q47: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q48. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q48. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q48: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 
-Query: q49. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q49. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q49: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Window)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (Project, Project, Project)
 Window is not supported
 
-Query: q50. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q50. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q50: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q51. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q51. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q51: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q52. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q52. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q52: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q53. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q53. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q53: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q54. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q54. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q54: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q55. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q55. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q55: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q56. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q56. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q56: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q57. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q57: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q58. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q58. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q58: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
 Query: q59. Comet Exec: Enabled (CometFilter, CometProject)
 Query: q59: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q60. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q60. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q60: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q61. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q61. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q61: ExplainInfo:
-Broadcast is not enabled: no reason available
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastNestedLoopJoin)
 
-Query: q62. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q62. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q62: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q63. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q63. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q63: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q64. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q64. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q64: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Project)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q65. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q65. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q65: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q66. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q66. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q66: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate)
 
-Query: q67. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q67. Comet Exec: Enabled (CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q67: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q68. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q68. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q68: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q69. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q69. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q69: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q70. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q70. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q70: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Expand is not native because the following children are not native (Project)
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Expand)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Sort, Project)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q71. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q71. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q71: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-Union disabled because not all child plans are native
+HashAggregate is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q72. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q72. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q72: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q73. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q73. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q73: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q74. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q74. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q74: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q75. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q75. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q75: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 
-Query: q76. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q76. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q76: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 
-Query: q77. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q77. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q77: ExplainInfo:
-Broadcast is not enabled: no reason available
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Expand is not native because the following children are not native (Union)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Expand)
+Project is not native because the following children are not native (BroadcastNestedLoopJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (Project, Project, Project)
 
-Query: q78. Comet Exec: Enabled (CometFilter)
+Query: q78. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q78: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q79. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q79. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q79: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q80. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q80. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q80: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Expand is not native because the following children are not native (Union)
+HashAggregate is not native because the following children are not native (Expand)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q81. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q81. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q81: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (Project, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q82. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q82. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q82: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q83. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q83. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q83: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q84. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q84. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q84: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 TakeOrderedAndProject requires shuffle to be enabled
+concat is not supported
 
-Query: q85. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q85. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q85: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q86. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q86. Comet Exec: Enabled (CometHashAggregate, CometExpand, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q86: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q87. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q87. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q87: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 
-Query: q88. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q88. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q88: ExplainInfo:
-Broadcast is not enabled: no reason available
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastNestedLoopJoin is not native because the following children are not native (BroadcastNestedLoopJoin, BroadcastExchange)
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 
-Query: q89. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q89. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q89: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q90. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q90. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q90: ExplainInfo:
-Broadcast is not enabled: no reason available
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastNestedLoopJoin)
 
-Query: q91. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q91. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q91: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q92. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q92. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q92: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q93. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q93. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q93: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q94. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q94. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q94: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 
-Query: q95. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q95. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q95: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 
-Query: q96. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q96. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q96: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 
-Query: q97. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q97. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q97: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 
-Query: q98. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q98. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q98: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Sort)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 Window is not supported
 
-Query: q99. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q99. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q99: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q5a-v2.7. Comet Exec: Enabled (CometFilter, CometProject, CometUnion)
+Query: q5a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q5a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometFilter, CometProject)
+Query: q6-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q6-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q10a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q10a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q10a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 
-Query: q11-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q11-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q11-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q12-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q12-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q12-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q14-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q14-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q14-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
+BroadcastHashJoin is not native because the following children are not native (SortMergeJoin, BroadcastExchange)
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Filter)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q14a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q14a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q14a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
+BroadcastHashJoin is not native because the following children are not native (SortMergeJoin, BroadcastExchange)
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(10,0) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
+HashAggregate is not native because the following children are not native (Union)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (Filter, Filter, Filter)
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q18a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q18a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q18a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
+Comet does not guarantee correct results for cast from IntegerType to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY (No overflow check). To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate)
 
-Query: q20-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q20-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q20-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q22-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q22-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Expand is not native because the following children are not native (Project)
+HashAggregate is not native because the following children are not native (Expand)
+Project is not native because the following children are not native (BroadcastNestedLoopJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q22a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q22a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q22a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate)
 
-Query: q24-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q24-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q24-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q27a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q27a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q27a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q34-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q34-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q34-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Sort is not native because the following children are not native (Exchange)
 
-Query: q35-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q35-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q35-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (SortMergeJoin)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q35a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q35a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q35a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 
-Query: q36a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q36a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q36a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 Window is not supported
 
-Query: q47-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q47-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q47-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q49-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q49-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q49-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Window)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (Project, Project, Project)
 Window is not supported
 
-Query: q51a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q51a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q51a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+Filter is not native because the following children are not native (SortMergeJoin)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (Window, Project)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q57-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q57-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q57-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 Window is not supported
 
-Query: q64-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q64-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q64-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (Project)
 ObjectHashAggregate is not supported
-SortMergeJoin is not enabled because not all children are native
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (Project)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 xxhash64 is disabled by default. Set spark.comet.xxhash64.enabled=true to enable it.
 
-Query: q67a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q67a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q67a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (HashAggregate)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate, HashAggregate)
 Window is not supported
 
-Query: q70a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q70a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q70a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastHashJoin is not native because the following children are not native (BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (Window)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Project)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (BroadcastHashJoin)
+Project is not native because the following children are not native (Filter)
+Project is not native because the following children are not native (SortMergeJoin)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Sort, Project)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 Window is not supported
 
-Query: q72-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q72-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q72-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Project)
+Project is not native because the following children are not native (BroadcastHashJoin)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q74-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q74-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q74-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
+SortMergeJoin is not enabled because the following children are not native (SortMergeJoin, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q75-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q75-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject, CometUnion)
 Query: q75-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Exchange)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
 
-Query: q77a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q77a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q77a-v2.7: ExplainInfo:
-Broadcast is not enabled: no reason available
-BroadcastHashJoin is not enabled because not all child plans are native 
+BroadcastNestedLoopJoin is not native because the following children are not native (HashAggregate, BroadcastExchange)
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (BroadcastNestedLoopJoin)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
+Union is not enabled because the following children are not native (Project, Project, Project)
 
-Query: q78-v2.7. Comet Exec: Enabled (CometFilter)
+Query: q78-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q78-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
-SortMergeJoin is not enabled because not all children are native
+Filter is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (SortMergeJoin)
+Sort is not native because the following children are not native (Filter)
+Sort is not native because the following children are not native (HashAggregate)
+SortMergeJoin is not enabled because the following children are not native (Project, Sort)
+SortMergeJoin is not enabled because the following children are not native (Sort, Sort)
 TakeOrderedAndProject requires shuffle to be enabled
 
-Query: q80a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q80a-v2.7. Comet Exec: Enabled (CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q80a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
+Comet does not guarantee correct results for cast from DecimalType(7,2) to DecimalType(12,2) with timezone Some(America/Los_Angeles) and evalMode LEGACY. To enable all incompatible casts, set spark.comet.cast.allowIncompatible=true
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 
-Query: q86a-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q86a-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q86a-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+HashAggregate is not native because the following children are not native (HashAggregate)
+HashAggregate is not native because the following children are not native (Union)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 TakeOrderedAndProject requires shuffle to be enabled
-Union disabled because not all child plans are native
+Union is not enabled because the following children are not native (HashAggregate, HashAggregate, HashAggregate)
 Window is not supported
 
-Query: q98-v2.7. Comet Exec: Enabled (CometFilter, CometProject)
+Query: q98-v2.7. Comet Exec: Enabled (CometHashAggregate, CometBroadcastHashJoin, CometFilter, CometProject)
 Query: q98-v2.7: ExplainInfo:
-BroadcastHashJoin is not enabled because not all child plans are native 
 Comet shuffle is not enabled: spark.sql.adaptive.coalescePartitions.enabled is enabled and spark.comet.shuffle.enforceMode.enabled is not enabled
+HashAggregate is not native because the following children are not native (Exchange)
+Project is not native because the following children are not native (Window)
+Sort is not native because the following children are not native (Exchange)
 Window is not supported
 
