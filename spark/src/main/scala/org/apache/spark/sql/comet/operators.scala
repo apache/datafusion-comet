@@ -381,7 +381,8 @@ abstract class CometNativeExec extends CometExec {
    */
   protected def canonicalizePlans(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
-      case sparkPlan: SparkPlan => sparkPlan.canonicalized
+      case sparkPlan: SparkPlan if !sparkPlan.isInstanceOf[CometNativeExec] =>
+        sparkPlan.canonicalized
       case other: AnyRef => other
       case null => null
     }
