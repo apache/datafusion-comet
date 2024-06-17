@@ -2101,27 +2101,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
         case XxHash64(children, seed) =>
-          if (CometConf.COMET_XXHASH64_ENABLED.get()) {
-            val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-            if (firstUnSupportedInput.isDefined) {
-              withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-              return None
-            }
-            val exprs = children.map(exprToProtoInternal(_, inputs))
-            val seedBuilder = ExprOuterClass.Literal
-              .newBuilder()
-              .setDatatype(serializeDataType(LongType).get)
-              .setLongVal(seed)
-            val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-            // the seed is put at the end of the arguments
-            scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
-          } else {
-            withInfo(
-              expr,
-              "xxhash64 is disabled by default. " +
-                s"Set ${CometConf.COMET_XXHASH64_ENABLED.key}=true to enable it.")
-            None
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
           }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(LongType).get)
+            .setLongVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
