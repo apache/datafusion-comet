@@ -382,6 +382,9 @@ abstract class CometNativeExec extends CometExec {
   protected def canonicalizePlans(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case sparkPlan: SparkPlan if !sparkPlan.isInstanceOf[CometNativeExec] =>
+        // Different to Spark, Comet native query node might have a Spark plan as Product element.
+        // We need to canonicalize the Spark plan. But it is not possibly to be another Comet
+        // native query node.
         sparkPlan.canonicalized
       case other: AnyRef => other
       case null => null
