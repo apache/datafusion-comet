@@ -221,6 +221,16 @@ class CometSparkSessionExtensions
 
     private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
+    private def explainChildNotNative(op: SparkPlan): String = {
+      var nonNatives: Seq[String] = Seq()
+      op.children.foreach(plan => {
+        if (!isCometNative(plan)) {
+          nonNatives = nonNatives :+ plan.nodeName
+        }
+      })
+      nonNatives.mkString("(", ", ", ")")
+    }
+
     // spotless:off
     /**
      * Tries to transform a Spark physical plan into a Comet plan.
@@ -291,6 +301,10 @@ class CometSparkSessionExtensions
             op,
             op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
         } else {
+          withInfo(
+            op,
+            s"${op.nodeName} is not native because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           None
         }
       }
@@ -444,7 +458,10 @@ class CometSparkSessionExtensions
           op
 
         case op: ShuffledHashJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "ShuffleHashJoin disabled because not all child plans are native")
+          withInfo(
+            op,
+            "ShuffleHashJoin disabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           op
 
         case op: BroadcastHashJoinExec
@@ -467,16 +484,6 @@ class CometSparkSessionExtensions
             case None =>
               op
           }
-
-        case op: BroadcastHashJoinExec
-            if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
-              !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "BroadcastHashJoin is not enabled because not all child plans are native ")
-          op
-
-        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
-          withInfo(op, "BroadcastHashJoin is not enabled")
-          op
 
         case op: SortMergeJoinExec
             if isCometOperatorEnabled(conf, "sort_merge_join") &&
@@ -501,7 +508,10 @@ class CometSparkSessionExtensions
         case op: SortMergeJoinExec
             if isCometOperatorEnabled(conf, "sort_merge_join") &&
               !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "SortMergeJoin is not enabled because not all children are native")
+          withInfo(
+            op,
+            "SortMergeJoin is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           op
 
         case op: SortMergeJoinExec if !isCometOperatorEnabled(conf, "sort_merge_join") =>
@@ -509,7 +519,10 @@ class CometSparkSessionExtensions
           op
 
         case op: SortMergeJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "SortMergeJoin disabled because not all child plans are native")
+          withInfo(
+            op,
+            "SortMergeJoin is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           op
 
         case c @ CoalesceExec(numPartitions, child)
@@ -528,7 +541,10 @@ class CometSparkSessionExtensions
           c
 
         case op: CoalesceExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "Coalesce disabled because not all child plans are native")
+          withInfo(
+            op,
+            "Coalesce is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           op
 
         case s: TakeOrderedAndProjectExec
@@ -570,7 +586,10 @@ class CometSparkSessionExtensions
           u
 
         case op: UnionExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "Union disabled because not all child plans are native")
+          withInfo(
+            op,
+            "Union is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
           op
 
         // For AQE broadcast stage on a Comet broadcast exchange
@@ -615,8 +634,10 @@ class CometSparkSessionExtensions
               plan
             }
           } else {
-            val reason = getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-            withInfo(plan, s"Broadcast is not enabled: $reason")
+            withInfo(
+              plan,
+              s"${plan.nodeName} is not native because the following children are not native " +
+                s"${explainChildNotNative(plan)}")
             plan
           }
 
@@ -624,7 +645,22 @@ class CometSparkSessionExtensions
         // child BroadcastExchange has been applied, otherwise that transform
         // never gets applied
         case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(op, "BroadcastHashJoin disabled because not all child plans are native")
+          withInfo(
+            op,
+            "BroadcastHashJoin is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
+          op
+        case op: BroadcastHashJoinExec
+            if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
+              !op.children.forall(isCometNative(_)) =>
+          withInfo(
+            op,
+            "BroadcastHashJoin is not enabled because the following children are not native " +
+              s"${explainChildNotNative(op)}")
+          op
+
+        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
+          withInfo(op, "BroadcastHashJoin is not enabled")
           op
 
         // For AQE shuffle stage on a Comet shuffle exchange
