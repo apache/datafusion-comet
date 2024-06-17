@@ -2062,7 +2062,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             childExpr)
           optExprWithInfo(optExpr, expr, child)
 
-        case b @ BinaryExpression(_, _) =>
+        case b @ BloomFilterMightContain(_, _) =>
           val bloomFilter = b.left
           val value = b.right
           val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs)
