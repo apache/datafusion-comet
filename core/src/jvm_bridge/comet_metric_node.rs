@@ -22,8 +22,6 @@ use jni::{
     JNIEnv,
 };
 
-use super::get_global_jclass;
-
 /// A struct that holds all the JNI methods and fields for JVM CometMetricNode class.
 pub struct CometMetricNode<'a> {
     pub class: JClass<'a>,
@@ -38,7 +36,7 @@ impl<'a> CometMetricNode<'a> {
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
         // Get the global class reference
-        let class = get_global_jclass(env, Self::JVM_CLASS)?;
+        let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {
             method_get_child_node: env

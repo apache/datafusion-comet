@@ -22,8 +22,6 @@ use jni::{
     JNIEnv,
 };
 
-use super::get_global_jclass;
-
 /// A struct that holds all the JNI methods and fields for JVM CometExec object.
 pub struct CometExec<'a> {
     pub class: JClass<'a>,
@@ -56,7 +54,7 @@ impl<'a> CometExec<'a> {
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometExec<'a>> {
         // Get the global class reference
-        let class = get_global_jclass(env, Self::JVM_CLASS)?;
+        let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometExec {
             method_get_bool: env
