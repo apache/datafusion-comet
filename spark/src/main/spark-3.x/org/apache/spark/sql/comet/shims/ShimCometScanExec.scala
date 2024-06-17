@@ -27,12 +27,19 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
-import org.apache.spark.sql.execution.datasources.{PartitionDirectory, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, PartitionDirectory, PartitionedFile}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
 trait ShimCometScanExec {
   def wrapped: FileSourceScanExec
+
+  // TODO: remove after dropping Spark 3.2 support and directly call wrapped.metadataColumns
+  lazy val metadataColumns: Seq[AttributeReference] = wrapped.getClass.getDeclaredMethods
+    .filter(_.getName == "metadataColumns")
+    .map { a => a.setAccessible(true); a }
+    .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
 
   // TODO: remove after dropping Spark 3.3 support and directly call
   //       wrapped.fileConstantMetadataColumns
@@ -41,6 +48,34 @@ trait ShimCometScanExec {
       .filter(_.getName == "fileConstantMetadataColumns")
       .map { a => a.setAccessible(true); a }
       .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
+
+  // TODO: remove after dropping Spark 3.2 support and directly call new FileScanRDD
+  protected def newFileScanRDD(
+      fsRelation: HadoopFsRelation,
+      readFunction: PartitionedFile => Iterator[InternalRow],
+      filePartitions: Seq[FilePartition],
+      readSchema: StructType,
+      options: ParquetOptions): FileScanRDD =
+    classOf[FileScanRDD].getDeclaredConstructors
+      // Prevent to pick up incorrect constructors from any custom Spark forks.
+      .filter(c => List(3, 5, 6).contains(c.getParameterCount()))
+      .map { c =>
+        c.getParameterCount match {
+          case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
+          case 5 =>
+            c.newInstance(fsRelation.sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
+          case 6 =>
+            c.newInstance(
+              fsRelation.sparkSession,
+              readFunction,
+              filePartitions,
+              readSchema,
+              fileConstantMetadataColumns,
+              options)
+        }
+      }
+      .last
+      .asInstanceOf[FileScanRDD]
 
   // TODO: remove after dropping Spark 3.3 support and directly call
   //       QueryExecutionErrors.SparkException

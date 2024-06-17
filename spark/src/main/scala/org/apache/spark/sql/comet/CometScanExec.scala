@@ -409,13 +409,12 @@ case class CometScanExec(
         true,
         Map.empty)
     } else {
-      new FileScanRDD(
-        fsRelation.sparkSession,
+      newFileScanRDD(
+        fsRelation,
         readFile,
         partitions,
         new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
-        Seq.empty,
-        new FileSourceOptions(CaseInsensitiveMap(relation.options)))
+        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
     }
   }
 

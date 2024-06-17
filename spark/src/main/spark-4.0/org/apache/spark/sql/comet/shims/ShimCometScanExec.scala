@@ -40,14 +40,6 @@ trait ShimCometScanExec {
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
     wrapped.fileConstantMetadataColumns
 
-  protected def newDataSourceRDD(
-      sc: SparkContext,
-      inputPartitions: Seq[Seq[InputPartition]],
-      partitionReaderFactory: PartitionReaderFactory,
-      columnarReads: Boolean,
-      customMetrics: Map[String, SQLMetric]): DataSourceRDD =
-    new DataSourceRDD(sc, inputPartitions, partitionReaderFactory, columnarReads, customMetrics)
-
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
