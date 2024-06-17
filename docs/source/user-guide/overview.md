@@ -40,7 +40,7 @@ The following diagram illustrates the architecture of Comet:
 
 ## Current Status
 
-The project is currently integrated into Apache Spark 3.2, 3.3, and 3.4.
+The project is currently integrated into Apache Spark 3.3, and 3.4.
 
 ## Feature Parity with Apache Spark
 

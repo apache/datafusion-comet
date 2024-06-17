@@ -173,7 +173,7 @@ If the expression you're adding has different behavior across different Spark ve
 
 ## Shimming to Support Different Spark Versions
 
-By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, `unhex` added a new optional parameter is Spark 3.4, for if it should `failOnError` or not. So for version 3.2 and 3.3, the shim is:
+By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, `unhex` added a new optional parameter is Spark 3.4, for if it should `failOnError` or not. So for version 3.3, the shim is:
 
 ```scala
 trait CometExprShim {

@@ -583,14 +583,14 @@ class CometShuffleWriteProcessor(
 }
 
 /**
- * Copied from Spark `PartitionIdPassthrough` as it is private in Spark 3.2.
+ * Copied from Spark `PartitionIdPassthrough` as it is private in Spark 3.3.
  */
 private[spark] class PartitionIdPassthrough(override val numPartitions: Int) extends Partitioner {
   override def getPartition(key: Any): Int = key.asInstanceOf[Int]
 }
 
 /**
- * Copied from Spark `ConstantPartitioner` as it doesn't exist in Spark 3.2.
+ * Copied from Spark `ConstantPartitioner` as it doesn't exist in Spark 3.3.
  */
 private[spark] class ConstantPartitioner extends Partitioner {
   override def numPartitions: Int = 1

@@ -36,6 +36,7 @@ import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
+import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -401,19 +402,20 @@ case class CometScanExec(
         new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf),
         metrics)
 
-      newDataSourceRDD(
+      new DataSourceRDD(
         fsRelation.sparkSession.sparkContext,
         partitions.map(Seq(_)),
         partitionReaderFactory,
         true,
         Map.empty)
     } else {
-      newFileScanRDD(
-        fsRelation,
+      new FileScanRDD(
+        fsRelation.sparkSession,
         readFile,
         partitions,
         new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
-        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
+        Seq.empty,
+        new FileSourceOptions(CaseInsensitiveMap(relation.options)))
     }
   }
 

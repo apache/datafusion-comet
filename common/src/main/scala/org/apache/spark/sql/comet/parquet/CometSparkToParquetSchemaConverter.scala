@@ -26,6 +26,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName._
 import org.apache.parquet.schema.Type.Repetition._
 import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -66,8 +67,8 @@ class CometSparkToParquetSchemaConverter(
    */
   def convertField(field: StructField): Type = {
     val converted = convertField(field, if (field.nullable) OPTIONAL else REQUIRED)
-    if (useFieldId && CometParquetUtils.hasFieldId(field)) {
-      converted.withId(CometParquetUtils.getFieldId(field))
+    if (useFieldId && ParquetUtils.hasFieldId(field)) {
+      converted.withId(ParquetUtils.getFieldId(field))
     } else {
       converted
     }

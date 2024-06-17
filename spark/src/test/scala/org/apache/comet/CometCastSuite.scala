@@ -999,7 +999,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
-            } else if (CometSparkSessionExtensions.isSpark33Plus) {
+            } else {
               // for Spark 3.3 we just need to strip the prefix from the Comet message
               // before comparing
               val cometMessageModified = cometMessage
