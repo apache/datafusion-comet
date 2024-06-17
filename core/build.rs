@@ -20,7 +20,7 @@
 use std::{fs, io::Result, path::Path};
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/execution/proto/*.proto");
+    println!("cargo:rerun-if-changed=src/execution/proto/");
 
     let out_dir = "src/execution/generated";
     if !Path::new(out_dir).is_dir() {
