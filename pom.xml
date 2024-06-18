@@ -522,20 +522,6 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-3.2</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.2.2</spark.version>
-        <spark.version.short>3.2</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
-        <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.2</shims.minorVerSrc>
-      </properties>
-    </profile>
-
-    <profile>
       <id>spark-3.3</id>
       <properties>
         <scala.version>2.12.15</scala.version>

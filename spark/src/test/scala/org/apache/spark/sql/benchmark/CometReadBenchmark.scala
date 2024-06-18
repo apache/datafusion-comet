@@ -24,8 +24,8 @@ import java.io.File
 import scala.collection.JavaConverters._
 import scala.util.Random
 
+import org.apache.spark.TestUtils
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.comet.shims.ShimTestUtils
 import org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
@@ -124,7 +124,7 @@ object CometReadBenchmark extends CometBenchmarkBase {
             (col: ColumnVector, i: Int) => longSum += col.getUTF8String(i).toLongExact
         }
 
-        val files = ShimTestUtils.listDirectory(new File(dir, "parquetV1"))
+        val files = TestUtils.listDirectory(new File(dir, "parquetV1"))
 
         sqlBenchmark.addCase("ParquetReader Spark") { _ =>
           files.map(_.asInstanceOf[String]).foreach { p =>
