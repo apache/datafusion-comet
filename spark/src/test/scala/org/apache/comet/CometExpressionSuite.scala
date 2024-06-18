@@ -856,6 +856,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("remainder") {
+    withTempDir { dir =>
+      // Create a DataFrame with null values
+      val df = Seq((-21840, -0.0)).toDF("c90", "c1")
+
+      // Write the DataFrame to a Parquet file
+      val path = new Path(dir.toURI.toString, "remainder_test.parquet").toString
+      df.write.mode("overwrite").parquet(path)
+
+      withParquetTable(path, "t") {
+        checkSparkAnswerAndOperator("SELECT c90, c1, c90 % c1 FROM t")
+      }
+    }
+  }
+
   test("abs Overflow ansi mode") {
 
     def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
