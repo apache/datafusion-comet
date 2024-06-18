@@ -19,8 +19,8 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal._
-import org.apache.spark.sql.internal.SQLConf._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 
 trait ShimSQLConf {
 
