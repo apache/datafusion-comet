@@ -540,6 +540,7 @@ under the License.
         <parquet.version>1.12.0</parquet.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
+        <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
       </properties>
     </profile>
 
@@ -549,6 +550,7 @@ under the License.
         <scala.version>2.12.17</scala.version>
         <spark.version.short>3.4</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
       </properties>
     </profile>
 
@@ -561,6 +563,7 @@ under the License.
         <parquet.version>1.12.0</parquet.version>
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+        <shims.pre35Src>not-needed</shims.pre35Src>
       </properties>
     </profile>
 
@@ -576,6 +579,7 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <shims.pre35Src>not-needed</shims.pre35Src>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
