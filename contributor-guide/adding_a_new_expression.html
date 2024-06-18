@@ -394,7 +394,7 @@ under the License.
 <h3>Adding the Expression in Scala<a class="headerlink" href="#adding-the-expression-in-scala" title="Link to this heading">¶</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object has a method <code class="docutils literal notranslate"><span class="pre">exprToProto</span></code>, which is responsible for converting a Spark expression to a protobuf expression. Within that method is an <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code> method that contains a large match statement for each expression type. You’ll need to add a new case to this match statement for your new expression.</p>
 <p>For example, the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function looks like this:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">isSpark32</span><span class="w"> </span><span class="o">=&gt;</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">unHex</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">unhexSerde</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
 
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">childExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">unHex</span><span class="p">.</span><span class="n">_1</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">)</span>
@@ -407,7 +407,6 @@ under the License.
 </div>
 <p>A few things to note here:</p>
 <ul class="simple">
-<li><p>The <code class="docutils literal notranslate"><span class="pre">isSpark32</span></code> check is used to fall back to Spark’s implementation of <code class="docutils literal notranslate"><span class="pre">unhex</span></code> in Spark 3.2. This is somewhat context specific, because in this case, due to a bug in Spark 3.2 for <code class="docutils literal notranslate"><span class="pre">unhex</span></code>, we want to use the Spark implementation and not a Comet implementation that would behave differently if correct.</p></li>
 <li><p>The function is recursively called on child expressions, so you’ll need to make sure that the child expressions are also converted to protobuf.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">scalarExprToProtoWithReturnType</span></code> is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.</p></li>
 </ul>
@@ -416,8 +415,6 @@ under the License.
 <p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code>, and use the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method to compare the results of the new expression with the expected Spark results and that Comet’s native execution engine is able to execute the expression.</p>
 <p>For example, this is the test case for the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> expression:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">assume</span><span class="p">(</span><span class="o">!</span><span class="n">isSpark32</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;unhex function has incorrect behavior in 3.2&quot;</span><span class="p">)</span><span class="w">  </span><span class="c1">// used to skip the test in Spark 3.2</span>
-
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">table</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;unhex_table&quot;</span>
 <span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s&quot;create table </span><span class="si">$</span><span class="n">table</span><span class="s">(col string) using parquet&quot;</span><span class="p">)</span>
@@ -508,13 +505,13 @@ under the License.
 <p>If the expression you’re adding has different behavior across different Spark versions, you’ll need to account for that in your implementation. There are two tools at your disposal to help with this:</p>
 <ol class="arabic simple">
 <li><p>Shims that exist in <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala</span></code> for each Spark version. These shims are used to provide compatibility between different Spark versions.</p></li>
-<li><p>Variables that correspond to the Spark version, such as <code class="docutils literal notranslate"><span class="pre">isSpark32</span></code>, which can be used to conditionally execute code based on the Spark version.</p></li>
+<li><p>Variables that correspond to the Spark version, such as <code class="docutils literal notranslate"><span class="pre">isSpark33Plus</span></code>, which can be used to conditionally execute code based on the Spark version.</p></li>
 </ol>
 </section>
 </section>
 <section id="shimming-to-support-different-spark-versions">
 <h2>Shimming to Support Different Spark Versions<a class="headerlink" href="#shimming-to-support-different-spark-versions" title="Link to this heading">¶</a></h2>
-<p>By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, <code class="docutils literal notranslate"><span class="pre">unhex</span></code> added a new optional parameter is Spark 3.4, for if it should <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> or not. So for version 3.2 and 3.3, the shim is:</p>
+<p>By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, <code class="docutils literal notranslate"><span class="pre">unhex</span></code> added a new optional parameter is Spark 3.4, for if it should <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> or not. So for version 3.3, the shim is:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="cm">/**</span>
 <span class="cm">      * Returns a tuple of expressions for the `unhex` function.</span>
