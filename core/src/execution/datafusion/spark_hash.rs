@@ -174,7 +174,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     hash = hash.wrapping_add(total_len);
 
     // process u64s
-    while offset_u64 * 8 + 8 < length_bytes {
+    while offset_u64 * 8 + 8 <= length_bytes {
         let mut k1 = unsafe {
             ptr_u64
                 .add(offset_u64)
@@ -196,7 +196,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     let ptr_u32 = data.as_ptr() as *const u32;
     let length_bytes = length_bytes - offset_u64 * 8;
     let mut offset_u32 = 0;
-    while offset_u32 * 4 + 4 < length_bytes {
+    while offset_u32 * 4 + 4 <= length_bytes {
         let k1 = unsafe {
             u64::from(ptr_u32.add(offset_u32).read_unaligned().to_le()).wrapping_mul(PRIME_1)
         };
