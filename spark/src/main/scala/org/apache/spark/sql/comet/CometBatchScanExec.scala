@@ -44,6 +44,10 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
 
   wrapped.logicalLink.foreach(setLogicalLink)
 
+  def keyGroupedPartitioning: Option[Seq[Expression]] = wrapped.keyGroupedPartitioning
+
+  def inputPartitions: Seq[InputPartition] = wrapped.inputPartitions
+
   override lazy val inputRDD: RDD[InternalRow] = wrappedScan.inputRDD
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {

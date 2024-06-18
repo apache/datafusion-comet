@@ -35,7 +35,7 @@ import org.apache.spark.sql.types.{LongType, StructField, StructType}
 trait ShimCometScanExec {
   def wrapped: FileSourceScanExec
 
-  // TODO: remove after dropping Spark 3.2 support and directly call wrapped.metadataColumns
+  // TODO: remove after dropping Spark 3.3 support
   lazy val metadataColumns: Seq[AttributeReference] = wrapped.getClass.getDeclaredMethods
     .filter(_.getName == "metadataColumns")
     .map { a => a.setAccessible(true); a }
@@ -49,7 +49,7 @@ trait ShimCometScanExec {
       .map { a => a.setAccessible(true); a }
       .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
 
-  // TODO: remove after dropping Spark 3.2 support and directly call new FileScanRDD
+  // TODO: remove after dropping Spark 3.4 support and directly call new FileScanRDD
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
@@ -58,10 +58,9 @@ trait ShimCometScanExec {
       options: ParquetOptions): FileScanRDD =
     classOf[FileScanRDD].getDeclaredConstructors
       // Prevent to pick up incorrect constructors from any custom Spark forks.
-      .filter(c => List(3, 5, 6).contains(c.getParameterCount()))
+      .filter(c => List(5, 6).contains(c.getParameterCount()))
       .map { c =>
         c.getParameterCount match {
-          case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
           case 5 =>
             c.newInstance(fsRelation.sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
           case 6 =>
@@ -80,16 +79,12 @@ trait ShimCometScanExec {
   // TODO: remove after dropping Spark 3.3 support and directly call
   //       QueryExecutionErrors.SparkException
   protected def invalidBucketFile(path: String, sparkVersion: String): Throwable = {
-    if (sparkVersion >= "3.3") {
-      val messageParameters = if (sparkVersion >= "3.4") Map("path" -> path) else Array(path)
-      classOf[SparkException].getDeclaredConstructors
-        .filter(_.getParameterCount == 3)
-        .map(_.newInstance("INVALID_BUCKET_FILE", messageParameters, null))
-        .last
-        .asInstanceOf[SparkException]
-    } else { // Spark 3.2
-      new IllegalStateException(s"Invalid bucket file ${path}")
-    }
+    val messageParameters = if (sparkVersion >= "3.4") Map("path" -> path) else Array(path)
+    classOf[SparkException].getDeclaredConstructors
+      .filter(_.getParameterCount == 3)
+      .map(_.newInstance("INVALID_BUCKET_FILE", messageParameters, null))
+      .last
+      .asInstanceOf[SparkException]
   }
 
   // Copied from Spark 3.4 RowIndexUtil due to PARQUET-2161 (tracked in SPARK-39634)

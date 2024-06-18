@@ -19,23 +19,11 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
-import org.apache.spark.sql.connector.read.InputPartition
+import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 trait ShimCometBatchScanExec {
   def wrapped: BatchScanExec
-
-  // Only for Spark 3.3+
-  def keyGroupedPartitioning: Option[Seq[Expression]] = wrapped.getClass.getDeclaredMethods
-    .filter(_.getName == "keyGroupedPartitioning")
-    .flatMap(_.invoke(wrapped).asInstanceOf[Option[Seq[Expression]]])
-    .headOption
-
-  // Only for Spark 3.3+
-  def inputPartitions: Seq[InputPartition] = wrapped.getClass.getDeclaredMethods
-    .filter(_.getName == "inputPartitions")
-    .flatMap(_.invoke(wrapped).asInstanceOf[Seq[InputPartition]])
 
   // Only for Spark 3.4+
   def ordering: Option[Seq[SortOrder]] = wrapped.getClass.getDeclaredMethods
