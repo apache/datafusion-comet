@@ -30,7 +30,7 @@ import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, PartitionDirectory, PartitionedFile}
-import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.types.StructType
 
 trait ShimCometScanExec {
   def wrapped: FileSourceScanExec
