@@ -93,6 +93,7 @@ under the License.
     <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+    <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
   </properties>
 
   <dependencyManagement>
