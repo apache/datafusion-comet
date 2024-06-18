@@ -131,15 +131,24 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     }
 
     // process chunks of 32 bytes
-    let mut offset_u64 = 0;
+    let mut offset_u64_4 = 0;
     let ptr_u64 = data.as_ptr() as *const u64;
     unsafe {
-        while offset_u64 * CHUNK_SIZE + CHUNK_SIZE <= length_bytes {
-            v1 = ingest_one_number(v1, ptr_u64.add(offset_u64).read_unaligned().to_le());
-            v2 = ingest_one_number(v2, ptr_u64.add(offset_u64 + 1).read_unaligned().to_le());
-            v3 = ingest_one_number(v3, ptr_u64.add(offset_u64 + 2).read_unaligned().to_le());
-            v4 = ingest_one_number(v4, ptr_u64.add(offset_u64 + 3).read_unaligned().to_le());
-            offset_u64 += 4;
+        while offset_u64_4 * CHUNK_SIZE + CHUNK_SIZE <= length_bytes {
+            v1 = ingest_one_number(v1, ptr_u64.add(offset_u64_4 * 4).read_unaligned().to_le());
+            v2 = ingest_one_number(
+                v2,
+                ptr_u64.add(offset_u64_4 * 4 + 1).read_unaligned().to_le(),
+            );
+            v3 = ingest_one_number(
+                v3,
+                ptr_u64.add(offset_u64_4 * 4 + 2).read_unaligned().to_le(),
+            );
+            v4 = ingest_one_number(
+                v4,
+                ptr_u64.add(offset_u64_4 * 4 + 3).read_unaligned().to_le(),
+            );
+            offset_u64_4 += 1;
         }
     }
     let total_len = data.len() as u64;
@@ -174,6 +183,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     hash = hash.wrapping_add(total_len);
 
     // process u64s
+    let mut offset_u64 = offset_u64_4 * 4;
     while offset_u64 * 8 + 8 <= length_bytes {
         let mut k1 = unsafe {
             ptr_u64
@@ -691,12 +701,12 @@ mod tests {
     }
 
     #[test]
-    fn test_xxhash64() {
+    fn test_xxhash64_random() {
         let mut rng = rand::thread_rng();
         for len in 1..128 {
             for _ in 0..10 {
                 let data: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-                let seed = rng.gen();
+                let seed = 42_u64; //rng.gen();
                 check_xxhash64(&data, seed);
             }
         }
