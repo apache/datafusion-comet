@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.{SQLQueryTestHelper, SparkSession}
+import org.apache.spark.sql.SQLQueryTestHelper
 
 trait ShimCometTPCHQuerySuite extends SQLQueryTestHelper {
   // no need to define getNormalizedQueryExecutionResult in this version of the shim because it exists

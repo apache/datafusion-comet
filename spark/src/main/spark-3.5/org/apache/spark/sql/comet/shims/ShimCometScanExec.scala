@@ -23,7 +23,7 @@ import org.apache.comet.shims.ShimFileFormat
 
 import scala.language.implicitConversions
 
-import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.fs.Path
 
 import org.apache.spark.{SparkContext, SparkException}
 import org.apache.spark.sql.SparkSession
