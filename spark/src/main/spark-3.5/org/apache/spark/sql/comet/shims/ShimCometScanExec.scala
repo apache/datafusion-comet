@@ -65,50 +65,19 @@ trait ShimCometScanExec {
     new DataSourceRDD(sc, inputPartitions, partitionReaderFactory, columnarReads, customMetrics)
   }
 
-  // TODO: remove after dropping Spark 3.2 support and directly call new FileScanRDD
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
       filePartitions: Seq[FilePartition],
       readSchema: StructType,
-      options: ParquetOptions): FileScanRDD = {
-    val validConstructors = classOf[FileScanRDD].getDeclaredConstructors
-      // Prevent to pick up incorrect constructors from any custom Spark forks.
-      .filter(c => List(3, 5, 6, 7).contains(c.getParameterCount()))
-      .map { c =>
-        c.getParameterCount match {
-          case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
-          case 5 =>
-            c.newInstance(fsRelation.sparkSession, readFunction, filePartitions, readSchema, metadataColumns)
-          case 6 =>
-            c.newInstance(
-              fsRelation.sparkSession,
-              readFunction,
-              filePartitions,
-              readSchema,
-              fileConstantMetadataColumns,
-              options)
-          case 7 =>
-            // Apache Spark 3.5.1
-            c.newInstance(
-              fsRelation.sparkSession,
-              readFunction,
-              filePartitions,
-              readSchema,
-              fileConstantMetadataColumns,
-              Map.empty,
-              options)
-        }
-      }
-
-    if (validConstructors.isEmpty) {
-      throw new IllegalStateException("Failed to find valid constructor for FileScanRDD")
-    }
-
-    validConstructors
-      .last
-      .asInstanceOf[FileScanRDD]
-  }
+      options: ParquetOptions): FileScanRDD = new FileScanRDD(
+    fsRelation.sparkSession,
+    readFunction,
+    filePartitions,
+    readSchema,
+    fileConstantMetadataColumns,
+    Map.empty,
+    options)
 
   // TODO: remove after dropping Spark 3.2 and 3.3 support and directly call
   //       QueryExecutionErrors.SparkException
