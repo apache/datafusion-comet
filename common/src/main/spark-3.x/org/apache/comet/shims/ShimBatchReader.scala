@@ -48,6 +48,20 @@ object ShimBatchReader {
               Array.empty[String],
               Long.box(0),
               Long.box(0))
+          case 8 =>
+            // Apache Spark 3.5.1
+            c.newInstance(
+              partitionValues,
+              c.getParameterTypes()(1)
+                .getConstructor(classOf[String])
+                .newInstance(file)
+                .asInstanceOf[AnyRef],
+              Long.box(-1), // -1 means we read the entire file
+              Long.box(-1),
+              Array.empty[String],
+              Long.box(0),
+              Long.box(0),
+              Map.empty)
         })
       .head
       .asInstanceOf[PartitionedFile]
