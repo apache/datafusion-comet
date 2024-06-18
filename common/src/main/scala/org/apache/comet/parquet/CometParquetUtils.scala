@@ -20,10 +20,9 @@
 package org.apache.comet.parquet
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.comet.shims.ShimCometParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 
-object CometParquetUtils extends ShimCometParquetUtils {
+object CometParquetUtils {
   private val PARQUET_FIELD_ID_WRITE_ENABLED = "spark.sql.parquet.fieldId.write.enabled"
   private val PARQUET_FIELD_ID_READ_ENABLED = "spark.sql.parquet.fieldId.read.enabled"
   private val IGNORE_MISSING_PARQUET_FIELD_ID = "spark.sql.parquet.fieldId.read.ignoreMissing"
