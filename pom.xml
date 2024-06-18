@@ -553,6 +553,18 @@ under the License.
     </profile>
 
     <profile>
+      <id>spark-3.5</id>
+      <properties>
+        <scala.version>2.12.15</scala.version>
+        <spark.version>3.5.1</spark.version>
+        <spark.version.short>3.5</spark.version.short>
+        <parquet.version>1.12.0</parquet.version>
+        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
+        <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+      </properties>
+    </profile>
+
+    <profile>
       <!-- FIXME: this is WIP. Tests may fail -->
       <id>spark-4.0</id>
       <properties>
