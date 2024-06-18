@@ -109,7 +109,7 @@ pub const PRIME_5: u64 = 2_870_177_450_012_600_261;
 /// Custom implementation of xxhash64 based on code from https://github.com/shepmaster/twox-hash
 /// but optimized for our use case by removing any intermediate buffering, which is
 /// not required because we are operating on data that is already in memory.
-/// This results in a 40-50% speedup.
+/// This results in a 40% speedup.
 #[inline]
 pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
     let data: &[u8] = data.as_ref();
@@ -703,10 +703,10 @@ mod tests {
     #[test]
     fn test_xxhash64_random() {
         let mut rng = rand::thread_rng();
-        for len in 1..128 {
+        for len in 0..128 {
             for _ in 0..10 {
                 let data: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
-                let seed = 42_u64; //rng.gen();
+                let seed = rng.gen();
                 check_xxhash64(&data, seed);
             }
         }
