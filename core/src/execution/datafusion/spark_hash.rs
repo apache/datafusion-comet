@@ -106,6 +106,10 @@ pub const PRIME_3: u64 = 1_609_587_929_392_839_161;
 pub const PRIME_4: u64 = 9_650_029_242_287_828_579;
 pub const PRIME_5: u64 = 2_870_177_450_012_600_261;
 
+/// Custom implementation of xxhash64 based on code from https://github.com/shepmaster/twox-hash
+/// but optimized for our use case by removing any intermediate buffering, which is
+/// not required because we are operating on data that is already in memory.
+/// This results in a 40-50% speedup.
 #[inline]
 pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
     let data: &[u8] = data.as_ref();
@@ -142,11 +146,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
 
     let mut hash = if total_len >= CHUNK_SIZE as u64 {
         // We have processed at least one full chunk
-        // XxCore::finish
-        #[allow(unknown_lints, clippy::needless_late_init)] // keeping things parallel
-        let mut hash;
-
-        hash = v1.rotate_left(1);
+        let mut hash = v1.rotate_left(1);
         hash = hash.wrapping_add(v2.rotate_left(7));
         hash = hash.wrapping_add(v3.rotate_left(12));
         hash = hash.wrapping_add(v4.rotate_left(18));
