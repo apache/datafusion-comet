@@ -21,15 +21,12 @@ package org.apache.comet.shims
 
 object ShimFileFormat {
 
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use FileFormat.ROW_INDEX
+  // TODO: remove after dropping Spark 3.3 support and directly use FileFormat.ROW_INDEX
   val ROW_INDEX = "row_index"
 
   // A name for a temporary column that holds row indexes computed by the file format reader
   // until they can be placed in the _metadata struct.
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use
+  // TODO: remove after dropping Spark 3.3 support and directly use
   //       FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
   val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = s"_tmp_metadata_$ROW_INDEX"
-
-  // TODO: remove after dropping Spark 3.2 support and use FileFormat.OPTION_RETURNING_BATCH
-  val OPTION_RETURNING_BATCH = "returning_batch"
 }

@@ -40,6 +40,7 @@ The following diagram illustrates the architecture of Comet:
 
 ## Current Status
 
+<<<<<<< HEAD
 Comet currently supports the following versions of Apache Spark:
 
 - 3.2.x
@@ -54,6 +55,9 @@ use only and should not be used in production yet.
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by 
 Cloud Service Providers. 
+=======
+The project is currently integrated into Apache Spark 3.3, and 3.4.
+>>>>>>> apache/main
 
 ## Feature Parity with Apache Spark
 

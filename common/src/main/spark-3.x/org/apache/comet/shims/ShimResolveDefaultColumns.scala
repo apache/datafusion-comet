@@ -24,7 +24,7 @@ import scala.util.Try
 import org.apache.spark.sql.types.{StructField, StructType}
 
 object ShimResolveDefaultColumns {
-  // TODO: remove after dropping Spark 3.2 & 3.3 support and directly use ResolveDefaultColumns
+  // TODO: remove after dropping Spark 3.3 support and directly use ResolveDefaultColumns
   def getExistenceDefaultValue(field: StructField): Any =
     Try {
       // scalastyle:off classforname

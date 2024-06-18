@@ -294,7 +294,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     new TestSparkSession(new SparkContext("local[1]", this.getClass.getCanonicalName, conf))
   }
 
-  // TODO: remove once Spark 3.2 & 3.3 is no longer supported
+  // TODO: remove once Spark 3.3 is no longer supported
   private val shouldRegenerateGoldenFiles: Boolean =
     System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
 }

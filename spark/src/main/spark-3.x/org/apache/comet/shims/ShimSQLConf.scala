@@ -28,7 +28,7 @@ trait ShimSQLConf {
    * Spark 3.4 renamed parquetFilterPushDownStringStartWith to
    * parquetFilterPushDownStringPredicate
    *
-   * TODO: delete after dropping Spark 3.2 & 3.3 support and simply use
+   * TODO: delete after dropping Spark 3.3 support and simply use
    * parquetFilterPushDownStringPredicate
    */
   protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =

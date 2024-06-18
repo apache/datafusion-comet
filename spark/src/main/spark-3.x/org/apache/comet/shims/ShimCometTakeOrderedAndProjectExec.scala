@@ -24,7 +24,7 @@ import org.apache.spark.sql.execution.TakeOrderedAndProjectExec
 trait ShimCometTakeOrderedAndProjectExec {
 
   /**
-   * TODO: delete after dropping Spark 3.2 and 3.3 support
+   * TODO: delete after dropping Spark 3.3 support
    */
   protected def getOffset(plan: TakeOrderedAndProjectExec): Option[Int] = {
     plan.getClass.getDeclaredFields
