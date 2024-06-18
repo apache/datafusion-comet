@@ -115,8 +115,7 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 [[package]]
 name = "arrow"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ae9728f104939be6d8d9b368a354b4929b0569160ea1641f0721b55a861ce38"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -136,8 +135,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7029a5b3efbeafbf4a12d12dc16b8f9e9bff20a410b8c25c5d28acc089e1043"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -151,8 +149,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d33238427c60271710695f17742f45b1a5dc5bcfc5c15331c25ddfe7abf70d97"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -168,8 +165,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe9b95e825ae838efaf77e366c00d3fc8cca78134c9db497d6bda425f2e7b7c1"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "bytes",
  "half",
@@ -179,8 +175,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87cf8385a9d5b5fcde771661dd07652b79b9139fea66193eda6a88664400ccab"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -200,8 +195,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea5068bef430a86690059665e40034625ec323ffa4dd21972048eebb0127adc"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -219,8 +213,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb29be98f987bcf217b070512bb7afba2f65180858bca462edf4a39d84a23e10"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -231,8 +224,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffc68f6523970aa6f7ce1dc9a33a7d9284cfb9af77d4ad3e617dbe5d79cc6ec8"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -246,8 +238,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2041380f94bd6437ab648e6c2085a045e45a0c44f91a1b9a4fe3fed3d379bfb1"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -266,8 +257,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcb56ed1547004e12203652f12fe12e824161ff9d1e5cf2a7dc4ff02ba94f413"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -281,8 +271,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "575b42f1fc588f2da6977b94a5ca565459f5ab07b60545e17243fb9a7ed6d43e"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -296,8 +285,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32aae6a60458a2389c0da89c9de0b7932427776127da1a738e2efc21d32f3393"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "bitflags 2.5.0",
 ]
@@ -305,8 +293,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de36abaef8767b4220d7b4a8c2fe5ffc78b47db81b03d77e2136091c3ba39102"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -319,8 +306,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e435ada8409bcafc910bc3e0077f532a4daa20e99060a496685c0e3e53cc2597"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -805,8 +791,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f92d2d7a9cba4580900b32b009848d9eb35f1028ac84cdd6ddcf97612cd0068"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -913,8 +898,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "effed030d2c1667eb1e11df5372d4981eaf5d11a521be32220b3985ae5ba6971"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -934,8 +918,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0091318129dad1359f08e4c6c71f855163c35bba05d1dbf983196f727857894"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "tokio",
 ]
@@ -943,8 +926,7 @@ dependencies = [
 [[package]]
 name = "datafusion-execution"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8385aba84fc4a06d3ebccfbcbf9b4f985e80c762fac634b49079f7cc14933fb1"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "arrow",
  "chrono",
@@ -964,8 +946,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebb192f0055d2ce64e38ac100abc18e4e6ae9734d3c28eee522bbbd6a32108a3"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -983,8 +964,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c081ae5b7edd712b92767fb8ed5c0e32755682f8075707666cd70835807c0b"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "arrow",
  "base64",
@@ -1010,8 +990,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feb28a4ea52c28a26990646986a27c4052829a2a2572386258679e19263f8b78"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -1028,8 +1007,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12172f2a6c9eb4992a51e62d709eeba5dedaa3b5369cce37ff6c2260e100ba76"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1047,8 +1025,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a3fce531b623e94180f6cd33d620ef01530405751b6ddd2fd96250cdbd78e2e"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -1078,8 +1055,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046400b6a2cc3ed57a7c576f5ae6aecc77804ac8e0186926b278b189305b2a77"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1090,8 +1066,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aed47f5a2ad8766260befb375b201592e86a08b260256e168ae4311426a2bff"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "ahash",
  "arrow",
@@ -1124,8 +1099,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "39.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fa92bb1fd15e46ce5fb6f1c85f3ac054592560f294429a28e392b5f9cd4255e"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=dd5f0e1#dd5f0e19b4b7d070d46d5a8ccb3d98d4a08d25a4"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -2064,8 +2038,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "52.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29c3b5322cc1bbf67f11c079c42be41a55949099b78732f7dba9e15edde40eab"
+source = "git+https://github.com/viirya/arrow-rs.git?rev=564f3bd#564f3bded7b0edd8f2a014f5773446562e8406be"
 dependencies = [
  "ahash",
  "bytes",
