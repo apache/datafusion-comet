@@ -71,10 +71,10 @@ trait ShimCometScanExec {
       readFunction: PartitionedFile => Iterator[InternalRow],
       filePartitions: Seq[FilePartition],
       readSchema: StructType,
-      options: ParquetOptions): FileScanRDD =
-    classOf[FileScanRDD].getDeclaredConstructors
+      options: ParquetOptions): FileScanRDD = {
+    val validConstructors = classOf[FileScanRDD].getDeclaredConstructors
       // Prevent to pick up incorrect constructors from any custom Spark forks.
-      .filter(c => List(3, 5, 6).contains(c.getParameterCount()) )
+      .filter(c => List(3, 5, 6, 7).contains(c.getParameterCount()))
       .map { c =>
         c.getParameterCount match {
           case 3 => c.newInstance(fsRelation.sparkSession, readFunction, filePartitions)
@@ -88,10 +88,27 @@ trait ShimCometScanExec {
               readSchema,
               fileConstantMetadataColumns,
               options)
+          case 7 =>
+            // Apache Spark 3.5.1
+            c.newInstance(
+              fsRelation.sparkSession,
+              readFunction,
+              filePartitions,
+              readSchema,
+              fileConstantMetadataColumns,
+              Map.empty,
+              options)
         }
       }
+
+    if (validConstructors.isEmpty) {
+      throw new IllegalStateException("Failed to find valid constructor for FileScanRDD")
+    }
+
+    validConstructors
       .last
       .asInstanceOf[FileScanRDD]
+  }
 
   // TODO: remove after dropping Spark 3.2 and 3.3 support and directly call
   //       QueryExecutionErrors.SparkException
