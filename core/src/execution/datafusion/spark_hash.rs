@@ -599,7 +599,7 @@ pub(crate) fn create_murmur3_hashes<'a>(
 }
 
 /// Creates xxhash64 hash values for every row, based on the values in the
-/// columns.7
+/// columns.
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
@@ -635,6 +635,7 @@ mod tests {
         create_murmur3_hashes, create_xxhash64_hashes, pmod,
     };
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
+    use rand::Rng;
     use twox_hash::XxHash64;
 
     macro_rules! test_hashes_internal {
@@ -691,20 +692,25 @@ mod tests {
 
     #[test]
     fn test_xxhash64() {
-        // TODO fuzz testing
-        check_xxhash64("12345678123456781234567812345678", 42_u64);
-        check_xxhash64("12345678123456781234567812345678a", 42_u64);
-        check_xxhash64("12345678123456781234567812345678aab", 42_u64);
-        check_xxhash64("a", 42_u64);
-        check_xxhash64("aab", 42_u64);
+        let mut rng = rand::thread_rng();
+        for len in 1..128 {
+            for _ in 0..10 {
+                let data: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+                let seed = rng.gen();
+                check_xxhash64(&data, seed);
+            }
+        }
     }
 
-    fn check_xxhash64(data: &str, seed: u64) {
+    fn check_xxhash64(data: &[u8], seed: u64) {
         let mut hasher = XxHash64::with_seed(seed);
         hasher.write(data.as_ref());
         let hash1 = hasher.finish();
         let hash2 = spark_compatible_xxhash64(data, seed);
-        assert_eq!(hash1, hash2);
+        if hash1 != hash2 {
+            panic!("input: {} with seed {seed} produced incorrect hash (comet={hash2}, twox-hash={hash1})",
+                   data.iter().map(|byte| format!("{:02x}", byte)).collect::<String>())
+        }
     }
 
     #[test]
