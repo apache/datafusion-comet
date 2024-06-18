@@ -588,6 +588,7 @@ under the License.
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <shims.pre35Src>not-needed</shims.pre35Src>
+        <additional.pre35.test.source>not needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
