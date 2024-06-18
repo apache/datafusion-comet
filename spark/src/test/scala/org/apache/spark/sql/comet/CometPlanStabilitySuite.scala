@@ -114,7 +114,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
     if (!foundMatch) {
       FileUtils.deleteDirectory(dir)
-      assert(dir.mkdirs())
+      if (!dir.mkdirs()) {
+        fail(s"Could not create dir: $dir")
+      }
 
       val file = new File(dir, "simplified.txt")
       FileUtils.writeStringToFile(file, simplified, StandardCharsets.UTF_8)

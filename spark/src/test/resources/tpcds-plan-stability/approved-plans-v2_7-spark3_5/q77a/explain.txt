@@ -532,25 +532,25 @@ Input [8]: [channel#28, id#29, sum#94, isEmpty#95, sum#96, isEmpty#97, sum#98, i
 Keys [2]: [channel#28, id#29]
 Functions [3]: [sum(sales#13), sum(returns#30), sum(profit#31)]
 Aggregate Attributes [3]: [sum(sales#13)#100, sum(returns#30)#101, sum(profit#31)#102]
-Results [3]: [sum(sales#13)#100 AS sales#106, sum(returns#30)#101 AS returns#107, sum(profit#31)#102 AS profit#108]
+Results [3]: [sum(sales#13)#100 AS sales#128, sum(returns#30)#101 AS returns#129, sum(profit#31)#102 AS profit#130]
 
 (92) HashAggregate [codegen id : 43]
-Input [3]: [sales#106, returns#107, profit#108]
+Input [3]: [sales#128, returns#129, profit#130]
 Keys: []
-Functions [3]: [partial_sum(sales#106), partial_sum(returns#107), partial_sum(profit#108)]
-Aggregate Attributes [6]: [sum#128, isEmpty#129, sum#130, isEmpty#131, sum#132, isEmpty#133]
-Results [6]: [sum#134, isEmpty#135, sum#136, isEmpty#137, sum#138, isEmpty#139]
+Functions [3]: [partial_sum(sales#128), partial_sum(returns#129), partial_sum(profit#130)]
+Aggregate Attributes [6]: [sum#131, isEmpty#132, sum#133, isEmpty#134, sum#135, isEmpty#136]
+Results [6]: [sum#137, isEmpty#138, sum#139, isEmpty#140, sum#141, isEmpty#142]
 
 (93) Exchange
-Input [6]: [sum#134, isEmpty#135, sum#136, isEmpty#137, sum#138, isEmpty#139]
+Input [6]: [sum#137, isEmpty#138, sum#139, isEmpty#140, sum#141, isEmpty#142]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=12]
 
 (94) HashAggregate [codegen id : 44]
-Input [6]: [sum#134, isEmpty#135, sum#136, isEmpty#137, sum#138, isEmpty#139]
+Input [6]: [sum#137, isEmpty#138, sum#139, isEmpty#140, sum#141, isEmpty#142]
 Keys: []
-Functions [3]: [sum(sales#106), sum(returns#107), sum(profit#108)]
-Aggregate Attributes [3]: [sum(sales#106)#140, sum(returns#107)#141, sum(profit#108)#142]
-Results [5]: [null AS channel#143, null AS id#144, sum(sales#106)#140 AS sales#145, sum(returns#107)#141 AS returns#146, sum(profit#108)#142 AS profit#147]
+Functions [3]: [sum(sales#128), sum(returns#129), sum(profit#130)]
+Aggregate Attributes [3]: [sum(sales#128)#143, sum(returns#129)#144, sum(profit#130)#145]
+Results [5]: [null AS channel#146, null AS id#147, sum(sales#128)#143 AS sales#148, sum(returns#129)#144 AS returns#149, sum(profit#130)#145 AS profit#150]
 
 (95) Union
 

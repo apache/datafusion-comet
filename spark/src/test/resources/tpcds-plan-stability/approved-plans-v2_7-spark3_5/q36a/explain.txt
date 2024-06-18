@@ -155,60 +155,60 @@ Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#4))#16, sum(UnscaledV
 Results [6]: [cast((MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#16,17,2) / MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#17,17,2)) as decimal(38,20)) AS gross_margin#18, i_category#11, i_class#10, 0 AS t_category#19, 0 AS t_class#20, 0 AS lochierarchy#21]
 
 (24) ReusedExchange [Reuses operator id: 22]
-Output [4]: [i_category#11, i_class#10, sum#22, sum#23]
+Output [4]: [i_category#22, i_class#23, sum#24, sum#25]
 
 (25) HashAggregate [codegen id : 4]
-Input [4]: [i_category#11, i_class#10, sum#22, sum#23]
-Keys [2]: [i_category#11, i_class#10]
-Functions [2]: [sum(UnscaledValue(ss_net_profit#4)), sum(UnscaledValue(ss_ext_sales_price#3))]
-Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#4))#24, sum(UnscaledValue(ss_ext_sales_price#3))#25]
-Results [3]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#24,17,2) AS ss_net_profit#26, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#25,17,2) AS ss_ext_sales_price#27, i_category#11]
+Input [4]: [i_category#22, i_class#23, sum#24, sum#25]
+Keys [2]: [i_category#22, i_class#23]
+Functions [2]: [sum(UnscaledValue(ss_net_profit#26)), sum(UnscaledValue(ss_ext_sales_price#27))]
+Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#26))#28, sum(UnscaledValue(ss_ext_sales_price#27))#29]
+Results [3]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#26))#28,17,2) AS ss_net_profit#30, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#27))#29,17,2) AS ss_ext_sales_price#31, i_category#22]
 
 (26) HashAggregate [codegen id : 4]
-Input [3]: [ss_net_profit#26, ss_ext_sales_price#27, i_category#11]
-Keys [1]: [i_category#11]
-Functions [2]: [partial_sum(ss_net_profit#26), partial_sum(ss_ext_sales_price#27)]
-Aggregate Attributes [4]: [sum#28, isEmpty#29, sum#30, isEmpty#31]
-Results [5]: [i_category#11, sum#32, isEmpty#33, sum#34, isEmpty#35]
+Input [3]: [ss_net_profit#30, ss_ext_sales_price#31, i_category#22]
+Keys [1]: [i_category#22]
+Functions [2]: [partial_sum(ss_net_profit#30), partial_sum(ss_ext_sales_price#31)]
+Aggregate Attributes [4]: [sum#32, isEmpty#33, sum#34, isEmpty#35]
+Results [5]: [i_category#22, sum#36, isEmpty#37, sum#38, isEmpty#39]
 
 (27) Exchange
-Input [5]: [i_category#11, sum#32, isEmpty#33, sum#34, isEmpty#35]
-Arguments: hashpartitioning(i_category#11, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+Input [5]: [i_category#22, sum#36, isEmpty#37, sum#38, isEmpty#39]
+Arguments: hashpartitioning(i_category#22, 5), ENSURE_REQUIREMENTS, [plan_id=2]
 
 (28) HashAggregate [codegen id : 5]
-Input [5]: [i_category#11, sum#32, isEmpty#33, sum#34, isEmpty#35]
-Keys [1]: [i_category#11]
-Functions [2]: [sum(ss_net_profit#26), sum(ss_ext_sales_price#27)]
-Aggregate Attributes [2]: [sum(ss_net_profit#26)#36, sum(ss_ext_sales_price#27)#37]
-Results [6]: [cast((sum(ss_net_profit#26)#36 / sum(ss_ext_sales_price#27)#37) as decimal(38,20)) AS gross_margin#38, i_category#11, null AS i_class#39, 0 AS t_category#40, 1 AS t_class#41, 1 AS lochierarchy#42]
+Input [5]: [i_category#22, sum#36, isEmpty#37, sum#38, isEmpty#39]
+Keys [1]: [i_category#22]
+Functions [2]: [sum(ss_net_profit#30), sum(ss_ext_sales_price#31)]
+Aggregate Attributes [2]: [sum(ss_net_profit#30)#40, sum(ss_ext_sales_price#31)#41]
+Results [6]: [cast((sum(ss_net_profit#30)#40 / sum(ss_ext_sales_price#31)#41) as decimal(38,20)) AS gross_margin#42, i_category#22, null AS i_class#43, 0 AS t_category#44, 1 AS t_class#45, 1 AS lochierarchy#46]
 
 (29) ReusedExchange [Reuses operator id: 22]
-Output [4]: [i_category#11, i_class#10, sum#43, sum#44]
+Output [4]: [i_category#47, i_class#48, sum#49, sum#50]
 
 (30) HashAggregate [codegen id : 7]
-Input [4]: [i_category#11, i_class#10, sum#43, sum#44]
-Keys [2]: [i_category#11, i_class#10]
-Functions [2]: [sum(UnscaledValue(ss_net_profit#4)), sum(UnscaledValue(ss_ext_sales_price#3))]
-Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#4))#24, sum(UnscaledValue(ss_ext_sales_price#3))#25]
-Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#24,17,2) AS ss_net_profit#26, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#25,17,2) AS ss_ext_sales_price#27]
+Input [4]: [i_category#47, i_class#48, sum#49, sum#50]
+Keys [2]: [i_category#47, i_class#48]
+Functions [2]: [sum(UnscaledValue(ss_net_profit#51)), sum(UnscaledValue(ss_ext_sales_price#52))]
+Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#51))#28, sum(UnscaledValue(ss_ext_sales_price#52))#29]
+Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#51))#28,17,2) AS ss_net_profit#53, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#52))#29,17,2) AS ss_ext_sales_price#54]
 
 (31) HashAggregate [codegen id : 7]
-Input [2]: [ss_net_profit#26, ss_ext_sales_price#27]
+Input [2]: [ss_net_profit#53, ss_ext_sales_price#54]
 Keys: []
-Functions [2]: [partial_sum(ss_net_profit#26), partial_sum(ss_ext_sales_price#27)]
-Aggregate Attributes [4]: [sum#45, isEmpty#46, sum#47, isEmpty#48]
-Results [4]: [sum#49, isEmpty#50, sum#51, isEmpty#52]
+Functions [2]: [partial_sum(ss_net_profit#53), partial_sum(ss_ext_sales_price#54)]
+Aggregate Attributes [4]: [sum#55, isEmpty#56, sum#57, isEmpty#58]
+Results [4]: [sum#59, isEmpty#60, sum#61, isEmpty#62]
 
 (32) Exchange
-Input [4]: [sum#49, isEmpty#50, sum#51, isEmpty#52]
+Input [4]: [sum#59, isEmpty#60, sum#61, isEmpty#62]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=3]
 
 (33) HashAggregate [codegen id : 8]
-Input [4]: [sum#49, isEmpty#50, sum#51, isEmpty#52]
+Input [4]: [sum#59, isEmpty#60, sum#61, isEmpty#62]
 Keys: []
-Functions [2]: [sum(ss_net_profit#26), sum(ss_ext_sales_price#27)]
-Aggregate Attributes [2]: [sum(ss_net_profit#26)#53, sum(ss_ext_sales_price#27)#54]
-Results [6]: [cast((sum(ss_net_profit#26)#53 / sum(ss_ext_sales_price#27)#54) as decimal(38,20)) AS gross_margin#55, null AS i_category#56, null AS i_class#57, 1 AS t_category#58, 1 AS t_class#59, 2 AS lochierarchy#60]
+Functions [2]: [sum(ss_net_profit#53), sum(ss_ext_sales_price#54)]
+Aggregate Attributes [2]: [sum(ss_net_profit#53)#63, sum(ss_ext_sales_price#54)#64]
+Results [6]: [cast((sum(ss_net_profit#53)#63 / sum(ss_ext_sales_price#54)#64) as decimal(38,20)) AS gross_margin#65, null AS i_category#66, null AS i_class#67, 1 AS t_category#68, 1 AS t_class#69, 2 AS lochierarchy#70]
 
 (34) Union
 
@@ -228,27 +228,27 @@ Input [6]: [gross_margin#18, i_category#11, i_class#10, t_category#19, t_class#2
 Keys [6]: [gross_margin#18, i_category#11, i_class#10, t_category#19, t_class#20, lochierarchy#21]
 Functions: []
 Aggregate Attributes: []
-Results [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, CASE WHEN (t_class#20 = 0) THEN i_category#11 END AS _w0#61]
+Results [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, CASE WHEN (t_class#20 = 0) THEN i_category#11 END AS _w0#71]
 
 (38) Exchange
-Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#61]
-Arguments: hashpartitioning(lochierarchy#21, _w0#61, 5), ENSURE_REQUIREMENTS, [plan_id=5]
+Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#71]
+Arguments: hashpartitioning(lochierarchy#21, _w0#71, 5), ENSURE_REQUIREMENTS, [plan_id=5]
 
 (39) Sort [codegen id : 11]
-Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#61]
-Arguments: [lochierarchy#21 ASC NULLS FIRST, _w0#61 ASC NULLS FIRST, gross_margin#18 ASC NULLS FIRST], false, 0
+Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#71]
+Arguments: [lochierarchy#21 ASC NULLS FIRST, _w0#71 ASC NULLS FIRST, gross_margin#18 ASC NULLS FIRST], false, 0
 
 (40) Window
-Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#61]
-Arguments: [rank(gross_margin#18) windowspecdefinition(lochierarchy#21, _w0#61, gross_margin#18 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#62], [lochierarchy#21, _w0#61], [gross_margin#18 ASC NULLS FIRST]
+Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#71]
+Arguments: [rank(gross_margin#18) windowspecdefinition(lochierarchy#21, _w0#71, gross_margin#18 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#72], [lochierarchy#21, _w0#71], [gross_margin#18 ASC NULLS FIRST]
 
 (41) Project [codegen id : 12]
-Output [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#62]
-Input [6]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#61, rank_within_parent#62]
+Output [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#72]
+Input [6]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, _w0#71, rank_within_parent#72]
 
 (42) TakeOrderedAndProject
-Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#62]
-Arguments: 100, [lochierarchy#21 DESC NULLS LAST, CASE WHEN (lochierarchy#21 = 0) THEN i_category#11 END ASC NULLS FIRST, rank_within_parent#62 ASC NULLS FIRST], [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#62]
+Input [5]: [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#72]
+Arguments: 100, [lochierarchy#21 DESC NULLS LAST, CASE WHEN (lochierarchy#21 = 0) THEN i_category#11 END ASC NULLS FIRST, rank_within_parent#72 ASC NULLS FIRST], [gross_margin#18, i_category#11, i_class#10, lochierarchy#21, rank_within_parent#72]
 
 ===== Subqueries =====
 

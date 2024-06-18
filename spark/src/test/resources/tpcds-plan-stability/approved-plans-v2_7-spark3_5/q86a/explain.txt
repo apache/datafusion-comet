@@ -121,60 +121,60 @@ Aggregate Attributes [1]: [sum(UnscaledValue(ws_net_paid#2))#11]
 Results [6]: [cast(MakeDecimal(sum(UnscaledValue(ws_net_paid#2))#11,17,2) as decimal(27,2)) AS total_sum#12, i_category#9, i_class#8, 0 AS g_category#13, 0 AS g_class#14, 0 AS lochierarchy#15]
 
 (18) ReusedExchange [Reuses operator id: 16]
-Output [3]: [i_category#9, i_class#8, sum#16]
+Output [3]: [i_category#16, i_class#17, sum#18]
 
 (19) HashAggregate [codegen id : 4]
-Input [3]: [i_category#9, i_class#8, sum#16]
-Keys [2]: [i_category#9, i_class#8]
-Functions [1]: [sum(UnscaledValue(ws_net_paid#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ws_net_paid#2))#11]
-Results [2]: [MakeDecimal(sum(UnscaledValue(ws_net_paid#2))#11,17,2) AS total_sum#17, i_category#9]
+Input [3]: [i_category#16, i_class#17, sum#18]
+Keys [2]: [i_category#16, i_class#17]
+Functions [1]: [sum(UnscaledValue(ws_net_paid#19))]
+Aggregate Attributes [1]: [sum(UnscaledValue(ws_net_paid#19))#11]
+Results [2]: [MakeDecimal(sum(UnscaledValue(ws_net_paid#19))#11,17,2) AS total_sum#20, i_category#16]
 
 (20) HashAggregate [codegen id : 4]
-Input [2]: [total_sum#17, i_category#9]
-Keys [1]: [i_category#9]
-Functions [1]: [partial_sum(total_sum#17)]
-Aggregate Attributes [2]: [sum#18, isEmpty#19]
-Results [3]: [i_category#9, sum#20, isEmpty#21]
+Input [2]: [total_sum#20, i_category#16]
+Keys [1]: [i_category#16]
+Functions [1]: [partial_sum(total_sum#20)]
+Aggregate Attributes [2]: [sum#21, isEmpty#22]
+Results [3]: [i_category#16, sum#23, isEmpty#24]
 
 (21) Exchange
-Input [3]: [i_category#9, sum#20, isEmpty#21]
-Arguments: hashpartitioning(i_category#9, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+Input [3]: [i_category#16, sum#23, isEmpty#24]
+Arguments: hashpartitioning(i_category#16, 5), ENSURE_REQUIREMENTS, [plan_id=2]
 
 (22) HashAggregate [codegen id : 5]
-Input [3]: [i_category#9, sum#20, isEmpty#21]
-Keys [1]: [i_category#9]
-Functions [1]: [sum(total_sum#17)]
-Aggregate Attributes [1]: [sum(total_sum#17)#22]
-Results [6]: [sum(total_sum#17)#22 AS total_sum#23, i_category#9, null AS i_class#24, 0 AS g_category#25, 1 AS g_class#26, 1 AS lochierarchy#27]
+Input [3]: [i_category#16, sum#23, isEmpty#24]
+Keys [1]: [i_category#16]
+Functions [1]: [sum(total_sum#20)]
+Aggregate Attributes [1]: [sum(total_sum#20)#25]
+Results [6]: [sum(total_sum#20)#25 AS total_sum#26, i_category#16, null AS i_class#27, 0 AS g_category#28, 1 AS g_class#29, 1 AS lochierarchy#30]
 
 (23) ReusedExchange [Reuses operator id: 16]
-Output [3]: [i_category#9, i_class#8, sum#28]
+Output [3]: [i_category#31, i_class#32, sum#33]
 
 (24) HashAggregate [codegen id : 7]
-Input [3]: [i_category#9, i_class#8, sum#28]
-Keys [2]: [i_category#9, i_class#8]
-Functions [1]: [sum(UnscaledValue(ws_net_paid#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ws_net_paid#2))#11]
-Results [1]: [MakeDecimal(sum(UnscaledValue(ws_net_paid#2))#11,17,2) AS total_sum#17]
+Input [3]: [i_category#31, i_class#32, sum#33]
+Keys [2]: [i_category#31, i_class#32]
+Functions [1]: [sum(UnscaledValue(ws_net_paid#34))]
+Aggregate Attributes [1]: [sum(UnscaledValue(ws_net_paid#34))#11]
+Results [1]: [MakeDecimal(sum(UnscaledValue(ws_net_paid#34))#11,17,2) AS total_sum#35]
 
 (25) HashAggregate [codegen id : 7]
-Input [1]: [total_sum#17]
+Input [1]: [total_sum#35]
 Keys: []
-Functions [1]: [partial_sum(total_sum#17)]
-Aggregate Attributes [2]: [sum#29, isEmpty#30]
-Results [2]: [sum#31, isEmpty#32]
+Functions [1]: [partial_sum(total_sum#35)]
+Aggregate Attributes [2]: [sum#36, isEmpty#37]
+Results [2]: [sum#38, isEmpty#39]
 
 (26) Exchange
-Input [2]: [sum#31, isEmpty#32]
+Input [2]: [sum#38, isEmpty#39]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=3]
 
 (27) HashAggregate [codegen id : 8]
-Input [2]: [sum#31, isEmpty#32]
+Input [2]: [sum#38, isEmpty#39]
 Keys: []
-Functions [1]: [sum(total_sum#17)]
-Aggregate Attributes [1]: [sum(total_sum#17)#33]
-Results [6]: [sum(total_sum#17)#33 AS total_sum#34, null AS i_category#35, null AS i_class#36, 1 AS g_category#37, 1 AS g_class#38, 2 AS lochierarchy#39]
+Functions [1]: [sum(total_sum#35)]
+Aggregate Attributes [1]: [sum(total_sum#35)#40]
+Results [6]: [sum(total_sum#35)#40 AS total_sum#41, null AS i_category#42, null AS i_class#43, 1 AS g_category#44, 1 AS g_class#45, 2 AS lochierarchy#46]
 
 (28) Union
 
@@ -194,27 +194,27 @@ Input [6]: [total_sum#12, i_category#9, i_class#8, g_category#13, g_class#14, lo
 Keys [6]: [total_sum#12, i_category#9, i_class#8, g_category#13, g_class#14, lochierarchy#15]
 Functions: []
 Aggregate Attributes: []
-Results [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, CASE WHEN (g_class#14 = 0) THEN i_category#9 END AS _w0#40]
+Results [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, CASE WHEN (g_class#14 = 0) THEN i_category#9 END AS _w0#47]
 
 (32) Exchange
-Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#40]
-Arguments: hashpartitioning(lochierarchy#15, _w0#40, 5), ENSURE_REQUIREMENTS, [plan_id=5]
+Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#47]
+Arguments: hashpartitioning(lochierarchy#15, _w0#47, 5), ENSURE_REQUIREMENTS, [plan_id=5]
 
 (33) Sort [codegen id : 11]
-Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#40]
-Arguments: [lochierarchy#15 ASC NULLS FIRST, _w0#40 ASC NULLS FIRST, total_sum#12 DESC NULLS LAST], false, 0
+Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#47]
+Arguments: [lochierarchy#15 ASC NULLS FIRST, _w0#47 ASC NULLS FIRST, total_sum#12 DESC NULLS LAST], false, 0
 
 (34) Window
-Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#40]
-Arguments: [rank(total_sum#12) windowspecdefinition(lochierarchy#15, _w0#40, total_sum#12 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#41], [lochierarchy#15, _w0#40], [total_sum#12 DESC NULLS LAST]
+Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#47]
+Arguments: [rank(total_sum#12) windowspecdefinition(lochierarchy#15, _w0#47, total_sum#12 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#48], [lochierarchy#15, _w0#47], [total_sum#12 DESC NULLS LAST]
 
 (35) Project [codegen id : 12]
-Output [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#41]
-Input [6]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#40, rank_within_parent#41]
+Output [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#48]
+Input [6]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, _w0#47, rank_within_parent#48]
 
 (36) TakeOrderedAndProject
-Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#41]
-Arguments: 100, [lochierarchy#15 DESC NULLS LAST, CASE WHEN (lochierarchy#15 = 0) THEN i_category#9 END ASC NULLS FIRST, rank_within_parent#41 ASC NULLS FIRST], [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#41]
+Input [5]: [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#48]
+Arguments: 100, [lochierarchy#15 DESC NULLS LAST, CASE WHEN (lochierarchy#15 = 0) THEN i_category#9 END ASC NULLS FIRST, rank_within_parent#48 ASC NULLS FIRST], [total_sum#12, i_category#9, i_class#8, lochierarchy#15, rank_within_parent#48]
 
 ===== Subqueries =====
 
