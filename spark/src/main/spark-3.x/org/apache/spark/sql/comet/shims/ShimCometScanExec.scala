@@ -49,7 +49,7 @@ trait ShimCometScanExec {
       .map { a => a.setAccessible(true); a }
       .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
 
-  // TODO: remove after dropping Spark 3.4 support and directly call new FileScanRDD
+  // TODO: remove after dropping Spark 3.3 and 3.4 support and directly call new FileScanRDD
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
       readFunction: PartitionedFile => Iterator[InternalRow],
