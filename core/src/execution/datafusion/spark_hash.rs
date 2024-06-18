@@ -138,7 +138,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
             offset_u64 += 4;
         }
     }
-    let total_len = offset_u64 as u64 * 8_u64;
+    let total_len = data.len() as u64;
 
     let mut hash = if total_len >= CHUNK_SIZE as u64 {
         // We have processed at least one full chunk
@@ -192,7 +192,8 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     }
 
     // process u32s
-    let ptr_u32 = data[offset_u64 * 8..].as_ptr() as *const u32;
+    let data = &data[offset_u64 * 8..];
+    let ptr_u32 = data.as_ptr() as *const u32;
     let length_bytes = length_bytes - offset_u64 * 8;
     let mut offset_u32 = 0;
     while offset_u32 * 4 + 4 < length_bytes {
@@ -598,7 +599,7 @@ pub(crate) fn create_murmur3_hashes<'a>(
 }
 
 /// Creates xxhash64 hash values for every row, based on the values in the
-/// columns.
+/// columns.7
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
@@ -690,7 +691,12 @@ mod tests {
 
     #[test]
     fn test_xxhash64() {
+        // TODO fuzz testing
         check_xxhash64("12345678123456781234567812345678", 42_u64);
+        check_xxhash64("12345678123456781234567812345678a", 42_u64);
+        check_xxhash64("12345678123456781234567812345678aab", 42_u64);
+        check_xxhash64("a", 42_u64);
+        check_xxhash64("aab", 42_u64);
     }
 
     fn check_xxhash64(data: &str, seed: u64) {
