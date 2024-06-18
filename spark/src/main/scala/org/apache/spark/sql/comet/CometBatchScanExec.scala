@@ -144,5 +144,7 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     }
   }
 
+  @transient override lazy val partitions: Seq[Seq[InputPartition]] = wrappedScan.partitions
+
   override def supportsColumnar: Boolean = true
 }
