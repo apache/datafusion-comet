@@ -46,7 +46,7 @@ jobs:
         os: [ubuntu-latest]
         java_version: [8, 11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4']
+        spark-version: ['3.5']
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -109,7 +109,7 @@ jobs:
         os: [ubuntu-latest]
         java_version: [8, 11, 17]
         test-target: [java]
-        spark-version: ['3.2', '3.3']
+        spark-version: ['3.3', '3.4']
         scala-version: ['2.12', '2.13']
         exclude:
           - java_version: 17
