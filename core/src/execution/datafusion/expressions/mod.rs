@@ -43,6 +43,7 @@ pub mod temporal;
 pub mod unbound;
 mod utils;
 pub mod variance;
+pub mod xxhash64;
 
 #[derive(Debug, Hash, PartialEq, Clone, Copy)]
 pub enum EvalMode {
