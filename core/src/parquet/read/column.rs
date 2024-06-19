@@ -132,11 +132,17 @@ impl ColumnReader {
                             (32, false) => typed_reader!(UInt32ColumnReader, Int64),
                             _ => unimplemented!("Unsupported INT32 annotation: {:?}", lt),
                         },
-                        LogicalType::Decimal { scale, precision } => {
-                            if use_decimal_128 {
+                        LogicalType::Decimal {
+                            scale,
+                            precision: _,
+                        } => {
+                            if use_decimal_128 || scale < &promotion_info.scale {
                                 typed_reader!(
                                     Int32DecimalColumnReader,
-                                    ArrowDataType::Decimal128(*precision as u8, *scale as i8)
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
                                 )
                             } else {
                                 typed_reader!(Int32ColumnReader, Int32)
@@ -168,11 +174,17 @@ impl ColumnReader {
                             ),
                             _ => panic!("Unsupported INT64 annotation: {:?}", lt),
                         },
-                        LogicalType::Decimal { scale, precision } => {
-                            if use_decimal_128 {
+                        LogicalType::Decimal {
+                            scale,
+                            precision: _,
+                        } => {
+                            if use_decimal_128 || scale < &promotion_info.scale {
                                 typed_reader!(
                                     Int64DecimalColumnReader,
-                                    ArrowDataType::Decimal128(*precision as u8, *scale as i8)
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
                                 )
                             } else {
                                 typed_reader!(Int64ColumnReader, Int64)
@@ -248,7 +260,10 @@ impl ColumnReader {
             PhysicalType::FIXED_LEN_BYTE_ARRAY => {
                 if let Some(logical_type) = desc.logical_type() {
                     match logical_type {
-                        LogicalType::Decimal { precision, scale } => {
+                        LogicalType::Decimal {
+                            precision,
+                            scale: _,
+                        } => {
                             if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
                                 typed_reader!(FLBADecimal32ColumnReader, Int32)
                             } else if !use_decimal_128 && precision <= DECIMAL_MAX_LONG_DIGITS {
@@ -256,7 +271,10 @@ impl ColumnReader {
                             } else {
                                 typed_reader!(
                                     FLBADecimalColumnReader,
-                                    ArrowDataType::Decimal128(precision as u8, scale as i8)
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
                                 )
                             }
                         }

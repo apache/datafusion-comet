@@ -385,5 +385,6 @@ pub(crate) fn convert_exception(
     Ok(CometError::JavaException {
         class: exception_class_name_str,
         msg: message_str,
+        throwable: env.new_global_ref(throwable)?,
     })
 }
