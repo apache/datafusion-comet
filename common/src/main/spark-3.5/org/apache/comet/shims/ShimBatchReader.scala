@@ -29,10 +29,10 @@ object ShimBatchReader {
     PartitionedFile(
       partitionValues,
       SparkPath.fromPathString(file),
-      Long.box(-1), // -1 means we read the entire file
-      Long.box(-1),
+      -1, // -1 means we read the entire file
+      -1,
       Array.empty[String],
-      Long.box(0),
-      Long.box(0),
+      0,
+      0,
       Map.empty)
 }

@@ -55,24 +55,9 @@ trait ShimCometScanExec {
   protected def invalidBucketFile(path: String, sparkVersion: String): Throwable =
     new SparkException("INVALID_BUCKET_FILE", Map("path" -> path), null)
 
-  // Copied from Spark 3.4 RowIndexUtil due to PARQUET-2161 (tracked in SPARK-39634)
-  // TODO: remove after PARQUET-2161 becomes available in Parquet
-  private def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
-    sparkSchema.fields.zipWithIndex.find { case (field: StructField, _: Int) =>
-      field.name == ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-    } match {
-      case Some((field: StructField, idx: Int)) =>
-        if (field.dataType != LongType) {
-          throw new RuntimeException(
-            s"${ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME} must be of LongType")
-        }
-        idx
-      case _ => -1
-    }
-  }
-
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = {
-    findRowIndexColumnIndexInSchema(sparkSchema) >= 0
+    // TODO: remove after PARQUET-2161 becomes available in Parquet (tracked in SPARK-39634)
+    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema) >= 0
   }
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =

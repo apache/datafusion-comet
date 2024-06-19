@@ -529,7 +529,6 @@ under the License.
     </profile>
 
     <profile>
-
       <id>spark-3.3</id>
       <properties>
         <scala.version>2.12.15</scala.version>
@@ -538,7 +537,6 @@ under the License.
         <parquet.version>1.12.0</parquet.version>
         <slf4j.version>1.7.32</slf4j.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
         <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
       </properties>
@@ -560,13 +558,13 @@ under the License.
       <!-- FIXME: this is WIP. Tests may fail -->
       <id>spark-3.5</id>
       <properties>
-        <scala.version>2.12.15</scala.version>
+        <scala.version>2.12.18</scala.version>
         <spark.version>3.5.1</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
         <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not needed</additional.pre35.test.source>
+        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <additional.3_5.test.source>spark-3.5</additional.3_5.test.source>
       </properties>
     </profile>
@@ -586,7 +584,7 @@ under the License.
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not needed</additional.pre35.test.source>
+        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
