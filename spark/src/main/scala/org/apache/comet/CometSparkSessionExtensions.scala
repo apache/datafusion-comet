@@ -44,7 +44,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, shouldApplyRowToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -96,7 +96,7 @@ class CometSparkSessionExtensions
                 isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
                 isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
                 // Comet does not support pushedAggregate
-                getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isEmpty =>
+                scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isEmpty =>
             val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
             logInfo("Comet extension enabled for Scan")
             CometBatchScanExec(
@@ -116,7 +116,7 @@ class CometSparkSessionExtensions
               s"Partition schema $readPartitionSchema is not supported")
             // Comet does not support pushedAggregate
             val info3 = createMessage(
-              getPushedAggregate(scanExec.scan.asInstanceOf[ParquetScan]).isDefined,
+              scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isDefined,
               "Comet does not support pushed aggregate")
             withInfos(scanExec, Seq(info1, info2, info3).flatten.toSet)
             scanExec
@@ -715,7 +715,9 @@ class CometSparkSessionExtensions
       // enabled.
       if (isANSIEnabled(conf)) {
         if (COMET_ANSI_MODE_ENABLED.get()) {
-          logWarning("Using Comet's experimental support for ANSI mode.")
+          if (!isSpark40Plus) {
+            logWarning("Using Comet's experimental support for ANSI mode.")
+          }
         } else {
           logInfo("Comet extension disabled for ANSI mode")
           return plan
@@ -992,8 +994,7 @@ object CometSparkSessionExtensions extends Logging {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2.
-    case t: DataType if t.typeName == "timestamp_ntz" && !isSpark32 => true
+    case t: DataType if t.typeName == "timestamp_ntz" => true
     case dt =>
       logInfo(s"Comet extension is disabled because data type $dt is not supported")
       false
@@ -1013,11 +1014,6 @@ object CometSparkSessionExtensions extends Logging {
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
-  }
-
-  /** Used for operations that weren't available in Spark 3.2 */
-  def isSpark32: Boolean = {
-    org.apache.spark.SPARK_VERSION.matches("3\\.2\\..*")
   }
 
   def isSpark33Plus: Boolean = {

@@ -57,6 +57,8 @@ under the License.
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
+    <semanticdb.version>4.8.8</semanticdb.version>
+    <slf4j.version>2.0.6</slf4j.version>
     <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -235,6 +237,12 @@ under the License.
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
         <version>${protobuf.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+        <scope>${spark.maven.scope}</scope>
       </dependency>
 
       <!-- Shaded deps marked as provided. These are promoted to compile scope
@@ -518,26 +526,13 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-3.2</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.2.2</spark.version>
-        <spark.version.short>3.2</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
-        <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.2</shims.minorVerSrc>
-      </properties>
-    </profile>
-
-    <profile>
       <id>spark-3.3</id>
       <properties>
         <scala.version>2.12.15</scala.version>
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <slf4j.version>1.7.32</slf4j.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
@@ -553,15 +548,17 @@ under the License.
     </profile>
 
     <profile>
-      <!-- FIXME: this is WIP. Tests may fail -->
+      <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
       <id>spark-4.0</id>
       <properties>
         <!-- Use Scala 2.13 by default -->
-        <scala.version>2.13.13</scala.version>
+        <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.0-preview1</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <semanticdb.version>4.9.5</semanticdb.version>
+        <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
@@ -646,7 +643,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.8.8</version>
+                    <version>${semanticdb.version}</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>

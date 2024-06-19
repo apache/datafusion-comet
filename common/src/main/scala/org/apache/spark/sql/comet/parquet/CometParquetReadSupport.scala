@@ -27,9 +27,8 @@ import org.apache.parquet.schema._
 import org.apache.parquet.schema.LogicalTypeAnnotation.ListLogicalTypeAnnotation
 import org.apache.parquet.schema.Type.Repetition
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types._
-
-import org.apache.comet.parquet.CometParquetUtils
 
 /**
  * This class is copied & slightly modified from [[ParquetReadSupport]] in Spark. Changes:
@@ -53,7 +52,7 @@ object CometParquetReadSupport {
       ignoreMissingIds: Boolean): MessageType = {
     if (!ignoreMissingIds &&
       !containsFieldIds(parquetSchema) &&
-      CometParquetUtils.hasFieldIds(catalystSchema)) {
+      ParquetUtils.hasFieldIds(catalystSchema)) {
       throw new RuntimeException(
         "Spark read schema expects field Ids, " +
           "but Parquet file schema doesn't contain any field Ids.\n" +
@@ -334,14 +333,14 @@ object CometParquetReadSupport {
     }
 
     def matchIdField(f: StructField): Type = {
-      val fieldId = CometParquetUtils.getFieldId(f)
+      val fieldId = ParquetUtils.getFieldId(f)
       idToParquetFieldMap
         .get(fieldId)
         .map { parquetTypes =>
           if (parquetTypes.size > 1) {
             // Need to fail if there is ambiguity, i.e. more than one field is matched
             val parquetTypesString = parquetTypes.map(_.getName).mkString("[", ", ", "]")
-            throw CometParquetUtils.foundDuplicateFieldInFieldIdLookupModeError(
+            throw QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
               fieldId,
               parquetTypesString)
           } else {
@@ -355,9 +354,9 @@ object CometParquetReadSupport {
         }
     }
 
-    val shouldMatchById = useFieldId && CometParquetUtils.hasFieldIds(structType)
+    val shouldMatchById = useFieldId && ParquetUtils.hasFieldIds(structType)
     structType.map { f =>
-      if (shouldMatchById && CometParquetUtils.hasFieldId(f)) {
+      if (shouldMatchById && ParquetUtils.hasFieldId(f)) {
         matchIdField(f)
       } else if (caseSensitive) {
         matchCaseSensitiveField(f)

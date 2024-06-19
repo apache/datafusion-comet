@@ -21,6 +21,7 @@ use arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
 use jni::errors::{Exception, ToException};
 use regex::Regex;
+
 use std::{
     any::Any,
     convert,
@@ -37,6 +38,7 @@ use std::{
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
 use crate::execution::operators::ExecutionError;
+use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
@@ -61,7 +63,7 @@ pub enum CometError {
     Internal(String),
 
     // Note that this message format is based on Spark 3.4 and is more detailed than the message
-    // returned by Spark 3.2 or 3.3
+    // returned by Spark 3.3
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
         Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
@@ -160,7 +162,11 @@ pub enum CometError {
     },
 
     #[error("{class}: {msg}")]
-    JavaException { class: String, msg: String },
+    JavaException {
+        class: String,
+        msg: String,
+        throwable: GlobalRef,
+    },
 }
 
 pub fn init() {
@@ -208,6 +214,15 @@ impl From<CometError> for ExecutionError {
     fn from(value: CometError) -> Self {
         match value {
             CometError::Execution { source } => source,
+            CometError::JavaException {
+                class,
+                msg,
+                throwable,
+            } => ExecutionError::JavaException {
+                class,
+                msg,
+                throwable,
+            },
             _ => ExecutionError::GeneralError(value.to_string()),
         }
     }
@@ -379,17 +394,34 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
     }
 }
 
-fn throw_exception<E: ToException>(env: &mut JNIEnv, error: &E, backtrace: Option<String>) {
+fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<String>) {
     // If there isn't already an exception?
     if env.exception_check().is_ok() {
         // ... then throw new exception
-        let exception = error.to_exception();
-        match backtrace {
-            Some(backtrace_string) => env.throw_new(
-                exception.class,
-                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-            ),
-            _ => env.throw_new(exception.class, exception.msg),
+        match error {
+            CometError::JavaException {
+                class: _,
+                msg: _,
+                throwable,
+            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            CometError::Execution {
+                source:
+                    ExecutionError::JavaException {
+                        class: _,
+                        msg: _,
+                        throwable,
+                    },
+            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            _ => {
+                let exception = error.to_exception();
+                match backtrace {
+                    Some(backtrace_string) => env.throw_new(
+                        exception.class,
+                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                    ),
+                    _ => env.throw_new(exception.class, exception.msg),
+                }
+            }
         }
         .expect("Thrown exception")
     }

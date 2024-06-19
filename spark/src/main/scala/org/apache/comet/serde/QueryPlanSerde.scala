@@ -42,7 +42,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
@@ -63,8 +63,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2.
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -88,7 +87,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: BinaryType => 8
       case _: TimestampType => 9
       case _: DecimalType => 10
-      case dt if dt.typeName == "timestamp_ntz" => 11
+      case dt if isTimestampNTZType(dt) => 11
       case _: DateType => 12
       case _: NullType => 13
       case _: ArrayType => 14
@@ -1034,6 +1033,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                   com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
                 exprBuilder.setBytesVal(byteStr)
               case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+              case dt if isTimestampNTZType(dt) =>
+                exprBuilder.setLongVal(value.asInstanceOf[Long])
               case dt =>
                 logWarning(s"Unexpected date type '$dt' for literal value '$value'")
             }
@@ -1413,7 +1414,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
-          // `UnaryExpression` includes `PromotePrecision` for Spark 3.2 & 3.3
+          // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs)
 
@@ -1518,7 +1519,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           optExprWithInfo(optExpr, expr, child)
 
-        case e: Unhex if !isSpark32 =>
+        case e: Unhex =>
           val unHex = unhexSerde(e)
 
           val childExpr = exprToProtoInternal(unHex._1, inputs)
@@ -1585,9 +1586,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val optExpr = scalarExprToProto("pow", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
 
-        // round function for Spark 3.2 does not allow negative round target scale. In addition,
-        // it has different result precision/scale for decimals. Supporting only 3.3 and above.
-        case r: Round if !isSpark32 =>
+        case r: Round =>
           // _scale s a constant, copied from Spark's RoundBase because it is a protected val
           val scaleV: Any = r.scale.eval(EmptyRow)
           val _scale: Int = scaleV.asInstanceOf[Int]
@@ -2066,7 +2065,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             childExpr)
           optExprWithInfo(optExpr, expr, child)
 
-        case b @ BinaryExpression(_, _) if isBloomFilterMightContain(b) =>
+        case b @ BloomFilterMightContain(_, _) =>
           val bloomFilter = b.left
           val value = b.right
           val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs)
@@ -2101,27 +2100,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
         case XxHash64(children, seed) =>
-          if (CometConf.COMET_XXHASH64_ENABLED.get()) {
-            val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-            if (firstUnSupportedInput.isDefined) {
-              withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-              return None
-            }
-            val exprs = children.map(exprToProtoInternal(_, inputs))
-            val seedBuilder = ExprOuterClass.Literal
-              .newBuilder()
-              .setDatatype(serializeDataType(LongType).get)
-              .setLongVal(seed)
-            val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-            // the seed is put at the end of the arguments
-            scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
-          } else {
-            withInfo(
-              expr,
-              "xxhash64 is disabled by default. " +
-                s"Set ${CometConf.COMET_XXHASH64_ENABLED.key}=true to enable it.")
-            None
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
           }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(LongType).get)
+            .setLongVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
@@ -2252,8 +2243,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2/3.3.
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case _ => false
   }
 
@@ -2330,12 +2320,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
 
-          // Spark 3.2 doesn't support offset for GlobalLimit, but newer Spark versions
-          // support it. Before we upgrade to Spark 3.3, just set it zero.
           // TODO: Spark 3.3 might have negative limit (-1) for Offset usage.
           // When we upgrade to Spark 3.3., we need to address it here.
           limitBuilder.setLimit(globalLimitExec.limit)
-          limitBuilder.setOffset(0)
 
           Some(result.setLimit(limitBuilder).build())
         } else {

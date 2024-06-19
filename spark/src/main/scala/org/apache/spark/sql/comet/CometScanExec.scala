@@ -36,6 +36,7 @@ import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
+import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -44,7 +45,6 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
-import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -150,7 +150,7 @@ case class CometScanExec(
 
   lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +
-      (ShimFileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
+      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =
       relation.fileFormat.buildReaderWithPartitionValues(
         sparkSession = relation.sparkSession,
@@ -402,7 +402,7 @@ case class CometScanExec(
         new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf),
         metrics)
 
-      newDataSourceRDD(
+      new DataSourceRDD(
         fsRelation.sparkSession.sparkContext,
         partitions.map(Seq(_)),
         partitionReaderFactory,

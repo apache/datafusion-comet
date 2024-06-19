@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -51,7 +51,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals divide by zero") {
-    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal divide operation
+    // TODO: enable Spark 3.3 tests after supporting decimal divide operation
     assume(isSpark34Plus)
 
     Seq(true, false).foreach { dictionary =>
@@ -293,7 +293,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to string") {
-    // TODO: make the test pass for Spark 3.2 & 3.3
+    // TODO: make the test pass for Spark 3.3
     assume(isSpark34Plus)
 
     withSQLConf(
@@ -318,7 +318,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to long, date") {
-    // TODO: make the test pass for Spark 3.2 & 3.3
+    // TODO: make the test pass for Spark 3.3
     assume(isSpark34Plus)
 
     withSQLConf(
@@ -411,7 +411,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with timestamp_ntz") {
-    assume(!isSpark32, "timestamp functions for timestamp_ntz have incorrect behavior in 3.2")
     withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -619,8 +618,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("contains") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -637,8 +634,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("startswith") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -655,8 +650,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("endswith") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -693,7 +686,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals arithmetic and comparison") {
-    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal reminder operation
+    // TODO: enable Spark 3.3 tests after supporting decimal reminder operation
     assume(isSpark34Plus)
 
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
@@ -958,10 +951,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("round") {
-    assume(
-      !isSpark32,
-      "round function for Spark 3.2 does not allow negative target scale and has different result precision/scale for decimals")
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1177,11 +1166,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unhex") {
-    // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
-    // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
-    // the same (and this only applies to edge cases with hex inputs with lengths that are not divisible by 2)
-    assume(!isSpark32, "unhex function has incorrect behavior in 3.2")
-
     val table = "unhex_table"
     withTable(table) {
       sql(s"create table $table(col string) using parquet")
@@ -1587,7 +1571,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
@@ -1620,7 +1603,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {

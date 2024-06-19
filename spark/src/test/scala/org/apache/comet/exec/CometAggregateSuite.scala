@@ -800,7 +800,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("final decimal avg") {
-    // TODO: enable decimal average for Spark 3.2 & 3.3
+    // TODO: enable decimal average for Spark 3.3
     assume(isSpark34Plus)
 
     withSQLConf(

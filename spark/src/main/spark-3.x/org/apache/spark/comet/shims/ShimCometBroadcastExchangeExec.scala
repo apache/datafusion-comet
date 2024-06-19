@@ -25,7 +25,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 
 trait ShimCometBroadcastExchangeExec {
-  // TODO: remove after dropping Spark 3.2 and 3.3 support
+  // TODO: remove after dropping Spark 3.3 support
   protected def doBroadcast[T: ClassTag](sparkContext: SparkContext, value: T): Broadcast[Any] = {
     // Spark 3.4 has new API `broadcastInternal` to broadcast the relation without caching the
     // unserialized object.
