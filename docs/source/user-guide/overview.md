@@ -42,7 +42,6 @@ The following diagram illustrates the architecture of Comet:
 
 Comet currently supports the following versions of Apache Spark:
 
-- 3.2.x
 - 3.3.x
 - 3.4.x
 
