@@ -40,19 +40,8 @@ import org.apache.spark.sql.types.{LongType, StructField, StructType}
 trait ShimCometScanExec {
   def wrapped: FileSourceScanExec
 
-  // TODO: remove after dropping Spark 3.2 support and directly call wrapped.metadataColumns
-  lazy val metadataColumns: Seq[AttributeReference] = wrapped.getClass.getDeclaredMethods
-    .filter(_.getName == "metadataColumns")
-    .map { a => a.setAccessible(true); a }
-    .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
-
-  // TODO: remove after dropping Spark 3.2 and 3.3 support and directly call
-  //       wrapped.fileConstantMetadataColumns
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
-    wrapped.getClass.getDeclaredMethods
-      .filter(_.getName == "fileConstantMetadataColumns")
-      .map { a => a.setAccessible(true); a }
-      .flatMap(_.invoke(wrapped).asInstanceOf[Seq[AttributeReference]])
+    wrapped.fileConstantMetadataColumns
 
   // TODO: remove after dropping Spark 3.2 support and directly call new DataSourceRDD
   protected def newDataSourceRDD(
@@ -79,20 +68,8 @@ trait ShimCometScanExec {
     Map.empty,
     options)
 
-  // TODO: remove after dropping Spark 3.2 and 3.3 support and directly call
-  //       QueryExecutionErrors.SparkException
-  protected def invalidBucketFile(path: String, sparkVersion: String): Throwable = {
-    if (sparkVersion >= "3.3") {
-      val messageParameters = if (sparkVersion >= "3.4") Map("path" -> path) else Array(path)
-      classOf[SparkException].getDeclaredConstructors
-        .filter(_.getParameterCount == 3)
-        .map(_.newInstance("INVALID_BUCKET_FILE", messageParameters, null))
-        .last
-        .asInstanceOf[SparkException]
-    } else { // Spark 3.2
-      new IllegalStateException(s"Invalid bucket file ${path}")
-    }
-  }
+  protected def invalidBucketFile(path: String, sparkVersion: String): Throwable =
+    new SparkException("INVALID_BUCKET_FILE", Map("path" -> path), null)
 
   // Copied from Spark 3.4 RowIndexUtil due to PARQUET-2161 (tracked in SPARK-39634)
   // TODO: remove after PARQUET-2161 becomes available in Parquet
