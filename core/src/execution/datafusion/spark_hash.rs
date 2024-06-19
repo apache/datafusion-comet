@@ -150,9 +150,8 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
             offset_u64_4 += 1;
         }
     }
-    let total_len = data.len() as u64;
 
-    let mut hash = if total_len >= CHUNK_SIZE as u64 {
+    let mut hash = if length_bytes >= CHUNK_SIZE {
         // We have processed at least one full chunk
         let mut hash = v1.rotate_left(1);
         hash = hash.wrapping_add(v2.rotate_left(7));
@@ -179,7 +178,7 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
         seed.wrapping_add(PRIME_5)
     };
 
-    hash = hash.wrapping_add(total_len);
+    hash = hash.wrapping_add(length_bytes as u64);
 
     // process u64s
     let mut offset_u64 = offset_u64_4 * 4;
