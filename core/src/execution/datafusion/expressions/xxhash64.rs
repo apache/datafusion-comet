@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-/// xxhash64 implementation
+//! xxhash64 implementation
 
 const CHUNK_SIZE: usize = 32;
 
@@ -33,20 +33,10 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     let data: &[u8] = data.as_ref();
     let length_bytes = data.len();
 
-    // XxCore::with_seed
     let mut v1 = seed.wrapping_add(PRIME_1).wrapping_add(PRIME_2);
     let mut v2 = seed.wrapping_add(PRIME_2);
     let mut v3 = seed;
     let mut v4 = seed.wrapping_sub(PRIME_1);
-
-    // XxCore::ingest_chunks
-    #[inline(always)]
-    fn ingest_one_number(mut current_value: u64, mut value: u64) -> u64 {
-        value = value.wrapping_mul(PRIME_2);
-        current_value = current_value.wrapping_add(value);
-        current_value = current_value.rotate_left(31);
-        current_value.wrapping_mul(PRIME_1)
-    }
 
     // process chunks of 32 bytes
     let mut offset_u64_4 = 0;
@@ -76,16 +66,6 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
         hash = hash.wrapping_add(v2.rotate_left(7));
         hash = hash.wrapping_add(v3.rotate_left(12));
         hash = hash.wrapping_add(v4.rotate_left(18));
-
-        #[inline(always)]
-        fn mix_one(mut hash: u64, mut value: u64) -> u64 {
-            value = value.wrapping_mul(PRIME_2);
-            value = value.rotate_left(31);
-            value = value.wrapping_mul(PRIME_1);
-            hash ^= value;
-            hash = hash.wrapping_mul(PRIME_1);
-            hash.wrapping_add(PRIME_4)
-        }
 
         hash = mix_one(hash, v1);
         hash = mix_one(hash, v2);
@@ -154,6 +134,24 @@ pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u
     hash ^= hash >> 32;
 
     hash
+}
+
+#[inline(always)]
+fn ingest_one_number(mut current_value: u64, mut value: u64) -> u64 {
+    value = value.wrapping_mul(PRIME_2);
+    current_value = current_value.wrapping_add(value);
+    current_value = current_value.rotate_left(31);
+    current_value.wrapping_mul(PRIME_1)
+}
+
+#[inline(always)]
+fn mix_one(mut hash: u64, mut value: u64) -> u64 {
+    value = value.wrapping_mul(PRIME_2);
+    value = value.rotate_left(31);
+    value = value.wrapping_mul(PRIME_1);
+    hash ^= value;
+    hash = hash.wrapping_mul(PRIME_1);
+    hash.wrapping_add(PRIME_4)
 }
 
 #[cfg(test)]
