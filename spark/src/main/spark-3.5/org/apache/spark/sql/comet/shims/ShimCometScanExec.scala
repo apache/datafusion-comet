@@ -33,8 +33,6 @@ import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFacto
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
-import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
-import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
 trait ShimCometScanExec {
@@ -42,17 +40,6 @@ trait ShimCometScanExec {
 
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
     wrapped.fileConstantMetadataColumns
-
-  // TODO: remove after dropping Spark 3.2 support and directly call new DataSourceRDD
-  protected def newDataSourceRDD(
-      sc: SparkContext,
-      inputPartitions: Seq[Seq[InputPartition]],
-      partitionReaderFactory: PartitionReaderFactory,
-      columnarReads: Boolean,
-      customMetrics: Map[String, SQLMetric]): DataSourceRDD = {
-    implicit def flattenSeq(p: Seq[Seq[InputPartition]]): Seq[InputPartition] = p.flatten
-    new DataSourceRDD(sc, inputPartitions, partitionReaderFactory, columnarReads, customMetrics)
-  }
 
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
