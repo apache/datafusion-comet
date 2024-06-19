@@ -25,6 +25,7 @@ use arrow::{
 
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow_schema::ArrowError;
+use jni::objects::GlobalRef;
 use std::{fmt::Debug, sync::Arc};
 
 mod scan;
@@ -52,6 +53,13 @@ pub enum ExecutionError {
     /// DataFusion error
     #[error("Error from DataFusion: {0}.")]
     DataFusionError(String),
+
+    #[error("{class}: {msg}")]
+    JavaException {
+        class: String,
+        msg: String,
+        throwable: GlobalRef,
+    },
 }
 
 /// Copy an Arrow Array

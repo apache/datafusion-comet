@@ -28,6 +28,7 @@ use crate::{
     parquet::{data_type::*, read::DECIMAL_BYTE_WIDTH, ParquetMutableVector},
     unlikely,
 };
+use arrow::datatypes::DataType as ArrowDataType;
 
 pub fn get_decoder<T: DataType>(
     value_data: Buffer,
@@ -651,6 +652,12 @@ macro_rules! make_plain_decimal_impl {
 
                     debug_assert!(byte_width <= DECIMAL_BYTE_WIDTH);
 
+                    let src_scale = src.desc.type_scale() as u32;
+                    let dst_scale = match dst.arrow_type {
+                        ArrowDataType::Decimal128(_percision, scale) => scale as u32,
+                        _ => unreachable!()
+                    };
+
                     for _ in 0..num {
                         let s = &mut dst_data[dst_offset..];
 
@@ -671,6 +678,15 @@ macro_rules! make_plain_decimal_impl {
                             // If so, also fill pad the remaining bytes with 0xff.
                             if s[byte_width - 1] & 0x80 == 0x80 {
                                 s[byte_width..DECIMAL_BYTE_WIDTH].fill(0xff);
+                            }
+                        }
+
+                        if dst_scale > src_scale {
+                            let exp = dst_scale - src_scale;
+                            let mul = 10_i128.pow(exp);
+                            let v = s.as_mut_ptr() as *mut i128;
+                            unsafe {
+                                 v.write_unaligned(v.read_unaligned() * mul);
                             }
                         }
 

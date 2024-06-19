@@ -63,7 +63,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
       true
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -87,7 +87,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: BinaryType => 8
       case _: TimestampType => 9
       case _: DecimalType => 10
-      case dt if dt.typeName == "timestamp_ntz" => 11
+      case dt if isTimestampNTZType(dt) => 11
       case _: DateType => 12
       case _: NullType => 13
       case _: ArrayType => 14
@@ -1033,6 +1033,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                   com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
                 exprBuilder.setBytesVal(byteStr)
               case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+              case dt if isTimestampNTZType(dt) =>
+                exprBuilder.setLongVal(value.asInstanceOf[Long])
               case dt =>
                 logWarning(s"Unexpected date type '$dt' for literal value '$value'")
             }
@@ -2241,8 +2243,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    // `TimestampNTZType` is private in Spark 3.3.
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case _ => false
   }
 
