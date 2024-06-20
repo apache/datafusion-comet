@@ -260,7 +260,12 @@ class CometBufferImportTypeVisitor
           type,
           start,
           end);
-      final long len = end - start;
+      // HACK: For the issue https://github.com/apache/datafusion-comet/issues/540
+      // As Arrow Java doesn't support `offset` in C Data interface, we cannot correctly import
+      // a slice of string from arrow-rs to Java Arrow and then export it to arrow-rs again.
+      // So we add this hack to always take full length of data buffer by assuming the first offset
+      // is always 0 which is true for Arrow Java and arrow-rs.
+      final long len = end;
       offsets.getReferenceManager().retain();
       return Arrays.asList(maybeImportBitmap(type), offsets, importData(type, len));
     }
@@ -277,7 +282,12 @@ class CometBufferImportTypeVisitor
           type,
           start,
           end);
-      final int len = end - start;
+      // HACK: For the issue https://github.com/apache/datafusion-comet/issues/540
+      // As Arrow Java doesn't support `offset` in C Data interface, we cannot correctly import
+      // a slice of string from arrow-rs to Java Arrow and then export it to arrow-rs again.
+      // So we add this hack to always take full length of data buffer by assuming the first offset
+      // is always 0 which is true for Arrow Java and arrow-rs.
+      final int len = end;
       offsets.getReferenceManager().retain();
       return Arrays.asList(maybeImportBitmap(type), offsets, importData(type, len));
     }
@@ -296,7 +306,12 @@ class CometBufferImportTypeVisitor
           type,
           start,
           end);
-      final long len = end - start;
+      // HACK: For the issue https://github.com/apache/datafusion-comet/issues/540
+      // As Arrow Java doesn't support `offset` in C Data interface, we cannot correctly import
+      // a slice of string from arrow-rs to Java Arrow and then export it to arrow-rs again.
+      // So we add this hack to always take full length of data buffer by assuming the first offset
+      // is always 0 which is true for Arrow Java and arrow-rs.
+      final long len = end;
       offsets.getReferenceManager().retain();
       return Arrays.asList(maybeImportBitmap(type), offsets, importData(type, len));
     }
