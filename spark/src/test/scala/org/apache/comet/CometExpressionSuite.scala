@@ -1558,7 +1558,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "Project is not native because the following children are not native (BroadcastHashJoin)",
               "BroadcastHashJoin is not enabled because the following children are not native" +
-                " (BroadcastQueryStage, Project)")))
+                " (BroadcastExchange, Project)")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
