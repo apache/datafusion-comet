@@ -1025,6 +1025,10 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "3.4"
   }
 
+  def isSpark35Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "3.5"
+  }
+
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
