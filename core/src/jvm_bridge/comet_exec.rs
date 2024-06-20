@@ -53,7 +53,6 @@ impl<'a> CometExec<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometScalarSubquery";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometExec<'a>> {
-        // Get the global class reference
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometExec {

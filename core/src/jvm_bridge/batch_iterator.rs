@@ -33,7 +33,6 @@ impl<'a> CometBatchIterator<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/comet/CometBatchIterator";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometBatchIterator<'a>> {
-        // Get the global class reference
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometBatchIterator {

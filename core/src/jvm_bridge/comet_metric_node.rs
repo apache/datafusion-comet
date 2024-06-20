@@ -35,7 +35,6 @@ impl<'a> CometMetricNode<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometMetricNode";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
-        // Get the global class reference
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {
