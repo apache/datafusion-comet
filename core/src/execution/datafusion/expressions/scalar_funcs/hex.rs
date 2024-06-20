@@ -26,22 +26,67 @@ use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
     cast::{as_binary_array, as_fixed_size_binary_array, as_int64_array},
-    exec_err, DataFusionError,
+    exec_err, DataFusionError, ScalarValue,
 };
+use datafusion_expr::ScalarFunctionImplementation;
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
     format!("{:X}", num)
 }
 
-fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
-    let bytes = bytes.as_ref();
-    let length = bytes.len();
-    let mut hex_string = String::with_capacity(length * 2);
-    for &byte in bytes {
-        write!(&mut hex_string, "{:02X}", byte)?;
+#[inline(always)]
+fn hex_encode<T: AsRef<[u8]>>(data: T, lower_case: bool) -> String {
+    let mut s = String::with_capacity(data.as_ref().len() * 2);
+    if lower_case {
+        for b in data.as_ref() {
+            // Writing to a string never errors, so we can unwrap here.
+            write!(&mut s, "{b:02x}").unwrap();
+        }
+    } else {
+        for b in data.as_ref() {
+            // Writing to a string never errors, so we can unwrap here.
+            write!(&mut s, "{b:02X}").unwrap();
+        }
     }
+    s
+}
+
+#[inline(always)]
+fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
+    hex_encode(data, true)
+}
+
+#[inline(always)]
+fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
+    let hex_string = hex_encode(bytes, false);
     Ok(hex_string)
+}
+
+pub(super) fn wrap_digest_result_as_hex_string(
+    args: &[ColumnarValue],
+    digest: ScalarFunctionImplementation,
+) -> Result<ColumnarValue, DataFusionError> {
+    let value = digest(args)?;
+    match value {
+        ColumnarValue::Array(array) => {
+            let binary_array = as_binary_array(&array)?;
+            let string_array: StringArray = binary_array
+                .iter()
+                .map(|opt| opt.map(hex_strings::<_>))
+                .collect();
+            Ok(ColumnarValue::Array(Arc::new(string_array)))
+        }
+        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => Ok(ColumnarValue::Scalar(
+            ScalarValue::Utf8(opt.map(hex_strings::<_>)),
+        )),
+        _ => {
+            exec_err!(
+                "digest function should return binary value, but got: {:?}",
+                value.data_type()
+            )
+        }
+    }
 }
 
 pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -246,14 +291,14 @@ mod test {
     fn test_dictionary_hex_binary() {
         let mut input_builder = BinaryDictionaryBuilder::<Int32Type>::new();
         input_builder.append_value("1");
-        input_builder.append_value("1");
+        input_builder.append_value("j");
         input_builder.append_null();
         input_builder.append_value("3");
         let input = input_builder.finish();
 
         let mut expected_builder = StringBuilder::new();
         expected_builder.append_value("31");
-        expected_builder.append_value("31");
+        expected_builder.append_value("6A");
         expected_builder.append_null();
         expected_builder.append_value("33");
         let expected = expected_builder.finish();
