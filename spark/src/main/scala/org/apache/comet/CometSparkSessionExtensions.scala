@@ -226,11 +226,13 @@ class CometSparkSessionExtensions
     private def explainChildNotNative(op: SparkPlan): String = {
       var nonNatives: Seq[String] = Seq()
       val actualOp = getActualPlan(op)
-      op.children.foreach(plan => {
-        if (!isCometNative(plan)) {
-          nonNatives = nonNatives :+ getActualPlan(plan).nodeName
-        }
-      })
+      actualOp.children.foreach {
+        case p: SparkPlan =>
+          if (!isCometNative(p)) {
+            nonNatives = nonNatives :+ getActualPlan(p).nodeName
+          }
+        case _ =>
+      }
       nonNatives.mkString("(", ", ", ")")
     }
 
