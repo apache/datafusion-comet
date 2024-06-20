@@ -44,6 +44,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
+import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -223,9 +224,10 @@ class CometSparkSessionExtensions
 
     private def explainChildNotNative(op: SparkPlan): String = {
       var nonNatives: Seq[String] = Seq()
+      val actualOp = getActualPlan(op)
       op.children.foreach(plan => {
         if (!isCometNative(plan)) {
-          nonNatives = nonNatives :+ plan.nodeName
+          nonNatives = nonNatives :+ getActualPlan(plan).nodeName
         }
       })
       nonNatives.mkString("(", ", ", ")")

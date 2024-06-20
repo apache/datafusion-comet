@@ -274,6 +274,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.verbose.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide a verbose tree representation of " +
+          "the extended information.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(
