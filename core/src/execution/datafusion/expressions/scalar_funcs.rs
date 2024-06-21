@@ -47,13 +47,14 @@ mod unhex;
 use unhex::spark_unhex;
 
 mod hex;
-use hex::{spark_hex, wrap_digest_result_as_hex_string};
+use hex::spark_hex;
 
 mod chr;
 use chr::spark_chr;
 
 pub mod hash_expressions;
 // exposed for benchmark only
+use hash_expressions::wrap_digest_result_as_hex_string;
 pub use hash_expressions::{spark_murmur3_hash, spark_xxhash64};
 
 macro_rules! make_comet_scalar_udf {

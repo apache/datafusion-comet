@@ -26,9 +26,8 @@ use arrow_schema::DataType;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
     cast::{as_binary_array, as_fixed_size_binary_array, as_int64_array},
-    exec_err, DataFusionError, ScalarValue,
+    exec_err, DataFusionError,
 };
-use datafusion_expr::ScalarFunctionImplementation;
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
@@ -53,7 +52,7 @@ fn hex_encode<T: AsRef<[u8]>>(data: T, lower_case: bool) -> String {
 }
 
 #[inline(always)]
-fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
+pub(super) fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
     hex_encode(data, true)
 }
 
@@ -61,32 +60,6 @@ fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
 fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
     let hex_string = hex_encode(bytes, false);
     Ok(hex_string)
-}
-
-pub(super) fn wrap_digest_result_as_hex_string(
-    args: &[ColumnarValue],
-    digest: ScalarFunctionImplementation,
-) -> Result<ColumnarValue, DataFusionError> {
-    let value = digest(args)?;
-    match value {
-        ColumnarValue::Array(array) => {
-            let binary_array = as_binary_array(&array)?;
-            let string_array: StringArray = binary_array
-                .iter()
-                .map(|opt| opt.map(hex_strings::<_>))
-                .collect();
-            Ok(ColumnarValue::Array(Arc::new(string_array)))
-        }
-        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => Ok(ColumnarValue::Scalar(
-            ScalarValue::Utf8(opt.map(hex_strings::<_>)),
-        )),
-        _ => {
-            exec_err!(
-                "digest function should return binary value, but got: {:?}",
-                value.data_type()
-            )
-        }
-    }
 }
 
 pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {

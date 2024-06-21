@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::expressions::scalar_funcs::hex::hex_strings;
 use crate::execution::datafusion::spark_hash::{create_murmur3_hashes, create_xxhash64_hashes};
-use arrow_array::{ArrayRef, Int32Array, Int64Array};
-use datafusion_common::{internal_err, DataFusionError, ScalarValue};
-use datafusion_expr::ColumnarValue;
+use arrow_array::{ArrayRef, Int32Array, Int64Array, StringArray};
+use datafusion_common::cast::as_binary_array;
+use datafusion_common::{exec_err, internal_err, DataFusionError, ScalarValue};
+use datafusion_expr::{ColumnarValue, ScalarFunctionImplementation};
 use std::sync::Arc;
 
+/// Spark compatible murmur3 hash in vectorized execution fashion
 pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];
@@ -64,6 +67,7 @@ pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
     }
 }
 
+/// Spark compatible xxhash64 in vectorized execution fashion
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];
@@ -102,6 +106,32 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
             internal_err!(
                 "The seed of function xxhash64 must be an Int64 scalar value, but got: {:?}.",
                 seed
+            )
+        }
+    }
+}
+
+pub(super) fn wrap_digest_result_as_hex_string(
+    args: &[ColumnarValue],
+    digest: ScalarFunctionImplementation,
+) -> Result<ColumnarValue, DataFusionError> {
+    let value = digest(args)?;
+    match value {
+        ColumnarValue::Array(array) => {
+            let binary_array = as_binary_array(&array)?;
+            let string_array: StringArray = binary_array
+                .iter()
+                .map(|opt| opt.map(hex_strings::<_>))
+                .collect();
+            Ok(ColumnarValue::Array(Arc::new(string_array)))
+        }
+        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => Ok(ColumnarValue::Scalar(
+            ScalarValue::Utf8(opt.map(hex_strings::<_>)),
+        )),
+        _ => {
+            exec_err!(
+                "digest function should return binary value, but got: {:?}",
+                value.data_type()
             )
         }
     }
