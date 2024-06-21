@@ -20,8 +20,8 @@
 use crate::errors::CometResult;
 
 use jni::{
-    errors::{Error, Result as JniResult},
-    objects::{JClass, JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
+    errors::Error,
+    objects::{JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
     signature::ReturnType,
     AttachGuard, JNIEnv,
 };
@@ -175,20 +175,6 @@ pub(crate) use jni_new_global_ref;
 pub(crate) use jni_new_string;
 pub(crate) use jni_static_call;
 pub(crate) use jvalues;
-
-/// Gets a global reference to a Java class.
-pub fn get_global_jclass(env: &mut JNIEnv, cls: &str) -> JniResult<JClass<'static>> {
-    let local_jclass = env.find_class(cls)?;
-    let global = env.new_global_ref::<JObject>(local_jclass.into())?;
-
-    // A hack to make the `JObject` static. This is safe because the global reference is never
-    // gc-ed by the JVM before dropping the global reference.
-    let global_obj = unsafe { std::mem::transmute::<_, JObject<'static>>(global.as_obj()) };
-    // Prevent the global reference from being dropped.
-    let _ = std::mem::ManuallyDrop::new(global);
-
-    Ok(JClass::from(global_obj))
-}
 
 mod comet_exec;
 pub use comet_exec::*;

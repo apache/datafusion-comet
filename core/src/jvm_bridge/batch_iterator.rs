@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::get_global_jclass;
 use jni::{
     errors::Result as JniResult,
     objects::{JClass, JMethodID},
@@ -34,8 +33,7 @@ impl<'a> CometBatchIterator<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/comet/CometBatchIterator";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometBatchIterator<'a>> {
-        // Get the global class reference
-        let class = get_global_jclass(env, Self::JVM_CLASS)?;
+        let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometBatchIterator {
             class,
