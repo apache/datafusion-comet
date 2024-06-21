@@ -666,14 +666,6 @@ class CometSparkSessionExtensions
             "BroadcastHashJoin is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
           op
-        case op: BroadcastHashJoinExec
-            if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
-              !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "BroadcastHashJoin is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
-          op
 
         case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
           withInfo(op, "BroadcastHashJoin is not enabled")
