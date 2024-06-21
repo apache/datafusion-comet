@@ -97,7 +97,7 @@ use crate::{
     },
 };
 
-use super::expressions::{abs::CometAbsFunc, EvalMode};
+use super::expressions::{abs::CometAbsFunc, modulo::ModuloExpr, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -681,7 +681,13 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
-            _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
+            _ => {
+                // Improves compatibility with Spark
+                if op == DataFusionOperator::Modulo {
+                    return Ok(Arc::new(ModuloExpr::new(left, right)));
+                }
+                Ok(Arc::new(BinaryExpr::new(left, op, right)))
+            }
         }
     }
 

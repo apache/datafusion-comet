@@ -858,7 +858,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("remainder") {
     withTempDir { dir =>
-      val df = Seq((-21840, -0.0)).toDF("c90", "c1")
+      val df = Seq((21840, -0.0)).toDF("c90", "c1")
       val path = new Path(dir.toURI.toString, "remainder_test.parquet").toString
       df.write.mode("overwrite").parquet(path)
 

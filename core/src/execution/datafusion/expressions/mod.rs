@@ -33,6 +33,7 @@ pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
 pub mod correlation;
 pub mod covariance;
+pub mod modulo;
 pub mod negative;
 pub mod stats;
 pub mod stddev;
