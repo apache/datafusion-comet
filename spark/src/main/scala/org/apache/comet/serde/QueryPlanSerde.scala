@@ -428,40 +428,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child)
           None
         }
-      case cov @ CovSample(child1, child2, _) =>
+      case cov @ CovSample(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)
         val dataType = serializeDataType(cov.dataType)
 
         if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.CovSample.newBuilder()
+          val covBuilder = ExprOuterClass.Covariance.newBuilder()
           covBuilder.setChild1(child1Expr.get)
           covBuilder.setChild2(child2Expr.get)
+          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           covBuilder.setDatatype(dataType.get)
+          covBuilder.setStatsTypeValue(0)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setCovSample(covBuilder)
+              .setCovariance(covBuilder)
               .build())
         } else {
           None
         }
-      case cov @ CovPopulation(child1, child2, _) =>
+      case cov @ CovPopulation(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)
         val dataType = serializeDataType(cov.dataType)
 
         if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.CovPopulation.newBuilder()
+          val covBuilder = ExprOuterClass.Covariance.newBuilder()
           covBuilder.setChild1(child1Expr.get)
           covBuilder.setChild2(child2Expr.get)
+          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           covBuilder.setDatatype(dataType.get)
+          covBuilder.setStatsTypeValue(1)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setCovPopulation(covBuilder)
+              .setCovariance(covBuilder)
               .build())
         } else {
           None
