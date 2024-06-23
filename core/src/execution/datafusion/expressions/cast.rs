@@ -259,7 +259,7 @@ macro_rules! cast_float_to_int16_down {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
+                        let is_overflow = value.is_nan() || value.abs() as i32 == i32::MAX;
                         if is_overflow {
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
@@ -374,7 +374,7 @@ macro_rules! cast_decimal_to_int16_down {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
                         let (truncated, decimal) = (value / divisor, (value % divisor).abs());
-                        let is_overflow = truncated.abs() > std::i32::MAX.into();
+                        let is_overflow = truncated.abs() > i32::MAX.into();
                         if is_overflow {
                             return Err(cast_overflow(
                                 &format!("{}.{}BD", truncated, decimal),
