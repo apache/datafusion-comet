@@ -56,6 +56,7 @@ use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 
+use crate::execution::datafusion::expressions::binary::CometBinaryExpr;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -166,6 +167,7 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Plus,
                 input_schema,
+                EvalMode::Legacy,
             ),
             ExprStruct::Subtract(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -173,6 +175,7 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Minus,
                 input_schema,
+                EvalMode::try_from(expr.eval_mode)?,
             ),
             ExprStruct::Multiply(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -180,6 +183,7 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Multiply,
                 input_schema,
+                EvalMode::Legacy,
             ),
             ExprStruct::Divide(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -187,6 +191,7 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Divide,
                 input_schema,
+                EvalMode::Legacy,
             ),
             ExprStruct::Remainder(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -194,6 +199,7 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Modulo,
                 input_schema,
+                EvalMode::Legacy,
             ),
             ExprStruct::Eq(expr) => {
                 let left = self.create_expr(expr.left.as_ref().unwrap(), input_schema.clone())?;
@@ -627,6 +633,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
+        eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, input_schema.clone())?;
         let right = self.create_expr(right, input_schema.clone())?;
@@ -681,7 +688,7 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
-            _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
+            _ => Ok(Arc::new(CometBinaryExpr::new(left, op, right, eval_mode))),
         }
     }
 
