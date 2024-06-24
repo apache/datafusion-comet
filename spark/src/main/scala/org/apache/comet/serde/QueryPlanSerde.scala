@@ -736,9 +736,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.Subtract.newBuilder()
+            val failOnErr = getFailOnError(sub)
+            val evalModeStr =
+              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
-            builder.setFailOnError(getFailOnError(sub))
+            builder.setFailOnError(failOnErr)
+            builder.setEvalMode(evalModeStr)
             serializeDataType(sub.dataType).foreach { t =>
               builder.setReturnType(t)
             }
