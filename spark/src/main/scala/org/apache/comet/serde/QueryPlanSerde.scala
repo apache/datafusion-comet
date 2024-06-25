@@ -2240,8 +2240,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   def nullIfWhenPrimitive(expression: Expression): Expression = if (isPrimitive(expression)) {
     val zero = Literal.default(expression.dataType)
-    val negZero = Literal.create(-0.0, DoubleType)
-    if (expression.dataType == DoubleType) {
+    val negZero = UnaryMinus(Literal.default(expression.dataType))
+    if (expression.dataType == DoubleType || expression.dataType == FloatType) {
       If(
         Or(EqualTo(expression, zero), EqualTo(expression, negZero)),
         Literal.create(null, expression.dataType),
