@@ -19,8 +19,7 @@
 mod common;
 
 use arrow_array::ArrayRef;
-use comet::execution::datafusion::expressions::scalar_funcs::spark_murmur3_hash;
-use comet::execution::datafusion::spark_hash::create_xxhash64_hashes;
+use comet::execution::datafusion::expressions::scalar_funcs::{spark_murmur3_hash, spark_xxhash64};
 use comet::execution::kernels::hash;
 use common::*;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -100,12 +99,15 @@ fn criterion_benchmark(c: &mut Criterion) {
         },
     );
     group.bench_function(BenchmarkId::new("xxhash64", BATCH_SIZE), |b| {
-        let input = vec![a3.clone(), a4.clone()];
-        let mut dst = vec![0; BATCH_SIZE];
+        let inputs = &[
+            ColumnarValue::Array(a3.clone()),
+            ColumnarValue::Array(a4.clone()),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(42i64))),
+        ];
 
         b.iter(|| {
             for _ in 0..NUM_ITER {
-                create_xxhash64_hashes(&input, &mut dst).unwrap();
+                spark_xxhash64(inputs).unwrap();
             }
         });
     });

@@ -34,13 +34,31 @@ fn hex_int64(num: i64) -> String {
     format!("{:X}", num)
 }
 
-fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
-    let bytes = bytes.as_ref();
-    let length = bytes.len();
-    let mut hex_string = String::with_capacity(length * 2);
-    for &byte in bytes {
-        write!(&mut hex_string, "{:02X}", byte)?;
+#[inline(always)]
+fn hex_encode<T: AsRef<[u8]>>(data: T, lower_case: bool) -> String {
+    let mut s = String::with_capacity(data.as_ref().len() * 2);
+    if lower_case {
+        for b in data.as_ref() {
+            // Writing to a string never errors, so we can unwrap here.
+            write!(&mut s, "{b:02x}").unwrap();
+        }
+    } else {
+        for b in data.as_ref() {
+            // Writing to a string never errors, so we can unwrap here.
+            write!(&mut s, "{b:02X}").unwrap();
+        }
     }
+    s
+}
+
+#[inline(always)]
+pub(super) fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
+    hex_encode(data, true)
+}
+
+#[inline(always)]
+fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
+    let hex_string = hex_encode(bytes, false);
     Ok(hex_string)
 }
 
@@ -246,14 +264,14 @@ mod test {
     fn test_dictionary_hex_binary() {
         let mut input_builder = BinaryDictionaryBuilder::<Int32Type>::new();
         input_builder.append_value("1");
-        input_builder.append_value("1");
+        input_builder.append_value("j");
         input_builder.append_null();
         input_builder.append_value("3");
         let input = input_builder.finish();
 
         let mut expected_builder = StringBuilder::new();
         expected_builder.append_value("31");
-        expected_builder.append_value("31");
+        expected_builder.append_value("6A");
         expected_builder.append_null();
         expected_builder.append_value("33");
         let expected = expected_builder.finish();
