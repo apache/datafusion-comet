@@ -21,8 +21,7 @@ use arrow::{
     compute::take,
     datatypes::{ArrowNativeTypeOp, UInt16Type, UInt32Type, UInt64Type, UInt8Type},
 };
-use std::{hash::Hasher, sync::Arc};
-use twox_hash::XxHash64;
+use std::sync::Arc;
 
 use datafusion::{
     arrow::{
@@ -34,6 +33,8 @@ use datafusion::{
     },
     error::{DataFusionError, Result},
 };
+
+use crate::execution::datafusion::expressions::xxhash64::spark_compatible_xxhash64;
 
 #[inline]
 pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
@@ -102,14 +103,6 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
         }
         fmix(h1, len as i32) as u32
     }
-}
-
-#[inline]
-pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
-    // TODO: Rewrite with a stateless hasher to reduce stack allocation?
-    let mut hasher = XxHash64::with_seed(seed);
-    hasher.write(data.as_ref());
-    hasher.finish()
 }
 
 macro_rules! hash_array {
