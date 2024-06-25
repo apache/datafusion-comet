@@ -857,15 +857,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("remainder") {
-    withTempDir { dir =>
-      val df =
-        Seq((21840, -0.0), (21840, 5.0))
-          .toDF("c90", "c1")
-      val path = new Path(dir.toURI.toString, "remainder_test.parquet").toString
-      df.write.mode("overwrite").parquet(path)
+    val testCases = Seq(
+      (Seq((21840, -0.0), (21840, 5.0)), "t"),
+      (Seq((Decimal(21840, 10, 0), Decimal(-0.0, 10, 0))), "t"),
+      (Seq((21840.0f, -0.0f), (21840.0f, 5.0f)), "t"))
 
-      withParquetTable(path, "t") {
-        checkSparkAnswerAndOperator("SELECT c90, c1, c90 % c1 FROM t")
+    testCases.foreach { case (data, tableName) =>
+      withParquetTable(data, tableName) {
+        checkSparkAnswerAndOperator("SELECT _1, _2, _1 % _2 FROM t")
       }
     }
   }
