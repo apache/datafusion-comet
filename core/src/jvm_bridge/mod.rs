@@ -222,7 +222,7 @@ impl JVMClasses<'_> {
         JVM_CLASSES.get_or_init(|| {
             // A hack to make the `JNIEnv` static. It is not safe but we don't really use the
             // `JNIEnv` except for creating the global references of the classes.
-            let env = unsafe { std::mem::transmute::<_, &'static mut JNIEnv>(env) };
+            let env = unsafe { std::mem::transmute::<&mut JNIEnv, &'static mut JNIEnv>(env) };
 
             let clazz = env.find_class("java/lang/Object").unwrap();
             let object_get_class_method = env
