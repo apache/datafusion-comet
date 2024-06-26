@@ -32,13 +32,13 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, AdaptiveSparkPlanExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -195,27 +195,18 @@ class CometSparkSessionExtensions
 
   case class CometQueryStagePrepRule(session: SparkSession) extends Rule[SparkPlan] {
     def apply(plan: SparkPlan): SparkPlan = {
-
-
       val newPlan = CometExecRule(session).apply(plan)
-
-
       if (CometConf.COMET_CBO_ENABLED.get()) {
         val costEvaluator = new CometCostEvaluator()
-        println(plan)
-        println(newPlan)
         val sparkCost = costEvaluator.evaluateCost(plan)
         val cometCost = costEvaluator.evaluateCost(newPlan)
-        println(s"sparkCost = $sparkCost, cometCost = $cometCost")
         if (cometCost > sparkCost) {
           val msg = s"Comet plan is more expensive than Spark plan ($cometCost > $sparkCost)" +
             s"\nSPARK: $plan\n" +
             s"\nCOMET: $newPlan\n"
           logWarning(msg)
-          println(msg)
-          println(s"CometQueryStagePrepRule:\nIN: ${plan.getClass}\nOUT: ${plan.getClass}")
 
-          def fallbackRecursively(plan: SparkPlan) : Unit = {
+          def fallbackRecursively(plan: SparkPlan): Unit = {
             plan.setTagValue(CANNOT_RUN_NATIVE, true)
             plan match {
               case a: AdaptiveSparkPlanExec => fallbackRecursively(a.inputPlan)
@@ -228,19 +219,13 @@ class CometSparkSessionExtensions
           return plan
         }
       }
-
-
-      println(s"CometQueryStagePrepRule:\nIN: ${plan.getClass}\nOUT: ${newPlan.getClass}")
-
       newPlan
     }
   }
 
   case class CometPreColumnarRule(session: SparkSession) extends Rule[SparkPlan] {
     def apply(plan: SparkPlan): SparkPlan = {
-      val newPlan = CometExecRule(session).apply(plan)
-      println(s"CometPreColumnarRule:\nIN: ${plan.getClass}\nOUT: ${newPlan.getClass}")
-      newPlan
+      CometExecRule(session).apply(plan)
     }
   }
 
@@ -780,7 +765,7 @@ class CometSparkSessionExtensions
       if (!isCometEnabled(conf)) return plan
 
       if (plan.getTagValue(CANNOT_RUN_NATIVE).getOrElse(false)) {
-        println("Cannot run native - too slow")
+        logWarning("Will not run plan natively because it may be slower")
         return plan
       }
 

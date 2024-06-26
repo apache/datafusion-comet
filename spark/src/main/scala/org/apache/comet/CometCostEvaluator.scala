@@ -100,11 +100,11 @@ class CometCostEvaluator extends CostEvaluator with Logging {
         0
       }
 
-
       val totalCost = operatorCost + transitionCost + childPlanCost
 
-      logWarning(s"total cost is $totalCost ($operatorCost + $transitionCost + $childPlanCost) " +
-        s"for ${plan.nodeName}")
+      logWarning(
+        s"total cost is $totalCost ($operatorCost + $transitionCost + $childPlanCost) " +
+          s"for ${plan.nodeName}")
 
       totalCost
     }
