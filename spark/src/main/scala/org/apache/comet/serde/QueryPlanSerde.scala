@@ -2301,7 +2301,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .addAllSortOrders(sortOrders.map(_.get).asJava)
           Some(result.setSort(sortBuilder).build())
         } else {
-          withInfo(op, sortOrder: _*)
+          withInfo(op, "sort not allowed", sortOrder: _*)
           None
         }
 

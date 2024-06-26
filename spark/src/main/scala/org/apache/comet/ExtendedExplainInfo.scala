@@ -85,4 +85,5 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
 object CometExplainInfo {
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
+  val CANNOT_RUN_NATIVE = new TreeNodeTag[Boolean]("CometCannotRunNative")
 }

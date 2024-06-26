@@ -32,18 +32,19 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, AdaptiveSparkPlanExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
+import org.apache.comet.CometExplainInfo.CANNOT_RUN_NATIVE
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -65,7 +66,7 @@ class CometSparkSessionExtensions
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session => CometQueryStagePrepRule(session) }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -73,7 +74,7 @@ class CometSparkSessionExtensions
   }
 
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+    override def preColumnarTransitions: Rule[SparkPlan] = CometPreColumnarRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
@@ -189,6 +190,57 @@ class CometSparkSessionExtensions
             scanExec
         }
       }
+    }
+  }
+
+  case class CometQueryStagePrepRule(session: SparkSession) extends Rule[SparkPlan] {
+    def apply(plan: SparkPlan): SparkPlan = {
+
+
+      val newPlan = CometExecRule(session).apply(plan)
+
+
+      if (CometConf.COMET_CBO_ENABLED.get()) {
+        val costEvaluator = new CometCostEvaluator()
+        println(plan)
+        println(newPlan)
+        val sparkCost = costEvaluator.evaluateCost(plan)
+        val cometCost = costEvaluator.evaluateCost(newPlan)
+        println(s"sparkCost = $sparkCost, cometCost = $cometCost")
+        if (cometCost > sparkCost) {
+          val msg = s"Comet plan is more expensive than Spark plan ($cometCost > $sparkCost)" +
+            s"\nSPARK: $plan\n" +
+            s"\nCOMET: $newPlan\n"
+          logWarning(msg)
+          println(msg)
+          println(s"CometQueryStagePrepRule:\nIN: ${plan.getClass}\nOUT: ${plan.getClass}")
+
+          def fallbackRecursively(plan: SparkPlan) : Unit = {
+            plan.setTagValue(CANNOT_RUN_NATIVE, true)
+            plan match {
+              case a: AdaptiveSparkPlanExec => fallbackRecursively(a.inputPlan)
+              case qs: QueryStageExec => fallbackRecursively(qs.plan)
+              case p => p.children.foreach(fallbackRecursively)
+            }
+          }
+          fallbackRecursively(plan)
+
+          return plan
+        }
+      }
+
+
+      println(s"CometQueryStagePrepRule:\nIN: ${plan.getClass}\nOUT: ${newPlan.getClass}")
+
+      newPlan
+    }
+  }
+
+  case class CometPreColumnarRule(session: SparkSession) extends Rule[SparkPlan] {
+    def apply(plan: SparkPlan): SparkPlan = {
+      val newPlan = CometExecRule(session).apply(plan)
+      println(s"CometPreColumnarRule:\nIN: ${plan.getClass}\nOUT: ${newPlan.getClass}")
+      newPlan
     }
   }
 
@@ -726,6 +778,11 @@ class CometSparkSessionExtensions
 
       // We shouldn't transform Spark query plan if Comet is disabled.
       if (!isCometEnabled(conf)) return plan
+
+      if (plan.getTagValue(CANNOT_RUN_NATIVE).getOrElse(false)) {
+        println("Cannot run native - too slow")
+        return plan
+      }
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
