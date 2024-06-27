@@ -262,10 +262,15 @@ impl JVMClasses<'_> {
     }
 
     /// Gets the JNIEnv for the current thread.
-    pub fn get_env() -> AttachGuard<'static> {
+    pub fn get_env() -> CometResult<AttachGuard<'static>> {
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
-            java_vm.attach_current_thread().unwrap()
+            java_vm.attach_current_thread().map_err(|e| {
+                CometError::Internal(format!(
+                    "JVMClasses::get_env() failed to attach current thread: {}",
+                    e
+                ))
+            })
         }
     }
 }

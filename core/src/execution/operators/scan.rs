@@ -146,7 +146,7 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
-        let mut env = JVMClasses::get_env();
+        let mut env = JVMClasses::get_env()?;
 
         if iter.is_null() {
             return Err(CometError::from(ExecutionError::GeneralError(format!(
