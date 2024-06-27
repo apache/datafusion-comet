@@ -39,7 +39,7 @@ use arrow_array::{
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -275,7 +275,10 @@ impl SparkUnsafeRow {
 
 macro_rules! downcast_builder {
     ($builder_type:ty, $builder:expr) => {
-        $builder.into_box_any().downcast::<$builder_type>().unwrap()
+        $builder
+            .into_box_any()
+            .downcast::<$builder_type>()
+            .expect(stringify!($builder_type))
     };
 }
 
@@ -284,7 +287,7 @@ macro_rules! downcast_builder_ref {
         $builder
             .as_any_mut()
             .downcast_mut::<$builder_type>()
-            .unwrap()
+            .expect(stringify!($builder_type))
     };
 }
 
@@ -348,8 +351,7 @@ pub(crate) fn append_field(
                         $field,
                         field_builder,
                         &row.get_map(idx),
-                    )
-                    .unwrap();
+                    )?;
                 }
             }
         }};
@@ -378,8 +380,7 @@ pub(crate) fn append_field(
                         $element_dt,
                         field_builder,
                         &row.get_array(idx),
-                    )
-                    .unwrap()
+                    )?
                 }
             }
         }};
@@ -1057,7 +1058,7 @@ pub(crate) fn append_columns(
             let element_builder = builder
                 .as_any_mut()
                 .downcast_mut::<$builder_type>()
-                .unwrap();
+                .expect(stringify!($builder_type));
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
@@ -1084,7 +1085,7 @@ pub(crate) fn append_columns(
             let list_builder = builder
                 .as_any_mut()
                 .downcast_mut::<ListBuilder<$builder_type>>()
-                .unwrap();
+                .expect(stringify!($builder_type));
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
@@ -1103,8 +1104,7 @@ pub(crate) fn append_columns(
                         $element_dt,
                         list_builder,
                         &row.get_array(column_idx),
-                    )
-                    .unwrap()
+                    )?
                 }
             }
         }};
@@ -1116,7 +1116,11 @@ pub(crate) fn append_columns(
             let map_builder = builder
                 .as_any_mut()
                 .downcast_mut::<MapBuilder<$key_builder_type, $value_builder_type>>()
-                .unwrap();
+                .expect(&format!(
+                    "MapBuilder<{},{}>",
+                    stringify!($key_builder_type),
+                    stringify!($value_builder_type)
+                ));
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
@@ -1135,8 +1139,7 @@ pub(crate) fn append_columns(
                         $field,
                         map_builder,
                         &row.get_map(column_idx),
-                    )
-                    .unwrap()
+                    )?
                 }
             }
         }};
@@ -1148,7 +1151,7 @@ pub(crate) fn append_columns(
             let struct_builder = builder
                 .as_any_mut()
                 .downcast_mut::<StructBuilder>()
-                .unwrap();
+                .expect("StructBuilder");
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
@@ -3347,7 +3350,7 @@ pub fn process_sorted_row_partition(
             .zip(schema.iter())
             .map(|(builder, datatype)| builder_to_array(builder, datatype, prefer_dictionary_ratio))
             .collect();
-        let batch = make_batch(array_refs?, n);
+        let batch = make_batch(array_refs?, n)?;
 
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
@@ -3382,7 +3385,7 @@ fn builder_to_array(
             let builder = builder
                 .as_any_mut()
                 .downcast_mut::<StringDictionaryBuilder<Int32Type>>()
-                .unwrap();
+                .expect("StringDictionaryBuilder<Int32Type>");
 
             let dict_array = builder.finish();
             let num_keys = dict_array.keys().len();
@@ -3401,7 +3404,7 @@ fn builder_to_array(
             let builder = builder
                 .as_any_mut()
                 .downcast_mut::<BinaryDictionaryBuilder<Int32Type>>()
-                .unwrap();
+                .expect("BinaryDictionaryBuilder<Int32Type>");
 
             let dict_array = builder.finish();
             let num_keys = dict_array.keys().len();
@@ -3420,7 +3423,7 @@ fn builder_to_array(
     }
 }
 
-fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> RecordBatch {
+fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, ArrowError> {
     let mut dict_id = 0;
     let fields = arrays
         .iter()
@@ -3442,5 +3445,5 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> RecordBatch {
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
-    RecordBatch::try_new_with_options(schema, arrays, &options).unwrap()
+    RecordBatch::try_new_with_options(schema, arrays, &options)
 }

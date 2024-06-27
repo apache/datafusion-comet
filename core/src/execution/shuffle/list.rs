@@ -192,7 +192,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<BooleanBuilder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<BooleanBuilder>"),
                 list,
                 idx,
             ),
@@ -200,7 +200,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Int8Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Int8Builder>"),
                 list,
                 idx,
             ),
@@ -208,7 +208,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Int16Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Int16Builder>"),
                 list,
                 idx,
             ),
@@ -216,7 +216,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Int32Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Int32Builder>"),
                 list,
                 idx,
             ),
@@ -224,7 +224,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Int64Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Int64Builder>"),
                 list,
                 idx,
             ),
@@ -232,7 +232,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Float32Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Float32Builder>"),
                 list,
                 idx,
             ),
@@ -240,7 +240,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Float64Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Float64Builder>"),
                 list,
                 idx,
             ),
@@ -248,7 +248,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<Date32Builder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<Date32Builder>"),
                 list,
                 idx,
             ),
@@ -256,7 +256,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<TimestampMicrosecondBuilder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<TimestampMicrosecondBuilder>"),
                 list,
                 idx,
             ),
@@ -264,7 +264,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<BinaryBuilder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<BinaryBuilder>"),
                 list,
                 idx,
             ),
@@ -272,7 +272,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                 list_builder
                     .as_any_mut()
                     .downcast_mut::<ListBuilder<StringBuilder>>()
-                    .unwrap(),
+                    .expect("ListBuilder<StringBuilder>"),
                 list,
                 idx,
             ),
@@ -281,7 +281,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                     .values()
                     .as_any_mut()
                     .downcast_mut::<Decimal128Builder>()
-                    .unwrap();
+                    .expect("ListBuilder<Decimal128Builder>");
                 let is_null = list.is_null_at(idx);
 
                 if is_null {
@@ -319,7 +319,7 @@ pub fn append_list_element<T: ArrayBuilder>(
                     .values()
                     .as_any_mut()
                     .downcast_mut::<StructBuilder>()
-                    .unwrap();
+                    .expect("StructBuilder");
                 let is_null = list.is_null_at(idx);
 
                 let nested_row = if is_null {
