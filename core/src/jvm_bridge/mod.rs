@@ -19,6 +19,7 @@
 
 use crate::errors::CometResult;
 
+use jni::objects::JClass;
 use jni::{
     errors::Error,
     objects::{JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
@@ -189,6 +190,12 @@ pub use comet_task_memory_manager::*;
 
 /// The JVM classes that are used in the JNI calls.
 pub struct JVMClasses<'a> {
+    /// Cached JClass for "java.lang.Object"
+    java_lang_object: JClass<'a>,
+    /// Cached JClass for "java.lang.Class"
+    java_lang_class: JClass<'a>,
+    /// Cached JClass for "java.lang.Throwable"
+    java_lang_throwable: JClass<'a>,
     /// Cached method ID for "java.lang.Object#getClass"
     pub object_get_class_method: JMethodID,
     /// Cached method ID for "java.lang.Class#getName"
@@ -224,27 +231,32 @@ impl JVMClasses<'_> {
             // `JNIEnv` except for creating the global references of the classes.
             let env = unsafe { std::mem::transmute::<&mut JNIEnv, &'static mut JNIEnv>(env) };
 
-            let clazz = env.find_class("java/lang/Object").unwrap();
+            let java_lang_object = env.find_class("java/lang/Object").unwrap();
             let object_get_class_method = env
-                .get_method_id(clazz, "getClass", "()Ljava/lang/Class;")
+                .get_method_id(&java_lang_object, "getClass", "()Ljava/lang/Class;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Class").unwrap();
+            let java_lang_class = env.find_class("java/lang/Class").unwrap();
             let class_get_name_method = env
-                .get_method_id(clazz, "getName", "()Ljava/lang/String;")
+                .get_method_id(&java_lang_class, "getName", "()Ljava/lang/String;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Throwable").unwrap();
+            let java_lang_throwable = env.find_class("java/lang/Throwable").unwrap();
             let throwable_get_message_method = env
-                .get_method_id(clazz, "getMessage", "()Ljava/lang/String;")
+                .get_method_id(&java_lang_throwable, "getMessage", "()Ljava/lang/String;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Throwable").unwrap();
             let throwable_get_cause_method = env
-                .get_method_id(clazz, "getCause", "()Ljava/lang/Throwable;")
+                .get_method_id(&java_lang_throwable, "getCause", "()Ljava/lang/Throwable;")
                 .unwrap();
 
+            // SAFETY: According to the documentation for `JMethodID`, it is our
+            // responsibility to maintain a reference to the `JClass` instances where the
+            // methods were accessed from to prevent the methods from being garbage-collected
             JVMClasses {
+                java_lang_object,
+                java_lang_class,
+                java_lang_throwable,
                 object_get_class_method,
                 class_get_name_method,
                 throwable_get_message_method,
