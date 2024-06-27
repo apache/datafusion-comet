@@ -855,9 +855,50 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val zero = Literal.default(left.dataType)
+          val negZero = UnaryMinus(zero)
+          if (left.dataType == DoubleType || left.dataType == FloatType) {
+            if (right == negZero) {
+              return Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setEq(
+                    ExprOuterClass.Equal
+                      .newBuilder()
+                      .setLeft(exprToProtoInternal(left, inputs).get)
+                      .setRight(exprToProtoInternal(Abs(right).child, inputs).get))
+                  .build())
+            } else if (left == negZero) {
+              return Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setEq(
+                    ExprOuterClass.Equal
+                      .newBuilder()
+                      .setLeft(exprToProtoInternal(Abs(left).child, inputs).get)
+                      .setRight(exprToProtoInternal(right, inputs).get))
+                  .build())
+            } else {
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setEq(
+                    ExprOuterClass.Equal
+                      .newBuilder()
+                      .setLeft(exprToProtoInternal(left, inputs).get)
+                      .setRight(exprToProtoInternal(right, inputs).get))
+                  .build())
+            }
+          }
 
+          var leftExpr, rightExpr: Option[Expr] = None
+          if (left.dataType == DoubleType || left.dataType == FloatType) {
+            leftExpr = exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs)
+            rightExpr = exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs)
+          } else {
+            leftExpr = exprToProtoInternal(left, inputs)
+            rightExpr = exprToProtoInternal(right, inputs)
+          }
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.Equal.newBuilder()
             builder.setLeft(leftExpr.get)
@@ -2240,15 +2281,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   def nullIfWhenPrimitive(expression: Expression): Expression = if (isPrimitive(expression)) {
     val zero = Literal.default(expression.dataType)
-    val negZero = UnaryMinus(zero)
-    if (expression.dataType == DoubleType || expression.dataType == FloatType) {
-      If(
-        Or(EqualTo(expression, zero), EqualTo(expression, negZero)),
-        Literal.create(null, expression.dataType),
-        expression)
-    } else {
-      If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
-    }
+    If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
   } else {
     expression
   }
