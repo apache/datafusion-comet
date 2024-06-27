@@ -108,7 +108,7 @@ strip = "debuginfo"
 [lib]
 name = "comet"
 # "rlib" is for benchmarking with criterion.
-crate_type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [[bench]]
 name = "parquet_read"
