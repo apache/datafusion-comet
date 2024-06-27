@@ -189,6 +189,29 @@ index 0efe0877e9b..423d3b3d76d 100644
  --
  -- SELECT_HAVING
  -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
+index 8331a3c10fc..b4e22732a91 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
+@@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
+ import org.apache.spark.sql.execution.{ColumnarToRowExec, ExecSubqueryExpression, RDDScanExec, SparkPlan}
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEPropagateEmptyRelation}
+ import org.apache.spark.sql.execution.columnar._
+-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
++import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
+ import org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate
+ import org.apache.spark.sql.functions._
+ import org.apache.spark.sql.internal.SQLConf
+@@ -519,7 +519,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+       df.collect()
+     }
+     assert(
+-      collect(df.queryExecution.executedPlan) { case e: ShuffleExchangeExec => e }.size == expected)
++      collect(df.queryExecution.executedPlan) {
++        case _: ShuffleExchangeLike => 1 }.size == expected)
+   }
+ 
+   test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 index 631fcd8c0d8..6df0e1b4176 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
@@ -473,10 +496,18 @@ index a206e97c353..fea1149b67d 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..068a3bc8613 100644
+index 93275487f29..9203ed0b5e8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-@@ -955,6 +955,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterTha
+ import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
+ import org.apache.spark.sql.catalyst.plans.logical.Filter
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometSortMergeJoinExec}
+ import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.datasources.FilePartition
+@@ -955,6 +956,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -484,7 +515,23 @@ index 93275487f29..068a3bc8613 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1240,6 +1241,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1015,6 +1017,7 @@ class FileBasedDataSourceSuite extends QueryTest
+ 
+           val fileScan = df.queryExecution.executedPlan collectFirst {
+             case BatchScanExec(_, f: FileScan, _, _, _, _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _) => f
+           }
+           assert(fileScan.nonEmpty)
+           assert(fileScan.get.partitionFilters.nonEmpty)
+@@ -1056,6 +1059,7 @@ class FileBasedDataSourceSuite extends QueryTest
+ 
+           val fileScan = df.queryExecution.executedPlan collectFirst {
+             case BatchScanExec(_, f: FileScan, _, _, _, _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _) => f
+           }
+           assert(fileScan.nonEmpty)
+           assert(fileScan.get.partitionFilters.isEmpty)
+@@ -1240,6 +1244,8 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -493,6 +540,54 @@ index 93275487f29..068a3bc8613 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
+new file mode 100644
+index 00000000000..4b31bea33de
+--- /dev/null
++++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
+@@ -0,0 +1,42 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *    http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.spark.sql
++
++import org.scalactic.source.Position
++import org.scalatest.Tag
++
++import org.apache.spark.sql.test.SQLTestUtils
++
++/**
++ * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
++ */
++case class IgnoreComet(reason: String) extends Tag("DisableComet")
++
++/**
++ * Helper trait that disables Comet for all tests regardless of default config values.
++ */
++trait IgnoreCometSuite extends SQLTestUtils {
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++    (implicit pos: Position): Unit = {
++    if (isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 7af826583bd..3c3def1eb67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
@@ -673,10 +768,23 @@ index cfeccbdf648..803d8734cc4 100644
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index fbc256b3396..5293f5e4160 100644
+index fbc256b3396..0821999c7c2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -1599,6 +1599,12 @@ class SubquerySuite extends QueryTest
+@@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
+ import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
+ import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
+ import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Join, LogicalPlan, Project, Sort, Union}
++import org.apache.spark.sql.comet.CometScanExec
+ import org.apache.spark.sql.execution._
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
+ import org.apache.spark.sql.execution.datasources.FileScanRDD
+-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
++import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
+ import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -1599,6 +1600,12 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -689,7 +797,7 @@ index fbc256b3396..5293f5e4160 100644
          case _ => false
        })
      }
-@@ -2164,7 +2170,7 @@ class SubquerySuite extends QueryTest
+@@ -2164,7 +2171,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -2091,7 +2199,7 @@ index b4c4ec7acbf..20579284856 100644
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-index 3e1bc57dfa2..f6df2446c21 100644
+index 3e1bc57dfa2..3bf7bb448be 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 @@ -31,7 +31,7 @@ import org.apache.spark.scheduler.ExecutorCacheTaskLocation
@@ -2103,6 +2211,39 @@ index 3e1bc57dfa2..f6df2446c21 100644
  import org.apache.spark.sql.execution.streaming.{MemoryStream, StatefulOperatorStateInfo, StreamingSymmetricHashJoinExec, StreamingSymmetricHashJoinHelper}
  import org.apache.spark.sql.execution.streaming.state.{RocksDBStateStoreProvider, StateStore, StateStoreProviderId}
  import org.apache.spark.sql.functions._
+@@ -624,9 +624,29 @@ class StreamingInnerJoinSuite extends StreamingJoinSuite {
+             ShuffleExchangeExec(opA: HashPartitioning, _, _, _),
+             ShuffleExchangeExec(opB: HashPartitioning, _, _, _))
+               if partitionExpressionsColumns(opA.expressions) === Seq("a", "b")
+-                && partitionExpressionsColumns(opB.expressions) === Seq("a", "b")
+-                && opA.numPartitions == numPartitions && opB.numPartitions == numPartitions => j
+-        }.size == 1)
++        val join = query.lastExecution.executedPlan.collect {
++          case j: StreamingSymmetricHashJoinExec => j
++        }.head
++        val opA = join.left.collect {
++          case s: ShuffleExchangeLike
++            if s.outputPartitioning.isInstanceOf[HashPartitioning] &&
++              partitionExpressionsColumns(
++                s.outputPartitioning
++                  .asInstanceOf[HashPartitioning].expressions) === Seq("a", "b") =>
++>>>>>>> replacement
++            s.outputPartitioning
++              .asInstanceOf[HashPartitioning]
++        }.head
++        val opB = join.right.collect {
++          case s: ShuffleExchangeLike
++            if s.outputPartitioning.isInstanceOf[HashPartitioning] &&
++              partitionExpressionsColumns(
++                s.outputPartitioning
++                  .asInstanceOf[HashPartitioning].expressions) === Seq("a", "b") =>
++            s.outputPartitioning
++              .asInstanceOf[HashPartitioning]
++        }.head
++        assert(opA.numPartitions == numPartitions && opB.numPartitions == numPartitions)
+       })
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index abe606ad9c1..2d930b64cca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
