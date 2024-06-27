@@ -73,7 +73,7 @@ macro_rules! jni_call {
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -100,7 +100,7 @@ macro_rules! jni_static_call {
         let ret = $env.call_static_method_unchecked(clazz, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -262,10 +262,15 @@ impl JVMClasses<'_> {
     }
 
     /// Gets the JNIEnv for the current thread.
-    pub fn get_env() -> AttachGuard<'static> {
+    pub fn get_env() -> CometResult<AttachGuard<'static>> {
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
-            java_vm.attach_current_thread().unwrap()
+            java_vm.attach_current_thread().map_err(|e| {
+                CometError::Internal(format!(
+                    "JVMClasses::get_env() failed to attach current thread: {}",
+                    e
+                ))
+            })
         }
     }
 }

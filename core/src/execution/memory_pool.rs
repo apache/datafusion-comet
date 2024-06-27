@@ -59,7 +59,7 @@ impl CometMemoryPool {
     }
 
     fn acquire(&self, additional: usize) -> CometResult<i64> {
-        let mut env = JVMClasses::get_env();
+        let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
             jni_call!(&mut env,
@@ -68,7 +68,7 @@ impl CometMemoryPool {
     }
 
     fn release(&self, size: usize) -> CometResult<()> {
-        let mut env = JVMClasses::get_env();
+        let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
             jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
