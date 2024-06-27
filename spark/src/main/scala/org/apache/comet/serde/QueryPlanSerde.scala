@@ -870,22 +870,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
           if (left.dataType == DoubleType || left.dataType == FloatType) {
+            // make sure left or right is not null
             (left, right) match {
               case (`negZero`, _) =>
                 return Some(
                   buildEqualExpr(
-                    exprToProtoInternal(Abs(left).child, inputs).get,
-                    exprToProtoInternal(right, inputs).get))
+                    exprToProtoInternal(Abs(left).child, inputs).getOrElse(return None),
+                    exprToProtoInternal(right, inputs).getOrElse(return None)))
               case (_, `negZero`) =>
                 return Some(
                   buildEqualExpr(
-                    exprToProtoInternal(left, inputs).get,
-                    exprToProtoInternal(Abs(right).child, inputs).get))
+                    exprToProtoInternal(left, inputs).getOrElse(return None),
+                    exprToProtoInternal(Abs(right).child, inputs).getOrElse(return None)))
               case _ =>
+                if ((left.nullable && !right.nullable) &&
+                  (left != zero && right != zero)) {
+                  withInfo(expr, left, right)
+                  return None
+                }
                 Some(
                   buildEqualExpr(
-                    exprToProtoInternal(left, inputs).get,
-                    exprToProtoInternal(right, inputs).get))
+                    exprToProtoInternal(left, inputs).getOrElse(return None),
+                    exprToProtoInternal(right, inputs).getOrElse(return None)))
             }
           }
 
@@ -898,11 +904,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               (exprToProtoInternal(left, inputs), exprToProtoInternal(right, inputs))
             }
 
-          (leftExpr, rightExpr) match {
-            case (Some(l), Some(r)) => Some(buildEqualExpr(l, r))
-            case _ =>
-              withInfo(expr, left, right)
-              None
+          if (leftExpr.isDefined && rightExpr.isDefined) {
+            Some(buildEqualExpr(leftExpr.get, rightExpr.get))
+          } else {
+            withInfo(expr, left, right)
+            None
           }
 
         case Not(EqualTo(left, right)) =>
