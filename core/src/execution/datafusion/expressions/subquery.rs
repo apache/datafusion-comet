@@ -90,7 +90,7 @@ impl PhysicalExpr for Subquery {
     }
 
     fn evaluate(&self, _: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
-        let mut env = JVMClasses::get_env();
+        let mut env = JVMClasses::get_env()?;
 
         unsafe {
             let is_null = jni_static_call!(&mut env,
