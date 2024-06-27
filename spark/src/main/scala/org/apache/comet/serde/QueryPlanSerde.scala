@@ -857,61 +857,52 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case EqualTo(left, right) =>
           val zero = Literal.default(left.dataType)
           val negZero = UnaryMinus(zero)
+
+          def buildEqualExpr(leftExpr: Expr, rightExpr: Expr): ExprOuterClass.Expr = {
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setEq(
+                ExprOuterClass.Equal
+                  .newBuilder()
+                  .setLeft(leftExpr)
+                  .setRight(rightExpr))
+              .build()
+          }
+
           if (left.dataType == DoubleType || left.dataType == FloatType) {
-            if (right == negZero) {
-              return Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setEq(
-                    ExprOuterClass.Equal
-                      .newBuilder()
-                      .setLeft(exprToProtoInternal(left, inputs).get)
-                      .setRight(exprToProtoInternal(Abs(right).child, inputs).get))
-                  .build())
-            } else if (left == negZero) {
-              return Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setEq(
-                    ExprOuterClass.Equal
-                      .newBuilder()
-                      .setLeft(exprToProtoInternal(Abs(left).child, inputs).get)
-                      .setRight(exprToProtoInternal(right, inputs).get))
-                  .build())
-            } else {
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setEq(
-                    ExprOuterClass.Equal
-                      .newBuilder()
-                      .setLeft(exprToProtoInternal(left, inputs).get)
-                      .setRight(exprToProtoInternal(right, inputs).get))
-                  .build())
+            (left, right) match {
+              case (`negZero`, _) =>
+                return Some(
+                  buildEqualExpr(
+                    exprToProtoInternal(Abs(left).child, inputs).get,
+                    exprToProtoInternal(right, inputs).get))
+              case (_, `negZero`) =>
+                return Some(
+                  buildEqualExpr(
+                    exprToProtoInternal(left, inputs).get,
+                    exprToProtoInternal(Abs(right).child, inputs).get))
+              case _ =>
+                Some(
+                  buildEqualExpr(
+                    exprToProtoInternal(left, inputs).get,
+                    exprToProtoInternal(right, inputs).get))
             }
           }
 
-          var leftExpr, rightExpr: Option[Expr] = None
-          if (left.dataType == DoubleType || left.dataType == FloatType) {
-            leftExpr = exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs)
-            rightExpr = exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs)
-          } else {
-            leftExpr = exprToProtoInternal(left, inputs)
-            rightExpr = exprToProtoInternal(right, inputs)
-          }
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Equal.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
+          val (leftExpr, rightExpr) =
+            if (left.dataType == DoubleType || left.dataType == FloatType) {
+              (
+                exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs),
+                exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs))
+            } else {
+              (exprToProtoInternal(left, inputs), exprToProtoInternal(right, inputs))
+            }
 
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setEq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
+          (leftExpr, rightExpr) match {
+            case (Some(l), Some(r)) => Some(buildEqualExpr(l, r))
+            case _ =>
+              withInfo(expr, left, right)
+              None
           }
 
         case Not(EqualTo(left, right)) =>

@@ -856,6 +856,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("zero equality") {
+    withParquetTable(
+      Seq(
+        (-0.0, 0.0),
+        (0.0, -0.0),
+        (-0.0, -0.0),
+        (0.0, 0.0),
+        (1.0, 2.0),
+        (1.0, 1.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (-0.0, 1.0),
+        (1.0, -0.0),
+        (1.0, -1.0),
+        (-1.0, 1.0),
+        (-1.0, -0.0),
+        (-1.0, -1.0),
+        (-1.0, 0.0),
+        (0.0, -1.0)),
+      "t") {
+      checkSparkAnswerAndOperator("SELECT _1 == _2 FROM t")
+    }
+  }
+
   test("remainder") {
     val query = "SELECT _1, _2, _1 % _2 FROM t"
     withParquetTable(Seq((21840, -0.0), (21840, 5.0)), "t") {
