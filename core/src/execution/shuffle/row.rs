@@ -287,7 +287,7 @@ macro_rules! downcast_builder_ref {
         $builder
             .as_any_mut()
             .downcast_mut::<$builder_type>()
-            .expect(&format!("{}", stringify!($builder_type)))
+            .expect(stringify!($builder_type))
     };
 }
 
@@ -1058,7 +1058,7 @@ pub(crate) fn append_columns(
             let element_builder = builder
                 .as_any_mut()
                 .downcast_mut::<$builder_type>()
-                .expect(&format!("{}", stringify!($builder_type)));
+                .expect(stringify!($builder_type));
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
@@ -1085,7 +1085,7 @@ pub(crate) fn append_columns(
             let list_builder = builder
                 .as_any_mut()
                 .downcast_mut::<ListBuilder<$builder_type>>()
-                .expect(&format!("{}", stringify!($builder_type)));
+                .expect(stringify!($builder_type));
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
