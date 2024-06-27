@@ -53,9 +53,7 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{
-    ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-};
+use datafusion_expr::{ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -1517,11 +1515,9 @@ impl PhysicalPlanner {
             Some(AggExprStruct::Max(expr)) => {
                 Ok(("max".to_string(), optional_expr_to_vec(&expr.child)))
             }
-            other => {
-                Err(ExecutionError::GeneralError(format!(
-                    "{other:?} not supported for window function"
-                )))
-            }
+            other => Err(ExecutionError::GeneralError(format!(
+                "{other:?} not supported for window function"
+            ))),
         }
     }
 
