@@ -54,7 +54,7 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{
-    ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
@@ -1380,12 +1380,12 @@ impl PhysicalPlanner {
         partition_by: &[Arc<dyn PhysicalExpr>],
         sort_exprs: &[PhysicalSortExpr],
     ) -> Result<Arc<dyn WindowExpr>, ExecutionError> {
-        let (window_func_name, window_func_args);
+        let (mut window_func_name, mut window_func_args) = (String::new(), Vec::new());
         if let Some(func) = &spark_expr.built_in_window_function {
             match &func.expr_struct {
                 Some(ExprStruct::ScalarFunc(f)) => {
-                    window_func_name = f.func.clone();
-                    window_func_args = f.args.clone();
+                    window_func_name.clone_from(&f.func);
+                    window_func_args.clone_from(&f.args);
                 }
                 other => {
                     return Err(ExecutionError::GeneralError(format!(
@@ -1518,7 +1518,7 @@ impl PhysicalPlanner {
                 Ok(("max".to_string(), optional_expr_to_vec(&expr.child)))
             }
             other => {
-                return Err(ExecutionError::GeneralError(format!(
+                Err(ExecutionError::GeneralError(format!(
                     "{other:?} not supported for window function"
                 )))
             }

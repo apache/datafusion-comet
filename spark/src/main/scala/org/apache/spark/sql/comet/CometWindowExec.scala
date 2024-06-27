@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, 
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.CometWindowExec.getNativePlan
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.OperatorOuterClass
@@ -57,7 +57,7 @@ case class CometWindowExec(
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
   private lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
-  override lazy val metrics = Map(
+  override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "shuffleReadElapsedCompute" ->
       SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle read elapsed compute at native"),
