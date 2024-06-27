@@ -617,10 +617,18 @@ index 7af826583bd..3c3def1eb67 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 9dcf7ec2904..ac3535f6127 100644
+index 9dcf7ec2904..39b57fb166a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-@@ -801,7 +801,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
+ import org.apache.spark.sql.catalyst.expressions.{Ascending, GenericRow, SortOrder}
+ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+ import org.apache.spark.sql.catalyst.plans.logical.{Filter, HintInfo, Join, JoinHint, NO_BROADCAST_AND_REPLICATION}
++import org.apache.spark.sql.comet._
+ import org.apache.spark.sql.execution.{BinaryExecNode, FilterExec, ProjectExec, SortExec, SparkPlan, WholeStageCodegenExec}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.exchange.{ShuffleExchangeExec, ShuffleExchangeLike}
+@@ -801,7 +802,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
      }
    }
  
@@ -630,7 +638,7 @@ index 9dcf7ec2904..ac3535f6127 100644
      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1",
        SQLConf.SORT_MERGE_JOIN_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "0",
        SQLConf.SORT_MERGE_JOIN_EXEC_BUFFER_SPILL_THRESHOLD.key -> "1") {
-@@ -1176,9 +1177,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1176,9 +1178,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
        val plan = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2", joinType)
          .groupBy($"k1").count()
          .queryExecution.executedPlan
@@ -644,7 +652,7 @@ index 9dcf7ec2904..ac3535f6127 100644
      })
    }
  
-@@ -1195,10 +1198,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1195,10 +1199,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
          .join(df4.hint("SHUFFLE_MERGE"), $"k1" === $"k4", joinType)
          .queryExecution
          .executedPlan
@@ -658,7 +666,7 @@ index 9dcf7ec2904..ac3535f6127 100644
      })
  
      // Test shuffled hash join
-@@ -1208,10 +1212,13 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1208,10 +1213,13 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
          .join(df4.hint("SHUFFLE_MERGE"), $"k1" === $"k4", joinType)
          .queryExecution
          .executedPlan
@@ -675,7 +683,7 @@ index 9dcf7ec2904..ac3535f6127 100644
      })
    }
  
-@@ -1302,12 +1309,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1302,12 +1310,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
      inputDFs.foreach { case (df1, df2, joinExprs) =>
        val smjDF = df1.join(df2.hint("SHUFFLE_MERGE"), joinExprs, "full")
        assert(collect(smjDF.queryExecution.executedPlan) {
@@ -690,7 +698,7 @@ index 9dcf7ec2904..ac3535f6127 100644
        // Same result between shuffled hash join and sort merge join
        checkAnswer(shjDF, smjResult)
      }
-@@ -1485,7 +1492,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1485,7 +1493,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
            // Have shuffle before aggregation
@@ -700,7 +708,7 @@ index 9dcf7ec2904..ac3535f6127 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1514,9 +1522,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1514,9 +1523,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -715,7 +723,7 @@ index 9dcf7ec2904..ac3535f6127 100644
        }
  
        // Test output ordering is not preserved
-@@ -1525,9 +1536,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1525,9 +1537,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val selectExpr = "/*+ BROADCAST(left_t) */ k1 as k0"
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -730,7 +738,7 @@ index 9dcf7ec2904..ac3535f6127 100644
        }
  
        // Test singe partition
-@@ -1537,7 +1551,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1537,7 +1552,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
             |FROM range(0, 10, 1, 1) t1 FULL OUTER JOIN range(0, 10, 1, 1) t2
             |""".stripMargin)
        val plan = fullJoinDF.queryExecution.executedPlan
@@ -933,9 +941,18 @@ index 6b07c77aefb..8277661560e 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index ae1c0a86a14..7c04bf010b8 100644
+index ae1c0a86a14..1d3b914fd64 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
+@@ -27,7 +27,7 @@ import org.apache.hadoop.fs.permission.FsPermission
+ import org.mockito.Mockito.{mock, spy, when}
+ 
+ import org.apache.spark._
+-import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, QueryTest, Row, SaveMode}
++import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, IgnoreComet, QueryTest, Row, SaveMode}
+ import org.apache.spark.sql.catalyst.FunctionIdentifier
+ import org.apache.spark.sql.catalyst.analysis.{NamedParameter, UnresolvedGenerator}
+ import org.apache.spark.sql.catalyst.expressions.{Grouping, Literal, RowNumber}
 @@ -256,7 +256,8 @@ class QueryExecutionErrorsSuite
    }
  
@@ -1086,10 +1103,18 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index 5a413c77754..52580071d89 100644
+index 5a413c77754..37eee6e2c07 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-@@ -235,6 +235,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution
+ import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
+ import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
+ import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
++import org.apache.spark.sql.comet.CometSortMergeJoinExec
+ import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
+ import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
+ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+@@ -235,6 +236,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
        assert(twoJoinsDF.queryExecution.executedPlan.collect {
          case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
          case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
@@ -1097,7 +1122,7 @@ index 5a413c77754..52580071d89 100644
        }.size === 2)
        checkAnswer(twoJoinsDF,
          Seq(Row(0, 0, 0), Row(1, 1, null), Row(2, 2, 2), Row(3, 3, null), Row(4, 4, null),
-@@ -358,6 +359,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -358,6 +360,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
        .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "right_outer")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
        case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
@@ -1105,7 +1130,7 @@ index 5a413c77754..52580071d89 100644
      }.size === 2)
      checkAnswer(twoJoinsDF,
        Seq(Row(0, 0, 0), Row(1, 1, 1), Row(2, 2, 2), Row(3, 3, 3), Row(4, null, 4), Row(5, null, 5),
-@@ -380,8 +382,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -380,8 +383,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val twoJoinsDF = df3.join(df2.hint("SHUFFLE_MERGE"), $"k3" === $"k2", "left_semi")
        .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "left_semi")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
@@ -1115,7 +1140,7 @@ index 5a413c77754..52580071d89 100644
      }.size === 2)
      checkAnswer(twoJoinsDF, Seq(Row(0), Row(1), Row(2), Row(3)))
    }
-@@ -402,8 +403,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -402,8 +404,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val twoJoinsDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_anti")
        .join(df3.hint("SHUFFLE_MERGE"), $"k1" === $"k3", "left_anti")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
@@ -1125,7 +1150,7 @@ index 5a413c77754..52580071d89 100644
      }.size === 2)
      checkAnswer(twoJoinsDF, Seq(Row(6), Row(7), Row(8), Row(9)))
    }
-@@ -536,7 +536,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -536,7 +537,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val plan = df.queryExecution.executedPlan
      assert(plan.exists(p =>
        p.isInstanceOf[WholeStageCodegenExec] &&
@@ -1136,7 +1161,7 @@ index 5a413c77754..52580071d89 100644
      assert(df.collect() === Array(Row(1), Row(2), Row(3)))
    }
  
-@@ -716,7 +718,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -716,7 +719,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
            .write.mode(SaveMode.Overwrite).parquet(path)
  
          withSQLConf(SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "255",
@@ -1148,10 +1173,23 @@ index 5a413c77754..52580071d89 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 68bae34790a..f0c240bf23a 100644
+index 68bae34790a..ea906fd1adc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-@@ -112,6 +112,7 @@ class AdaptiveQueryExecSuite
+@@ -26,9 +26,11 @@ import org.scalatest.time.SpanSugar._
+ 
+ import org.apache.spark.SparkException
+ import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart}
+-import org.apache.spark.sql.{Dataset, QueryTest, Row, SparkSession, Strategy}
++import org.apache.spark.sql.{Dataset, IgnoreComet, QueryTest, Row, SparkSession, Strategy}
+ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+ import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
++import org.apache.spark.sql.comet._
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, LocalTableScanExec, PartialReducerPartitionSpec, QueryExecution, ReusedSubqueryExec, ShuffledRowRDD, SortExec, SparkPlan, SparkPlanInfo, UnionExec}
+ import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+@@ -112,6 +114,7 @@ class AdaptiveQueryExecSuite
    private def findTopLevelBroadcastHashJoin(plan: SparkPlan): Seq[BroadcastHashJoinExec] = {
      collect(plan) {
        case j: BroadcastHashJoinExec => j
@@ -1159,7 +1197,7 @@ index 68bae34790a..f0c240bf23a 100644
      }
    }
  
-@@ -124,30 +125,38 @@ class AdaptiveQueryExecSuite
+@@ -124,30 +127,38 @@ class AdaptiveQueryExecSuite
    private def findTopLevelSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] = {
      collect(plan) {
        case j: SortMergeJoinExec => j
@@ -1198,7 +1236,7 @@ index 68bae34790a..f0c240bf23a 100644
      }
    }
  
-@@ -191,6 +200,7 @@ class AdaptiveQueryExecSuite
+@@ -191,6 +202,7 @@ class AdaptiveQueryExecSuite
        val parts = rdd.partitions
        assert(parts.forall(rdd.preferredLocations(_).nonEmpty))
      }
@@ -1206,7 +1244,7 @@ index 68bae34790a..f0c240bf23a 100644
      assert(numShuffles === (numLocalReads.length + numShufflesWithoutLocalRead))
    }
  
-@@ -199,7 +209,7 @@ class AdaptiveQueryExecSuite
+@@ -199,7 +211,7 @@ class AdaptiveQueryExecSuite
      val plan = df.queryExecution.executedPlan
      assert(plan.isInstanceOf[AdaptiveSparkPlanExec])
      val shuffle = plan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan.collect {
@@ -1215,7 +1253,7 @@ index 68bae34790a..f0c240bf23a 100644
      }
      assert(shuffle.size == 1)
      assert(shuffle(0).outputPartitioning.numPartitions == numPartition)
-@@ -215,7 +225,8 @@ class AdaptiveQueryExecSuite
+@@ -215,7 +227,8 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1225,7 +1263,7 @@ index 68bae34790a..f0c240bf23a 100644
      }
    }
  
-@@ -242,7 +253,8 @@ class AdaptiveQueryExecSuite
+@@ -242,7 +255,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1235,7 +1273,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -274,7 +286,8 @@ class AdaptiveQueryExecSuite
+@@ -274,7 +288,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1245,7 +1283,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -288,7 +301,8 @@ class AdaptiveQueryExecSuite
+@@ -288,7 +303,8 @@ class AdaptiveQueryExecSuite
        val localReads = collect(adaptivePlan) {
          case read: AQEShuffleReadExec if read.isLocalRead => read
        }
@@ -1255,7 +1293,7 @@ index 68bae34790a..f0c240bf23a 100644
        val localShuffleRDD0 = localReads(0).execute().asInstanceOf[ShuffledRowRDD]
        val localShuffleRDD1 = localReads(1).execute().asInstanceOf[ShuffledRowRDD]
        // the final parallelism is math.max(1, numReduces / numMappers): math.max(1, 5/2) = 2
-@@ -337,7 +351,7 @@ class AdaptiveQueryExecSuite
+@@ -337,7 +353,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1264,7 +1302,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -352,7 +366,7 @@ class AdaptiveQueryExecSuite
+@@ -352,7 +368,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1273,7 +1311,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -368,7 +382,7 @@ class AdaptiveQueryExecSuite
+@@ -368,7 +384,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1282,7 +1320,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -413,7 +427,7 @@ class AdaptiveQueryExecSuite
+@@ -413,7 +429,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1291,7 +1329,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -458,7 +472,7 @@ class AdaptiveQueryExecSuite
+@@ -458,7 +474,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1300,7 +1338,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
-@@ -523,7 +537,7 @@ class AdaptiveQueryExecSuite
+@@ -523,7 +539,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1309,7 +1347,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -554,7 +568,9 @@ class AdaptiveQueryExecSuite
+@@ -554,7 +570,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1320,7 +1358,7 @@ index 68bae34790a..f0c240bf23a 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.nonEmpty)
-@@ -575,7 +591,9 @@ class AdaptiveQueryExecSuite
+@@ -575,7 +593,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1331,7 +1369,7 @@ index 68bae34790a..f0c240bf23a 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.isEmpty)
-@@ -584,7 +602,8 @@ class AdaptiveQueryExecSuite
+@@ -584,7 +604,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1341,7 +1379,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "20000000",
-@@ -679,7 +698,8 @@ class AdaptiveQueryExecSuite
+@@ -679,7 +700,8 @@ class AdaptiveQueryExecSuite
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
        // There is still a SMJ, and its two shuffles can't apply local read.
@@ -1351,7 +1389,7 @@ index 68bae34790a..f0c240bf23a 100644
      }
    }
  
-@@ -801,7 +821,8 @@ class AdaptiveQueryExecSuite
+@@ -801,7 +823,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1361,7 +1399,7 @@ index 68bae34790a..f0c240bf23a 100644
      Seq("SHUFFLE_MERGE", "SHUFFLE_HASH").foreach { joinHint =>
        def getJoinNode(plan: SparkPlan): Seq[ShuffledJoin] = if (joinHint == "SHUFFLE_MERGE") {
          findTopLevelSortMergeJoin(plan)
-@@ -1019,7 +1040,8 @@ class AdaptiveQueryExecSuite
+@@ -1019,7 +1042,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1371,7 +1409,7 @@ index 68bae34790a..f0c240bf23a 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
        val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
          "SELECT key FROM testData GROUP BY key")
-@@ -1614,7 +1636,7 @@ class AdaptiveQueryExecSuite
+@@ -1614,7 +1638,7 @@ class AdaptiveQueryExecSuite
          val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
            "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
          assert(collect(adaptivePlan) {
@@ -1380,7 +1418,7 @@ index 68bae34790a..f0c240bf23a 100644
          }.length == 1)
        }
      }
-@@ -1694,7 +1716,8 @@ class AdaptiveQueryExecSuite
+@@ -1694,7 +1718,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1390,7 +1428,7 @@ index 68bae34790a..f0c240bf23a 100644
      def hasRepartitionShuffle(plan: SparkPlan): Boolean = {
        find(plan) {
          case s: ShuffleExchangeLike =>
-@@ -1879,6 +1902,9 @@ class AdaptiveQueryExecSuite
+@@ -1879,6 +1904,9 @@ class AdaptiveQueryExecSuite
      def checkNoCoalescePartitions(ds: Dataset[Row], origin: ShuffleOrigin): Unit = {
        assert(collect(ds.queryExecution.executedPlan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -1400,7 +1438,7 @@ index 68bae34790a..f0c240bf23a 100644
        }.size == 1)
        ds.collect()
        val plan = ds.queryExecution.executedPlan
-@@ -1887,6 +1913,9 @@ class AdaptiveQueryExecSuite
+@@ -1887,6 +1915,9 @@ class AdaptiveQueryExecSuite
        }.isEmpty)
        assert(collect(plan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -1410,7 +1448,7 @@ index 68bae34790a..f0c240bf23a 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2043,7 +2072,8 @@ class AdaptiveQueryExecSuite
+@@ -2043,7 +2074,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1420,7 +1458,7 @@ index 68bae34790a..f0c240bf23a 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2129,7 +2159,8 @@ class AdaptiveQueryExecSuite
+@@ -2129,7 +2161,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1430,7 +1468,7 @@ index 68bae34790a..f0c240bf23a 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2228,7 +2259,7 @@ class AdaptiveQueryExecSuite
+@@ -2228,7 +2261,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -1439,7 +1477,7 @@ index 68bae34790a..f0c240bf23a 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2241,7 +2272,7 @@ class AdaptiveQueryExecSuite
+@@ -2241,7 +2274,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -1448,7 +1486,7 @@ index 68bae34790a..f0c240bf23a 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2275,7 +2306,8 @@ class AdaptiveQueryExecSuite
+@@ -2275,7 +2308,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1458,7 +1496,7 @@ index 68bae34790a..f0c240bf23a 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2419,6 +2451,7 @@ class AdaptiveQueryExecSuite
+@@ -2419,6 +2453,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1466,7 +1504,7 @@ index 68bae34790a..f0c240bf23a 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2436,7 +2469,8 @@ class AdaptiveQueryExecSuite
+@@ -2436,7 +2471,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1476,7 +1514,7 @@ index 68bae34790a..f0c240bf23a 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2548,7 +2582,7 @@ class AdaptiveQueryExecSuite
+@@ -2548,7 +2584,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1485,7 +1523,7 @@ index 68bae34790a..f0c240bf23a 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2559,7 +2593,7 @@ class AdaptiveQueryExecSuite
+@@ -2559,7 +2595,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -1495,10 +1533,18 @@ index 68bae34790a..f0c240bf23a 100644
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
-index bf496d6db21..2b8a0416591 100644
+index bf496d6db21..1e92016830f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
-@@ -868,6 +868,7 @@ abstract class SchemaPruningSuite
+@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Concat
+ import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
+ import org.apache.spark.sql.catalyst.plans.logical.Expand
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils
++import org.apache.spark.sql.comet.CometScanExec
+ import org.apache.spark.sql.execution.FileSourceScanExec
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.functions._
+@@ -868,6 +869,7 @@ abstract class SchemaPruningSuite
      val fileSourceScanSchemata =
        collect(df.queryExecution.executedPlan) {
          case scan: FileSourceScanExec => scan.requiredSchema
@@ -1530,9 +1576,18 @@ index ce43edb79c1..c414b19eda7 100644
        withTable("t") {
          sql(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
-index 0b6fdef4f74..6b845fdc47d 100644
+index 0b6fdef4f74..5b18c55da4b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
+@@ -28,7 +28,7 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, GlobFilter, Path}
+ import org.mockito.Mockito.{mock, when}
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, IgnoreCometSuite, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+ import org.apache.spark.sql.execution.datasources.PartitionedFile
+ import org.apache.spark.sql.functions.col
 @@ -38,7 +38,9 @@ import org.apache.spark.sql.test.SharedSparkSession
  import org.apache.spark.sql.types._
  import org.apache.spark.util.Utils
@@ -1704,9 +1759,18 @@ index 828ec39c7d7..369b3848192 100644
      }
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-index 4f906411345..5544a6ba7f9 100644
+index 4f906411345..6cc69f7e915 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
+@@ -21,7 +21,7 @@ import java.nio.file.{Files, Paths, StandardCopyOption}
+ import java.sql.{Date, Timestamp}
+ 
+ import org.apache.spark.{SPARK_VERSION_SHORT, SparkConf, SparkException, SparkUpgradeException}
+-import org.apache.spark.sql.{QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row, SPARK_LEGACY_DATETIME_METADATA_KEY, SPARK_LEGACY_INT96_METADATA_KEY, SPARK_TIMEZONE_METADATA_KEY}
+ import org.apache.spark.sql.catalyst.util.DateTimeTestUtils
+ import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
+ import org.apache.spark.sql.internal.LegacyBehaviorPolicy.{CORRECTED, EXCEPTION, LEGACY}
 @@ -30,9 +30,11 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType.{INT96,
  import org.apache.spark.sql.test.SharedSparkSession
  import org.apache.spark.tags.SlowSQLTest
@@ -1765,10 +1829,18 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..4ae61238a95 100644
+index 3f47c5e506f..bc1ee1ec0ba 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-@@ -1036,7 +1036,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+@@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
+ import org.apache.parquet.schema.Type._
+ 
+ import org.apache.spark.SparkException
++import org.apache.spark.sql.IgnoreComet
+ import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
+ import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+ import org.apache.spark.sql.functions.desc
+@@ -1036,7 +1037,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
      e
    }
  
@@ -1898,10 +1970,24 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..1b718d2d3cc 100644
+index 746f289c393..77d76b0d102 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-@@ -102,12 +102,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -25,10 +25,11 @@ import org.apache.spark.sql.catalyst.expressions
+ import org.apache.spark.sql.catalyst.expressions._
+ import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils
+-import org.apache.spark.sql.execution.{FileSourceScanExec, SortExec, SparkPlan}
++import org.apache.spark.sql.comet._
++import org.apache.spark.sql.execution.{ColumnarToRowExec, FileSourceScanExec, SortExec, SparkPlan}
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+ import org.apache.spark.sql.execution.datasources.BucketingUtils
+-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
++import org.apache.spark.sql.execution.exchange.{ShuffleExchangeExec, ShuffleExchangeLike}
+ import org.apache.spark.sql.execution.joins.SortMergeJoinExec
+ import org.apache.spark.sql.functions._
+ import org.apache.spark.sql.internal.SQLConf
+@@ -102,12 +103,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
      }
    }
  
@@ -1924,7 +2010,7 @@ index 746f289c393..1b718d2d3cc 100644
    // To verify if the bucket pruning works, this function checks two conditions:
    //   1) Check if the pruned buckets (before filtering) are empty.
    //   2) Verify the final result is the same as the expected one
-@@ -156,7 +164,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -156,7 +165,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            val planWithoutBucketedScan = bucketedDataFrame.filter(filterCondition)
              .queryExecution.executedPlan
            val fileScan = getFileScan(planWithoutBucketedScan)
@@ -1934,7 +2020,7 @@ index 746f289c393..1b718d2d3cc 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -452,28 +461,44 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -452,28 +462,44 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sqlContext.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -1987,7 +2073,7 @@ index 746f289c393..1b718d2d3cc 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -836,11 +861,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -836,11 +862,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -2001,11 +2087,67 @@ index 746f289c393..1b718d2d3cc 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
+@@ -1029,9 +1055,12 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+           Seq(true, false).foreach { aqeEnabled =>
+             withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
+               val plan = sql(query).queryExecution.executedPlan
+-              val shuffles = collect(plan) { case s: ShuffleExchangeExec => s }
++              val shuffles = collect(plan) {
++            case s: ShuffleExchangeLike => s
++          }
+               assert(shuffles.length == expectedNumShuffles)
+ 
++<<<<<<< found
+               val scans = collect(plan) {
+                 case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
+               }
+@@ -1041,6 +1070,33 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+               } else {
+                 assert(scans.isEmpty)
+               }
++||||||| expected
++          val scans = plan.collect {
++            case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
++          }
++          if (expectedCoalescedNumBuckets.isDefined) {
++            assert(scans.length == 1)
++            assert(scans.head.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
++          } else {
++            assert(scans.isEmpty)
++          }
++=======
++          val scans = plan.collect {
++            case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
++            case b: CometScanExec if b.optionalNumCoalescedBuckets.isDefined => b
++          }
++          if (expectedCoalescedNumBuckets.isDefined) {
++            assert(scans.length == 1)
++            scans.head match {
++              case f: FileSourceScanExec =>
++                assert(f.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
++              case b: CometScanExec =>
++                assert(b.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
++            }
++          } else {
++            assert(scans.isEmpty)
++          }
++>>>>>>> replacement
+             }
+           }
+         }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
-index 6f897a9c0b7..ab520bc5104 100644
+index 6f897a9c0b7..b0723634f68 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
-@@ -27,7 +27,10 @@ import org.apache.spark.sql.internal.SQLConf.BUCKETING_MAX_BUCKETS
+@@ -20,6 +20,7 @@ package org.apache.spark.sql.sources
+ import java.io.File
+ 
+ import org.apache.spark.SparkException
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.catalyst.TableIdentifier
+ import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTableType}
+ import org.apache.spark.sql.catalyst.parser.ParseException
+@@ -27,7 +28,10 @@ import org.apache.spark.sql.internal.SQLConf.BUCKETING_MAX_BUCKETS
  import org.apache.spark.sql.test.SharedSparkSession
  import org.apache.spark.util.Utils
  
@@ -2018,10 +2160,18 @@ index 6f897a9c0b7..ab520bc5104 100644
  
    protected override lazy val sql = spark.sql _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
-index d675503a8ba..47af89691d3 100644
+index d675503a8ba..659fa686fb7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
-@@ -68,7 +68,10 @@ abstract class DisableUnnecessaryBucketedScanSuite
+@@ -18,6 +18,7 @@
+ package org.apache.spark.sql.sources
+ 
+ import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.comet.CometScanExec
+ import org.apache.spark.sql.execution.FileSourceScanExec
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.internal.SQLConf
+@@ -68,7 +69,10 @@ abstract class DisableUnnecessaryBucketedScanSuite
  
      def checkNumBucketedScan(query: String, expectedNumBucketedScan: Int): Unit = {
        val plan = sql(query).queryExecution.executedPlan
@@ -2143,10 +2293,18 @@ index 2a2a83d35e1..e3b7b290b3e 100644
      val initialState: KeyValueGroupedDataset[String, RunningCount] =
        initialStateDS.groupByKey(_._1).mapValues(_._2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
-index c97979a57a5..58a5381be30 100644
+index c97979a57a5..45a998db0e0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
-@@ -1114,11 +1114,12 @@ class StreamSuite extends StreamTest {
+@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.plans.logical.{Range, RepartitionByExpressi
+ import org.apache.spark.sql.catalyst.streaming.{InternalOutputModes, StreamingRelationV2}
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
+ import org.apache.spark.sql.catalyst.util.DateTimeUtils
++import org.apache.spark.sql.comet.CometLocalLimitExec
+ import org.apache.spark.sql.execution.{LocalLimitExec, SimpleMode, SparkPlan}
+ import org.apache.spark.sql.execution.command.ExplainCommand
+ import org.apache.spark.sql.execution.streaming._
+@@ -1114,11 +1115,12 @@ class StreamSuite extends StreamTest {
        val localLimits = execPlan.collect {
          case l: LocalLimitExec => l
          case l: StreamingLocalLimitExec => l
@@ -2160,7 +2318,7 @@ index c97979a57a5..58a5381be30 100644
  
        if (expectStreamingLimit) {
          assert(
-@@ -1126,7 +1127,8 @@ class StreamSuite extends StreamTest {
+@@ -1126,7 +1128,8 @@ class StreamSuite extends StreamTest {
            s"Local limit was not StreamingLocalLimitExec:\n$execPlan")
        } else {
          assert(
