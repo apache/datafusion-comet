@@ -857,8 +857,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case EqualTo(left, right) =>
           // this is a workaround for handling -0.0 in double and float
           // untill https://github.com/apache/datafusion/issues/11108 is fixed
-          val zero = Literal.default(left.dataType)
-          val negZero = UnaryMinus(zero)
+          val leftZero = Literal.default(left.dataType)
+          val rightZero = Literal.default(right.dataType)
+          // create negzero based on double or float
+          val negZeroLeft = UnaryMinus(leftZero)
+          val negZeroRight = UnaryMinus(rightZero)
 
           def buildEqualExpr(
               leftExpr: Option[Expr],
@@ -885,21 +888,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             right.dataType == DoubleType ||
             right.dataType == FloatType) {
             (left, right) match {
-              case (`negZero`, `negZero`) =>
+              case (`negZeroLeft`, `negZeroRight`) =>
                 return buildEqualExpr(
                   exprToProtoInternal(Abs(left).child, inputs),
                   exprToProtoInternal(Abs(right).child, inputs))
-              case (`negZero`, _) =>
+              case (`negZeroLeft`, _) =>
                 return buildEqualExpr(
                   exprToProtoInternal(Abs(left).child, inputs),
                   exprToProtoInternal(right, inputs))
-              case (_, `negZero`) =>
+              case (_, `negZeroRight`) =>
                 return buildEqualExpr(
                   exprToProtoInternal(left, inputs),
                   exprToProtoInternal(Abs(right).child, inputs))
               case _ =>
                 if ((left.nullable && !right.nullable) &&
-                  (left != zero && right != zero)) {
+                  (left != leftZero && right != rightZero)) {
                   withInfo(expr, left, right)
                   return None
                 }
@@ -910,12 +913,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
           val leftExpr = if (left.dataType == DoubleType || left.dataType == FloatType) {
-            exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs)
+            exprToProtoInternal(If(EqualTo(left, negZeroLeft), leftZero, left), inputs)
           } else {
             exprToProtoInternal(left, inputs)
           }
           val rightExpr = if (right.dataType == DoubleType || right.dataType == FloatType) {
-            exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs)
+            exprToProtoInternal(If(EqualTo(right, negZeroRight), rightZero, right), inputs)
           } else {
             exprToProtoInternal(right, inputs)
           }
