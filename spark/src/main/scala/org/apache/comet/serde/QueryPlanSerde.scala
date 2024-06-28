@@ -855,61 +855,72 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
+          // this is a workaround for handling -0.0 in double and float
+          // untill https://github.com/apache/datafusion/issues/11108 is fixed
           val zero = Literal.default(left.dataType)
           val negZero = UnaryMinus(zero)
 
-          def buildEqualExpr(leftExpr: Expr, rightExpr: Expr): ExprOuterClass.Expr = {
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setEq(
-                ExprOuterClass.Equal
+          def buildEqualExpr(
+              leftExpr: Option[Expr],
+              rightExpr: Option[Expr]): Option[ExprOuterClass.Expr] = {
+
+            if (leftExpr.isDefined && rightExpr.isDefined) {
+              Some(
+                ExprOuterClass.Expr
                   .newBuilder()
-                  .setLeft(leftExpr)
-                  .setRight(rightExpr))
-              .build()
+                  .setEq(
+                    ExprOuterClass.Equal
+                      .newBuilder()
+                      .setLeft(leftExpr.get)
+                      .setRight(rightExpr.get))
+                  .build())
+            } else {
+              withInfo(expr, left, right)
+              None
+            }
           }
 
-          if (left.dataType == DoubleType || left.dataType == FloatType) {
-            // make sure left or right is not null
+          if (left.dataType == DoubleType ||
+            left.dataType == FloatType ||
+            right.dataType == DoubleType ||
+            right.dataType == FloatType) {
             (left, right) match {
+              case (`negZero`, `negZero`) =>
+                return buildEqualExpr(
+                  exprToProtoInternal(Abs(left).child, inputs),
+                  exprToProtoInternal(Abs(right).child, inputs))
               case (`negZero`, _) =>
-                return Some(
-                  buildEqualExpr(
-                    exprToProtoInternal(Abs(left).child, inputs).getOrElse(return None),
-                    exprToProtoInternal(right, inputs).getOrElse(return None)))
+                return buildEqualExpr(
+                  exprToProtoInternal(Abs(left).child, inputs),
+                  exprToProtoInternal(right, inputs))
               case (_, `negZero`) =>
-                return Some(
-                  buildEqualExpr(
-                    exprToProtoInternal(left, inputs).getOrElse(return None),
-                    exprToProtoInternal(Abs(right).child, inputs).getOrElse(return None)))
+                return buildEqualExpr(
+                  exprToProtoInternal(left, inputs),
+                  exprToProtoInternal(Abs(right).child, inputs))
               case _ =>
                 if ((left.nullable && !right.nullable) &&
                   (left != zero && right != zero)) {
                   withInfo(expr, left, right)
                   return None
                 }
-                Some(
-                  buildEqualExpr(
-                    exprToProtoInternal(left, inputs).getOrElse(return None),
-                    exprToProtoInternal(right, inputs).getOrElse(return None)))
+                buildEqualExpr(
+                  exprToProtoInternal(left, inputs),
+                  exprToProtoInternal(right, inputs))
             }
           }
 
-          val (leftExpr, rightExpr) =
-            if (left.dataType == DoubleType || left.dataType == FloatType) {
-              (
-                exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs),
-                exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs))
-            } else {
-              (exprToProtoInternal(left, inputs), exprToProtoInternal(right, inputs))
-            }
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            Some(buildEqualExpr(leftExpr.get, rightExpr.get))
+          val leftExpr = if (left.dataType == DoubleType || left.dataType == FloatType) {
+            exprToProtoInternal(If(EqualTo(left, negZero), zero, left), inputs)
           } else {
-            withInfo(expr, left, right)
-            None
+            exprToProtoInternal(left, inputs)
           }
+          val rightExpr = if (right.dataType == DoubleType || right.dataType == FloatType) {
+            exprToProtoInternal(If(EqualTo(right, negZero), zero, right), inputs)
+          } else {
+            exprToProtoInternal(right, inputs)
+          }
+
+          buildEqualExpr(leftExpr, rightExpr)
 
         case Not(EqualTo(left, right)) =>
           val leftExpr = exprToProtoInternal(left, inputs)
