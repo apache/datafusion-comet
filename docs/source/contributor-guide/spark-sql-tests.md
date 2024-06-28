@@ -20,15 +20,8 @@ under the License.
 # Running Spark SQL Tests
 
 Running Apache Spark's SQL tests with Comet enabled is a good way to ensure that Comet produces the same 
-results as that version of Spark.
-
-Here are the steps involved in running the Spark SQL tests with Comet.
-
-1. Run `make release` in Comet to install the Comet JAR into the local Maven repository
-2. Clone Apache Spark locally (checking out the specific version)
-3. Make changes to Apache Spark to enable Comet. For already supported Spark versions, we provide diff files that can be applied.
-
-Here is a more detailed guide to running Spark SQL tests locally for Spark version 3.4.3:
+results as that version of Spark. To do this, we need to  make some changes to the Apache Spark source code so that 
+it enables Comet.
 
 Here is an overview of the changes that are applied to Spark:
 
@@ -37,7 +30,24 @@ Here is an overview of the changes that are applied to Spark:
 - Modify TestHive to load Comet
 - Modify SQLTestUtilsBase to load Comet when `ENABLE_COMET` environment variable exists
 
-## Enabling Spark SQL Tests for a new Spark version
+Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
+
+## Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
+
+```shell
+make release PROFILES="-Pspark3.4"
+```
+
+## Clone Apache Spark locally and apply diff
+
+```shell
+git clone git@github.com:apache/spark.git apache-spark
+cd apache-spark
+git checkout v3.4.3
+git apply ../datafusion-comet/dev/diffs/3.4.3.diff
+```
+
+## Enabling Spark SQL tests for a new Spark version
 
 Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version 
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can 
@@ -48,6 +58,7 @@ for Spark version 3.5.1 we may start by applying the existing diff for 3.4.3 fir
 
 ```shell
 cd git/apache/spark
+git checkout v3.5.1
 git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.4.3.diff
 ```
 
@@ -78,7 +89,9 @@ find . -name "*.rej"
 
 The changes in these reject files need to be applied manually.
 
-One method is to use the wiggle command (`brew install wiggle` on Mac).
+One method is to use the [wiggle](https://github.com/neilbrown/wiggle) command (`brew install wiggle` on Mac).
+
+For example:
 
 ```shell
 wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala.rej
@@ -98,8 +111,14 @@ new version.
 
 ## Run Tests Locally
 
-TODO add more
+Use the following commands to run the SQL tests locally.
 
 ```shell
 ENABLE_COMET=true build/sbt catalyst/test
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
 ```
