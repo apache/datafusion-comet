@@ -35,7 +35,7 @@ Here are the steps involved in running the Spark SQL tests with Comet, using Spa
 ## Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
-make release PROFILES="-Pspark3.4"
+PROFILES="-Pspark-3.4" make release
 ```
 
 ## Clone Apache Spark locally and apply diff
