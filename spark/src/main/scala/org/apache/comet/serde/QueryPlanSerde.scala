@@ -859,7 +859,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // untill https://github.com/apache/datafusion/issues/11108 is fixed
           val leftZero = Literal.default(left.dataType)
           val rightZero = Literal.default(right.dataType)
-          // create negzero based on double or float
           val negZeroLeft = UnaryMinus(leftZero)
           val negZeroRight = UnaryMinus(rightZero)
 
