@@ -58,7 +58,7 @@ use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
-use num::{BigInt, ToPrimitive};
+use num::{BigInt, Signed, ToPrimitive};
 
 use crate::execution::spark_operator::lower_window_frame_bound::LowerFrameBoundStruct;
 use crate::execution::spark_operator::upper_window_frame_bound::UpperFrameBoundStruct;
@@ -1443,12 +1443,7 @@ impl PhysicalPlanner {
                     WindowFrameBound::Preceding(ScalarValue::UInt64(None))
                 }
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = if offset.offset < 0 {
-                        // Convert to positive and then cast to u64
-                        (-offset.offset) as u64
-                    } else {
-                        offset.offset as u64
-                    };
+                    let offset_value = offset.offset.abs() as u64;
                     WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value)))
                 }
                 LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,

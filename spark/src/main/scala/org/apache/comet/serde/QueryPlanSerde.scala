@@ -2470,7 +2470,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case WindowExec(windowExpression, partitionSpec, orderSpec, child) =>
+      case WindowExec(windowExpression, partitionSpec, orderSpec, child)
+          if isCometOperatorEnabled(op.conf, "window") =>
         val output = child.output
 
         val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>

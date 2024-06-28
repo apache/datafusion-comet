@@ -1436,27 +1436,19 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
-        withTable("t1") {
-          val numRows = 10
-          spark
-            .range(numRows)
-            .selectExpr("id AS a", s"$numRows - id AS b") // Todo: Test Nulls
-            .repartition(3) // Force repartition to test data will come to single partition
-            .write
-            .saveAsTable("t1")
-
+        withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
           val aggregateFunctions =
-            List("COUNT(a)", "MAX(a)", "MIN(a)") // Todo: Test all the aggregates
+            List("COUNT(_1)", "MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
 
           aggregateFunctions.foreach { function =>
             val queries = Seq(
               s"SELECT $function OVER() FROM t1",
-              s"SELECT $function OVER(order by b) FROM t1",
-              s"SELECT $function OVER(order by b desc) FROM t1",
-              s"SELECT $function OVER(partition by b order by b) FROM t1",
+              s"SELECT $function OVER(order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2 desc) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
-              s"SELECT $function OVER(order by b rows between 1 preceding and current row) FROM t1",
-              s"SELECT $function OVER(order by b rows between current row and 1 following) FROM t1")
+              s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
+              s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
               checkSparkAnswerAndOperator(query)
