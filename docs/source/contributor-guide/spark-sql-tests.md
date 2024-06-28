@@ -23,7 +23,7 @@ Running Apache Spark's SQL tests with Comet enabled is a good way to ensure that
 results as that version of Spark. To do this, we need to  make some changes to the Apache Spark source code so that 
 it enables Comet.
 
-Here is an overview of the changes that are applied to Spark:
+Here is an overview of the changes that we need to make to Spark:
 
 - Update the pom.xml to add a dependency on Comet
 - Modify SparkSession to load the Comet extension
@@ -32,13 +32,17 @@ Here is an overview of the changes that are applied to Spark:
 
 Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
 
-## Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
+## 1. Install Comet
+
+Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
 PROFILES="-Pspark-3.4" make release
 ```
 
-## Clone Apache Spark locally and apply diff
+## 2. Clone Spark and Apply Diff
+
+Clone Apache Spark locally and apply the diff file from Comet.
 
 ```shell
 git clone git@github.com:apache/spark.git apache-spark
@@ -47,7 +51,21 @@ git checkout v3.4.3
 git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 ```
 
-## Enabling Spark SQL tests for a new Spark version
+## 3. Run Spark SQL Tests
+
+Use the following commands to run the SQL tests locally.
+
+```shell
+ENABLE_COMET=true build/sbt catalyst/test
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
+```
+
+## Creating a diff file for a new Spark version
 
 Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version 
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can 
@@ -100,7 +118,7 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 ## Generating The Diff File
 
 ```shell
-git diff v3.5.1 58c7ce4407d2c4685a1feaf3e60cefac32de0d39 > ../datafusion-comet/dev/diffs/3.5.1.diff
+    git diff v3.5.1 58c7ce4407d2c4685a1feaf3e60cefac32de0d39 > ../datafusion-comet/dev/diffs/3.5.1.diff
 ```
 
 ## Running Tests in CI 
@@ -108,17 +126,3 @@ git diff v3.5.1 58c7ce4407d2c4685a1feaf3e60cefac32de0d39 > ../datafusion-comet/d
 The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a 
 new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the 
 new version.
-
-## Run Tests Locally
-
-Use the following commands to run the SQL tests locally.
-
-```shell
-ENABLE_COMET=true build/sbt catalyst/test
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
-```
