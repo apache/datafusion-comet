@@ -180,63 +180,37 @@ macro_rules! make_plain_dict_impl {
 }
 
 make_plain_dict_impl! { Int8Type, UInt8Type, Int16Type, UInt16Type, Int32Type, UInt32Type }
-make_plain_dict_impl! { Int32DateType, Int64Type, FloatType, FLBAType }
+make_plain_dict_impl! { Int32DateType, Int64Type, FloatType, Int64ToDecimal64Type, FLBAType }
 make_plain_dict_impl! { DoubleType, Int64TimestampMillisType, Int64TimestampMicrosType }
 
-impl PlainDictDecoding for Int32To64Type {
-    fn decode_dict_one(
-        idx: usize,
-        val_idx: usize,
-        src: &ParquetMutableVector,
-        dst: &mut ParquetMutableVector,
-        _: usize,
-    ) {
-        let src_ptr = src.value_buffer.as_ptr() as *const i32;
-        let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut i64;
-        unsafe {
-            dst_ptr
-                .add(idx)
-                .write_unaligned(src_ptr.add(val_idx).read_unaligned() as i64);
-        }
-    }
-}
-
-impl PlainDecoding for FloatToDoubleType {
-    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-        let src_ptr = src.data.as_ptr() as *const f32;
-        let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut f64;
-        unsafe {
-            for i in 0..num {
-                dst_ptr
-                    .add(dst.num_values + i)
-                    .write_unaligned(src_ptr.add(src.offset + i).read_unaligned() as f64);
+macro_rules! make_int_variant_dict_impl {
+    ($ty:ty, $src_ty:ty, $dst_ty:ty) => {
+        impl PlainDictDecoding for $ty {
+            fn decode_dict_one(
+                idx: usize,
+                val_idx: usize,
+                src: &ParquetMutableVector,
+                dst: &mut ParquetMutableVector,
+                _: usize,
+            ) {
+                let src_ptr = src.value_buffer.as_ptr() as *const $src_ty;
+                let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut $dst_ty;
+                unsafe {
+                    dst_ptr
+                        .add(idx)
+                        .write_unaligned(src_ptr.add(val_idx).read_unaligned() as $dst_ty);
+                }
             }
         }
-        src.offset += 4 * num;
-    }
-
-    fn skip(src: &mut PlainDecoderInner, num: usize) {
-        src.offset += 4 * num;
-    }
+    };
 }
 
-impl PlainDictDecoding for FloatToDoubleType {
-    fn decode_dict_one(
-        idx: usize,
-        val_idx: usize,
-        src: &ParquetMutableVector,
-        dst: &mut ParquetMutableVector,
-        _: usize,
-    ) {
-        let src_ptr = src.value_buffer.as_ptr() as *const f32;
-        let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut f64;
-        unsafe {
-            dst_ptr
-                .add(idx)
-                .write_unaligned(src_ptr.add(val_idx).read_unaligned() as f64);
-        }
-    }
-}
+make_int_variant_dict_impl!(Int16ToDoubleType, i16, f64);
+make_int_variant_dict_impl!(Int32To64Type, i32, i64);
+make_int_variant_dict_impl!(Int32ToDecimal64Type, i32, i64);
+make_int_variant_dict_impl!(Int32ToDoubleType, i32, f64);
+make_int_variant_dict_impl!(Int32TimestampMicrosType, i32, i64);
+make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
 
 impl PlainDecoding for Int32DateType {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
@@ -279,6 +253,59 @@ impl PlainDecoding for Int32DateType {
         src.offset += num_bytes;
     }
 
+    fn skip(src: &mut PlainDecoderInner, num: usize) {
+        let num_bytes = src.desc.type_length() as usize * num;
+        src.offset += num_bytes;
+    }
+}
+
+impl PlainDecoding for Int32TimestampMicrosType {
+    #[inline]
+    fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+        let src_data = &src.data;
+        let byte_width = src.desc.type_length() as usize;
+        let num_bytes = byte_width * num;
+
+        {
+            let mut offset = src.offset;
+            for _ in 0..num {
+                let v = &src_data[offset..offset + byte_width] as *const [u8] as *const u8
+                    as *const i32;
+
+                // TODO: optimize this further as checking value one by one is not very efficient
+                unsafe {
+                    if unlikely(v.read_unaligned() < JULIAN_GREGORIAN_SWITCH_OFF_DAY) {
+                        panic!(
+                            "Encountered timestamp value {}, which is before 1582-10-15 (counting \
+                        backwards from Unix eopch date 1970-01-01), and could be ambigous \
+                        depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
+                        or a Proleptic Gregorian calendar is used.",
+                            *v
+                        );
+                    }
+                }
+
+                offset += byte_width;
+            }
+        }
+
+        let mut offset = src.offset;
+        let dst_byte_width = byte_width * 2;
+        let mut dst_offset = dst_byte_width * dst.num_values;
+        for _ in 0..num {
+            let v =
+                &src_data[offset..offset + byte_width] as *const [u8] as *const u8 as *const i32;
+            let v = unsafe { v.read_unaligned() };
+            let v = (v as i64).wrapping_mul(MICROS_PER_DAY);
+            bit::memcpy_value(&v, dst_byte_width, &mut dst.value_buffer[dst_offset..]);
+            offset += byte_width;
+            dst_offset += dst_byte_width;
+        }
+
+        src.offset += num_bytes;
+    }
+
+    #[inline]
     fn skip(src: &mut PlainDecoderInner, num: usize) {
         let num_bytes = src.desc.type_length() as usize * num;
         src.offset += num_bytes;
@@ -439,13 +466,61 @@ macro_rules! make_int_variant_impl {
 
 make_int_variant_impl!(Int8Type, copy_i32_to_i8, 1);
 make_int_variant_impl!(Int16Type, copy_i32_to_i16, 2);
-make_int_variant_impl!(Int32To64Type, copy_i32_to_i64, 4);
+make_int_variant_impl!(Int16ToDoubleType, copy_i32_to_f64, 8); // Parquet uses Int16 using 4 bytes
+make_int_variant_impl!(Int32To64Type, copy_i32_to_i64, 8);
+make_int_variant_impl!(Int32ToDoubleType, copy_i32_to_f64, 8);
+make_int_variant_impl!(FloatToDoubleType, copy_f32_to_f64, 8);
 
 // unsigned type require double the width and zeroes are written for the second half
 // perhaps because they are implemented as the next size up signed type?
 make_int_variant_impl!(UInt8Type, copy_i32_to_u8, 2);
 make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
 make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
+
+macro_rules! make_int_decimal_variant_impl {
+    ($ty:ty, $copy_fn:ident, $type_width:expr, $dst_type:ty) => {
+        impl PlainDecoding for $ty {
+            fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+                let dst_slice = dst.value_buffer.as_slice_mut();
+                let dst_offset = dst.num_values * $type_width;
+                $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
+
+                let src_scale = src.desc.type_scale();
+                let src_scale = (if src_scale < 0 { 0 } else { src_scale }) as u32;
+                let dst_scale = match dst.arrow_type {
+                    ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
+                    _ => unreachable!(),
+                };
+                let v = dst_slice[dst_offset..].as_mut_ptr() as *mut $dst_type;
+                if dst_scale > src_scale {
+                    let mul = (10 as $dst_type).pow(dst_scale - src_scale);
+                    for i in 0..num {
+                        unsafe {
+                            let v = v.add(i);
+                            v.write_unaligned(v.read_unaligned() * mul);
+                        }
+                    }
+                } else if dst_scale < src_scale {
+                    let div = (10 as $dst_type).pow(src_scale - dst_scale);
+                    for i in 0..num {
+                        unsafe {
+                            let v = v.add(i);
+                            v.write_unaligned(v.read_unaligned() / div);
+                        }
+                    }
+                }
+
+                src.offset += 4 * num;
+            }
+
+            fn skip(src: &mut PlainDecoderInner, num: usize) {
+                src.offset += 4 * num;
+            }
+        }
+    };
+}
+make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 8, i64);
+make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
@@ -506,6 +581,21 @@ macro_rules! generate_cast_to_signed {
 generate_cast_to_signed!(copy_i32_to_i8, i32, i8);
 generate_cast_to_signed!(copy_i32_to_i16, i32, i16);
 generate_cast_to_signed!(copy_i32_to_i64, i32, i64);
+generate_cast_to_signed!(copy_i32_to_f64, i32, f64);
+generate_cast_to_signed!(copy_f32_to_f64, f32, f64);
+
+fn copy_i64_to_i64(src: &[u8], dst: &mut [u8], num: usize) {
+    debug_assert!(
+        src.len() >= num * std::mem::size_of::<i64>(),
+        "Source slice is too small"
+    );
+    debug_assert!(
+        dst.len() >= num * std::mem::size_of::<i64>(),
+        "Destination slice is too small"
+    );
+
+    bit::memcpy_value(src, 8 * num, dst);
+}
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
@@ -652,9 +742,10 @@ macro_rules! make_plain_decimal_impl {
 
                     debug_assert!(byte_width <= DECIMAL_BYTE_WIDTH);
 
-                    let src_scale = src.desc.type_scale() as u32;
+                    let src_scale = src.desc.type_scale();
+                    let src_scale = (if src_scale < 0 {0} else {src_scale}) as u32;
                     let dst_scale = match dst.arrow_type {
-                        ArrowDataType::Decimal128(_percision, scale) => scale as u32,
+                        ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                         _ => unreachable!()
                     };
 
@@ -687,6 +778,13 @@ macro_rules! make_plain_decimal_impl {
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
                                  v.write_unaligned(v.read_unaligned() * mul);
+                            }
+                        } else if dst_scale < src_scale {
+                            let exp = src_scale - dst_scale;
+                            let div = 10_i128.pow(exp);
+                            let v = s.as_mut_ptr() as *mut i128;
+                            unsafe {
+                                 v.write_unaligned(v.read_unaligned() / div);
                             }
                         }
 
@@ -728,12 +826,19 @@ macro_rules! make_plain_decimal_int_impl {
             impl PlainDecoding for $ty {
                 fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
                     let byte_width = src.desc.type_length() as usize;
-                    let num_bits = 8 * byte_width;
+                    let num_bits = 64.min(8 * byte_width);
 
                     let src_data = &src.data[src.offset..];
                     let dst_data = &mut dst.value_buffer[dst.num_values * $num_bytes..];
 
                     let mut src_offset = 0;
+
+                    let src_scale = src.desc.type_scale();
+                    let src_scale = (if src_scale < 0 {0} else {src_scale}) as u32;
+                    let dst_scale = match dst.arrow_type {
+                        ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
+                        _ => unreachable!()
+                    };
 
                     for i in 0..num {
                         let mut unscaled: i64 = 0;
@@ -742,6 +847,11 @@ macro_rules! make_plain_decimal_int_impl {
                             src_offset += 1;
                         }
                         unscaled = (unscaled << (64 - num_bits)) >> (64 - num_bits);
+                        if dst_scale > src_scale {
+                            unscaled *= 10_i64.pow(dst_scale - src_scale);
+                        } else if dst_scale < src_scale {
+                            unscaled /= 10_i64.pow(src_scale - dst_scale);
+                        }
                         bit::memcpy_value(&unscaled, $num_bytes, &mut dst_data[i *
                         $num_bytes..]);
                     }
