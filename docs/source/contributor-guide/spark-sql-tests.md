@@ -20,8 +20,8 @@ under the License.
 # Running Spark SQL Tests
 
 Running Apache Spark's SQL tests with Comet enabled is a good way to ensure that Comet produces the same 
-results as that version of Spark. To do this, we need to  make some changes to the Apache Spark source code so that 
-it enables Comet.
+results as that version of Spark. To enable this, we apply some changes to the Apache Spark source code so that 
+Comet is enabled when we run the tests.
 
 Here is an overview of the changes that we need to make to Spark:
 
@@ -118,7 +118,7 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 ## Generating The Diff File
 
 ```shell
-    git diff v3.5.1 58c7ce4407d2c4685a1feaf3e60cefac32de0d39 > ../datafusion-comet/dev/diffs/3.5.1.diff
+    git diff v3.5.1 > ../datafusion-comet/dev/diffs/3.5.1.diff
 ```
 
 ## Running Tests in CI 
