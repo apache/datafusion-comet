@@ -21,7 +21,10 @@ package org.apache
 
 import java.util.Properties
 
+import org.apache.arrow.memory.RootAllocator
+
 package object comet {
+  val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the
