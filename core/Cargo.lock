@@ -115,7 +115,7 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 [[package]]
 name = "arrow"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -135,7 +135,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -149,7 +149,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -165,7 +165,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "bytes",
  "half",
@@ -175,7 +175,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -195,7 +195,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -213,7 +213,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -224,7 +224,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -238,7 +238,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -257,7 +257,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -271,7 +271,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -285,7 +285,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "bitflags 2.5.0",
 ]
@@ -293,7 +293,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -306,7 +306,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -791,7 +791,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -898,7 +898,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -918,7 +918,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "tokio",
 ]
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "datafusion-execution"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "arrow",
  "chrono",
@@ -946,7 +946,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -964,7 +964,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "arrow",
  "base64",
@@ -990,7 +990,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -1007,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1066,7 +1066,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "ahash",
  "arrow",
@@ -1099,7 +1099,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "39.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=4d59d19#4d59d19d25c4f9fc6c928f4d9d0e53d5cf44e2cb"
+source = "git+https://github.com/viirya/arrow-datafusion.git?rev=17446b1#17446b1886d2872be482efa4225d2b35e5d96569"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -2038,7 +2038,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "52.0.0"
-source = "git+https://github.com/tustvold/arrow-rs.git?rev=78b6139#78b61396b4ef8ee568452b060b45062ef68cd77d"
+source = "git+https://github.com/apache/arrow-rs.git?rev=0a4d8a1#0a4d8a14b58e45ef92e31541f0b51a5b25de5f10"
 dependencies = [
  "ahash",
  "bytes",
