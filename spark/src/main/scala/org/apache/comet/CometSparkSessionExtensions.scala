@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, CartesianProductExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -698,6 +698,31 @@ class CometSparkSessionExtensions
             s"JVM shuffle: ${QueryPlanSerde.supportPartitioningTypes(s.child.output)._2}")
           withInfo(s, Seq(msg1, msg2, msg3).flatten.mkString(","))
           s
+
+        case op: CartesianProductExec
+            if isCometOperatorEnabled(conf, "cross_join") &&
+              op.children.forall(isCometNative) =>
+          val newOp = transform1(op)
+          newOp match {
+            case Some(nativeOp) =>
+              CometCartesianProductExec(
+                nativeOp,
+                op,
+                op.condition,
+                op.left,
+                op.right,
+                SerializedPlan(None))
+            case None =>
+              op
+          }
+
+        case op: CartesianProductExec if !isCometOperatorEnabled(conf, "cross_join") =>
+          withInfo(op, "Cross join is not enabled")
+          op
+
+        case op: CartesianProductExec if !op.children.forall(isCometNative(_)) =>
+          withInfo(op, "Cross join disabled because not all child plans are native")
+          op
 
         case op =>
           // An operator that is not supported by Comet
