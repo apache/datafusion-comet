@@ -22,11 +22,11 @@ use std::sync::Arc;
 
 use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::{DataType, Schema};
-use datafusion_common::Result;
+use datafusion_common::{DataFusionError, Result, ScalarValue};
 use datafusion_expr::{ColumnarValue, Operator};
 use datafusion_expr::interval_arithmetic::Interval;
 use datafusion_expr::sort_properties::ExprProperties;
-use datafusion_physical_expr::expressions::BinaryExpr;
+use datafusion_physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion_physical_expr_common::physical_expr::{down_cast_any_ref, PhysicalExpr};
 
 use crate::execution::datafusion::expressions::EvalMode;
@@ -55,6 +55,70 @@ impl CometBinaryExpr {
             inner: Arc::new(BinaryExpr::new(left, op, right)),
         }
     }
+
+    fn fail_on_overflow(&self, batch: &RecordBatch, result: &ColumnarValue) -> Result<()> {
+        if self.eval_mode == EvalMode::Ansi {
+            match self.op {
+                Operator::Plus => {
+                    match result.data_type() {
+                        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                            self.check_int_overflow(batch, result)?
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn check_int_overflow(&self, batch: &RecordBatch, result: &ColumnarValue) -> Result<()> {
+        let check_overflow_expr = Arc::new(BinaryExpr::new(
+            Arc::new(BinaryExpr::new(
+                Arc::new(BinaryExpr::new(
+                    self.left.clone(),
+                    Operator::BitwiseXor,
+                    self.inner.clone(),
+                )),
+                Operator::BitwiseAnd,
+                Arc::new(BinaryExpr::new(
+                    self.right.clone(),
+                    Operator::BitwiseXor,
+                    self.inner.clone(),
+                )),
+            )), 
+            Operator::Lt, 
+            Self::zero_literal(&result.data_type())?
+        ));
+        match check_overflow_expr.evaluate(batch)? {
+            ColumnarValue::Array(array) => {
+                let boolean_array = array.as_any().downcast_ref::<BooleanArray>().expect("Expected BooleanArray");
+                if boolean_array.true_count() > 0 {
+                    //TODO review error message
+                    return Err(DataFusionError::Execution("Overflow".to_owned()));
+                }
+                Ok(())             
+            },
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
+                //TODO review error message
+                return Err(DataFusionError::Execution("Overflow".to_owned()));
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn zero_literal(data_type: &DataType) -> Result<Arc<dyn PhysicalExpr>> {
+        let zero_literal = match data_type {
+            DataType::Int8 => ScalarValue::Int8(Some(0)),
+            DataType::Int16 => ScalarValue::Int16(Some(0)),
+            DataType::Int32 => ScalarValue::Int32(Some(0)),
+            DataType::Int64 => ScalarValue::Int64(Some(0)),
+            _ => return Err(DataFusionError::Internal(format!("Unsupported data type: {:?}", data_type))),
+        };
+        Ok(Arc::new(Literal::new(zero_literal)))
+
+    }
 }
 
 impl Display for CometBinaryExpr {
@@ -77,8 +141,13 @@ impl PhysicalExpr for CometBinaryExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        // TODO: Do some work here
-        self.inner.evaluate(batch)
+        match self.inner.evaluate(batch) {
+            Ok(result) => {
+                self.fail_on_overflow(batch, &result)?;
+                Ok(result)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn evaluate_selection(
