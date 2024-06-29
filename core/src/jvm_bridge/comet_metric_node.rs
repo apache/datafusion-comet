@@ -38,17 +38,13 @@ impl<'a> CometMetricNode<'a> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {
-            method_get_child_node: env
-                .get_method_id(
-                    Self::JVM_CLASS,
-                    "getChildNode",
-                    format!("(I)L{:};", Self::JVM_CLASS).as_str(),
-                )
-                .unwrap(),
+            method_get_child_node: env.get_method_id(
+                Self::JVM_CLASS,
+                "getChildNode",
+                format!("(I)L{:};", Self::JVM_CLASS).as_str(),
+            )?,
             method_get_child_node_ret: ReturnType::Object,
-            method_add: env
-                .get_method_id(Self::JVM_CLASS, "add", "(Ljava/lang/String;J)V")
-                .unwrap(),
+            method_add: env.get_method_id(Self::JVM_CLASS, "add", "(Ljava/lang/String;J)V")?,
             method_add_ret: ReturnType::Primitive(Primitive::Void),
             class,
         })

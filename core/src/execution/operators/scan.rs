@@ -146,7 +146,7 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
-        let mut env = JVMClasses::get_env();
+        let mut env = JVMClasses::get_env()?;
 
         if iter.is_null() {
             return Err(CometError::from(ExecutionError::GeneralError(format!(
@@ -318,13 +318,12 @@ impl ScanStream {
             .zip(schema_fields.iter())
             .map(|(column, f)| {
                 if column.data_type() != f.data_type() {
-                    cast_with_options(column, f.data_type(), &cast_options).unwrap()
+                    cast_with_options(column, f.data_type(), &cast_options)
                 } else {
-                    column.clone()
+                    Ok(column.clone())
                 }
             })
-            .collect();
-
+            .collect::<Result<Vec<_>, _>>()?;
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(self.schema.clone(), new_columns, &options)
             .map_err(|e| arrow_datafusion_err!(e))
