@@ -23,9 +23,9 @@ use std::sync::Arc;
 use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::{DataType, Schema};
 use datafusion_common::{DataFusionError, Result, ScalarValue};
-use datafusion_expr::{ColumnarValue, Operator};
 use datafusion_expr::interval_arithmetic::Interval;
 use datafusion_expr::sort_properties::ExprProperties;
+use datafusion_expr::{ColumnarValue, Operator};
 use datafusion_physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion_physical_expr_common::physical_expr::{down_cast_any_ref, PhysicalExpr};
 
@@ -61,14 +61,12 @@ impl CometBinaryExpr {
     fn fail_on_overflow(&self, batch: &RecordBatch, result: &ColumnarValue) -> Result<()> {
         if self.eval_mode == EvalMode::Ansi {
             match self.op {
-                Operator::Plus => {
-                    match result.data_type() {
-                        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                            self.check_int_overflow(batch, result)?
-                        }
-                        _ => {}
+                Operator::Plus => match result.data_type() {
+                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                        self.check_int_overflow(batch, result)?
                     }
-                }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -89,18 +87,21 @@ impl CometBinaryExpr {
                     Operator::BitwiseXor,
                     self.inner.clone(),
                 )),
-            )), 
-            Operator::Lt, 
-            Self::zero_literal(&result.data_type())?
+            )),
+            Operator::Lt,
+            Self::zero_literal(&result.data_type())?,
         ));
         match check_overflow_expr.evaluate(batch)? {
             ColumnarValue::Array(array) => {
-                let boolean_array = array.as_any().downcast_ref::<BooleanArray>().expect("Expected BooleanArray");
+                let boolean_array = array
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .expect("Expected BooleanArray");
                 if boolean_array.true_count() > 0 {
                     return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
                 }
-                Ok(())             
-            },
+                Ok(())
+            }
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
                 return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
             }
@@ -114,10 +115,14 @@ impl CometBinaryExpr {
             DataType::Int16 => ScalarValue::Int16(Some(0)),
             DataType::Int32 => ScalarValue::Int32(Some(0)),
             DataType::Int64 => ScalarValue::Int64(Some(0)),
-            _ => return Err(DataFusionError::Internal(format!("Unsupported data type: {:?}", data_type))),
+            _ => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unsupported data type: {:?}",
+                    data_type
+                )))
+            }
         };
         Ok(Arc::new(Literal::new(zero_literal)))
-
     }
 }
 

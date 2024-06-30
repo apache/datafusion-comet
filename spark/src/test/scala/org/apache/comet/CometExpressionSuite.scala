@@ -50,7 +50,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  def testAnsiWithoutOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T], query: String): Unit = {
+  def testAnsiWithoutOverflow[T <: Product: ClassTag: TypeTag](
+      data: Seq[T],
+      query: String): Unit = {
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator(query)
     }
@@ -697,19 +699,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     testLegacyOverflow(Seq((Short.MaxValue, 1.toShort), (Short.MinValue, -1.toShort)))
     testLegacyOverflow(Seq((Int.MaxValue, 1), (Int.MinValue, -1)))
     testLegacyOverflow(Seq((Long.MaxValue, 1.toLong), (Long.MinValue, -1.toLong)))
-    testLegacyOverflow(Seq((Float.MaxValue, 1.toFloat), (Float.MinValue, -1.toFloat), (Float.MaxValue, Float.MaxValue)))
-    testLegacyOverflow(Seq((Double.MaxValue, 1.toDouble), (Double.MinValue, -1.toDouble), (Double.MaxValue, Double.MaxValue)))
+    testLegacyOverflow(
+      Seq(
+        (Float.MaxValue, 1.toFloat),
+        (Float.MinValue, -1.toFloat),
+        (Float.MaxValue, Float.MaxValue)))
+    testLegacyOverflow(
+      Seq(
+        (Double.MaxValue, 1.toDouble),
+        (Double.MinValue, -1.toDouble),
+        (Double.MaxValue, Double.MaxValue)))
   }
 
   test("add overflow ansi mode") {
     val query = "select _1 + _2 from tbl"
-    withSQLConf( SQLConf.ANSI_ENABLED.key -> "true", CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
       testAnsiOverflow(Seq((Byte.MaxValue, 1.toByte), (Byte.MinValue, -1.toByte)), query)
       testAnsiOverflow(Seq((Short.MaxValue, 1.toShort), (Short.MinValue, -1.toShort)), query)
       testAnsiOverflow(Seq((Int.MaxValue, 1), (Int.MinValue, -1)), query)
       testAnsiOverflow(Seq((Long.MaxValue, 1.toLong), (Long.MinValue, -1.toLong)), query)
-      testAnsiWithoutOverflow(Seq((Float.MaxValue, 1.toFloat), (Float.MinValue, -1.toFloat), (Float.MaxValue, Float.MaxValue)), query)
-      testAnsiWithoutOverflow(Seq((Double.MaxValue, 1.toDouble), (Double.MinValue, -1.toDouble), (Double.MaxValue, Double.MaxValue)), query)
+      testAnsiWithoutOverflow(
+        Seq(
+          (Float.MaxValue, 1.toFloat),
+          (Float.MinValue, -1.toFloat),
+          (Float.MaxValue, Float.MaxValue)),
+        query)
+      testAnsiWithoutOverflow(
+        Seq(
+          (Double.MaxValue, 1.toDouble),
+          (Double.MinValue, -1.toDouble),
+          (Double.MaxValue, Double.MaxValue)),
+        query)
     }
   }
 
