@@ -193,8 +193,13 @@ class CometSparkSessionExtensions
     }
   }
 
+  /**
+   * CometQueryStagePrepRule gets called from AQE for the whole plan multiple times as the plan is
+   * re-optimized after query stages complete.
+   */
   case class CometQueryStagePrepRule(session: SparkSession) extends Rule[SparkPlan] {
     def apply(plan: SparkPlan): SparkPlan = {
+      logWarning("CometQueryStagePrepRule: " + plan)
       val newPlan = CometExecRule(session).apply(plan)
       if (CometConf.COMET_CBO_ENABLED.get()) {
         val costEvaluator = new CometCostEvaluator()
@@ -215,17 +220,29 @@ class CometSparkSessionExtensions
             }
           }
           fallbackRecursively(plan)
-
           return plan
+
+        } else {
+          val msg = s"Comet plan is cheaper than Spark plan ($cometCost <= $sparkCost)" +
+            s"\nSPARK: $plan\n" +
+            s"\nCOMET: $newPlan\n"
+          logWarning(msg)
         }
       }
       newPlan
     }
   }
 
+  /**
+   * CometPreColumnarRule gets called for each individual query stage as it is being prepared for
+   * execution. As the name suggests, this rule is called before any columnar transitions are
+   * inserted into the plan.
+   */
   case class CometPreColumnarRule(session: SparkSession) extends Rule[SparkPlan] {
     def apply(plan: SparkPlan): SparkPlan = {
-      CometExecRule(session).apply(plan)
+      val newPlan = CometExecRule(session).apply(plan)
+      logWarning(s"CometPreColumnarRule:\nINPUT: $plan\nOUTPUT: $newPlan")
+      newPlan
     }
   }
 

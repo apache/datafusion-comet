@@ -29,7 +29,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, Cost, Cos
  * during AQE.
  *
  * This evaluator will be called twice; once for the original Spark plan and once for the Comet
- * plan. Spark will choose the cheapest plan.
+ * plan. Comet will choose the cheapest plan.
  */
 class CometCostEvaluator extends CostEvaluator with Logging {
 
@@ -40,7 +40,7 @@ class CometCostEvaluator extends CostEvaluator with Logging {
   val DEFAULT_COMET_OPERATOR_COST = 0.8
 
   /** Relative cost of a transition (C2R, R2C) */
-  val DEFAULT_TRANSITION_COST = 1.0
+  val DEFAULT_TRANSITION_COST = 2.0
 
   override def evaluateCost(plan: SparkPlan): Cost = {
 
@@ -68,9 +68,6 @@ class CometCostEvaluator extends CostEvaluator with Logging {
         case _: CometSinkPlaceHolder => 0
         case _: InputAdapter => 0
         case _: WholeStageCodegenExec => 0
-        case RowToColumnarExec(_) => DEFAULT_TRANSITION_COST
-        case ColumnarToRowExec(_) => DEFAULT_TRANSITION_COST
-        case CometRowToColumnarExec(_) => DEFAULT_TRANSITION_COST
         case _: CometExec => DEFAULT_COMET_OPERATOR_COST
         case _ => DEFAULT_SPARK_OPERATOR_COST
       }
