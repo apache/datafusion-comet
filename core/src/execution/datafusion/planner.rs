@@ -162,9 +162,9 @@ impl PhysicalPlanner {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
                 let mode = if expr.fail_on_error {
-                    EvalMode::Legacy
-                } else {
                     EvalMode::Ansi
+                } else {
+                    EvalMode::Legacy
                 };
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),

@@ -31,6 +31,8 @@ use datafusion_physical_expr_common::physical_expr::{down_cast_any_ref, Physical
 
 use crate::execution::datafusion::expressions::EvalMode;
 
+use super::arithmetic_overflow_error;
+
 #[derive(Debug, Hash, Clone)]
 pub struct CometBinaryExpr {
     left: Arc<dyn PhysicalExpr>,
@@ -95,14 +97,12 @@ impl CometBinaryExpr {
             ColumnarValue::Array(array) => {
                 let boolean_array = array.as_any().downcast_ref::<BooleanArray>().expect("Expected BooleanArray");
                 if boolean_array.true_count() > 0 {
-                    //TODO review error message
-                    return Err(DataFusionError::Execution("Overflow".to_owned()));
+                    return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
                 }
                 Ok(())             
             },
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
-                //TODO review error message
-                return Err(DataFusionError::Execution("Overflow".to_owned()));
+                return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
             }
             _ => Ok(()),
         }
