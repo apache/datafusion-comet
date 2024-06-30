@@ -2336,19 +2336,20 @@ index b4c4ec7acbf..20579284856 100644
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-index 3e1bc57dfa2..6a78731919b 100644
+index 3e1bc57dfa2..8ca3cf57074 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.ExecutorCacheTaskLocation
+@@ -29,9 +29,6 @@ import org.scalatest.BeforeAndAfter
+ 
+ import org.apache.spark.scheduler.ExecutorCacheTaskLocation
  import org.apache.spark.sql.{DataFrame, Row, SparkSession}
- import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
- import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
+-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+-import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 -import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
-+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.execution.streaming.{MemoryStream, StatefulOperatorStateInfo, StreamingSymmetricHashJoinExec, StreamingSymmetricHashJoinHelper}
  import org.apache.spark.sql.execution.streaming.state.{RocksDBStateStoreProvider, StateStore, StateStoreProviderId}
  import org.apache.spark.sql.functions._
-@@ -595,39 +595,7 @@ class StreamingInnerJoinSuite extends StreamingJoinSuite {
+@@ -595,39 +592,7 @@ class StreamingInnerJoinSuite extends StreamingJoinSuite {
    }
  
    test("streaming join should require StatefulOpClusteredDistribution from children") {
