@@ -904,7 +904,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                   (left != negZeroLeft && right != negZeroRight) &&
                   (left != leftZero && right != rightZero) &&
                   (left != doubleNan && right != doubleNan) &&
-                  (left != floatNan && right != floatNan) && isSpark34Plus) {
+                  (left != floatNan && right != floatNan)) {
                   withInfo(expr, left, right)
                   return None
                 }
