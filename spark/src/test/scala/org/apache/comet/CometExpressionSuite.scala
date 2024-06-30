@@ -1734,6 +1734,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // Use inside a nullable statement to make sure isnan has correct behavior for null input
           checkSparkAnswerAndOperator(
             "SELECT CASE WHEN (_1 > 0) THEN NULL ELSE isnan(_1) END FROM tbl")
+          }
+      }
+    }
+  }
+
+  test("named_struct") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
       }
     }
