@@ -59,14 +59,11 @@ impl CometBinaryExpr {
     }
 
     fn fail_on_overflow(&self, batch: &RecordBatch, result: &ColumnarValue) -> Result<()> {
-        if self.eval_mode == EvalMode::Ansi {
-            match self.op {
-                Operator::Plus => match result.data_type() {
-                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                        self.check_int_overflow(batch, result)?
-                    }
-                    _ => {}
-                },
+        if self.eval_mode == EvalMode::Ansi && self.op == Operator::Plus {
+            match result.data_type() {
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                    self.check_int_overflow(batch, result)?
+                }
                 _ => {}
             }
         }
@@ -103,7 +100,7 @@ impl CometBinaryExpr {
                 Ok(())
             }
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
-                return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
+                Err(arithmetic_overflow_error(&result.data_type().to_string()).into())
             }
             _ => Ok(()),
         }
