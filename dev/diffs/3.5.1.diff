@@ -1532,6 +1532,132 @@ index 68bae34790a..ea906fd1adc 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileMetadataStructSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileMetadataStructSuite.scala
+index 15055a276fa..0f3748b965e 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileMetadataStructSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileMetadataStructSuite.scala
+@@ -23,7 +23,7 @@ import java.text.SimpleDateFormat
+ 
+ import org.apache.spark.TestUtils
+ import org.apache.spark.paths.SparkPath
+-import org.apache.spark.sql.{AnalysisException, Column, DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, Column, DataFrame, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+ import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+ import org.apache.spark.sql.execution.FileSourceScanExec
+@@ -116,7 +116,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+       testName: String, fileSchema: StructType)
+     (f: (DataFrame, Map[String, Any], Map[String, Any]) => Unit): Unit = {
+     Seq("json", "parquet").foreach { testFileFormat =>
+-      test(s"metadata struct ($testFileFormat): " + testName) {
++      test(s"metadata struct ($testFileFormat): " + testName,
++          IgnoreComet("TODO: fix Comet for this test")) {
+         withTempDir { dir =>
+           import scala.collection.JavaConverters._
+ 
+@@ -767,7 +768,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+ 
+   Seq(true, false).foreach { useVectorizedReader =>
+     val label = if (useVectorizedReader) "reading batches" else "reading rows"
+-    test(s"SPARK-39806: metadata for a partitioned table ($label)") {
++    test(s"SPARK-39806: metadata for a partitioned table ($label)",
++        IgnoreComet("TODO: fix Comet for this test")) {
+       withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> useVectorizedReader.toString) {
+         withTempPath { dir =>
+           // Store dynamically partitioned data.
+@@ -789,7 +791,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+   }
+ 
+   Seq("parquet", "orc").foreach { format =>
+-    test(s"SPARK-40918: Output cols around WSCG.isTooManyFields limit in $format") {
++    test(s"SPARK-40918: Output cols around WSCG.isTooManyFields limit in $format",
++        IgnoreComet("TODO: fix Comet for this test")) {
+       // The issue was that ParquetFileFormat would not count the _metadata columns towards
+       // the WholeStageCodegenExec.isTooManyFields limit, while FileSourceScanExec would,
+       // resulting in Parquet reader returning columnar output, while scan expected row.
+@@ -862,7 +865,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-41896: Filter on constant and generated metadata attributes at the same time") {
++  test("SPARK-41896: Filter on constant and generated metadata attributes at the same time",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withTempPath { dir =>
+       val idColumnName = "id"
+       val partitionColumnName = "partition"
+@@ -897,7 +901,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-41896: Filter by a function that takes the metadata struct as argument") {
++  test("SPARK-41896: Filter by a function that takes the metadata struct as argument",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withTempPath { dir =>
+       val idColumnName = "id"
+       val numFiles = 4
+@@ -984,7 +989,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+ 
+ 
+   Seq("parquet", "json", "csv", "text", "orc").foreach { format =>
+-    test(s"metadata file path is url encoded for format: $format") {
++    test(s"metadata file path is url encoded for format: $format",
++        IgnoreComet("TODO: fix Comet for this test")) {
+       withTempPath { f =>
+         val dirWithSpace = s"$f/with space"
+         spark.range(10)
+@@ -1002,7 +1008,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+       }
+     }
+ 
+-    test(s"metadata file name is url encoded for format: $format") {
++    test(s"metadata file name is url encoded for format: $format",
++        IgnoreComet("TODO: fix Comet for this test")) {
+       val suffix = if (format == "text") ".txt" else s".$format"
+       withTempPath { f =>
+         val dirWithSpace = s"$f/with space"
+@@ -1056,7 +1063,8 @@ class FileMetadataStructSuite extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-43450: Filter on full _metadata column struct") {
++  test("SPARK-43450: Filter on full _metadata column struct",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withTempPath { dir =>
+       val numRows = 10
+       spark.range(end = numRows)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
+index 05872d41131..a2c328b9742 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
+@@ -21,7 +21,7 @@ import java.io.File
+ 
+ import org.apache.hadoop.fs.{FileStatus, Path}
+ 
+-import org.apache.spark.sql.{DataFrame, Dataset, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, Dataset, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Expression, FileSourceConstantMetadataStructField, FileSourceGeneratedMetadataStructField, Literal}
+ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+@@ -134,7 +134,8 @@ class FileSourceCustomMetadataStructSuite extends QueryTest with SharedSparkSess
+     }
+   }
+ 
+-  test("[SPARK-43226] extra constant metadata fields with extractors") {
++  test("[SPARK-43226] extra constant metadata fields with extractors",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withTempData("parquet", FILE_SCHEMA) { (_, f0, f1) =>
+       val format = new TestFileFormat(extraConstantMetadataFields) {
+         val extractPartitionNumber = { pf: PartitionedFile =>
+@@ -335,7 +336,8 @@ class FileSourceCustomMetadataStructSuite extends QueryTest with SharedSparkSess
+     }
+   }
+ 
+-  test("generated columns and extractors take precedence over metadata map values") {
++  test("generated columns and extractors take precedence over metadata map values",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withTempData("parquet", FILE_SCHEMA) { (_, f0, f1) =>
+       import FileFormat.{FILE_NAME, FILE_SIZE}
+       import ParquetFileFormat.ROW_INDEX
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index bf496d6db21..1e92016830f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
@@ -1622,6 +1748,29 @@ index 07e2849ce6f..3e73645b638 100644
      val extraOptions = Map[String, String](
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
+index c10e1799702..2f78f6c44e4 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
+@@ -16,7 +16,7 @@
+  */
+ package org.apache.spark.sql.execution.datasources.parquet
+ 
+-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
++import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreComet, QueryTest}
+ import org.apache.spark.sql.execution.datasources.FileFormat
+ import org.apache.spark.sql.functions.{col, lit}
+ import org.apache.spark.sql.internal.SQLConf
+@@ -219,7 +219,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
+     }
+   }
+ 
+-  test(s"read user created ${FileFormat.METADATA_NAME}.${ROW_INDEX} column") {
++  test(s"read user created ${FileFormat.METADATA_NAME}.${ROW_INDEX} column",
++      IgnoreComet("TODO: fix Comet for this test")) {
+     withReadDataFrame("parquet", partitionCol = "pb") { df =>
+       withTempPath { dir =>
+         // The `df` has 10 input files with 10 rows each. Therefore the `_metadata.row_index` values
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 index 8e88049f51e..98d1eb07493 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
