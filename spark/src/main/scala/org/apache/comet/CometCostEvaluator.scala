@@ -20,9 +20,10 @@
 package org.apache.comet
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.comet.{CometExec, CometPlan, CometRowToColumnarExec, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometExec, CometPlan, CometProjectExec, CometRowToColumnarExec, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, Cost, CostEvaluator, QueryStageExec, SimpleCost}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 /**
  * The goal of this cost model is to avoid introducing performance regressions in query stages
@@ -37,21 +38,16 @@ class CometCostEvaluator extends CostEvaluator with Logging {
   val DEFAULT_SPARK_OPERATOR_COST = 1.0
 
   /** Relative cost of Comet operator */
-  val DEFAULT_COMET_OPERATOR_COST = 0.8
+  val DEFAULT_COMET_OPERATOR_COST = 0.5
 
   /** Relative cost of a transition (C2R, R2C) */
   val DEFAULT_TRANSITION_COST = 2.0
 
   override def evaluateCost(plan: SparkPlan): Cost = {
 
-    // TODO this is a crude prototype where we just penalize transitions, but
-    // this can evolve into a true cost model where we have real numbers for the relative
-    // performance of Comet operators & expressions versus the Spark versions
-    //
-    // Some areas to explore
-    // - can we use statistics from previous query stage(s)?
-    // - transition after filter should be cheaper than transition before filter (such as when
-    //   reading from Parquet followed by filter. Comet will filter first then transition)
+    // TODO this is a crude prototype, but this can evolve into a true cost model
+    //  where we have real numbers for the relative performance of Comet
+    //  operators & expressions versus the Spark versions
     def computePlanCost(plan: SparkPlan): Double = {
 
       // get children even for leaf nodes at query stage edges
@@ -68,34 +64,22 @@ class CometCostEvaluator extends CostEvaluator with Logging {
         case _: CometSinkPlaceHolder => 0
         case _: InputAdapter => 0
         case _: WholeStageCodegenExec => 0
+        case _: CometProjectExec =>
+          // TODO Comet projections are only "free" when they consist of column references
+          0
         case _: CometExec => DEFAULT_COMET_OPERATOR_COST
         case _ => DEFAULT_SPARK_OPERATOR_COST
       }
 
-      def isSparkNative(plan: SparkPlan): Boolean = plan match {
-        case p: AdaptiveSparkPlanExec => isSparkNative(p.inputPlan)
-        case p: QueryStageExec => isSparkNative(p.plan)
-        case _: CometPlan => false
-        case _ => true
-      }
-
-      def isCometNative(plan: SparkPlan): Boolean = plan match {
-        case p: AdaptiveSparkPlanExec => isCometNative(p.inputPlan)
-        case p: QueryStageExec => isCometNative(p.plan)
+      def isColumnar(plan: SparkPlan): Boolean = plan match {
+        case s: SparkPlan => s.supportsColumnar
         case _: CometPlan => true
         case _ => false
       }
 
-      def isTransition(plan1: SparkPlan, plan2: SparkPlan) = {
-        (isSparkNative(plan1) && isCometNative(plan2)) ||
-        (isCometNative(plan1) && isSparkNative(plan2))
-      }
-
-      val transitionCost = if (children.exists(ch => isTransition(plan, ch))) {
-        DEFAULT_TRANSITION_COST
-      } else {
-        0
-      }
+      val planColumnar = isColumnar(plan)
+      val transitionCost = children
+        .count(ch => isColumnar(ch) != planColumnar) * DEFAULT_TRANSITION_COST
 
       val totalCost = operatorCost + transitionCost + childPlanCost
 
