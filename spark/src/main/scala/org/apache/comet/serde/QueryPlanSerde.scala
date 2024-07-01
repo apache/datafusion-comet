@@ -2269,7 +2269,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
     op match {
       case _ if op.getTagValue(CometExplainInfo.CBO_FALLBACK).isDefined =>
-        logWarning("QueryPlanSerde cbo fallback")
         withInfo(op, "cbo: " + op.getTagValue(CometExplainInfo.CBO_FALLBACK).get)
         None
 
