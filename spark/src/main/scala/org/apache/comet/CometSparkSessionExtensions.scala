@@ -202,7 +202,6 @@ class CometSparkSessionExtensions
     private val execRule = CometExecRule(session)
 
     def apply(plan: SparkPlan): SparkPlan = {
-      var needToReplan = false
       val cometPlan = execRule.apply(plan)
       if (CometConf.COMET_CBO_ENABLED.get()) {
         // simple heuristic to avoid moving from Spark execution to Comet execution just
@@ -211,16 +210,12 @@ class CometSparkSessionExtensions
         cometPlan match {
           case CometSortExec(_, _, _, e: CometShuffleExchangeExec, _)
               if !e.child.supportsColumnar =>
-            needToReplan = true
-            // fall back for sort
-            plan.setTagValue(CometExplainInfo.CBO_FALLBACK, "avoid move to Comet just for sort")
-            // fall back for exchange as well
-            plan.children.head
-              .setTagValue(CometExplainInfo.CBO_FALLBACK, "avoid move to Comet just for sort")
+            // fall back for sort amd exchange operators
+            val fallbackReason = "avoid move to Comet just for sort"
+            plan.setTagValue(CometExplainInfo.CBO_FALLBACK, fallbackReason)
+            plan.children.head.setTagValue(CometExplainInfo.CBO_FALLBACK, fallbackReason)
+            return execRule.apply(plan)
           case _ =>
-        }
-        if (needToReplan) {
-          return execRule.apply(plan)
         }
       }
       cometPlan
