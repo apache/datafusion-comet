@@ -118,7 +118,7 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 ## Generating The Diff File
 
 ```shell
-    git diff v3.5.1 > ../datafusion-comet/dev/diffs/3.5.1.diff
+git diff v3.5.1 > ../datafusion-comet/dev/diffs/3.5.1.diff
 ```
 
 ## Running Tests in CI 
