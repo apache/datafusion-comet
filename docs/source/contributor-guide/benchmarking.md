@@ -51,7 +51,8 @@ $SPARK_HOME/bin/spark-submit \
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
-    --conf spark.executor.memory=64G \
+    --conf spark.executor.instances=1 \
+    --conf spark.executor.memory=32G \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.sql.autoBroadcastJoinThreshold=-1 \
@@ -68,8 +69,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.batchSize=8192 \
     --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.comet.exec.shuffle.mode=auto \
+    --conf spark.comet.shuffle.enforceMode.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.sql.adaptive.coalescePartitions.enabled=false \
     tpcbench.py \
     --benchmark tpch \
     --data /mnt/bigdata/tpch/sf100/ \
@@ -99,7 +100,7 @@ is an ongoing task, and we welcome contributions from the community to help achi
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](./benchmark-results/2024-05-30/spark-8-exec-5-runs.json)
-- [Comet](./benchmark-results/2024-05-30/comet-8-exec-5-runs.json)
-- [DataFusion](./benchmark-results/2024-05-30/datafusion-python-8-cores.json)
+- [Spark](./benchmark-results/2024-06-29/spark-8-exec-5-runs.json)
+- [Comet](./benchmark-results/2024-06-29/comet-8-exec-5-runs.json)
+- [DataFusion](./benchmark-results/2024-06-29/datafusion-python-8-cores.json)
  
