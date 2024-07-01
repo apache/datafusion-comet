@@ -41,7 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
@@ -2268,6 +2268,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     childOp.foreach(result.addChildren)
 
     op match {
+      case _ if op.getTagValue(CometExplainInfo.CBO_FALLBACK).isDefined =>
+        logWarning("QueryPlanSerde cbo fallback")
+        withInfo(op, "cbo: " + op.getTagValue(CometExplainInfo.CBO_FALLBACK).get)
+        None
+
       case ProjectExec(projectList, child) if isCometOperatorEnabled(op.conf, "project") =>
         val exprs = projectList.map(exprToProto(_, child.output))
 

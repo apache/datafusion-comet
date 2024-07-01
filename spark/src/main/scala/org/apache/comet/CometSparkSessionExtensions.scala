@@ -65,7 +65,7 @@ class CometSparkSessionExtensions
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session => CometQueryStagePrepRule(session) }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -73,7 +73,7 @@ class CometSparkSessionExtensions
   }
 
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+    override def preColumnarTransitions: Rule[SparkPlan] = CometPreColumnarRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
@@ -189,6 +189,54 @@ class CometSparkSessionExtensions
             scanExec
         }
       }
+    }
+  }
+
+  /**
+   * CometQueryStagePrepRule gets called from AQE for the whole plan multiple times as the plan is
+   * re-optimized after query stages complete. This is where we translate Spark operators and
+   * expressions into Comet/DataFusion native versions.
+   */
+  case class CometQueryStagePrepRule(session: SparkSession) extends Rule[SparkPlan] {
+
+    private val execRule = CometExecRule(session)
+
+    def apply(plan: SparkPlan): SparkPlan = {
+      var needToReplan = false
+      val cometPlan = execRule.apply(plan)
+      if (CometConf.COMET_CBO_ENABLED.get()) {
+        // simple heuristic to avoid moving from Spark execution to Comet execution just
+        // for the final sort
+        cometPlan match {
+          case CometSortExec(_, _, _, e: CometShuffleExchangeExec, _)
+              if !e.child.supportsColumnar =>
+            needToReplan = true
+            // fall back for sort
+            plan.setTagValue(CometExplainInfo.CBO_FALLBACK, "avoid move to Comet just for sort")
+            // fall back for exchange as well
+            plan.children.head
+              .setTagValue(CometExplainInfo.CBO_FALLBACK, "avoid move to Comet just for sort")
+          case _ =>
+        }
+        if (needToReplan) {
+          return execRule.apply(plan)
+        }
+      }
+      cometPlan
+    }
+  }
+
+  /**
+   * CometPreColumnarRule gets called for each individual query stage as it is being prepared for
+   * execution. As the name suggests, this rule is called before any columnar transitions are
+   * inserted into the plan.
+   */
+  case class CometPreColumnarRule(session: SparkSession) extends Rule[SparkPlan] {
+
+    private val execRule = CometExecRule(session)
+
+    def apply(plan: SparkPlan): SparkPlan = {
+      execRule.apply(plan)
     }
   }
 

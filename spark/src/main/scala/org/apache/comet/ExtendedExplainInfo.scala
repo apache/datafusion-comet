@@ -85,4 +85,5 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
 object CometExplainInfo {
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
+  val CBO_FALLBACK = new TreeNodeTag[String]("CometCboFallback")
 }
