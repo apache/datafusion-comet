@@ -207,6 +207,7 @@ class CometSparkSessionExtensions
       if (CometConf.COMET_CBO_ENABLED.get()) {
         // simple heuristic to avoid moving from Spark execution to Comet execution just
         // for the final sort
+        // in the future, we can make this check more generic and base it on actual costs
         cometPlan match {
           case CometSortExec(_, _, _, e: CometShuffleExchangeExec, _)
               if !e.child.supportsColumnar =>
