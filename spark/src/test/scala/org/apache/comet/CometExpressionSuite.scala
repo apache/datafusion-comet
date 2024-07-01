@@ -735,6 +735,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("add overflow ansi mode decimal") {
+    val value = BigDecimal("9" * 20 + "." + "9" * 18)
+    // TODO comet return null, control it and return the correct exception
+    val query = "select _1 + _2 from tbl"
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      "spark.sql.decimalOperations.allowPrecisionLoss" -> "false") {
+      testAnsiOverflow(Seq((value, value)), query)
+    }
+  }
+
   test("divide by zero (ANSI disable)") {
     // Enabling ANSI will cause native engine failure, but as we cannot catch
     // native error now, we cannot test it here.
