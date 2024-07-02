@@ -29,6 +29,7 @@ import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
 import org.apache.spark.package$;
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
@@ -57,7 +58,9 @@ public class TypeUtil {
     if (type == DataTypes.BooleanType || type == DataTypes.NullType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BOOLEAN, repetition);
     } else if (type == DataTypes.IntegerType || type instanceof YearMonthIntervalType) {
-      builder = Types.primitive(PrimitiveType.PrimitiveTypeName.INT32, repetition);
+      builder =
+          Types.primitive(PrimitiveType.PrimitiveTypeName.INT32, repetition)
+              .as(LogicalTypeAnnotation.intType(32, true));
     } else if (type == DataTypes.DateType) {
       builder =
           Types.primitive(PrimitiveType.PrimitiveTypeName.INT32, repetition)
@@ -148,6 +151,12 @@ public class TypeUtil {
           return;
         } else if (sparkType instanceof YearMonthIntervalType) {
           return;
+        } else if (sparkType == DataTypes.DoubleType && isSpark40Plus()) {
+          return;
+        } else if (sparkType == TimestampNTZType$.MODULE$
+            && isSpark40Plus()
+            && logicalTypeAnnotation instanceof DateLogicalTypeAnnotation) {
+          return;
         }
         break;
       case INT64:
@@ -159,11 +168,13 @@ public class TypeUtil {
           // For unsigned int64, it stores as plain signed int64 in Parquet when dictionary
           // fallbacks. We read them as decimal values.
           return;
-        } else if (isTimestampTypeMatched(logicalTypeAnnotation, TimeUnit.MICROS)) {
+        } else if (isTimestampTypeMatched(logicalTypeAnnotation, TimeUnit.MICROS)
+            && (sparkType == TimestampNTZType$.MODULE$ || sparkType == DataTypes.TimestampType)) {
           validateTimestampType(logicalTypeAnnotation, sparkType);
           // TODO: use dateTimeRebaseMode from Spark side
           return;
-        } else if (isTimestampTypeMatched(logicalTypeAnnotation, TimeUnit.MILLIS)) {
+        } else if (isTimestampTypeMatched(logicalTypeAnnotation, TimeUnit.MILLIS)
+            && (sparkType == TimestampNTZType$.MODULE$ || sparkType == DataTypes.TimestampType)) {
           validateTimestampType(logicalTypeAnnotation, sparkType);
           return;
         }
@@ -266,9 +277,14 @@ public class TypeUtil {
       DecimalLogicalTypeAnnotation decimalType = (DecimalLogicalTypeAnnotation) typeAnnotation;
       // It's OK if the required decimal precision is larger than or equal to the physical decimal
       // precision in the Parquet metadata, as long as the decimal scale is the same.
-      return decimalType.getPrecision() <= d.precision()
-          && (decimalType.getScale() == d.scale()
-              || (isSpark40Plus() && decimalType.getScale() <= d.scale()));
+      return (decimalType.getPrecision() <= d.precision() && decimalType.getScale() == d.scale())
+          || (isSpark40Plus()
+              && (!SQLConf.get().parquetVectorizedReaderEnabled()
+                  || (decimalType.getScale() <= d.scale()
+                      && decimalType.getPrecision() - decimalType.getScale()
+                          <= d.precision() - d.scale())));
+    } else if (isSpark40Plus() && !SQLConf.get().parquetVectorizedReaderEnabled()) {
+      return typeAnnotation instanceof IntLogicalTypeAnnotation || typeAnnotation == null;
     }
     return false;
   }

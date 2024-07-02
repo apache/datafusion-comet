@@ -70,6 +70,7 @@ public final class Native extends NativeBase {
       int maxDl,
       int maxRl,
       int bitWidth,
+      int expectedBitWidth,
       boolean isSigned,
       int typeLength,
       int precision,
