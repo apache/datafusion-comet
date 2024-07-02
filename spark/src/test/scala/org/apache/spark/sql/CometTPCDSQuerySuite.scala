@@ -160,6 +160,9 @@ class CometTPCDSQuerySuite
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "20g")
     conf.set(CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key, "true")
     conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+    // Disable `CometTakeOrderedAndProjectExec` because it doesn't produce same output order
+    // as Spark.
+    conf.set("spark.comet.exec.takeOrderedAndProjectExec.disabled", "true")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "20g")
     conf
