@@ -97,7 +97,7 @@ use crate::{
     },
 };
 
-use super::expressions::{abs::CometAbsFunc, EvalMode};
+use super::expressions::{abs::CometAbsFunc, create_named_struct::CreateNamedStruct, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -583,6 +583,15 @@ impl PhysicalPlanner {
                     bloom_filter_expr,
                     value_expr,
                 )?))
+            }
+            ExprStruct::CreateNamedStruct(expr) => {
+                let values = expr
+                    .values
+                    .iter()
+                    .map(|expr| self.create_expr(expr, input_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

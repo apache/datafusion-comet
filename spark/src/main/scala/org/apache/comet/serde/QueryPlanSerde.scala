@@ -2141,6 +2141,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
           }
 
+        case struct @ CreateNamedStruct(_) =>
+          val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
+          val dataType = serializeDataType(struct.dataType)
+
+          if (valExprs.forall(_.isDefined) && dataType.isDefined) {
+            val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
+            structBuilder.addAllValues(valExprs.map(_.get).asJava)
+            structBuilder.setDatatype(dataType.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setCreateNamedStruct(structBuilder)
+                .build())
+          } else {
+            withInfo(expr, struct.valExprs: _*)
+            None
+          }
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
