@@ -21,20 +21,20 @@ package org.apache.comet.vector
 
 import java.nio.channels.ReadableByteChannel
 
-import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ReadChannel}
 import org.apache.arrow.vector.ipc.message.MessageChannelReader
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometArrowAllocator
+
 /**
  * A reader that consumes Arrow data from an input channel, and produces Comet batches.
  */
 case class StreamReader(channel: ReadableByteChannel, source: String) extends AutoCloseable {
-  private var allocator = new RootAllocator(Long.MaxValue)
-    .newChildAllocator(s"${this.getClass.getSimpleName}/$source", 0, Long.MaxValue)
-  private val channelReader = new MessageChannelReader(new ReadChannel(channel), allocator)
-  private var arrowReader = new ArrowStreamReader(channelReader, allocator)
+  private val channelReader =
+    new MessageChannelReader(new ReadChannel(channel), CometArrowAllocator)
+  private var arrowReader = new ArrowStreamReader(channelReader, CometArrowAllocator)
   private var root = arrowReader.getVectorSchemaRoot
 
   def nextBatch(): Option[ColumnarBatch] = {
@@ -53,11 +53,9 @@ case class StreamReader(channel: ReadableByteChannel, source: String) extends Au
     if (root != null) {
       arrowReader.close()
       root.close()
-      allocator.close()
 
       arrowReader = null
       root = null
-      allocator = null
     }
   }
 }

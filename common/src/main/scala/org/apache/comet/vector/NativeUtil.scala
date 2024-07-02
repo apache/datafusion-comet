@@ -22,18 +22,18 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometArrowAllocator
+
 class NativeUtil {
   import Utils._
 
-  private val allocator = new RootAllocator(Long.MaxValue)
-    .newChildAllocator(this.getClass.getSimpleName, 0, Long.MaxValue)
+  private val allocator = CometArrowAllocator
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
   private val importer = new ArrowImporter(allocator)
 
