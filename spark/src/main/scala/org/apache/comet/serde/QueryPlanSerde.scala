@@ -825,8 +825,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
           None
 
-        case rem @ Remainder(left, right, _)
-            if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+        case rem @ Remainder(left, right, _) if supportedDataType(left.dataType) =>
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(nullIfWhenPrimitive(right), inputs)
 
@@ -858,23 +857,80 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          // this is a workaround for handling -0.0 in double and float
+          // untill https://github.com/apache/datafusion/issues/11108 is fixed
+          val leftZero = Literal.default(left.dataType)
+          val rightZero = Literal.default(right.dataType)
+          val negZeroLeft = UnaryMinus(leftZero)
+          val negZeroRight = UnaryMinus(rightZero)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Equal.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setEq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
+          def buildEqualExpr(
+              leftExpr: Option[Expr],
+              rightExpr: Option[Expr]): Option[ExprOuterClass.Expr] = {
+            if (leftExpr.isDefined && rightExpr.isDefined) {
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setEq(
+                    ExprOuterClass.Equal
+                      .newBuilder()
+                      .setLeft(leftExpr.get)
+                      .setRight(rightExpr.get))
+                  .build())
+            } else {
+              withInfo(expr, left, right)
+              None
+            }
           }
+          if ((left.dataType == DoubleType &&
+              right.dataType == DoubleType) ||
+            (left.dataType == FloatType &&
+              right.dataType == FloatType)) {
+            (left, right) match {
+              case (`negZeroLeft`, `negZeroRight`) =>
+                return buildEqualExpr(
+                  exprToProtoInternal(Abs(left).child, inputs),
+                  exprToProtoInternal(Abs(right).child, inputs))
+              case (`negZeroLeft`, _) =>
+                return buildEqualExpr(
+                  exprToProtoInternal(Abs(left).child, inputs),
+                  exprToProtoInternal(right, inputs))
+              case (_, `negZeroRight`) =>
+                return buildEqualExpr(
+                  exprToProtoInternal(left, inputs),
+                  exprToProtoInternal(Abs(right).child, inputs))
+              case _ =>
+                val doubleNan = Literal(Double.NaN, DoubleType)
+                val floatNan = Literal(Float.NaN, FloatType)
+
+                if ((left.nullable && !right.nullable) &&
+                  (left != negZeroLeft && right != negZeroRight) &&
+                  (left != leftZero && right != rightZero) &&
+                  (left != doubleNan && right != doubleNan) &&
+                  (left != floatNan && right != floatNan)) {
+                  withInfo(expr, left, right)
+                  return None
+                }
+                buildEqualExpr(
+                  exprToProtoInternal(left, inputs),
+                  exprToProtoInternal(right, inputs))
+            }
+          }
+
+          val leftExpr =
+            if (left.dataType == DoubleType || left.dataType == FloatType) {
+              exprToProtoInternal(If(EqualTo(left, negZeroLeft), leftZero, left), inputs)
+            } else {
+              exprToProtoInternal(left, inputs)
+            }
+          val rightExpr =
+            if (right.dataType == DoubleType || right.dataType == FloatType) {
+              exprToProtoInternal(If(EqualTo(right, negZeroRight), rightZero, right), inputs)
+            } else {
+              exprToProtoInternal(right, inputs)
+            }
+
+          buildEqualExpr(leftExpr, rightExpr)
 
         case Not(EqualTo(left, right)) =>
           val leftExpr = exprToProtoInternal(left, inputs)
