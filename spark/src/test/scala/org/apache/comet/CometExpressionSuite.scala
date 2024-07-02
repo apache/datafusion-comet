@@ -1543,6 +1543,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1554,8 +1555,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
-              "BroadcastExchange is not supported",
-              "BroadcastHashJoin disabled because not all child plans are native")))
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "Project is not native because the following children are not native (BroadcastHashJoin)",
+              "BroadcastHashJoin is not enabled because the following children are not native" +
+                " (BroadcastExchange, Project)")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
