@@ -401,6 +401,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CBO_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.cbo.enabled")
+      .doc(
+        "Cost-based optimizer to avoid performance regressions where Comet plan may " +
+          "be slower than Spark plan.")
+      .booleanConf
+      .createWithDefault(false)
+
 }
 
 object ConfigHelpers {
