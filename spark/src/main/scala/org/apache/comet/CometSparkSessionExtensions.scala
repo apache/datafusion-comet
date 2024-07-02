@@ -40,6 +40,7 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -540,6 +541,17 @@ class CometSparkSessionExtensions
             "TakeOrderedAndProject requires shuffle to be enabled")
           withInfo(s, Seq(info1, info2).flatten.mkString(","))
           s
+
+        case w: WindowExec =>
+          val newOp = transform1(w)
+          newOp match {
+            case Some(nativeOp) =>
+              val cometOp =
+                CometWindowExec(w, w.windowExpression, w.partitionSpec, w.orderSpec, w.child)
+              CometSinkPlaceHolder(nativeOp, w, cometOp)
+            case None =>
+              w
+          }
 
         case u: UnionExec
             if isCometOperatorEnabled(conf, "union") &&
