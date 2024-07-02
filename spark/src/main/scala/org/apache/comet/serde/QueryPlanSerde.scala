@@ -1352,6 +1352,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case IsNaN(child) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          val optExpr =
+            scalarExprToProtoWithReturnType("isnan", BooleanType, childExpr)
+
+          optExprWithInfo(optExpr, expr, child)
+
         case SortOrder(child, direction, nullOrdering, _) =>
           val childExpr = exprToProtoInternal(child, inputs)
 

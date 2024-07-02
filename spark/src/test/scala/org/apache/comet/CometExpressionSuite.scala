@@ -1719,4 +1719,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("isnan") {
+    Seq("true", "false").foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+        withParquetTable(
+          Seq(Some(1.0), Some(Double.NaN), None).map(i => Tuple1(i)),
+          "tbl",
+          withDictionary = dictionary.toBoolean) {
+          checkSparkAnswerAndOperator("SELECT isnan(_1), isnan(cast(_1 as float)) FROM tbl")
+          // Use inside a nullable statement to make sure isnan has correct behavior for null input
+          checkSparkAnswerAndOperator(
+            "SELECT CASE WHEN (_1 > 0) THEN NULL ELSE isnan(_1) END FROM tbl")
+        }
+      }
+    }
+  }
 }
