@@ -778,7 +778,7 @@ class CometSparkSessionExtensions
       if (isANSIEnabled(conf)) {
         if (COMET_ANSI_MODE_ENABLED.get()) {
           if (!isSpark40Plus) {
-          logWarning("Using Comet's experimental support for ANSI mode.")
+            logWarning("Using Comet's experimental support for ANSI mode.")
           }
         } else {
           logInfo("Comet extension disabled for ANSI mode")
