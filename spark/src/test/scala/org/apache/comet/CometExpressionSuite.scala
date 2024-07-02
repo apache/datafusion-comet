@@ -37,6 +37,27 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plu
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  def testAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T], query: String): Unit = {
+    withParquetTable(data, "tbl") {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkExc), Some(cometExc)) =>
+          val cometErrorPattern =
+            """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
+          assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
+          assert(sparkExc.getMessage.contains("overflow"))
+        case _ => fail("Exception should be thrown")
+      }
+    }
+  }
+
+  def testAnsiWithoutOverflow[T <: Product: ClassTag: TypeTag](
+      data: Seq[T],
+      query: String): Unit = {
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
   test("coalesce should return correct datatype") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -666,12 +687,51 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("add overflow (ANSI disable)") {
-    // Enabling ANSI will cause native engine failure, but as we cannot catch
-    // native error now, we cannot test it here.
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      withParquetTable(Seq((Int.MaxValue, 1)), "tbl") {
-        checkSparkAnswerAndOperator("SELECT _1 + _2 FROM tbl")
+    def testLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl") {
+          checkSparkAnswerAndOperator("select _1 + _2 from tbl")
+        }
       }
+    }
+
+    testLegacyOverflow(Seq((Byte.MaxValue, 1.toByte), (Byte.MinValue, -1.toByte)))
+    testLegacyOverflow(Seq((Short.MaxValue, 1.toShort), (Short.MinValue, -1.toShort)))
+    testLegacyOverflow(Seq((Int.MaxValue, 1), (Int.MinValue, -1)))
+    testLegacyOverflow(Seq((Long.MaxValue, 1.toLong), (Long.MinValue, -1.toLong)))
+    testLegacyOverflow(
+      Seq(
+        (Float.MaxValue, 1.toFloat),
+        (Float.MinValue, -1.toFloat),
+        (Float.MaxValue, Float.MaxValue)))
+    testLegacyOverflow(
+      Seq(
+        (Double.MaxValue, 1.toDouble),
+        (Double.MinValue, -1.toDouble),
+        (Double.MaxValue, Double.MaxValue)))
+  }
+
+  test("add overflow ansi mode") {
+    val query = "select _1 + _2 from tbl"
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      testAnsiOverflow(Seq((Byte.MaxValue, 1.toByte), (Byte.MinValue, -1.toByte)), query)
+      testAnsiOverflow(Seq((Short.MaxValue, 1.toShort), (Short.MinValue, -1.toShort)), query)
+      testAnsiOverflow(Seq((Int.MaxValue, 1), (Int.MinValue, -1)), query)
+      testAnsiOverflow(Seq((Long.MaxValue, 1.toLong), (Long.MinValue, -1.toLong)), query)
+      testAnsiWithoutOverflow(
+        Seq(
+          (Float.MaxValue, 1.toFloat),
+          (Float.MinValue, -1.toFloat),
+          (Float.MaxValue, Float.MaxValue)),
+        query)
+      testAnsiWithoutOverflow(
+        Seq(
+          (Double.MaxValue, 1.toDouble),
+          (Double.MinValue, -1.toDouble),
+          (Double.MaxValue, Double.MaxValue)),
+        query)
     }
   }
 
@@ -850,35 +910,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("abs Overflow ansi mode") {
-
-    def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
-      withParquetTable(data, "tbl") {
-        checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
-            assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-
-    def testAbsAnsi[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
-      withParquetTable(data, "tbl") {
-        checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
-      }
-    }
-
+    val query = "select abs(_1), abs(_2) from tbl"
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
       CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
-      testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
-      testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
-      testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
-      testAbsAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)))
-      testAbsAnsi(Seq((Float.MaxValue, Float.MinValue)))
-      testAbsAnsi(Seq((Double.MaxValue, Double.MinValue)))
+      testAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)), query)
+      testAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)), query)
+      testAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)), query)
+      testAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)), query)
+      testAnsiWithoutOverflow(Seq((Float.MaxValue, Float.MinValue)), query)
+      testAnsiWithoutOverflow(Seq((Double.MaxValue, Double.MinValue)), query)
     }
   }
 
