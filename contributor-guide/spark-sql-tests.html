@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Plugin Overview &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Running Spark SQL Tests &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comet Development Guide" href="development.html" />
-    <link rel="prev" title="Contributing to Apache DataFusion Comet" href="contributing.html" />
+    <link rel="prev" title="Profiling Native Code" href="profiling_native_code.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -160,8 +159,8 @@ under the License.
    Getting Started
   </a>
  </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+ <li class="toctree-l1">
+  <a class="reference internal" href="plugin_overview.html">
    Comet Plugin Overview
   </a>
  </li>
@@ -190,8 +189,8 @@ under the License.
    Profiling Native Code
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="spark-sql-tests.html">
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
    Spark SQL Tests
   </a>
  </li>
@@ -267,13 +266,33 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#cometscanrule">
-   CometScanRule
+  <a class="reference internal nav-link" href="#install-comet">
+   1. Install Comet
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#cometexecrule">
-   CometExecRule
+  <a class="reference internal nav-link" href="#clone-spark-and-apply-diff">
+   2. Clone Spark and Apply Diff
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-spark-sql-tests">
+   3. Run Spark SQL Tests
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#creating-a-diff-file-for-a-new-spark-version">
+   Creating a diff file for a new Spark version
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#generating-the-diff-file">
+   Generating The Diff File
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#running-tests-in-ci">
+   Running Tests in CI
   </a>
  </li>
 </ul>
@@ -285,7 +304,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/plugin_overview.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/spark-sql-tests.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -322,36 +341,102 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="comet-plugin-overview">
-<h1>Comet Plugin Overview<a class="headerlink" href="#comet-plugin-overview" title="Link to this heading">¶</a></h1>
-<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometSparkSessionExtensions</span></code> class, which can be registered with Spark by adding the following setting to the Spark configuration when launching <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">extensions</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">CometSparkSessionExtensions</span>
+<section id="running-spark-sql-tests">
+<h1>Running Spark SQL Tests<a class="headerlink" href="#running-spark-sql-tests" title="Link to this heading">¶</a></h1>
+<p>Running Apache Spark’s SQL tests with Comet enabled is a good way to ensure that Comet produces the same
+results as that version of Spark. To enable this, we apply some changes to the Apache Spark source code so that
+Comet is enabled when we run the tests.</p>
+<p>Here is an overview of the changes that we need to make to Spark:</p>
+<ul class="simple">
+<li><p>Update the pom.xml to add a dependency on Comet</p></li>
+<li><p>Modify SparkSession to load the Comet extension</p></li>
+<li><p>Modify TestHive to load Comet</p></li>
+<li><p>Modify SQLTestUtilsBase to load Comet when <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code> environment variable exists</p></li>
+</ul>
+<p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.</p>
+<section id="install-comet">
+<h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">¶</a></h2>
+<p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.4&quot;</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
-<p>On initialization, this class registers two physical plan optimization rules with Spark: <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> and <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>. These rules run whenever a query stage is being planned.</p>
-<section id="cometscanrule">
-<h2>CometScanRule<a class="headerlink" href="#cometscanrule" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet Parquet scan classes.</p>
-<p>When the V1 data source API is being used, <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>.</p>
-<p>When the V2 data source API is being used, <code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometBatchScanExec</span></code>.</p>
 </section>
-<section id="cometexecrule">
-<h2>CometExecRule<a class="headerlink" href="#cometexecrule" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> attempts to transform a Spark physical plan into a Comet plan. This rule is executed against
-individual query stages when they are being prepared for execution.</p>
-<p>This rule traverses bottom-up from the original Spark plan and attempts to replace each node with a Comet equivalent.
-For example, a <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code> will be replaced by <code class="docutils literal notranslate"><span class="pre">CometProjectExec</span></code>.</p>
-<p>When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
-If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
-underlying Spark node and the plan will not be converted.</p>
-<p>Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
-transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
-of this could outweigh the benefits of running parts of the query stage natively in Comet.</p>
-<p>Once the plan has been transformed, it is serialized into Comet protocol buffer format by the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> class
-and this serialized plan is passed into the native code by <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>.</p>
-<p>In the native code there is a <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner</span></code> struct (in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>) which converts the serialized plan into an
-Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
-override the DataFusion versions to ensure compatibility with Apache Spark.</p>
+<section id="clone-spark-and-apply-diff">
+<h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">¶</a></h2>
+<p>Clone Apache Spark locally and apply the diff file from Comet.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
+<span class="nb">cd</span><span class="w"> </span>apache-spark
+git<span class="w"> </span>checkout<span class="w"> </span>v3.4.3
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
+</pre></div>
+</div>
+</section>
+<section id="run-spark-sql-tests">
+<h2>3. Run Spark SQL Tests<a class="headerlink" href="#run-spark-sql-tests" title="Link to this heading">¶</a></h2>
+<p>Use the following commands to run the SQL tests locally.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span>catalyst/test
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="creating-a-diff-file-for-a-new-spark-version">
+<h2>Creating a diff file for a new Spark version<a class="headerlink" href="#creating-a-diff-file-for-a-new-spark-version" title="Link to this heading">¶</a></h2>
+<p>Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version
+of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
+vary depending on the changes in the new version of Spark, but here is a general guide to the process.</p>
+<p>We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
+for Spark version 3.5.1 we may start by applying the existing diff for 3.4.3 first.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>git/apache/spark
+git<span class="w"> </span>checkout<span class="w"> </span>v3.5.1
+git<span class="w"> </span>apply<span class="w"> </span>--reject<span class="w"> </span>--whitespace<span class="o">=</span>fix<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
+</pre></div>
+</div>
+<p>Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
+command generated the following files.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>find<span class="w"> </span>.<span class="w"> </span>-name<span class="w"> </span><span class="s2">&quot;*.rej&quot;</span>
+./pom.xml.rej
+./sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala.rej
+./sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala.rej
+./sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala.rej
+</pre></div>
+</div>
+<p>The changes in these reject files need to be applied manually.</p>
+<p>One method is to use the <a class="reference external" href="https://github.com/neilbrown/wiggle">wiggle</a> command (<code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">wiggle</span></code> on Mac).</p>
+<p>For example:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>wiggle<span class="w"> </span>--replace<span class="w"> </span>./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala<span class="w"> </span>./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala.rej
+</pre></div>
+</div>
+</section>
+<section id="generating-the-diff-file">
+<h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">¶</a></h2>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>diff<span class="w"> </span>v3.5.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.1.diff
+</pre></div>
+</div>
+</section>
+<section id="running-tests-in-ci">
+<h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">¶</a></h2>
+<p>The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
+new Spark version, the <code class="docutils literal notranslate"><span class="pre">spark_sql_test.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">spark_sql_test_ansi.yaml</span></code> files will need updating with the
+new version.</p>
 </section>
 </section>
 
@@ -361,19 +446,12 @@ override the DataFusion versions to ensure compatibility with Apache Spark.</p>
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="contributing.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="profiling_native_code.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
+            <p class="prev-next-title">Profiling Native Code</p>
         </div>
-    </a>
-    <a class='right-next' id="next-link" href="development.html" title="next page">
-    <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Development Guide</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
     </a>
 </div>
               
