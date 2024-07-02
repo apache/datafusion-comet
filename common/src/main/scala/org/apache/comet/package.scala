@@ -24,6 +24,14 @@ import java.util.Properties
 import org.apache.arrow.memory.RootAllocator
 
 package object comet {
+
+  /**
+   * The root allocator for Comet execution. Because Arrow Java memory management is based on
+   * reference counting, exposed arrays increase the reference count of the underlying buffers.
+   * Until the reference count is zero, the memory will not be released. If the consumer side is
+   * finished later than the close of the allocator, the allocator will think the memory is
+   * leaked. To avoid this, we use a single allocator for the whole execution process.
+   */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 
   /**
