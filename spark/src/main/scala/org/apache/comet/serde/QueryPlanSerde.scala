@@ -207,7 +207,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
       expr match {
         case agg: AggregateExpression =>
-          Some(agg)
+          agg.aggregateFunction match {
+            case _: Min | _: Max | _: Count =>
+              Some(agg)
+            case _ =>
+              withInfo(windowExpr, "Unsupported aggregate", expr)
+              None
+          }
         case _ =>
           None
       }
