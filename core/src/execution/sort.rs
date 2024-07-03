@@ -159,12 +159,16 @@ where
                     pos += 1;
                 }
             } else {
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        bucket.as_ptr(),
-                        self.get_unchecked_mut(pos),
-                        bucket.len(),
-                    );
+                if !bucket.is_empty() {
+                    unsafe {
+                        // SAFETY the buckets are created with correct alignment
+                        // because they are defined as Vec<Vec<T>>
+                        ptr::copy_nonoverlapping(
+                            bucket.as_ptr(),
+                            self.get_unchecked_mut(pos),
+                            bucket.len(),
+                        );
+                    }
                 }
                 pos += bucket.len();
             }

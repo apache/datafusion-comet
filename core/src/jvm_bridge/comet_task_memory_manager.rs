@@ -22,8 +22,6 @@ use jni::{
     JNIEnv,
 };
 
-use crate::jvm_bridge::get_global_jclass;
-
 /// A wrapper which delegate acquire/release memory calls to the
 /// JVM side `CometTaskMemoryManager`.
 #[derive(Debug)]
@@ -40,7 +38,7 @@ impl<'a> CometTaskMemoryManager<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/CometTaskMemoryManager";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometTaskMemoryManager<'a>> {
-        let class = get_global_jclass(env, Self::JVM_CLASS)?;
+        let class = env.find_class(Self::JVM_CLASS)?;
 
         let result = CometTaskMemoryManager {
             class,

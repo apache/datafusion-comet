@@ -19,9 +19,10 @@
 
 use crate::errors::CometResult;
 
+use jni::objects::JClass;
 use jni::{
-    errors::{Error, Result as JniResult},
-    objects::{JClass, JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
+    errors::Error,
+    objects::{JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
     signature::ReturnType,
     AttachGuard, JNIEnv,
 };
@@ -73,7 +74,7 @@ macro_rules! jni_call {
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -100,7 +101,7 @@ macro_rules! jni_static_call {
         let ret = $env.call_static_method_unchecked(clazz, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env).unwrap() {
+        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
             $crate::jvm_bridge::jni_map_error!($env, ret)
@@ -176,20 +177,6 @@ pub(crate) use jni_new_string;
 pub(crate) use jni_static_call;
 pub(crate) use jvalues;
 
-/// Gets a global reference to a Java class.
-pub fn get_global_jclass(env: &mut JNIEnv, cls: &str) -> JniResult<JClass<'static>> {
-    let local_jclass = env.find_class(cls)?;
-    let global = env.new_global_ref::<JObject>(local_jclass.into())?;
-
-    // A hack to make the `JObject` static. This is safe because the global reference is never
-    // gc-ed by the JVM before dropping the global reference.
-    let global_obj = unsafe { std::mem::transmute::<_, JObject<'static>>(global.as_obj()) };
-    // Prevent the global reference from being dropped.
-    let _ = std::mem::ManuallyDrop::new(global);
-
-    Ok(JClass::from(global_obj))
-}
-
 mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
@@ -203,6 +190,12 @@ pub use comet_task_memory_manager::*;
 
 /// The JVM classes that are used in the JNI calls.
 pub struct JVMClasses<'a> {
+    /// Cached JClass for "java.lang.Object"
+    java_lang_object: JClass<'a>,
+    /// Cached JClass for "java.lang.Class"
+    java_lang_class: JClass<'a>,
+    /// Cached JClass for "java.lang.Throwable"
+    java_lang_throwable: JClass<'a>,
     /// Cached method ID for "java.lang.Object#getClass"
     pub object_get_class_method: JMethodID,
     /// Cached method ID for "java.lang.Class#getName"
@@ -236,29 +229,34 @@ impl JVMClasses<'_> {
         JVM_CLASSES.get_or_init(|| {
             // A hack to make the `JNIEnv` static. It is not safe but we don't really use the
             // `JNIEnv` except for creating the global references of the classes.
-            let env = unsafe { std::mem::transmute::<_, &'static mut JNIEnv>(env) };
+            let env = unsafe { std::mem::transmute::<&mut JNIEnv, &'static mut JNIEnv>(env) };
 
-            let clazz = env.find_class("java/lang/Object").unwrap();
+            let java_lang_object = env.find_class("java/lang/Object").unwrap();
             let object_get_class_method = env
-                .get_method_id(clazz, "getClass", "()Ljava/lang/Class;")
+                .get_method_id(&java_lang_object, "getClass", "()Ljava/lang/Class;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Class").unwrap();
+            let java_lang_class = env.find_class("java/lang/Class").unwrap();
             let class_get_name_method = env
-                .get_method_id(clazz, "getName", "()Ljava/lang/String;")
+                .get_method_id(&java_lang_class, "getName", "()Ljava/lang/String;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Throwable").unwrap();
+            let java_lang_throwable = env.find_class("java/lang/Throwable").unwrap();
             let throwable_get_message_method = env
-                .get_method_id(clazz, "getMessage", "()Ljava/lang/String;")
+                .get_method_id(&java_lang_throwable, "getMessage", "()Ljava/lang/String;")
                 .unwrap();
 
-            let clazz = env.find_class("java/lang/Throwable").unwrap();
             let throwable_get_cause_method = env
-                .get_method_id(clazz, "getCause", "()Ljava/lang/Throwable;")
+                .get_method_id(&java_lang_throwable, "getCause", "()Ljava/lang/Throwable;")
                 .unwrap();
 
+            // SAFETY: According to the documentation for `JMethodID`, it is our
+            // responsibility to maintain a reference to the `JClass` instances where the
+            // methods were accessed from to prevent the methods from being garbage-collected
             JVMClasses {
+                java_lang_object,
+                java_lang_class,
+                java_lang_throwable,
                 object_get_class_method,
                 class_get_name_method,
                 throwable_get_message_method,
@@ -276,10 +274,15 @@ impl JVMClasses<'_> {
     }
 
     /// Gets the JNIEnv for the current thread.
-    pub fn get_env() -> AttachGuard<'static> {
+    pub fn get_env() -> CometResult<AttachGuard<'static>> {
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
-            java_vm.attach_current_thread().unwrap()
+            java_vm.attach_current_thread().map_err(|e| {
+                CometError::Internal(format!(
+                    "JVMClasses::get_env() failed to attach current thread: {}",
+                    e
+                ))
+            })
         }
     }
 }
@@ -385,5 +388,6 @@ pub(crate) fn convert_exception(
     Ok(CometError::JavaException {
         class: exception_class_name_str,
         msg: message_str,
+        throwable: env.new_global_ref(throwable)?,
     })
 }

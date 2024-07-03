@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark32, isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -51,7 +51,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals divide by zero") {
-    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal divide operation
+    // TODO: enable Spark 3.3 tests after supporting decimal divide operation
     assume(isSpark34Plus)
 
     Seq(true, false).foreach { dictionary =>
@@ -229,9 +229,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case None =>
                 Row(null, null, null)
               case Some(i) =>
-                val hour = new java.sql.Timestamp(i).getHours
-                val minute = new java.sql.Timestamp(i).getMinutes
-                val second = new java.sql.Timestamp(i).getSeconds
+                val timestamp = new java.sql.Timestamp(i).toLocalDateTime
+                val hour = timestamp.getHour
+                val minute = timestamp.getMinute
+                val second = timestamp.getSecond
 
                 Row(hour, minute, second)
             })
@@ -292,7 +293,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to string") {
-    // TODO: make the test pass for Spark 3.2 & 3.3
+    // TODO: make the test pass for Spark 3.3
     assume(isSpark34Plus)
 
     withSQLConf(
@@ -317,7 +318,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to long, date") {
-    // TODO: make the test pass for Spark 3.2 & 3.3
+    // TODO: make the test pass for Spark 3.3
     assume(isSpark34Plus)
 
     withSQLConf(
@@ -410,7 +411,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with timestamp_ntz") {
-    assume(!isSpark32, "timestamp functions for timestamp_ntz have incorrect behavior in 3.2")
     withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -618,8 +618,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("contains") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -636,8 +634,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("startswith") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -654,8 +650,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("endswith") {
-    assume(!isSpark32)
-
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -692,7 +686,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals arithmetic and comparison") {
-    // TODO: enable Spark 3.2 & 3.3 tests after supporting decimal reminder operation
+    // TODO: enable Spark 3.3 tests after supporting decimal reminder operation
     assume(isSpark34Plus)
 
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
@@ -957,10 +951,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("round") {
-    assume(
-      !isSpark32,
-      "round function for Spark 3.2 does not allow negative target scale and has different result precision/scale for decimals")
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1048,6 +1038,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
           val query = s"SELECT chr(c9), chr(c4) FROM $table"
           checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("Chr with negative and large value") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test0"
+        withTable(table) {
+          sql(s"create table $table(c9 int, c4 int) using parquet")
+          sql(
+            s"insert into $table values(0, 0), (61231, -61231), (-1700, 1700), (0, -4000), (-40, 40), (256, 512)")
+          val query = s"SELECT chr(c9), chr(c4) FROM $table"
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+
+    withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        for (n <- Seq("0", "-0", "0.5", "-0.5", "555", "-555", "null")) {
+          checkSparkAnswerAndOperator(s"select chr(cast(${n} as int)) FROM tbl")
         }
       }
     }
@@ -1152,11 +1166,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unhex") {
-    // When running against Spark 3.2, we include a bug fix for https://issues.apache.org/jira/browse/SPARK-40924 that
-    // was added in Spark 3.3, so although Comet's behavior is more correct when running against Spark 3.2, it is not
-    // the same (and this only applies to edge cases with hex inputs with lengths that are not divisible by 2)
-    assume(!isSpark32, "unhex function has incorrect behavior in 3.2")
-
     val table = "unhex_table"
     withTable(table) {
       sql(s"create table $table(col string) using parquet")
@@ -1534,6 +1543,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1545,8 +1555,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
-              "BroadcastExchange is not supported",
-              "BroadcastHashJoin disabled because not all child plans are native")))
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "Project is not native because the following children are not native (BroadcastHashJoin)",
+              "BroadcastHashJoin is not enabled because the following children are not native" +
+                " (BroadcastExchange, Project)")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1562,7 +1574,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
@@ -1595,7 +1606,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_XXHASH64_ENABLED.key -> "true",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {

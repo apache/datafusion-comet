@@ -21,8 +21,7 @@ use arrow::{
     compute::take,
     datatypes::{ArrowNativeTypeOp, UInt16Type, UInt32Type, UInt64Type, UInt8Type},
 };
-use std::{hash::Hasher, sync::Arc};
-use twox_hash::XxHash64;
+use std::sync::Arc;
 
 use datafusion::{
     arrow::{
@@ -34,6 +33,8 @@ use datafusion::{
     },
     error::{DataFusionError, Result},
 };
+
+use crate::execution::datafusion::expressions::xxhash64::spark_compatible_xxhash64;
 
 #[inline]
 pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
@@ -85,11 +86,16 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
     // safety:
     // avoid boundary checking in performance critical codes.
     // all operations are guaranteed to be safe
+    // data is &[u8] so we do not need to check for proper alignment
     unsafe {
-        let mut h1 = hash_bytes_by_int(
-            std::slice::from_raw_parts(data.get_unchecked(0), len_aligned),
-            seed,
-        );
+        let mut h1 = if len_aligned > 0 {
+            hash_bytes_by_int(
+                std::slice::from_raw_parts(data.get_unchecked(0), len_aligned),
+                seed,
+            )
+        } else {
+            seed as i32
+        };
 
         for i in len_aligned..len {
             let half_word = *data.get_unchecked(i) as i8 as i32;
@@ -97,14 +103,6 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
         }
         fmix(h1, len as i32) as u32
     }
-}
-
-#[inline]
-pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
-    // TODO: Rewrite with a stateless hasher to reduce stack allocation?
-    let mut hasher = XxHash64::with_seed(seed);
-    hasher.write(data.as_ref());
-    hasher.finish()
 }
 
 macro_rules! hash_array {
@@ -481,7 +479,7 @@ pub(crate) fn create_murmur3_hashes<'a>(
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
-pub(crate) fn create_xxhash64_hashes<'a>(
+pub fn create_xxhash64_hashes<'a>(
     arrays: &[ArrayRef],
     hashes_buffer: &'a mut [u64],
 ) -> Result<&'a mut [u64]> {

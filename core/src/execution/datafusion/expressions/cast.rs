@@ -259,7 +259,7 @@ macro_rules! cast_float_to_int16_down {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        let is_overflow = value.is_nan() || value.abs() as i32 == std::i32::MAX;
+                        let is_overflow = value.is_nan() || value.abs() as i32 == i32::MAX;
                         if is_overflow {
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
@@ -374,7 +374,7 @@ macro_rules! cast_decimal_to_int16_down {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
                         let (truncated, decimal) = (value / divisor, (value % divisor).abs());
-                        let is_overflow = truncated.abs() > std::i32::MAX.into();
+                        let is_overflow = truncated.abs() > i32::MAX.into();
                         if is_overflow {
                             return Err(cast_overflow(
                                 &format!("{}.{}BD", truncated, decimal),
@@ -498,7 +498,7 @@ impl Cast {
 
     fn cast_array(&self, array: ArrayRef) -> DataFusionResult<ArrayRef> {
         let to_type = &self.data_type;
-        let array = array_with_timezone(array, self.timezone.clone(), Some(to_type));
+        let array = array_with_timezone(array, self.timezone.clone(), Some(to_type))?;
         let from_type = array.data_type().clone();
 
         // unpack dictionary string arrays first
@@ -1641,6 +1641,8 @@ mod tests {
     use arrow_array::StringArray;
     use arrow_schema::TimeUnit;
 
+    use datafusion_physical_expr::expressions::Column;
+
     use super::*;
 
     #[test]
@@ -1896,5 +1898,32 @@ mod tests {
         // ANSI mode should throw error on decimal
         assert!(cast_string_to_i8("0.2", EvalMode::Ansi).is_err());
         assert!(cast_string_to_i8(".", EvalMode::Ansi).is_err());
+    }
+
+    #[test]
+    fn test_cast_unsupported_timestamp_to_date() {
+        // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
+        let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
+        let cast = Cast::new(
+            Arc::new(Column::new("a", 0)),
+            DataType::Date32,
+            EvalMode::Legacy,
+            "UTC".to_owned(),
+        );
+        let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_cast_invalid_timezone() {
+        let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
+        let cast = Cast::new(
+            Arc::new(Column::new("a", 0)),
+            DataType::Date32,
+            EvalMode::Legacy,
+            "Not a valid timezone".to_owned(),
+        );
+        let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
+        assert!(result.is_err())
     }
 }

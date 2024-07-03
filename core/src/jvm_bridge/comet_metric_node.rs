@@ -22,8 +22,6 @@ use jni::{
     JNIEnv,
 };
 
-use super::get_global_jclass;
-
 /// A struct that holds all the JNI methods and fields for JVM CometMetricNode class.
 pub struct CometMetricNode<'a> {
     pub class: JClass<'a>,
@@ -37,21 +35,16 @@ impl<'a> CometMetricNode<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometMetricNode";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
-        // Get the global class reference
-        let class = get_global_jclass(env, Self::JVM_CLASS)?;
+        let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {
-            method_get_child_node: env
-                .get_method_id(
-                    Self::JVM_CLASS,
-                    "getChildNode",
-                    format!("(I)L{:};", Self::JVM_CLASS).as_str(),
-                )
-                .unwrap(),
+            method_get_child_node: env.get_method_id(
+                Self::JVM_CLASS,
+                "getChildNode",
+                format!("(I)L{:};", Self::JVM_CLASS).as_str(),
+            )?,
             method_get_child_node_ret: ReturnType::Object,
-            method_add: env
-                .get_method_id(Self::JVM_CLASS, "add", "(Ljava/lang/String;J)V")
-                .unwrap(),
+            method_add: env.get_method_id(Self::JVM_CLASS, "add", "(Ljava/lang/String;J)V")?,
             method_add_ret: ReturnType::Primitive(Primitive::Void),
             class,
         })

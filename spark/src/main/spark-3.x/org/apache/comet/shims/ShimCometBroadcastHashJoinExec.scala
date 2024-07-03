@@ -27,9 +27,9 @@ trait ShimCometBroadcastHashJoinExec {
   /**
    * Returns the expressions that are used for hash partitioning including `HashPartitioning` and
    * `CoalescedHashPartitioning`. They shares same trait `HashPartitioningLike` since Spark 3.4,
-   * but Spark 3.2/3.3 doesn't have `HashPartitioningLike` and `CoalescedHashPartitioning`.
+   * but Spark 3.3 doesn't have `HashPartitioningLike` and `CoalescedHashPartitioning`.
    *
-   * TODO: remove after dropping Spark 3.2 and 3.3 support.
+   * TODO: remove after dropping Spark 3.3 support.
    */
   def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] = {
     partitioning.getClass.getDeclaredMethods
