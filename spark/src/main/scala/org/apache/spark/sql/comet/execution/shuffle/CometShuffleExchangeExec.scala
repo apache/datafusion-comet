@@ -77,8 +77,8 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "shuffleReadElapsedCompute" ->
-      SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle read elapsed compute at native"),
+    "shuffleNativeTotalTime" ->
+      SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle native code time"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -479,7 +479,7 @@ class CometShuffleWriteProcessor(
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
-      "elapsed_compute" -> metrics("shuffleReadElapsedCompute"))
+      "elapsed_compute" -> metrics("shuffleNativeTotalTime"))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
