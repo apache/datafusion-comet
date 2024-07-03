@@ -2287,7 +2287,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 .setCreateNamedStruct(structBuilder)
                 .build())
           } else {
-            withInfo(expr, struct.valExprs: _*)
+            withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
             None
           }
 

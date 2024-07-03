@@ -1734,7 +1734,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // Use inside a nullable statement to make sure isnan has correct behavior for null input
           checkSparkAnswerAndOperator(
             "SELECT CASE WHEN (_1 > 0) THEN NULL ELSE isnan(_1) END FROM tbl")
-          }
+        }
       }
     }
   }
