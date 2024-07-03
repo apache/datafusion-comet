@@ -712,9 +712,6 @@ impl PhysicalPlanner {
         spark_plan: &'a Operator,
         inputs: &mut Vec<Arc<GlobalRef>>,
     ) -> Result<(Vec<ScanExec>, Arc<dyn ExecutionPlan>), ExecutionError> {
-
-        println!("create plan coalesce={}", self.session_ctx.copied_config().coalesce_batches());
-
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
@@ -1044,15 +1041,14 @@ impl PhysicalPlanner {
     /// Wrap an ExecutionPlan in a CoalesceBatchesExec if the session context has
     /// the coalesce_batches option enabled
     fn coalesce_batches(&self, exec: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        let exec: Arc<dyn ExecutionPlan> =
-            if self.session_ctx.copied_config().coalesce_batches() {
-                Arc::new(CoalesceBatchesExec::new(
-                    exec,
-                    self.session_ctx.copied_config().batch_size(),
-                ))
-            } else {
-                exec
-            };
+        let exec: Arc<dyn ExecutionPlan> = if self.session_ctx.copied_config().coalesce_batches() {
+            Arc::new(CoalesceBatchesExec::new(
+                exec,
+                self.session_ctx.copied_config().batch_size(),
+            ))
+        } else {
+            exec
+        };
         exec
     }
 
