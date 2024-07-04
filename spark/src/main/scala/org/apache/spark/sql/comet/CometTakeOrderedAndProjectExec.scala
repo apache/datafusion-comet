@@ -24,6 +24,7 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec.{METRIC_NATIVE_TIME_DESCRIPTION, METRIC_NATIVE_TIME_NAME}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -55,8 +56,8 @@ case class CometTakeOrderedAndProjectExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "shuffleReadElapsedCompute" ->
-      SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle read elapsed compute at native"),
+    METRIC_NATIVE_TIME_NAME ->
+      SQLMetrics.createNanoTimingMetric(sparkContext, METRIC_NATIVE_TIME_DESCRIPTION),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
