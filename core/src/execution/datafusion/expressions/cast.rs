@@ -717,28 +717,33 @@ impl Cast {
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
-
-        let cast_array: ArrayRef = match to_type {
-            DataType::Date32 => {
-                let len = string_array.len();
-                let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
-                for i in 0..len {
-                    if !string_array.is_null(i) {
-                        match date_parser(string_array.value(i), eval_mode) {
-                            Ok(Some(cast_value)) => cast_array.append_value(cast_value),
-                            Ok(None) => cast_array.append_null(),
-                            Err(e) => return Err(e),
-                        }
-                    } else {
-                        cast_array.append_null()
-                    }
+    
+        if to_type != &DataType::Date32 {
+            unreachable!("Invalid data type {:?} in cast from string", to_type);
+        }
+    
+        let len = string_array.len();
+        let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
+    
+        for i in 0..len {
+            let value = if string_array.is_null(i) {
+                None
+            } else {
+                match date_parser(string_array.value(i), eval_mode) {
+                    Ok(Some(cast_value)) => Some(cast_value),
+                    Ok(None) => None,
+                    Err(e) => return Err(e),
                 }
-                Arc::new(cast_array.finish()) as ArrayRef
+            };
+    
+            match value {
+                Some(cast_value) => cast_array.append_value(cast_value),
+                None => cast_array.append_null(),
             }
-            _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
-        };
-        Ok(cast_array)
-    }
+        }
+    
+        Ok(Arc::new(cast_array.finish()) as ArrayRef)
+    }    
 
     fn cast_string_to_timestamp(
         array: &ArrayRef,
