@@ -140,15 +140,14 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
                     )?,
                 };
 
-                let keys = dict.keys().clone();
-                let mut new_keys = Vec::with_capacity(values.len());
+                let new_values: Vec<Option<String>> = dict
+                    .keys()
+                    .iter()
+                    .map(|key| key.map(|k| values[k as usize].clone()).unwrap_or(None))
+                    .collect();
 
-                for key in keys.iter() {
-                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
-                    new_keys.push(key);
-                }
+                let string_array_values = StringArray::from(new_values);
 
-                let string_array_values = StringArray::from(new_keys);
                 Ok(ColumnarValue::Array(Arc::new(string_array_values)))
             }
             _ => exec_err!(
