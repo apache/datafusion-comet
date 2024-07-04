@@ -595,8 +595,9 @@ under the License.
     <profile>
       <id>scala-2.13</id>
       <properties>
-        <scala.version>2.13.8</scala.version>
+        <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
+        <semanticdb.version>4.9.5</semanticdb.version>
       </properties>
     </profile>
 
