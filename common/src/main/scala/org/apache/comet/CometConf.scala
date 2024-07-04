@@ -410,9 +410,9 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_COALESCE_BATCHES: ConfigEntry[Boolean] =
-    conf("spark.comet.cast.coalesceBatches")
+    conf("spark.comet.coalesceBatches")
       .doc(
-        "When enabled, a CoalescedBatchExec will be inserted into the " +
+        "When enabled, a CoalesceBatchesExec will be inserted into the " +
           "plan after some operators that can produce smaller batches.")
       .booleanConf
       .createWithDefault(false)
