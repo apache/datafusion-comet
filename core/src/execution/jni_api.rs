@@ -192,11 +192,7 @@ fn prepare_datafusion_session_context(
 
     // Check if we are using unified memory manager integrated with Spark. Default to false if not
     // set.
-    let use_unified_memory_manager = conf
-        .get("use_unified_memory_manager")
-        .map(String::as_str)
-        .unwrap_or("false")
-        .parse::<bool>()?;
+    let use_unified_memory_manager = parse_bool_conf(conf, "use_unified_memory_manager")?;
 
     if use_unified_memory_manager {
         // Set Comet memory pool for native
@@ -219,7 +215,9 @@ fn prepare_datafusion_session_context(
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let mut session_config = SessionConfig::new().with_batch_size(batch_size);
+    let mut session_config = SessionConfig::new()
+        .with_batch_size(batch_size)
+        .with_coalesce_batches(parse_bool_conf(conf, "coalesce_batches")?);
 
     for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
         session_config = session_config.set_str(key, value);
@@ -231,6 +229,15 @@ fn prepare_datafusion_session_context(
         session_config,
         Arc::new(runtime),
     ))
+}
+
+/// Parse a boolean Comet configuration setting
+fn parse_bool_conf(conf: &HashMap<String, String>, name: &str) -> Result<bool, CometError> {
+    Ok(conf
+        .get(name)
+        .map(String::as_str)
+        .unwrap_or("false")
+        .parse::<bool>()?)
 }
 
 /// Prepares arrow arrays for output.

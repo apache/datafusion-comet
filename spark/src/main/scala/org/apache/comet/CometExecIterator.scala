@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_COALESCE_BATCHES, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -85,6 +85,7 @@ class CometExecIterator(
     result.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
     result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
+    result.put("coalesce_batches", String.valueOf(COMET_COALESCE_BATCHES.get()))
 
     // Strip mandatory prefix spark. which is not required for DataFusion session params
     conf.getAll.foreach {
