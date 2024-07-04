@@ -28,6 +28,11 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::{
+    common::bit::ceil,
+    errors::{CometError, CometResult},
+    execution::datafusion::spark_hash::{create_murmur3_hashes, pmod},
+};
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -59,12 +64,6 @@ use itertools::Itertools;
 use simd_adler32::Adler32;
 use tokio::task;
 
-use crate::{
-    common::bit::ceil,
-    errors::{CometError, CometResult},
-    execution::datafusion::spark_hash::{create_murmur3_hashes, pmod},
-};
-
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
 #[derive(Debug)]
@@ -80,6 +79,8 @@ pub struct ShuffleWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     cache: PlanProperties,
+    /// zstd compression level
+    compression_level: i32,
 }
 
 impl DisplayAs for ShuffleWriterExec {
@@ -118,6 +119,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.partitioning.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
+                self.compression_level,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -142,6 +144,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
+                    self.compression_level,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -169,6 +172,7 @@ impl ShuffleWriterExec {
         partitioning: Partitioning,
         output_data_file: String,
         output_index_file: String,
+        compression_level: i32,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(input.schema().clone()),
@@ -183,6 +187,7 @@ impl ShuffleWriterExec {
             output_data_file,
             output_index_file,
             cache,
+            compression_level,
         })
     }
 }
@@ -201,10 +206,12 @@ struct PartitionBuffer {
     /// The maximum number of rows in a batch. Once `num_active_rows` reaches `batch_size`,
     /// the active array builders will be frozen and appended to frozen buffer `frozen`.
     batch_size: usize,
+    /// zstd compression level
+    compression_level: i32,
 }
 
 impl PartitionBuffer {
-    fn new(schema: SchemaRef, batch_size: usize) -> Self {
+    fn new(schema: SchemaRef, batch_size: usize, compression_level: i32) -> Self {
         Self {
             schema,
             frozen: vec![],
@@ -212,6 +219,7 @@ impl PartitionBuffer {
             active_slots_mem_size: 0,
             num_active_rows: 0,
             batch_size,
+            compression_level,
         }
     }
 
@@ -285,7 +293,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, self.compression_level)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -577,6 +585,8 @@ struct ShuffleRepartitioner {
     partition_ids: Vec<u64>,
     /// The configured batch size
     batch_size: usize,
+    /// zstd compression level
+    compression_level: i32,
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -611,6 +621,7 @@ impl ShuffleRepartitioner {
         metrics: ShuffleRepartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
+        compression_level: i32,
     ) -> Self {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
@@ -633,7 +644,7 @@ impl ShuffleRepartitioner {
             schema: schema.clone(),
             buffered_partitions: Mutex::new(
                 (0..num_output_partitions)
-                    .map(|_| PartitionBuffer::new(schema.clone(), batch_size))
+                    .map(|_| PartitionBuffer::new(schema.clone(), batch_size, compression_level))
                     .collect::<Vec<_>>(),
             ),
             spills: Mutex::new(vec![]),
@@ -645,6 +656,7 @@ impl ShuffleRepartitioner {
             hashes_buf,
             partition_ids,
             batch_size,
+            compression_level,
         }
     }
 
@@ -963,6 +975,7 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
+    compression_level: i32,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -974,6 +987,7 @@ async fn external_shuffle(
         metrics,
         context.runtime_env(),
         context.session_config().batch_size(),
+        compression_level,
     );
 
     while let Some(batch) = input.next().await {
@@ -1353,6 +1367,7 @@ impl Checksum {
 pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    compression_level: i32,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
         return Ok(0);
@@ -1363,8 +1378,10 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     output.write_all(&[0u8; 8])?;
 
     // write ipc data
-    // TODO: make compression level configurable
-    let mut arrow_writer = StreamWriter::try_new(zstd::Encoder::new(output, 1)?, &batch.schema())?;
+    let mut arrow_writer = StreamWriter::try_new(
+        zstd::Encoder::new(output, compression_level)?,
+        &batch.schema(),
+    )?;
     arrow_writer.write(batch)?;
     arrow_writer.finish()?;
 
@@ -1465,6 +1482,7 @@ mod test {
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
+            1,
         )
         .unwrap();
         let ctx = SessionContext::new();

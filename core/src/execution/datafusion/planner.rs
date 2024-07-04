@@ -128,9 +128,12 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
+    compression_level: i32,
 }
 
+#[cfg(test)]
 impl Default for PhysicalPlanner {
+    /// Create default planner (for use in tests only)
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
         let execution_props = ExecutionProps::new();
@@ -138,17 +141,19 @@ impl Default for PhysicalPlanner {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             execution_props,
             session_ctx,
+            compression_level: 1,
         }
     }
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, compression_level: i32) -> Self {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             execution_props,
             session_ctx,
+            compression_level,
         }
     }
 
@@ -157,6 +162,7 @@ impl PhysicalPlanner {
             exec_context_id,
             execution_props: self.execution_props,
             session_ctx: self.session_ctx.clone(),
+            compression_level: self.compression_level,
         }
     }
 
@@ -863,6 +869,7 @@ impl PhysicalPlanner {
                         partitioning,
                         writer.output_data_file.clone(),
                         writer.output_index_file.clone(),
+                        self.compression_level,
                     )?),
                 ))
             }
