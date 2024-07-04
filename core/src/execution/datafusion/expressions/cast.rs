@@ -34,8 +34,9 @@ use arrow::{
 };
 use arrow_array::{
     types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array,
+    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -93,7 +94,8 @@ macro_rules! cast_utf8_to_int {
 }
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
-        let mut cast_array = PrimitiveArray::<$array_type>::builder($array.len()).with_timezone("UTC");
+        let mut cast_array =
+            PrimitiveArray::<$array_type>::builder($array.len()).with_timezone("UTC");
 
         for i in 0..$array.len() {
             if $array.is_null(i) {
@@ -502,18 +504,23 @@ impl Cast {
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type))?;
         let from_type = array.data_type().clone();
 
-        // unpack dictionary string arrays first
-        // TODO: we are unpacking a dictionary-encoded array and then performing
-        // the cast. We could potentially improve performance here by casting the
-        // dictionary values directly without unpacking the array first, although this
-        // would add more complexity to the code
         let array = match &from_type {
             DataType::Dictionary(key_type, value_type)
                 if key_type.as_ref() == &DataType::Int32
                     && (value_type.as_ref() == &DataType::Utf8
                         || value_type.as_ref() == &DataType::LargeUtf8) =>
             {
-                cast_with_options(&array, value_type.as_ref(), &CAST_OPTIONS)?
+                let dict_array = array
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<Int32Type>>()
+                    .expect("Expected a dictionary array");
+                let values = dict_array.values();
+                let cast_values = self.cast_array(values.clone())?;
+                let cast_array = Arc::new(DictionaryArray::<Int32Type>::new(
+                    dict_array.keys().clone(),
+                    cast_values,
+                )) as ArrayRef;
+                return Ok(cast_array);
             }
             _ => array,
         };
@@ -717,14 +724,14 @@ impl Cast {
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
-    
+
         if to_type != &DataType::Date32 {
             unreachable!("Invalid data type {:?} in cast from string", to_type);
         }
-    
+
         let len = string_array.len();
         let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
-    
+
         for i in 0..len {
             let value = if string_array.is_null(i) {
                 None
@@ -735,15 +742,15 @@ impl Cast {
                     Err(e) => return Err(e),
                 }
             };
-    
+
             match value {
                 Some(cast_value) => cast_array.append_value(cast_value),
                 None => cast_array.append_null(),
             }
         }
-    
+
         Ok(Arc::new(cast_array.finish()) as ArrayRef)
-    }    
+    }
 
     fn cast_string_to_timestamp(
         array: &ArrayRef,
