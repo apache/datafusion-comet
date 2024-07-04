@@ -91,22 +91,23 @@ macro_rules! cast_utf8_to_int {
         result
     }};
 }
-
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
-        let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone("UTC");
-        for i in 0..len {
+        let mut cast_array = PrimitiveArray::<$array_type>::builder($array.len()).with_timezone("UTC");
+
+        for i in 0..$array.len() {
             if $array.is_null(i) {
-                cast_array.append_null()
-            } else if let Ok(Some(cast_value)) = $cast_method($array.value(i).trim(), $eval_mode) {
-                cast_array.append_value(cast_value);
+                cast_array.append_null();
             } else {
-                cast_array.append_null()
+                let value = $array.value(i).trim();
+                match $cast_method(value, $eval_mode) {
+                    Ok(Some(cast_value)) => cast_array.append_value(cast_value),
+                    _ => cast_array.append_null(),
+                }
             }
         }
-        let result: ArrayRef = Arc::new(cast_array.finish()) as ArrayRef;
-        result
+
+        Arc::new(cast_array.finish()) as ArrayRef
     }};
 }
 
