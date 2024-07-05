@@ -916,7 +916,7 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().downcast_ref::<ScanExec>().is_some() {
+                let child = if child.as_any().is::<ScanExec>() {
                     Arc::new(CopyExec::new(child))
                 } else {
                     child
@@ -1609,10 +1609,10 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().downcast_ref::<ScanExec>().is_some()
-        || op.as_any().downcast_ref::<LocalLimitExec>().is_some()
-        || op.as_any().downcast_ref::<ProjectionExec>().is_some()
-        || op.as_any().downcast_ref::<FilterExec>().is_some()
+    op.as_any().is::<ScanExec>()
+        || op.as_any().is::<LocalLimitExec>()
+        || op.as_any().is::<ProjectionExec>()
+        || op.as_any().is::<FilterExec>()
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression
