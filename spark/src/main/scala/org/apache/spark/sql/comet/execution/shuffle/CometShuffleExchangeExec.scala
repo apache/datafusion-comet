@@ -468,6 +468,7 @@ class CometShuffleWriteProcessor(
       mapId: Long,
       mapIndex: Int,
       context: TaskContext): MapStatus = {
+    val metricsReporter = createMetricsReporter(context)
     val shuffleBlockResolver =
       SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
     val dataFile = shuffleBlockResolver.getDataFile(dep.shuffleId, mapId)
@@ -483,19 +484,27 @@ class CometShuffleWriteProcessor(
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
-      "elapsed_compute" -> metrics("shuffleNativeTotalTime"))
+      "elapsed_compute" -> metrics(METRIC_NATIVE_TIME_NAME))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
+      .asInstanceOf[Iterator[ColumnarBatch]].map {
+        // Update Spark metrics from native metrics
+        metrics("dataSize") += Files.size(tempDataFilePath)
+      }
+
+    val startTime = System.nanoTime()
     val cometIter = CometExec.getCometIterator(
-      Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
+      Seq(newInputs),
       nativePlan,
       nativeMetrics)
 
     while (cometIter.hasNext) {
       cometIter.next()
     }
+
+    metricsReporter.incWriteTime(System.nanoTime() - startTime)
 
     // get partition lengths from shuffle write output index file
     var offset = 0L
@@ -512,8 +521,7 @@ class CometShuffleWriteProcessor(
       })
       .toArray
 
-    // Update Spark metrics from native metrics
-    metrics("dataSize") += Files.size(tempDataFilePath)
+    metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
 
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
