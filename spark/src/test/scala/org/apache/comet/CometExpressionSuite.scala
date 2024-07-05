@@ -1596,6 +1596,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1607,8 +1608,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
-              "BroadcastExchange is not supported",
-              "BroadcastHashJoin disabled because not all child plans are native")))
+              "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "Project is not native because the following children are not native (BroadcastHashJoin)",
+              "BroadcastHashJoin is not enabled because the following children are not native" +
+                " (BroadcastExchange, Project)")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1768,6 +1771,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
             checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
           }
+        }
+      }
+    }
+  }
+
+  test("isnan") {
+    Seq("true", "false").foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+        withParquetTable(
+          Seq(Some(1.0), Some(Double.NaN), None).map(i => Tuple1(i)),
+          "tbl",
+          withDictionary = dictionary.toBoolean) {
+          checkSparkAnswerAndOperator("SELECT isnan(_1), isnan(cast(_1 as float)) FROM tbl")
+          // Use inside a nullable statement to make sure isnan has correct behavior for null input
+          checkSparkAnswerAndOperator(
+            "SELECT CASE WHEN (_1 > 0) THEN NULL ELSE isnan(_1) END FROM tbl")
+        }
+      }
+    }
+  }
+
+  test("named_struct") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
       }
     }
