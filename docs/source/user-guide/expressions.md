@@ -191,3 +191,4 @@ The following Spark expressions are currently available. Any known compatibility
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
+| CreateNamedStruct       |                                                                                 |
