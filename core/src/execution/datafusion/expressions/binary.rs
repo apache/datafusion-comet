@@ -90,12 +90,21 @@ impl CometBinaryExpr {
         ));
         match check_overflow_expr.evaluate(batch)? {
             ColumnarValue::Array(array) => {
-                let boolean_array = array
-                    .as_any()
-                    .downcast_ref::<BooleanArray>()
-                    .expect("Expected BooleanArray");
-                if boolean_array.true_count() > 0 {
-                    return Err(arithmetic_overflow_error(&result.data_type().to_string()).into());
+                let boolean_array = array.as_any().downcast_ref::<BooleanArray>();
+                match boolean_array {
+                    Some(boolean_array) => {
+                        if boolean_array.true_count() > 0 {
+                            return Err(
+                                arithmetic_overflow_error(&result.data_type().to_string()).into()
+                            );
+                        }
+                    }
+                    None => {
+                        return Err(DataFusionError::Internal(format!(
+                            "Expected boolean array, found: {:?}",
+                            array
+                        )));
+                    }
                 }
                 Ok(())
             }

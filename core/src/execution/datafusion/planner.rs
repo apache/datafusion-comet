@@ -104,7 +104,9 @@ use crate::{
     },
 };
 
-use super::expressions::{abs::CometAbsFunc, binary::CometBinaryExpr, create_named_struct::CreateNamedStruct, EvalMode};
+use super::expressions::{
+    abs::CometAbsFunc, binary::CometBinaryExpr, create_named_struct::CreateNamedStruct, EvalMode,
+};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
