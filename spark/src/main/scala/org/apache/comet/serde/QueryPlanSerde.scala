@@ -2272,6 +2272,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
           }
 
+        case struct @ CreateNamedStruct(_) =>
+          val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
+          val dataType = serializeDataType(struct.dataType)
+
+          if (valExprs.forall(_.isDefined) && dataType.isDefined) {
+            val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
+            structBuilder.addAllValues(valExprs.map(_.get).asJava)
+            structBuilder.setDatatype(dataType.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setCreateNamedStruct(structBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
+            None
+          }
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
@@ -2630,6 +2649,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
+          return None
+        }
+
+        if ((join.leftKeys ++ join.rightKeys).exists(_.dataType.isInstanceOf[StructType])) {
+          withInfo(join, "Unsupported struct data type in join keys")
           return None
         }
 
