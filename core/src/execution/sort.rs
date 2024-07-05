@@ -165,7 +165,6 @@ where
                         // because they are defined as Vec<Vec<T>>
                         ptr::copy_nonoverlapping(
                             bucket.as_ptr(),
-                            //self.get_unchecked_mut(pos),
                             self.as_mut_ptr().add(pos),
                             bucket.len(),
                         );

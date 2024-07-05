@@ -1000,9 +1000,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // test takes too long with miri
-                              // This test only verifies that the various input array types work. Actually correctness to
-                              // ensure this produces the same results as spark is verified in the JVM tests
+    // test takes too long with miri
+    #[cfg_attr(miri, ignore)]
+    // This test only verifies that the various input array types work. Actually correctness to
+    // ensure this produces the same results as spark is verified in the JVM tests
     fn test_timestamp_trunc_array_fmt_dyn() {
         let size = 10;
         let formats = [
