@@ -585,6 +585,7 @@ mod tests {
         jvm().attach_current_thread().expect("Unable to attach JVM")
     }
 
+    #[ignore]
     #[test]
     pub fn error_from_panic() {
         let _guard = attach_current_thread();

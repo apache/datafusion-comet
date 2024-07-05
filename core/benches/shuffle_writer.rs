@@ -39,6 +39,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
+        1
     )
     .unwrap();
 
