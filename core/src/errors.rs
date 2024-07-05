@@ -586,6 +586,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn error_from_panic() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -604,6 +605,7 @@ mod tests {
     // Verify that functions that return an object are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn object_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -621,6 +623,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jlong_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -637,6 +640,7 @@ mod tests {
     // Verify that functions that return an array can handle throwing exceptions.  The test
     // causes an exception by dividing by zero.
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jlong_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -657,6 +661,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jlong_result_ok() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -673,6 +678,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jlong_result_err() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -693,6 +699,7 @@ mod tests {
     // Verify that functions that return an array are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jint_array_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -713,6 +720,7 @@ mod tests {
     // Verify that functions that return an array can handle throwing exceptions.  The test
     // causes an exception by dividing by zero.
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn jint_array_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -736,6 +744,7 @@ mod tests {
     /// See [`object_panic_exception`] for a test which involves generating a panic and verifying
     /// that the resulting stack trace includes the offending call.
     #[test]
+    #[cfg_attr(miri, ignore)]
     pub fn stacktrace_string() {
         // Setup: Start with a backtrace that includes all of the expected scenarios, including
         // cases where the file and location are not provided as part of the backtrace capture
