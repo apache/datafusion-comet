@@ -97,6 +97,7 @@ twox-hash = "1.6.3"
 
 [features]
 default = []
+nightly = []
 
 [profile.release]
 debug = true

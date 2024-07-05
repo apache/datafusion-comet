@@ -824,6 +824,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_date_trunc() {
         let size = 1000;
         let mut vec: Vec<i32> = Vec::with_capacity(size);
@@ -962,6 +963,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_timestamp_trunc() {
         let size = 1000;
         let mut vec: Vec<i64> = Vec::with_capacity(size);
@@ -998,6 +1000,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     // This test only verifies that the various input array types work. Actually correctness to
     // ensure this produces the same results as spark is verified in the JVM tests
     fn test_timestamp_trunc_array_fmt_dyn() {
