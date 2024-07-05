@@ -145,7 +145,7 @@ class CometTPCDSQuerySuite
       override val tpcdsQueries: Seq[String] =
         tpcdsAllQueries.filterNot(excludedTpcdsQueries.contains)
     }
-    with TPCDSQueryTestSuite
+    with CometTPCDSQueryTestSuite
     with ShimCometTPCDSQuerySuite {
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
