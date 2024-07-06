@@ -854,6 +854,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-expr",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-functions",
@@ -893,6 +894,17 @@ dependencies = [
  "twox-hash",
  "unicode-segmentation",
  "zstd",
+]
+
+[[package]]
+name = "datafusion-comet-expr"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-functions",
 ]
 
 [[package]]

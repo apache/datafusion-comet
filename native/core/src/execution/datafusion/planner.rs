@@ -104,7 +104,8 @@ use crate::{
     },
 };
 
-use super::expressions::{abs::CometAbsFunc, create_named_struct::CreateNamedStruct, EvalMode};
+use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
+use datafusion_comet_expr::abs::CometAbsFunc;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -365,7 +366,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
-                let eval_mode = expr.eval_mode.try_into()?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
 
                 Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
             }
@@ -504,7 +505,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
-                let eval_mode = expr.eval_mode.try_into()?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 let comet_abs = Arc::new(ScalarUDF::new_from_impl(CometAbsFunc::new(
                     eval_mode,
                     return_type.to_string(),
@@ -1741,6 +1742,14 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
+    match spark_expression::EvalMode::try_from(value)? {
+        spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
+        spark_expression::EvalMode::Try => Ok(EvalMode::Try),
+        spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
+    }
 }
 
 #[cfg(test)]

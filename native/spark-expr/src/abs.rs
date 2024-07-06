@@ -15,16 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::{any::Any, sync::Arc};
+
 use arrow::datatypes::DataType;
 use arrow_schema::ArrowError;
+
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature};
 use datafusion_common::DataFusionError;
 use datafusion_functions::math;
-use std::{any::Any, sync::Arc};
 
-use crate::execution::operators::ExecutionError;
-
-use super::{arithmetic_overflow_error, EvalMode};
+use super::EvalMode;
 
 #[derive(Debug)]
 pub struct CometAbsFunc {
@@ -34,7 +34,7 @@ pub struct CometAbsFunc {
 }
 
 impl CometAbsFunc {
-    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, ExecutionError> {
+    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, DataFusionError> {
         if let EvalMode::Legacy | EvalMode::Ansi = eval_mode {
             Ok(Self {
                 inner_abs_func: math::abs().inner(),
@@ -42,7 +42,7 @@ impl CometAbsFunc {
                 data_type_name,
             })
         } else {
-            Err(ExecutionError::GeneralError(format!(
+            Err(DataFusionError::Execution(format!(
                 "Invalid EvalMode: \"{:?}\"",
                 eval_mode
             )))
@@ -74,9 +74,8 @@ impl ScalarUDFImpl for CometAbsFunc {
                 if self.eval_mode == EvalMode::Legacy {
                     Ok(args[0].clone())
                 } else {
-                    let msg = arithmetic_overflow_error(&self.data_type_name).to_string();
                     Err(DataFusionError::ArrowError(
-                        ArrowError::ComputeError(msg),
+                        ArrowError::ComputeError(format!("overflow from {}", self.data_type_name)),
                         trace,
                     ))
                 }

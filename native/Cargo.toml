@@ -16,7 +16,8 @@
 # under the License.
 
 [workspace]
-members = ["core"]
+members = ["core", "spark-expr"]
+resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
@@ -30,3 +31,25 @@ edition = "2021"
 
 # Comet uses the same minimum Rust version as DataFusion
 rust-version = "1.75"
+
+[workspace.dependencies]
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
+arrow-data = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
+arrow-string = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
+datafusion-common = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1" }
+datafusion = { default-features = false, git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-functions = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", features = ["crypto_expressions"] }
+datafusion-expr = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", default-features = false }
+datafusion-physical-expr-common = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", default-features = false }
+datafusion-physical-expr = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", default-features = false }
+
+[profile.release]
+debug = true
+overflow-checks = false
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
