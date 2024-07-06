@@ -30,6 +30,7 @@ use crate::{errors::CometError, execution::spark_expression};
 pub mod abs;
 pub mod avg;
 pub mod avg_decimal;
+pub mod binary;
 pub mod bloom_filter_might_contain;
 pub mod correlation;
 pub mod covariance;
