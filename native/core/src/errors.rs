@@ -551,7 +551,7 @@ mod tests {
         INIT.call_once(|| {
             // Add common classes to the classpath in so that we can find CometException
             let mut common_classes = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            common_classes.push("../common/target/classes");
+            common_classes.push("../../common/target/classes");
             let mut class_path = common_classes
                 .as_path()
                 .to_str()
