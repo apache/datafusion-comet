@@ -83,8 +83,8 @@ jobs:
         with:
           name: libcomet-${{ github.run_id }}
           path: |
-            native/core/target/release/libcomet.so
-            native/core/target/release/libcomet.dylib
+            native/target/release/libcomet.so
+            native/target/release/libcomet.dylib
           retention-days: 1 # remove the artifact after 1 day, only valid for this workflow
           overwrite: true
       - name: Build tpcds-kit
@@ -134,7 +134,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: libcomet-${{ github.run_id }}
-          path: native/core/target/release
+          path: native/target/release
       - name: Run TPC-DS queries (Sort merge join)
         if: matrix.join == 'sort_merge'
         run: |

@@ -76,8 +76,8 @@ jobs:
         with:
           name: libcomet-${{ github.run_id }}
           path: |
-            native/core/target/release/libcomet.so
-            native/core/target/release/libcomet.dylib
+            native/target/release/libcomet.so
+            native/target/release/libcomet.dylib
           retention-days: 1 # remove the artifact after 1 day, only valid for this workflow
           overwrite: true
       - name: Generate TPC-H (SF=1) table data
@@ -119,7 +119,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: libcomet-${{ github.run_id }}
-          path: native/core/target/release
+          path: native/target/release
       - name: Run TPC-H queries
         run: |
           SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
