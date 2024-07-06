@@ -154,14 +154,15 @@ class CometTPCDSQuerySuite
       "spark.shuffle.manager",
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
+    conf.set(CometConf.COMET_BATCH_SIZE.key, "1000")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "20g")
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "15g")
     conf.set(CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key, "true")
     conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
-    conf.set(MEMORY_OFFHEAP_SIZE.key, "20g")
+    conf.set(MEMORY_OFFHEAP_SIZE.key, "15g")
     conf
   }
 
