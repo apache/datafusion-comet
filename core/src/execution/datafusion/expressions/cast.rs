@@ -520,7 +520,8 @@ impl Cast {
                     dict_array.keys().clone(),
                     cast_values,
                 )) as ArrayRef;
-                return Ok(cast_array);
+
+                cast_with_options(&cast_array, value_type, &CAST_OPTIONS)?
             }
             _ => array,
         };
