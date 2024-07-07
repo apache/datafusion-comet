@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Spark-compatible implementation of abs function
+
 use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::DataType;
@@ -26,14 +28,15 @@ use datafusion_functions::math;
 
 use super::EvalMode;
 
+/// Spark-compatible ABS expression
 #[derive(Debug)]
-pub struct CometAbsFunc {
+pub struct Abs {
     inner_abs_func: Arc<dyn ScalarUDFImpl>,
     eval_mode: EvalMode,
     data_type_name: String,
 }
 
-impl CometAbsFunc {
+impl Abs {
     pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, DataFusionError> {
         if let EvalMode::Legacy | EvalMode::Ansi = eval_mode {
             Ok(Self {
@@ -50,7 +53,7 @@ impl CometAbsFunc {
     }
 }
 
-impl ScalarUDFImpl for CometAbsFunc {
+impl ScalarUDFImpl for Abs {
     fn as_any(&self) -> &dyn Any {
         self
     }

@@ -16,9 +16,22 @@
 // under the License.
 
 pub mod abs;
+
+/// Spark supports three evaluation modes when evaluating expressions, which affect
+/// the behavior when processing input values that are invalid or would result in an
+/// error, such as divide by zero errors, and also affects behavior when converting
+/// between types.
 #[derive(Debug, Hash, PartialEq, Clone, Copy)]
 pub enum EvalMode {
+    /// Legacy is the default behavior in Spark prior to Spark 4.0. This mode silently ignores
+    /// or replaces errors during SQL operations. Operations resulting in errors (like
+    /// division by zero) will produce NULL values instead of failing. Legacy mode also
+    /// enables implicit type conversions.
     Legacy,
+    /// Adheres to the ANSI SQL standard for error handling by throwing exceptions for
+    /// operations that result in errors. Does not perform implicit type conversions.
     Ansi,
+    /// Same as Ansi mode, except that it converts errors to NULL values without
+    /// failing the entire query.
     Try,
 }

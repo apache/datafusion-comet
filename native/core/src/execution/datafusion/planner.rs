@@ -105,7 +105,7 @@ use crate::{
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
-use datafusion_comet_expr::abs::CometAbsFunc;
+use datafusion_comet_expr::abs::Abs;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -506,7 +506,7 @@ impl PhysicalPlanner {
                 let return_type = child.data_type(&input_schema)?;
                 let args = vec![child];
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                let comet_abs = Arc::new(ScalarUDF::new_from_impl(CometAbsFunc::new(
+                let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
                     eval_mode,
                     return_type.to_string(),
                 )?));
