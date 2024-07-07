@@ -31,6 +31,9 @@ include = [
     "Cargo.toml",
 ]
 
+# this crate is used in the Spark plugin and does not contain public Rust APIs so we do not publish this crate
+publish = false
+
 [dependencies]
 parquet-format = "4.0.0" # This must be kept in sync with that from parquet crate
 arrow = { workspace = true }

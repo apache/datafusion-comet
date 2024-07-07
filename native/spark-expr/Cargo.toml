@@ -17,11 +17,11 @@
 
 [package]
 name = "datafusion-comet-expr"
+description = "DataFusion expressions that emulate Apache Spark's behavior"
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 authors = { workspace = true }
-description = "Apache DataFusion Comet: High performance accelerator for Apache Spark"
 readme = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
