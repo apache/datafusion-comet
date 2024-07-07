@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+
 pub mod abs;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
@@ -34,4 +37,20 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+#[derive(Debug)]
+pub enum SparkError {
+    ArithmeticOverflow(String),
+}
+
+impl Error for SparkError {}
+
+impl Display for SparkError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ArithmeticOverflow(data_type) =>
+                write!(f, "[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", data_type)
+        }
+    }
 }

@@ -26,7 +26,7 @@ use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature};
 use datafusion_common::DataFusionError;
 use datafusion_functions::math;
 
-use super::EvalMode;
+use super::{EvalMode, SparkError};
 
 /// Spark-compatible ABS expression
 #[derive(Debug)]
@@ -71,16 +71,15 @@ impl ScalarUDFImpl for Abs {
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
         match self.inner_abs_func.invoke(args) {
-            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), trace))
+            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), _trace))
                 if msg.contains("overflow") =>
             {
                 if self.eval_mode == EvalMode::Legacy {
                     Ok(args[0].clone())
                 } else {
-                    Err(DataFusionError::ArrowError(
-                        ArrowError::ComputeError(format!("[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", self.data_type_name)),
-                        trace,
-                    ))
+                    Err(DataFusionError::External(Box::new(
+                        SparkError::ArithmeticOverflow(self.data_type_name.clone()),
+                    )))
                 }
             }
             other => other,
