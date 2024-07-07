@@ -78,7 +78,7 @@ impl ScalarUDFImpl for Abs {
                     Ok(args[0].clone())
                 } else {
                     Err(DataFusionError::ArrowError(
-                        ArrowError::ComputeError(format!("overflow from {}", self.data_type_name)),
+                        ArrowError::ComputeError(format!("[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", self.data_type_name)),
                         trace,
                     ))
                 }
