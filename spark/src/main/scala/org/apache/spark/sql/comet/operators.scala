@@ -349,7 +349,8 @@ abstract class CometNativeExec extends CometExec {
   }
 
   override protected def doCanonicalize(): SparkPlan = {
-    val canonicalizedPlan = super.doCanonicalize()
+    val canonicalizedPlan = super
+      .doCanonicalize()
       .asInstanceOf[CometNativeExec]
       .canonicalizePlans()
 
