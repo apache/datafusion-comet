@@ -154,7 +154,6 @@ class CometTPCDSQuerySuite
       "spark.shuffle.manager",
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
-    conf.set(CometConf.COMET_BATCH_SIZE.key, "1000")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")

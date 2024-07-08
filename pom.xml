@@ -88,7 +88,7 @@ under the License.
       --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
-    <argLine>-ea -Xmx10g -Xss4m ${extraJavaTestArgs}</argLine>
+    <argLine>-ea -Xmx6g -Xss4m ${extraJavaTestArgs}</argLine>
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
     <additional.3_5.test.source>not-needed</additional.3_5.test.source>
