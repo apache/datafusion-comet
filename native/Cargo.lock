@@ -857,7 +857,6 @@ dependencies = [
  "arrow-buffer",
  "arrow-data",
  "arrow-schema",
- "arrow-string",
  "assertables",
  "async-trait",
  "brotli",

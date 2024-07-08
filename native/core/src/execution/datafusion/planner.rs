@@ -1338,7 +1338,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_and",
+                    "bit_or",
                     false,
                     false,
                 )
@@ -1353,7 +1353,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_and",
+                    "bit_xor",
                     false,
                     false,
                 )
