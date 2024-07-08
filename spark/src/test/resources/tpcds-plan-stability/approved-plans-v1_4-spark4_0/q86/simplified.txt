@@ -17,10 +17,10 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                 InputAdapter
                                   CometExpand [i_category,i_class] [ws_net_paid,i_category,i_class,spark_grouping_id]
                                     CometProject [ws_net_paid,i_category,i_class]
-                                      CometBroadcastHashJoin [ws_item_sk,i_item_sk]
+                                      CometBroadcastHashJoin [ws_item_sk,ws_net_paid,i_item_sk,i_class,i_category]
                                         CometProject [ws_item_sk,ws_net_paid]
-                                          CometBroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                            CometFilter [ws_item_sk]
+                                          CometBroadcastHashJoin [ws_item_sk,ws_net_paid,ws_sold_date_sk,d_date_sk]
+                                            CometFilter [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                               CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
@@ -28,12 +28,12 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                       ColumnarToRow
                                                         InputAdapter
                                                           CometProject [d_date_sk]
-                                                            CometFilter [d_month_seq,d_date_sk]
+                                                            CometFilter [d_date_sk,d_month_seq]
                                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                            CometBroadcastExchange #4
+                                            CometBroadcastExchange [d_date_sk] #4
                                               CometProject [d_date_sk]
-                                                CometFilter [d_month_seq,d_date_sk]
+                                                CometFilter [d_date_sk,d_month_seq]
                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                        CometBroadcastExchange #5
-                                          CometFilter [i_item_sk]
+                                        CometBroadcastExchange [i_item_sk,i_class,i_category] #5
+                                          CometFilter [i_item_sk,i_class,i_category]
                                             CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
