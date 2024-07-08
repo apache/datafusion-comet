@@ -5,16 +5,16 @@ WholeStageCodegen (2)
         WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
-              CometHashAggregate [sum,ss_quantity]
+              CometHashAggregate [ss_quantity]
                 CometProject [ss_quantity]
-                  CometBroadcastHashJoin [ss_quantity,ss_sold_date_sk,d_date_sk]
+                  CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
                     CometProject [ss_quantity,ss_sold_date_sk]
-                      CometBroadcastHashJoin [ss_addr_sk,ss_quantity,ss_net_profit,ss_sold_date_sk,ca_address_sk,ca_state]
+                      CometBroadcastHashJoin [ss_addr_sk,ca_address_sk,ca_state,ss_net_profit]
                         CometProject [ss_addr_sk,ss_quantity,ss_net_profit,ss_sold_date_sk]
-                          CometBroadcastHashJoin [ss_cdemo_sk,ss_addr_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk,cd_demo_sk,cd_marital_status,cd_education_status]
+                          CometBroadcastHashJoin [ss_cdemo_sk,cd_demo_sk,cd_marital_status,cd_education_status,ss_sales_price]
                             CometProject [ss_cdemo_sk,ss_addr_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
-                              CometBroadcastHashJoin [ss_cdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk,s_store_sk]
-                                CometFilter [ss_cdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
+                              CometBroadcastHashJoin [ss_store_sk,s_store_sk]
+                                CometFilter [ss_store_sk,ss_cdemo_sk,ss_addr_sk,ss_sales_price,ss_net_profit]
                                   CometScan parquet spark_catalog.default.store_sales [ss_cdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_net_profit,ss_sold_date_sk]
                                     SubqueryBroadcast [d_date_sk] #1
                                       BroadcastExchange #2
@@ -22,19 +22,19 @@ WholeStageCodegen (2)
                                           ColumnarToRow
                                             InputAdapter
                                               CometProject [d_date_sk]
-                                                CometFilter [d_date_sk,d_year]
+                                                CometFilter [d_year,d_date_sk]
                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                CometBroadcastExchange [s_store_sk] #3
+                                CometBroadcastExchange #3
                                   CometFilter [s_store_sk]
                                     CometScan parquet spark_catalog.default.store [s_store_sk]
-                            CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #4
+                            CometBroadcastExchange #4
                               CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
                                 CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
-                        CometBroadcastExchange [ca_address_sk,ca_state] #5
+                        CometBroadcastExchange #5
                           CometProject [ca_address_sk,ca_state]
-                            CometFilter [ca_address_sk,ca_state,ca_country]
+                            CometFilter [ca_country,ca_address_sk,ca_state]
                               CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
-                    CometBroadcastExchange [d_date_sk] #6
+                    CometBroadcastExchange #6
                       CometProject [d_date_sk]
-                        CometFilter [d_date_sk,d_year]
+                        CometFilter [d_year,d_date_sk]
                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]

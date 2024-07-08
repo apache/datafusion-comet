@@ -6,18 +6,18 @@ TakeOrderedAndProject [sum(ss_ext_sales_price),d_year,i_category_id,i_category]
           WholeStageCodegen (1)
             ColumnarToRow
               InputAdapter
-                CometHashAggregate [d_year,i_category_id,i_category,sum,ss_ext_sales_price]
+                CometHashAggregate [d_year,i_category_id,i_category,ss_ext_sales_price]
                   CometProject [d_year,ss_ext_sales_price,i_category_id,i_category]
-                    CometBroadcastHashJoin [d_year,ss_item_sk,ss_ext_sales_price,i_item_sk,i_category_id,i_category]
+                    CometBroadcastHashJoin [ss_item_sk,i_item_sk]
                       CometProject [d_year,ss_item_sk,ss_ext_sales_price]
-                        CometBroadcastHashJoin [d_date_sk,d_year,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                        CometBroadcastHashJoin [d_date_sk,ss_sold_date_sk]
                           CometProject [d_date_sk,d_year]
-                            CometFilter [d_date_sk,d_year,d_moy]
+                            CometFilter [d_moy,d_year,d_date_sk]
                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                          CometBroadcastExchange [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk] #2
-                            CometFilter [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                          CometBroadcastExchange #2
+                            CometFilter [ss_item_sk]
                               CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                      CometBroadcastExchange [i_item_sk,i_category_id,i_category] #3
+                      CometBroadcastExchange #3
                         CometProject [i_item_sk,i_category_id,i_category]
-                          CometFilter [i_item_sk,i_category_id,i_category,i_manager_id]
+                          CometFilter [i_manager_id,i_item_sk]
                             CometScan parquet spark_catalog.default.item [i_item_sk,i_category_id,i_category,i_manager_id]

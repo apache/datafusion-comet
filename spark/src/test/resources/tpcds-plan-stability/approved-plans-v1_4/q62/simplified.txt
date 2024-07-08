@@ -6,27 +6,27 @@ TakeOrderedAndProject [substr(w_warehouse_name, 1, 20),sm_type,web_name,30 days 
           WholeStageCodegen (1)
             ColumnarToRow
               InputAdapter
-                CometHashAggregate [_groupingexpression,sm_type,web_name,sum,sum,sum,sum,sum,ws_ship_date_sk,ws_sold_date_sk]
+                CometHashAggregate [_groupingexpression,sm_type,web_name,ws_ship_date_sk,ws_sold_date_sk]
                   CometProject [w_warehouse_name] [ws_ship_date_sk,ws_sold_date_sk,sm_type,web_name,_groupingexpression]
-                    CometBroadcastHashJoin [ws_ship_date_sk,ws_sold_date_sk,w_warehouse_name,sm_type,web_name,d_date_sk]
+                    CometBroadcastHashJoin [ws_ship_date_sk,d_date_sk]
                       CometProject [ws_ship_date_sk,ws_sold_date_sk,w_warehouse_name,sm_type,web_name]
-                        CometBroadcastHashJoin [ws_ship_date_sk,ws_web_site_sk,ws_sold_date_sk,w_warehouse_name,sm_type,web_site_sk,web_name]
+                        CometBroadcastHashJoin [ws_web_site_sk,web_site_sk]
                           CometProject [ws_ship_date_sk,ws_web_site_sk,ws_sold_date_sk,w_warehouse_name,sm_type]
-                            CometBroadcastHashJoin [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_sold_date_sk,w_warehouse_name,sm_ship_mode_sk,sm_type]
+                            CometBroadcastHashJoin [ws_ship_mode_sk,sm_ship_mode_sk]
                               CometProject [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_sold_date_sk,w_warehouse_name]
-                                CometBroadcastHashJoin [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk,w_warehouse_sk,w_warehouse_name]
-                                  CometFilter [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
+                                CometBroadcastHashJoin [ws_warehouse_sk,w_warehouse_sk]
+                                  CometFilter [ws_warehouse_sk,ws_ship_mode_sk,ws_web_site_sk,ws_ship_date_sk]
                                     CometScan parquet spark_catalog.default.web_sales [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
-                                  CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #2
-                                    CometFilter [w_warehouse_sk,w_warehouse_name]
+                                  CometBroadcastExchange #2
+                                    CometFilter [w_warehouse_sk]
                                       CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
-                              CometBroadcastExchange [sm_ship_mode_sk,sm_type] #3
-                                CometFilter [sm_ship_mode_sk,sm_type]
+                              CometBroadcastExchange #3
+                                CometFilter [sm_ship_mode_sk]
                                   CometScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_type]
-                          CometBroadcastExchange [web_site_sk,web_name] #4
-                            CometFilter [web_site_sk,web_name]
+                          CometBroadcastExchange #4
+                            CometFilter [web_site_sk]
                               CometScan parquet spark_catalog.default.web_site [web_site_sk,web_name]
-                      CometBroadcastExchange [d_date_sk] #5
+                      CometBroadcastExchange #5
                         CometProject [d_date_sk]
-                          CometFilter [d_date_sk,d_month_seq]
+                          CometFilter [d_month_seq,d_date_sk]
                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]

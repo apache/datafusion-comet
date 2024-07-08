@@ -17,7 +17,7 @@ WholeStageCodegen (6)
                                 InputAdapter
                                   CometHashAggregate [ss_customer_sk,ss_item_sk]
                                     CometProject [ss_item_sk,ss_customer_sk]
-                                      CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_sold_date_sk,d_date_sk]
+                                      CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
                                         CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_sold_date_sk]
                                           SubqueryBroadcast [d_date_sk] #1
                                             BroadcastExchange #3
@@ -25,11 +25,11 @@ WholeStageCodegen (6)
                                                 ColumnarToRow
                                                   InputAdapter
                                                     CometProject [d_date_sk]
-                                                      CometFilter [d_date_sk,d_month_seq]
+                                                      CometFilter [d_month_seq,d_date_sk]
                                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                        CometBroadcastExchange [d_date_sk] #4
+                                        CometBroadcastExchange #4
                                           CometProject [d_date_sk]
-                                            CometFilter [d_date_sk,d_month_seq]
+                                            CometFilter [d_month_seq,d_date_sk]
                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                 InputAdapter
                   WholeStageCodegen (4)
@@ -42,7 +42,7 @@ WholeStageCodegen (6)
                                 InputAdapter
                                   CometHashAggregate [cs_bill_customer_sk,cs_item_sk]
                                     CometProject [cs_bill_customer_sk,cs_item_sk]
-                                      CometBroadcastHashJoin [cs_bill_customer_sk,cs_item_sk,cs_sold_date_sk,d_date_sk]
+                                      CometBroadcastHashJoin [cs_sold_date_sk,d_date_sk]
                                         CometScan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_sold_date_sk]
                                           ReusedSubquery [d_date_sk] #1
                                         ReusedExchange [d_date_sk] #4

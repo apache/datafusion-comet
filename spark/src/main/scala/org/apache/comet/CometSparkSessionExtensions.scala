@@ -328,13 +328,13 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan = CometProjectExec(
+              CometProjectExec(
                 nativeOp,
-                op.output,
+                op,
                 op.projectList,
+                op.output,
                 op.child,
                 SerializedPlan(None))
-              setLogicalLink(newPlan, op)
             case None =>
               op
           }
@@ -343,9 +343,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometFilterExec(nativeOp, op.output, op.condition, op.child, SerializedPlan(None))
-              setLogicalLink(newPlan, op)
+              CometFilterExec(nativeOp, op, op.condition, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -354,15 +352,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometSortExec(
-                  nativeOp,
-                  op.output,
-                  op.outputOrdering,
-                  op.sortOrder,
-                  op.child,
-                  SerializedPlan(None))
-              setLogicalLink(newPlan, op)
+              CometSortExec(nativeOp, op, op.sortOrder, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -371,9 +361,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometLocalLimitExec(nativeOp, op.limit, op.child, SerializedPlan(None))
-              setLogicalLink(newPlan, op)
+              CometLocalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -382,9 +370,7 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometGlobalLimitExec(nativeOp, op.limit, op.child, SerializedPlan(None))
-              setLogicalLink(newPlan, op)
+              CometGlobalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
             case None =>
               op
           }
@@ -396,9 +382,8 @@ class CometSparkSessionExtensions
           QueryPlanSerde.operator2Proto(op) match {
             case Some(nativeOp) =>
               val offset = getOffset(op)
-              val newPlan =
-                CometCollectLimitExec(op.limit, offset, op.child)
-              val cometOp = setLogicalLink(newPlan, op)
+              val cometOp =
+                CometCollectLimitExec(op, op.limit, offset, op.child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
             case None =>
               op
@@ -408,28 +393,12 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometExpandExec(
-                  nativeOp,
-                  op.output,
-                  op.projections,
-                  op.child,
-                  SerializedPlan(None))
-              setLogicalLink(newPlan, op)
+              CometExpandExec(nativeOp, op, op.projections, op.child, SerializedPlan(None))
             case None =>
               op
           }
 
-        case op @ HashAggregateExec(
-              _,
-              _,
-              _,
-              groupingExprs,
-              aggExprs,
-              _,
-              _,
-              resultExpressions,
-              child) =>
+        case op @ HashAggregateExec(_, _, _, groupingExprs, aggExprs, _, _, _, child) =>
           val modes = aggExprs.map(_.mode).distinct
 
           if (!modes.isEmpty && modes.size != 1) {
@@ -453,17 +422,15 @@ class CometSparkSessionExtensions
                   // modes is empty too. If aggExprs is not empty, we need to verify all the
                   // aggregates have the same mode.
                   assert(modes.length == 1 || modes.length == 0)
-                  val newPlan = CometHashAggregateExec(
+                  CometHashAggregateExec(
                     nativeOp,
-                    op.output,
+                    op,
                     groupingExprs,
                     aggExprs,
-                    resultExpressions,
                     child.output,
                     if (modes.nonEmpty) Some(modes.head) else None,
                     child,
                     SerializedPlan(None))
-                  setLogicalLink(newPlan, op)
                 case None =>
                   op
               }
@@ -476,10 +443,9 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan = CometHashJoinExec(
+              CometHashJoinExec(
                 nativeOp,
-                op.output,
-                op.outputOrdering,
+                op,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -488,7 +454,6 @@ class CometSparkSessionExtensions
                 op.left,
                 op.right,
                 SerializedPlan(None))
-              setLogicalLink(newPlan, op)
             case None =>
               op
           }
@@ -510,10 +475,9 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan = CometBroadcastHashJoinExec(
+              CometBroadcastHashJoinExec(
                 nativeOp,
-                op.output,
-                op.outputOrdering,
+                op,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -522,7 +486,6 @@ class CometSparkSessionExtensions
                 op.left,
                 op.right,
                 SerializedPlan(None))
-              setLogicalLink(newPlan, op)
             case None =>
               op
           }
@@ -533,10 +496,9 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan = CometSortMergeJoinExec(
+              CometSortMergeJoinExec(
                 nativeOp,
-                op.output,
-                op.outputOrdering,
+                op,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -544,7 +506,6 @@ class CometSparkSessionExtensions
                 op.left,
                 op.right,
                 SerializedPlan(None))
-              setLogicalLink(newPlan, op)
             case None =>
               op
           }
@@ -574,8 +535,7 @@ class CometSparkSessionExtensions
               && isCometNative(child) =>
           QueryPlanSerde.operator2Proto(c) match {
             case Some(nativeOp) =>
-              val newPlan = CometCoalesceExec(c.output, numPartitions, child)
-              val cometOp = setLogicalLink(newPlan, c)
+              val cometOp = CometCoalesceExec(c, numPartitions, child)
               CometSinkPlaceHolder(nativeOp, c, cometOp)
             case None =>
               c
@@ -598,14 +558,8 @@ class CometSparkSessionExtensions
               CometTakeOrderedAndProjectExec.isSupported(s) =>
           QueryPlanSerde.operator2Proto(s) match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometTakeOrderedAndProjectExec(
-                  s.output,
-                  s.limit,
-                  s.sortOrder,
-                  s.projectList,
-                  s.child)
-              val cometOp = setLogicalLink(newPlan, s)
+              val cometOp =
+                CometTakeOrderedAndProjectExec(s, s.limit, s.sortOrder, s.projectList, s.child)
               CometSinkPlaceHolder(nativeOp, s, cometOp)
             case None =>
               s
@@ -625,14 +579,8 @@ class CometSparkSessionExtensions
           val newOp = transform1(w)
           newOp match {
             case Some(nativeOp) =>
-              val newPlan =
-                CometWindowExec(
-                  w.output,
-                  w.windowExpression,
-                  w.partitionSpec,
-                  w.orderSpec,
-                  w.child)
-              val cometOp = setLogicalLink(newPlan, w)
+              val cometOp =
+                CometWindowExec(w, w.windowExpression, w.partitionSpec, w.orderSpec, w.child)
               CometSinkPlaceHolder(nativeOp, w, cometOp)
             case None =>
               w
@@ -643,8 +591,7 @@ class CometSparkSessionExtensions
               u.children.forall(isCometNative) =>
           QueryPlanSerde.operator2Proto(u) match {
             case Some(nativeOp) =>
-              val newPlan = CometUnionExec(u.output, u.children)
-              val cometOp = setLogicalLink(newPlan, u)
+              val cometOp = CometUnionExec(u, u.children)
               CometSinkPlaceHolder(nativeOp, u, cometOp)
             case None =>
               u
@@ -684,8 +631,7 @@ class CometSparkSessionExtensions
                   isSpark34Plus => // Spark 3.4+ only
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
-                  val newPlan = CometBroadcastExchangeExec(b.output, b.child)
-                  val cometOp = setLogicalLink(newPlan, b)
+                  val cometOp = CometBroadcastExchangeExec(b, b.child)
                   CometSinkPlaceHolder(nativeOp, b, cometOp)
                 case None => b
               }
@@ -876,6 +822,40 @@ class CometSparkSessionExtensions
           case CometScanWrapper(_, s) => s
         }
 
+        // Set up logical links
+        newPlan = newPlan.transform {
+          case op: CometExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+          case op: CometShuffleExchangeExec =>
+            // Original Spark shuffle exchange operator might have empty logical link.
+            // But the `setLogicalLink` call above on downstream operator of
+            // `CometShuffleExchangeExec` will set its logical link to the downstream
+            // operators which cause AQE behavior to be incorrect. So we need to unset
+            // the logical link here.
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+
+          case op: CometBroadcastExchangeExec =>
+            if (op.originalPlan.logicalLink.isEmpty) {
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+            } else {
+              op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+            }
+            op
+        }
+
         // Convert native execution block by linking consecutive native operators.
         var firstNativeOp = true
         newPlan.transformDown {
@@ -905,44 +885,6 @@ class CometSparkSessionExtensions
         case a: AQEShuffleReadExec => findPartialAgg(a.child)
         case s: ShuffleQueryStageExec => findPartialAgg(s.plan)
       }.flatten
-    }
-
-    /**
-     * Set up logical links for transformed Comet operators.
-     */
-    def setLogicalLink(newPlan: SparkPlan, originalPlan: SparkPlan): SparkPlan = {
-      newPlan match {
-        case op: CometExec =>
-          if (originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            originalPlan.logicalLink.foreach(op.setLogicalLink)
-          }
-          op
-        case op: CometShuffleExchangeExec =>
-          // Original Spark shuffle exchange operator might have empty logical link.
-          // But the `setLogicalLink` call above on downstream operator of
-          // `CometShuffleExchangeExec` will set its logical link to the downstream
-          // operators which cause AQE behavior to be incorrect. So we need to unset
-          // the logical link here.
-          if (originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            originalPlan.logicalLink.foreach(op.setLogicalLink)
-          }
-          op
-
-        case op: CometBroadcastExchangeExec =>
-          if (originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            originalPlan.logicalLink.foreach(op.setLogicalLink)
-          }
-          op
-      }
     }
 
     /**

@@ -12,20 +12,20 @@ TakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_s
                       WholeStageCodegen (1)
                         ColumnarToRow
                           InputAdapter
-                            CometHashAggregate [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum,d_day_name,ss_sales_price]
+                            CometHashAggregate [d_week_seq,ss_store_sk,d_day_name,ss_sales_price]
                               CometProject [ss_store_sk,ss_sales_price,d_week_seq,d_day_name]
-                                CometBroadcastHashJoin [ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_week_seq,d_day_name]
-                                  CometFilter [ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                  CometFilter [ss_store_sk]
                                     CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                  CometBroadcastExchange [d_date_sk,d_week_seq,d_day_name] #2
-                                    CometFilter [d_date_sk,d_week_seq,d_day_name]
+                                  CometBroadcastExchange #2
+                                    CometFilter [d_date_sk,d_week_seq]
                                       CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
                 InputAdapter
                   BroadcastExchange #3
                     WholeStageCodegen (2)
                       ColumnarToRow
                         InputAdapter
-                          CometFilter [s_store_sk,s_store_id,s_store_name]
+                          CometFilter [s_store_sk,s_store_id]
                             CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
             InputAdapter
               BroadcastExchange #4
