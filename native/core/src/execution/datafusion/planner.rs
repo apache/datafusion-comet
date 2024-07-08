@@ -1223,7 +1223,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "",
+                    "count",
                     false,
                     false,
                 )
@@ -1258,7 +1258,7 @@ impl PhysicalPlanner {
                             &[],
                             &[],
                             schema.as_ref(),
-                            "",
+                            "sum",
                             false,
                             false,
                         )
