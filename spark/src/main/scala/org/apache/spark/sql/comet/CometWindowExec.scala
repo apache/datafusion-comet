@@ -42,7 +42,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, wi
  * executions separated by a Comet shuffle exchange.
  */
 case class CometWindowExec(
-    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
     windowExpression: Seq[NamedExpression],
     partitionSpec: Seq[Expression],
     orderSpec: Seq[SortOrder],
@@ -51,8 +51,6 @@ case class CometWindowExec(
     with UnaryExecNode {
 
   override def nodeName: String = "CometWindowExec"
-
-  override def output: Seq[Attribute] = child.output ++ windowExpression.map(_.toAttribute)
 
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
