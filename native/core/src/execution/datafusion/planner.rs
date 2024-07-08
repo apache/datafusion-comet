@@ -21,19 +21,15 @@ use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
-use datafusion::functions_aggregate::count::{count, count_udaf};
-use datafusion::functions_aggregate::first_last::last_value_udaf;
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
-use datafusion::prelude::{BitAnd, BitOr, BitXor};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
-    functions_aggregate::count::Count,
     functions_aggregate::first_last::{FirstValue, LastValue},
-    functions_aggregate::sum::Sum,
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         execution_props::ExecutionProps,
