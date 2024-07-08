@@ -20,7 +20,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::{count, count_udaf};
+use datafusion::functions_aggregate::first_last::last_value_udaf;
+use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::prelude::{BitAnd, BitOr, BitXor};
@@ -1248,8 +1251,18 @@ impl PhysicalPlanner {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
                         let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-                        // Ok(Arc::new(Sum::new(child, "sum", datatype)))
-                        todo!()
+                        create_aggregate_expr(
+                            &sum_udaf(),
+                            &[child],
+                            &[],
+                            &[],
+                            &[],
+                            schema.as_ref(),
+                            "",
+                            false,
+                            false,
+                        )
+                        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                 }
             }
@@ -1276,38 +1289,82 @@ impl PhysicalPlanner {
             AggExprStruct::First(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(FirstValue::new());
-
-                // create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
-                //     .map_err(|e| e.into())
-
-                todo!()
+                create_aggregate_expr(
+                    &func,
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "first",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::Last(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(LastValue::new());
-
-                // create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
-                //     .map_err(|e| e.into())
-
-                todo!()
+                create_aggregate_expr(
+                    &func,
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "last",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                // Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
-                todo!()
+                create_aggregate_expr(
+                    &bit_and_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_and",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitOrAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                // Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
-                todo!()
+                create_aggregate_expr(
+                    &bit_or_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_and",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitXorAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                // Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
-                todo!()
+                create_aggregate_expr(
+                    &bit_xor_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_and",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::Covariance(expr) => {
                 let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
