@@ -14,12 +14,12 @@ WholeStageCodegen (5)
                           ColumnarToRow
                             InputAdapter
                               CometProject [inv_quantity_on_hand,i_item_sk,w_warehouse_sk,w_warehouse_name,d_moy]
-                                CometBroadcastHashJoin [inv_date_sk,d_date_sk]
+                                CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name,d_date_sk,d_moy]
                                   CometProject [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]
-                                    CometBroadcastHashJoin [inv_warehouse_sk,w_warehouse_sk]
+                                    CometBroadcastHashJoin [inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]
                                       CometProject [inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk]
-                                        CometBroadcastHashJoin [inv_item_sk,i_item_sk]
-                                          CometFilter [inv_item_sk,inv_warehouse_sk]
+                                        CometBroadcastHashJoin [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk]
+                                          CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                             CometScan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #3
@@ -27,17 +27,17 @@ WholeStageCodegen (5)
                                                     ColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk,d_moy]
-                                                          CometFilter [d_year,d_moy,d_date_sk]
+                                                          CometFilter [d_date_sk,d_year,d_moy]
                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange #4
+                                          CometBroadcastExchange [i_item_sk] #4
                                             CometFilter [i_item_sk]
                                               CometScan parquet spark_catalog.default.item [i_item_sk]
-                                      CometBroadcastExchange #5
-                                        CometFilter [w_warehouse_sk]
+                                      CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #5
+                                        CometFilter [w_warehouse_sk,w_warehouse_name]
                                           CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
-                                  CometBroadcastExchange #6
+                                  CometBroadcastExchange [d_date_sk,d_moy] #6
                                     CometProject [d_date_sk,d_moy]
-                                      CometFilter [d_year,d_moy,d_date_sk]
+                                      CometFilter [d_date_sk,d_year,d_moy]
                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
             InputAdapter
               BroadcastExchange #7
@@ -52,12 +52,12 @@ WholeStageCodegen (5)
                                 ColumnarToRow
                                   InputAdapter
                                     CometProject [inv_quantity_on_hand,i_item_sk,w_warehouse_sk,w_warehouse_name,d_moy]
-                                      CometBroadcastHashJoin [inv_date_sk,d_date_sk]
+                                      CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name,d_date_sk,d_moy]
                                         CometProject [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]
-                                          CometBroadcastHashJoin [inv_warehouse_sk,w_warehouse_sk]
+                                          CometBroadcastHashJoin [inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]
                                             CometProject [inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk]
-                                              CometBroadcastHashJoin [inv_item_sk,i_item_sk]
-                                                CometFilter [inv_item_sk,inv_warehouse_sk]
+                                              CometBroadcastHashJoin [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,i_item_sk]
+                                                CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                   CometScan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #2
                                                       BroadcastExchange #9
@@ -65,11 +65,11 @@ WholeStageCodegen (5)
                                                           ColumnarToRow
                                                             InputAdapter
                                                               CometProject [d_date_sk,d_moy]
-                                                                CometFilter [d_year,d_moy,d_date_sk]
+                                                                CometFilter [d_date_sk,d_year,d_moy]
                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                                 ReusedExchange [i_item_sk] #4
                                             ReusedExchange [w_warehouse_sk,w_warehouse_name] #5
-                                        CometBroadcastExchange #10
+                                        CometBroadcastExchange [d_date_sk,d_moy] #10
                                           CometProject [d_date_sk,d_moy]
-                                            CometFilter [d_year,d_moy,d_date_sk]
+                                            CometFilter [d_date_sk,d_year,d_moy]
                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

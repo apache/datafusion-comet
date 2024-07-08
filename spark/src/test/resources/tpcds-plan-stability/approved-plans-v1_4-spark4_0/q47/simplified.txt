@@ -25,27 +25,27 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                                 ColumnarToRow
                                                   InputAdapter
                                                     CometProject [i_brand,i_category,ss_sales_price,d_year,d_moy,s_store_name,s_company_name]
-                                                      CometBroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                      CometBroadcastHashJoin [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy,s_store_sk,s_store_name,s_company_name]
                                                         CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy]
-                                                          CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                          CometBroadcastHashJoin [i_brand,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_year,d_moy]
                                                             CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                              CometBroadcastHashJoin [i_item_sk,ss_item_sk]
-                                                                CometFilter [i_item_sk,i_category,i_brand]
+                                                              CometBroadcastHashJoin [i_item_sk,i_brand,i_category,ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                                                CometFilter [i_item_sk,i_brand,i_category]
                                                                   CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_category]
-                                                                CometBroadcastExchange #3
-                                                                  CometFilter [ss_item_sk,ss_store_sk]
+                                                                CometBroadcastExchange [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk] #3
+                                                                  CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                                                     CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                                                       SubqueryBroadcast [d_date_sk] #1
                                                                         BroadcastExchange #4
                                                                           WholeStageCodegen (1)
                                                                             ColumnarToRow
                                                                               InputAdapter
-                                                                                CometFilter [d_year,d_moy,d_date_sk]
+                                                                                CometFilter [d_date_sk,d_year,d_moy]
                                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                            CometBroadcastExchange #5
-                                                              CometFilter [d_year,d_moy,d_date_sk]
+                                                            CometBroadcastExchange [d_date_sk,d_year,d_moy] #5
+                                                              CometFilter [d_date_sk,d_year,d_moy]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                        CometBroadcastExchange #6
+                                                        CometBroadcastExchange [s_store_sk,s_store_name,s_company_name] #6
                                                           CometFilter [s_store_sk,s_store_name,s_company_name]
                                                             CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_name]
             InputAdapter
