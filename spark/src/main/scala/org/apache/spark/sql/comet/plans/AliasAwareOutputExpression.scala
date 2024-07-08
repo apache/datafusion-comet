@@ -88,7 +88,7 @@ trait AliasAwareOutputExpression extends SQLConfHelper {
     }
   }
 
-  // Copied from Spark 3.4+ to make it available in Spark 3.2+.
+  // Copied from Spark 3.4+ to make it available in Spark 3.3+.
   def multiTransformDown(expr: Expression)(
       rule: PartialFunction[Expression, Seq[Expression]]): Stream[Expression] = {
 

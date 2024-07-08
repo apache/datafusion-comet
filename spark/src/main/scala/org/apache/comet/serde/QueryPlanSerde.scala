@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -37,12 +37,13 @@ import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, Shuffle
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark32, isSpark34Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
@@ -63,8 +64,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2.
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -88,7 +88,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: BinaryType => 8
       case _: TimestampType => 9
       case _: DecimalType => 10
-      case dt if dt.typeName == "timestamp_ntz" => 11
+      case dt if isTimestampNTZType(dt) => 11
       case _: DateType => 12
       case _: NullType => 13
       case _: ArrayType => 14
@@ -197,6 +197,129 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     dt match {
       case _: IntegerType | LongType | ShortType | ByteType => true
       case _ => false
+    }
+  }
+
+  def windowExprToProto(
+      windowExpr: WindowExpression,
+      output: Seq[Attribute]): Option[OperatorOuterClass.WindowExpr] = {
+
+    val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
+      expr match {
+        case agg: AggregateExpression =>
+          agg.aggregateFunction match {
+            case _: Min | _: Max | _: Count =>
+              Some(agg)
+            case _ =>
+              withInfo(windowExpr, "Unsupported aggregate", expr)
+              None
+          }
+        case _ =>
+          None
+      }
+    }.toArray
+
+    val (aggExpr, builtinFunc) = if (aggregateExpressions.nonEmpty) {
+      val modes = aggregateExpressions.map(_.mode).distinct
+      assert(modes.size == 1 && modes.head == Complete)
+      (aggExprToProto(aggregateExpressions.head, output, true), None)
+    } else {
+      (None, exprToProto(windowExpr.windowFunction, output))
+    }
+
+    val f = windowExpr.windowSpec.frameSpecification
+
+    val (frameType, lowerBound, upperBound) = f match {
+      case SpecifiedWindowFrame(frameType, lBound, uBound) =>
+        val frameProto = frameType match {
+          case RowFrame => OperatorOuterClass.WindowFrameType.Rows
+          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
+        }
+
+        val lBoundProto = lBound match {
+          case UnboundedPreceding =>
+            OperatorOuterClass.LowerWindowFrameBound
+              .newBuilder()
+              .setUnboundedPreceding(OperatorOuterClass.UnboundedPreceding.newBuilder().build())
+              .build()
+          case CurrentRow =>
+            OperatorOuterClass.LowerWindowFrameBound
+              .newBuilder()
+              .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
+              .build()
+          case e =>
+            OperatorOuterClass.LowerWindowFrameBound
+              .newBuilder()
+              .setPreceding(
+                OperatorOuterClass.Preceding
+                  .newBuilder()
+                  .setOffset(e.eval().asInstanceOf[Int])
+                  .build())
+              .build()
+        }
+
+        val uBoundProto = uBound match {
+          case UnboundedFollowing =>
+            OperatorOuterClass.UpperWindowFrameBound
+              .newBuilder()
+              .setUnboundedFollowing(OperatorOuterClass.UnboundedFollowing.newBuilder().build())
+              .build()
+          case CurrentRow =>
+            OperatorOuterClass.UpperWindowFrameBound
+              .newBuilder()
+              .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
+              .build()
+          case e =>
+            OperatorOuterClass.UpperWindowFrameBound
+              .newBuilder()
+              .setFollowing(
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setOffset(e.eval().asInstanceOf[Int])
+                  .build())
+              .build()
+        }
+
+        (frameProto, lBoundProto, uBoundProto)
+      case _ =>
+        (
+          OperatorOuterClass.WindowFrameType.Rows,
+          OperatorOuterClass.LowerWindowFrameBound
+            .newBuilder()
+            .setUnboundedPreceding(OperatorOuterClass.UnboundedPreceding.newBuilder().build())
+            .build(),
+          OperatorOuterClass.UpperWindowFrameBound
+            .newBuilder()
+            .setUnboundedFollowing(OperatorOuterClass.UnboundedFollowing.newBuilder().build())
+            .build())
+    }
+
+    val frame = OperatorOuterClass.WindowFrame
+      .newBuilder()
+      .setFrameType(frameType)
+      .setLowerBound(lowerBound)
+      .setUpperBound(upperBound)
+      .build()
+
+    val spec =
+      OperatorOuterClass.WindowSpecDefinition.newBuilder().setFrameSpecification(frame).build()
+
+    if (builtinFunc.isDefined) {
+      Some(
+        OperatorOuterClass.WindowExpr
+          .newBuilder()
+          .setBuiltInWindowFunction(builtinFunc.get)
+          .setSpec(spec)
+          .build())
+    } else if (aggExpr.isDefined) {
+      Some(
+        OperatorOuterClass.WindowExpr
+          .newBuilder()
+          .setAggFunc(aggExpr.get)
+          .setSpec(spec)
+          .build())
+    } else {
+      None
     }
   }
 
@@ -429,40 +552,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child)
           None
         }
-      case cov @ CovSample(child1, child2, _) =>
+      case cov @ CovSample(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)
         val dataType = serializeDataType(cov.dataType)
 
         if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.CovSample.newBuilder()
+          val covBuilder = ExprOuterClass.Covariance.newBuilder()
           covBuilder.setChild1(child1Expr.get)
           covBuilder.setChild2(child2Expr.get)
+          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           covBuilder.setDatatype(dataType.get)
+          covBuilder.setStatsTypeValue(0)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setCovSample(covBuilder)
+              .setCovariance(covBuilder)
               .build())
         } else {
           None
         }
-      case cov @ CovPopulation(child1, child2, _) =>
+      case cov @ CovPopulation(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)
         val dataType = serializeDataType(cov.dataType)
 
         if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.CovPopulation.newBuilder()
+          val covBuilder = ExprOuterClass.Covariance.newBuilder()
           covBuilder.setChild1(child1Expr.get)
           covBuilder.setChild2(child2Expr.get)
+          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
           covBuilder.setDatatype(dataType.get)
+          covBuilder.setStatsTypeValue(1)
 
           Some(
             ExprOuterClass.AggExpr
               .newBuilder()
-              .setCovPopulation(covBuilder)
+              .setCovariance(covBuilder)
               .build())
         } else {
           None
@@ -1090,6 +1217,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                   com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
                 exprBuilder.setBytesVal(byteStr)
               case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+              case dt if isTimestampNTZType(dt) =>
+                exprBuilder.setLongVal(value.asInstanceOf[Long])
               case dt =>
                 logWarning(s"Unexpected date type '$dt' for literal value '$value'")
             }
@@ -1403,6 +1532,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case IsNaN(child) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          val optExpr =
+            scalarExprToProtoWithReturnType("isnan", BooleanType, childExpr)
+
+          optExprWithInfo(optExpr, expr, child)
+
         case SortOrder(child, direction, nullOrdering, _) =>
           val childExpr = exprToProtoInternal(child, inputs)
 
@@ -1469,7 +1605,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
-          // `UnaryExpression` includes `PromotePrecision` for Spark 3.2 & 3.3
+          // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs)
 
@@ -1574,7 +1710,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           optExprWithInfo(optExpr, expr, child)
 
-        case e: Unhex if !isSpark32 =>
+        case e: Unhex =>
           val unHex = unhexSerde(e)
 
           val childExpr = exprToProtoInternal(unHex._1, inputs)
@@ -1641,9 +1777,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val optExpr = scalarExprToProto("pow", leftExpr, rightExpr)
           optExprWithInfo(optExpr, expr, left, right)
 
-        // round function for Spark 3.2 does not allow negative round target scale. In addition,
-        // it has different result precision/scale for decimals. Supporting only 3.3 and above.
-        case r: Round if !isSpark32 =>
+        case r: Round =>
           // _scale s a constant, copied from Spark's RoundBase because it is a protected val
           val scaleV: Any = r.scale.eval(EmptyRow)
           val _scale: Int = scaleV.asInstanceOf[Int]
@@ -2122,7 +2256,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             childExpr)
           optExprWithInfo(optExpr, expr, child)
 
-        case b @ BinaryExpression(_, _) if isBloomFilterMightContain(b) =>
+        case b @ BloomFilterMightContain(_, _) =>
           val bloomFilter = b.left
           val value = b.right
           val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs)
@@ -2157,27 +2291,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
 
         case XxHash64(children, seed) =>
-          if (CometConf.COMET_XXHASH64_ENABLED.get()) {
-            val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-            if (firstUnSupportedInput.isDefined) {
-              withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-              return None
-            }
-            val exprs = children.map(exprToProtoInternal(_, inputs))
-            val seedBuilder = ExprOuterClass.Literal
-              .newBuilder()
-              .setDatatype(serializeDataType(LongType).get)
-              .setLongVal(seed)
-            val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-            // the seed is put at the end of the arguments
-            scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
-          } else {
-            withInfo(
-              expr,
-              "xxhash64 is disabled by default. " +
-                s"Set ${CometConf.COMET_XXHASH64_ENABLED.key}=true to enable it.")
-            None
+          val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
+          if (firstUnSupportedInput.isDefined) {
+            withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
+            return None
           }
+          val exprs = children.map(exprToProtoInternal(_, inputs))
+          val seedBuilder = ExprOuterClass.Literal
+            .newBuilder()
+            .setDatatype(serializeDataType(LongType).get)
+            .setLongVal(seed)
+          val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+          // the seed is put at the end of the arguments
+          scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
 
         case Sha2(left, numBits) =>
           if (!numBits.foldable) {
@@ -2200,6 +2326,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             exprToProtoInternal(Literal(null, StringType), inputs)
           } else {
             scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
+          }
+
+        case struct @ CreateNamedStruct(_) =>
+          val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
+          val dataType = serializeDataType(struct.dataType)
+
+          if (valExprs.forall(_.isDefined) && dataType.isDefined) {
+            val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
+            structBuilder.addAllValues(valExprs.map(_.get).asJava)
+            structBuilder.setDatatype(dataType.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setCreateNamedStruct(structBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
+            None
           }
 
         case _ =>
@@ -2308,8 +2453,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    // `TimestampNTZType` is private in Spark 3.2/3.3.
-    case dt if dt.typeName == "timestamp_ntz" => true
+    case dt if isTimestampNTZType(dt) => true
     case _ => false
   }
 
@@ -2363,7 +2507,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .addAllSortOrders(sortOrders.map(_.get).asJava)
           Some(result.setSort(sortBuilder).build())
         } else {
-          withInfo(op, sortOrder: _*)
+          withInfo(op, "sort order not supported", sortOrder: _*)
           None
         }
 
@@ -2386,12 +2530,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
 
-          // Spark 3.2 doesn't support offset for GlobalLimit, but newer Spark versions
-          // support it. Before we upgrade to Spark 3.3, just set it zero.
           // TODO: Spark 3.3 might have negative limit (-1) for Offset usage.
           // When we upgrade to Spark 3.3., we need to address it here.
           limitBuilder.setLimit(globalLimitExec.limit)
-          limitBuilder.setOffset(0)
 
           Some(result.setLimit(limitBuilder).build())
         } else {
@@ -2414,6 +2555,41 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           Some(result.setExpand(expandBuilder).build())
         } else {
           withInfo(op, allProjExprs: _*)
+          None
+        }
+
+      case WindowExec(windowExpression, partitionSpec, orderSpec, child)
+          if isCometOperatorEnabled(op.conf, "window") =>
+        val output = child.output
+
+        val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
+          expr match {
+            case alias: Alias =>
+              alias.child match {
+                case winExpr: WindowExpression =>
+                  Some(winExpr)
+                case _ =>
+                  None
+              }
+            case _ =>
+              None
+          }
+        }.toArray
+
+        val windowExprProto = winExprs.map(windowExprToProto(_, output))
+
+        val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
+
+        val sortOrders = orderSpec.map(exprToProto(_, child.output))
+
+        if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
+          && sortOrders.forall(_.isDefined)) {
+          val windowBuilder = OperatorOuterClass.Window.newBuilder()
+          windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
+          windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
+          windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
+          Some(result.setWindow(windowBuilder).build())
+        } else {
           None
         }
 
@@ -2529,6 +2705,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
+          return None
+        }
+
+        if ((join.leftKeys ++ join.rightKeys).exists(_.dataType.isInstanceOf[StructType])) {
+          withInfo(join, "Unsupported struct data type in join keys")
           return None
         }
 
@@ -2717,6 +2898,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: TakeOrderedAndProjectExec => true
       case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
       case _: BroadcastExchangeExec => true
+      case _: WindowExec => true
       case _ => false
     }
   }

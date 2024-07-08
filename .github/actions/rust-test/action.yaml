@@ -22,19 +22,19 @@ runs:
     - name: Check Cargo fmt
       shell: bash
       run: |
-        cd core
+        cd native
         cargo fmt --all -- --check --color=never
 
     - name: Check Cargo clippy
       shell: bash
       run: |
-        cd core
+        cd native
         cargo clippy --color=never -- -D warnings
 
     - name: Check compilation
       shell: bash
       run: |
-        cd core
+        cd native
         cargo check --benches
 
     - name: Cache Maven dependencies
@@ -56,5 +56,5 @@ runs:
     - name: Run Cargo test
       shell: bash
       run: |
-        cd core
+        cd native
         RUST_BACKTRACE=1 cargo test

@@ -75,6 +75,7 @@ public final class Native extends NativeBase {
       int precision,
       int expectedPrecision,
       int scale,
+      int expectedScale,
       int tu,
       boolean isAdjustedUtc,
       int batchSize,

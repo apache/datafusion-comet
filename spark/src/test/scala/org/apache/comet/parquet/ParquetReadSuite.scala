@@ -184,7 +184,6 @@ abstract class ParquetReadSuite extends CometTestBase {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         val expected = makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        val useLocalDateTime = spark.version >= "3.3"
         readParquetFile(path.toString) { df =>
           checkAnswer(
             df.select($"_0", $"_1", $"_2", $"_3", $"_4", $"_5"),
@@ -192,17 +191,11 @@ abstract class ParquetReadSuite extends CometTestBase {
               case None =>
                 Row(null, null, null, null, null, null)
               case Some(i) =>
-                // use `LocalDateTime` for `TimestampNTZType` with Spark 3.3 and above. At the moment,
-                // Spark reads Parquet timestamp values into `Timestamp` (with local timezone)
-                // regardless of whether `isAdjustedToUTC` is true or false. See SPARK-36182.
-                // TODO: make `LocalDateTime` default after dropping Spark 3.2.0 support
                 val ts = new java.sql.Timestamp(i)
-                val ldt = if (useLocalDateTime) {
-                  ts.toLocalDateTime
-                    .atZone(ZoneId.systemDefault())
-                    .withZoneSameInstant(ZoneOffset.UTC)
-                    .toLocalDateTime
-                } else ts
+                val ldt = ts.toLocalDateTime
+                  .atZone(ZoneId.systemDefault())
+                  .withZoneSameInstant(ZoneOffset.UTC)
+                  .toLocalDateTime
                 Row(ts, ts, ts, ldt, ts, ldt)
             })
         }
@@ -1123,7 +1116,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("row group skipping doesn't overflow when reading into larger type") {
-    // Spark 4.0 no longer fails for widening types
+    // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
     assume(isSpark34Plus && !isSpark40Plus)
 

@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.UnaryExecNode
  * satisfies distribution requirements.
  *
  * This is copied from Spark's `PartitioningPreservingUnaryExecNode` because it is only available
- * in Spark 3.4+. This is a workaround to make it available in Spark 3.2+.
+ * in Spark 3.4+. This is a workaround to make it available in Spark 3.3+.
  */
 trait PartitioningPreservingUnaryExecNode extends UnaryExecNode with AliasAwareOutputExpression {
   final override def outputPartitioning: Partitioning = {

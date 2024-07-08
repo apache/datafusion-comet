@@ -55,7 +55,8 @@ public class ArrowImporter {
       ArrowArray array, ArrowSchema schema, CDataDictionaryProvider provider) {
     Field field = importField(schema, provider);
     FieldVector vector = field.createVector(allocator);
-    Data.importIntoVector(allocator, array, vector, provider);
+    CometArrayImporter importer = new CometArrayImporter(allocator, vector, provider);
+    importer.importArray(array);
     return vector;
   }
 }

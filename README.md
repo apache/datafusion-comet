@@ -34,13 +34,14 @@ The following chart shows the time it takes to run the 22 TPC-H queries against 
 using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
 for details of the environment used for these benchmarks.
 
-When using Comet, the overall run time is reduced from 649 seconds to 440 seconds, a 1.5x speedup.
+When using Comet, the overall run time is reduced from 649 seconds to 433 seconds, a 1.5x speedup, with some queries
+showing a 2x-3x speedup.
 
 Running the same queries with DataFusion standalone (without Spark) using the same number of cores results in a 3.9x 
 speedup compared to Spark.
 
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
-for many use cases.
+for a broader set of queries.
 
 ![](docs/source/_static/images/tpch_allqueries.png)
 

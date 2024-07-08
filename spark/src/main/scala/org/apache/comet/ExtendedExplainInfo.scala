@@ -26,22 +26,18 @@ import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 
+import org.apache.comet.CometExplainInfo.getActualPlan
+
 class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
   override def generateExtendedInfo(plan: SparkPlan): String = {
-    val info = extensionInfo(plan)
-    info.toSeq.sorted.mkString("\n").trim
-  }
-
-  private def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
-    node match {
-      case p: AdaptiveSparkPlanExec => getActualPlan(p.executedPlan)
-      case p: InputAdapter => getActualPlan(p.child)
-      case p: QueryStageExec => getActualPlan(p.plan)
-      case p: WholeStageCodegenExec => getActualPlan(p.child)
-      case p => p
+    if (CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.get()) {
+      generateVerboseExtendedInfo(plan)
+    } else {
+      val info = extensionInfo(plan)
+      info.toSeq.sorted.mkString("\n").trim
     }
   }
 
@@ -81,8 +77,89 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     }
     ordered.reverse
   }
+
+  // generates the extended info in a verbose manner, printing each node along with the
+  // extended information in a tree display
+  def generateVerboseExtendedInfo(plan: SparkPlan): String = {
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString)
+    outString.toString()
+  }
+
+  // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
+  def generateTreeString(
+      node: TreeNode[_],
+      depth: Int,
+      lastChildren: Seq[Boolean],
+      indent: Int,
+      outString: StringBuilder): Unit = {
+    outString.append("   " * indent)
+    if (depth > 0) {
+      lastChildren.init.foreach { isLast =>
+        outString.append(if (isLast) "   " else ":  ")
+      }
+      outString.append(if (lastChildren.last) "+- " else ":- ")
+    }
+
+    val tagValue = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    val str = if (tagValue.nonEmpty) {
+      s" ${node.nodeName} [COMET: ${tagValue.get.mkString(", ")}]"
+    } else {
+      node.nodeName
+    }
+    outString.append(str)
+    outString.append("\n")
+
+    val innerChildrenLocal = node.innerChildren
+    if (innerChildrenLocal.nonEmpty) {
+      innerChildrenLocal.init.foreach {
+        case c @ (_: TreeNode[_]) =>
+          generateTreeString(
+            getActualPlan(c),
+            depth + 2,
+            lastChildren :+ node.children.isEmpty :+ false,
+            indent,
+            outString)
+        case _ =>
+      }
+      generateTreeString(
+        getActualPlan(innerChildrenLocal.last),
+        depth + 2,
+        lastChildren :+ node.children.isEmpty :+ true,
+        indent,
+        outString)
+    }
+    if (node.children.nonEmpty) {
+      node.children.init.foreach {
+        case c @ (_: TreeNode[_]) =>
+          generateTreeString(
+            getActualPlan(c),
+            depth + 1,
+            lastChildren :+ false,
+            indent,
+            outString)
+        case _ =>
+      }
+      node.children.last match {
+        case c @ (_: TreeNode[_]) =>
+          generateTreeString(getActualPlan(c), depth + 1, lastChildren :+ true, indent, outString)
+        case _ =>
+      }
+    }
+  }
 }
 
 object CometExplainInfo {
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
+
+  def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
+    node match {
+      case p: AdaptiveSparkPlanExec => getActualPlan(p.executedPlan)
+      case p: InputAdapter => getActualPlan(p.child)
+      case p: QueryStageExec => getActualPlan(p.plan)
+      case p: WholeStageCodegenExec => getActualPlan(p.child)
+      case p => p
+    }
+  }
+
 }

@@ -274,6 +274,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.verbose.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide a verbose tree representation of " +
+          "the extended information.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(
@@ -398,12 +406,6 @@ object CometConf extends ShimCometConf {
         "Comet is not currently fully compatible with Spark for all cast operations. " +
           "Set this config to true to allow them anyway. See compatibility guide " +
           "for more information.")
-      .booleanConf
-      .createWithDefault(false)
-
-  val COMET_XXHASH64_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.xxhash64.enabled")
-      .doc("The xxhash64 implementation is not optimized yet and may cause performance issues.")
       .booleanConf
       .createWithDefault(false)
 
