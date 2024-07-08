@@ -38,7 +38,6 @@ arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" 
 arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
 arrow-data = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
 arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
-arrow-string = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1" }
 datafusion-common = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1" }
 datafusion = { default-features = false, git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", features = ["unicode_expressions", "crypto_expressions"] }
 datafusion-functions = { git = "https://github.com/viirya/arrow-datafusion.git", rev = "17446b1", features = ["crypto_expressions"] }
@@ -52,4 +51,3 @@ overflow-checks = false
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-

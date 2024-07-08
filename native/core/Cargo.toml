@@ -35,19 +35,16 @@ include = [
 publish = false
 
 [dependencies]
-parquet-format = "4.0.0" # This must be kept in sync with that from parquet crate
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-string = { workspace = true }
 parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "0a4d8a1", default-features = false, features = ["experimental"] }
 half = { version = "2.4.1", default-features = false }
 futures = "0.3.28"
 mimalloc = { version = "*", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-tokio-stream = { version = "0.1.8" }
 async-trait = "0.1"
 log = "0.4"
 log4rs = "1.2.0"
@@ -55,9 +52,7 @@ thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 lazy_static = "1.4.0"
 prost = "0.12.1"
-thrift = "0.17"
 jni = "0.21"
-byteorder = "1.4.3"
 snap = "1.1"
 brotli = "3.3"
 flate2 = "1.0"
@@ -66,8 +61,6 @@ zstd = "0.11"
 rand = "0.8"
 num = "0.4"
 bytes = "1.5.0"
-hashbrown = { version = "0.14", features = ["raw"] }
-parking_lot = "0.12"
 tempfile = "3.8.0"
 ahash = { version = "0.8", default-features = false }
 itertools = "0.11.0"
