@@ -92,8 +92,6 @@ impl ExecutionPlan for CometExpandExec {
         self
     }
 
-
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
