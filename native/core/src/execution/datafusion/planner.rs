@@ -1319,8 +1319,7 @@ impl PhysicalPlanner {
                 .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 create_aggregate_expr(
                     &bit_and_udaf(),
                     &[child],
@@ -1335,8 +1334,7 @@ impl PhysicalPlanner {
                 .map_err(|e| e.into())
             }
             AggExprStruct::BitOrAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 create_aggregate_expr(
                     &bit_or_udaf(),
                     &[child],
@@ -1351,8 +1349,7 @@ impl PhysicalPlanner {
                 .map_err(|e| e.into())
             }
             AggExprStruct::BitXorAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 create_aggregate_expr(
                     &bit_xor_udaf(),
                     &[child],
