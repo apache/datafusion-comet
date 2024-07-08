@@ -855,7 +855,6 @@ dependencies = [
  "datafusion-comet-expr",
  "datafusion-common",
  "datafusion-expr",
- "datafusion-functions",
  "datafusion-physical-expr",
  "datafusion-physical-expr-common",
  "flate2",
