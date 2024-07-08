@@ -193,14 +193,14 @@ under the License.
         <directory>${project.basedir}/src/main/resources</directory>
       </resource>
       <resource>
-        <directory>${project.basedir}/../core/target/x86_64-apple-darwin/release</directory>
+        <directory>${project.basedir}/../native/target/x86_64-apple-darwin/release</directory>
         <includes>
           <include>libcomet.dylib</include>
         </includes>
         <targetPath>org/apache/comet/darwin/x86_64</targetPath>
       </resource>
       <resource>
-        <directory>${project.basedir}/../core/target/aarch64-apple-darwin/release</directory>
+        <directory>${project.basedir}/../native/target/aarch64-apple-darwin/release</directory>
         <includes>
           <include>libcomet.dylib</include>
         </includes>

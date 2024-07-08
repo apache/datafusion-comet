@@ -59,7 +59,7 @@ under the License.
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.6</slf4j.version>
-    <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
+    <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
     <comet.shade.packageName>org.apache.comet.shaded</comet.shade.packageName>
@@ -458,7 +458,7 @@ under the License.
     <profile>
       <id>release</id>
       <properties>
-        <jni.dir>${project.basedir}/../core/target/release</jni.dir>
+        <jni.dir>${project.basedir}/../native/target/release</jni.dir>
       </properties>
     </profile>
 
