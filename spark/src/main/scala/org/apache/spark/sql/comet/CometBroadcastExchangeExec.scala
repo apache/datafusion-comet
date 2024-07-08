@@ -31,6 +31,7 @@ import org.apache.spark.comet.shims.ShimCometBroadcastExchangeExec
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
@@ -60,7 +61,10 @@ import org.apache.comet.CometRuntimeException
  * Note that this only supports Spark 3.4 and later, because the serialization class
  * `ChunkedByteBuffer` is only serializable in Spark 3.4 and later.
  */
-case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
+case class CometBroadcastExchangeExec(
+    originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val child: SparkPlan)
     extends BroadcastExchangeLike
     with ShimCometBroadcastExchangeExec {
   import CometBroadcastExchangeExec._
@@ -75,7 +79,7 @@ case class CometBroadcastExchangeExec(originalPlan: SparkPlan, child: SparkPlan)
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
-    CometBroadcastExchangeExec(originalPlan.canonicalized, child.canonicalized)
+    CometBroadcastExchangeExec(null, null, child.canonicalized)
   }
 
   override def runtimeStatistics: Statistics = {

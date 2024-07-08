@@ -15,9 +15,9 @@ WholeStageCodegen (18)
                             WholeStageCodegen (1)
                               ColumnarToRow
                                 InputAdapter
-                                  CometHashAggregate [ss_list_price]
+                                  CometHashAggregate [ss_list_price,sum,count,count]
                                     CometProject [ss_list_price]
-                                      CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                      CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                         CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
             InputAdapter
               BroadcastExchange #3
@@ -33,9 +33,9 @@ WholeStageCodegen (18)
                                   WholeStageCodegen (3)
                                     ColumnarToRow
                                       InputAdapter
-                                        CometHashAggregate [ss_list_price]
+                                        CometHashAggregate [ss_list_price,sum,count,count]
                                           CometProject [ss_list_price]
-                                            CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                            CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                               CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
           InputAdapter
             BroadcastExchange #6
@@ -51,9 +51,9 @@ WholeStageCodegen (18)
                                 WholeStageCodegen (6)
                                   ColumnarToRow
                                     InputAdapter
-                                      CometHashAggregate [ss_list_price]
+                                      CometHashAggregate [ss_list_price,sum,count,count]
                                         CometProject [ss_list_price]
-                                          CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                          CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
         InputAdapter
           BroadcastExchange #9
@@ -69,9 +69,9 @@ WholeStageCodegen (18)
                               WholeStageCodegen (9)
                                 ColumnarToRow
                                   InputAdapter
-                                    CometHashAggregate [ss_list_price]
+                                    CometHashAggregate [ss_list_price,sum,count,count]
                                       CometProject [ss_list_price]
-                                        CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                        CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                           CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
       InputAdapter
         BroadcastExchange #12
@@ -87,9 +87,9 @@ WholeStageCodegen (18)
                             WholeStageCodegen (12)
                               ColumnarToRow
                                 InputAdapter
-                                  CometHashAggregate [ss_list_price]
+                                  CometHashAggregate [ss_list_price,sum,count,count]
                                     CometProject [ss_list_price]
-                                      CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                      CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                         CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
     InputAdapter
       BroadcastExchange #15
@@ -105,7 +105,7 @@ WholeStageCodegen (18)
                           WholeStageCodegen (15)
                             ColumnarToRow
                               InputAdapter
-                                CometHashAggregate [ss_list_price]
+                                CometHashAggregate [ss_list_price,sum,count,count]
                                   CometProject [ss_list_price]
-                                    CometFilter [ss_quantity,ss_list_price,ss_coupon_amt,ss_wholesale_cost]
+                                    CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                       CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]

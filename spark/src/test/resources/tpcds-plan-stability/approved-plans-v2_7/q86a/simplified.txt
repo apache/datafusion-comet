@@ -22,12 +22,12 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                           WholeStageCodegen (1)
                                             ColumnarToRow
                                               InputAdapter
-                                                CometHashAggregate [i_category,i_class,ws_net_paid]
+                                                CometHashAggregate [i_category,i_class,sum,ws_net_paid]
                                                   CometProject [ws_net_paid,i_class,i_category]
-                                                    CometBroadcastHashJoin [ws_item_sk,i_item_sk]
+                                                    CometBroadcastHashJoin [ws_item_sk,ws_net_paid,i_item_sk,i_class,i_category]
                                                       CometProject [ws_item_sk,ws_net_paid]
-                                                        CometBroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                          CometFilter [ws_item_sk]
+                                                        CometBroadcastHashJoin [ws_item_sk,ws_net_paid,ws_sold_date_sk,d_date_sk]
+                                                          CometFilter [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                                             CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #4
@@ -35,14 +35,14 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         CometProject [d_date_sk]
-                                                                          CometFilter [d_month_seq,d_date_sk]
+                                                                          CometFilter [d_date_sk,d_month_seq]
                                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                                          CometBroadcastExchange #5
+                                                          CometBroadcastExchange [d_date_sk] #5
                                                             CometProject [d_date_sk]
-                                                              CometFilter [d_month_seq,d_date_sk]
+                                                              CometFilter [d_date_sk,d_month_seq]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                                      CometBroadcastExchange #6
-                                                        CometFilter [i_item_sk]
+                                                      CometBroadcastExchange [i_item_sk,i_class,i_category] #6
+                                                        CometFilter [i_item_sk,i_class,i_category]
                                                           CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                   WholeStageCodegen (5)
                                     HashAggregate [i_category,sum,isEmpty] [sum(total_sum),total_sum,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
