@@ -40,7 +40,11 @@ import com.google.common.base.Objects
  *
  * TODO: support offset semantics
  */
-case class CometCollectLimitExec(limit: Int, offset: Int, child: SparkPlan)
+case class CometCollectLimitExec(
+    override val originalPlan: SparkPlan,
+    limit: Int,
+    offset: Int,
+    child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
   override def output: Seq[Attribute] = child.output

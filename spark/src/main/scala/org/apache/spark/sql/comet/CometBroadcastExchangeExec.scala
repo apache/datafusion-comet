@@ -62,6 +62,7 @@ import org.apache.comet.CometRuntimeException
  * `ChunkedByteBuffer` is only serializable in Spark 3.4 and later.
  */
 case class CometBroadcastExchangeExec(
+    originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val child: SparkPlan)
     extends BroadcastExchangeLike
@@ -76,6 +77,10 @@ case class CometBroadcastExchangeExec(
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+
+  override def doCanonicalize(): SparkPlan = {
+    CometBroadcastExchangeExec(null, null, child.canonicalized)
+  }
 
   override def runtimeStatistics: Statistics = {
     val dataSize = metrics("dataSize").value
@@ -236,7 +241,7 @@ case class CometBroadcastExchangeExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometBroadcastExchangeExec =>
-        this.output == other.output &&
+        this.originalPlan == other.originalPlan &&
         this.child == other.child
       case _ =>
         false

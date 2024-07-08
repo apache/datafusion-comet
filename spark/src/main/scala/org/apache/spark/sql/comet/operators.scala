@@ -56,14 +56,27 @@ import org.apache.comet.shims.ShimCometBroadcastHashJoinExec
  */
 abstract class CometExec extends CometPlan {
 
+  /** The original Spark operator from which this Comet operator is converted from */
+  def originalPlan: SparkPlan
+
   /** Comet always support columnar execution */
   override def supportsColumnar: Boolean = true
+
+  override def output: Seq[Attribute] = originalPlan.output
 
   override def doExecute(): RDD[InternalRow] =
     ColumnarToRowExec(this).doExecute()
 
   override def executeCollect(): Array[InternalRow] =
     ColumnarToRowExec(this).executeCollect()
+
+  override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+
+  // `CometExec` reuses the outputPartitioning of the original SparkPlan.
+  // Note that if the outputPartitioning of the original SparkPlan depends on its children,
+  // we should override this method in the specific CometExec, because Spark AQE may change the
+  // outputPartitioning of SparkPlan, e.g., AQEShuffleReadExec.
+  override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
 
   /**
    * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
@@ -399,6 +412,7 @@ case class SerializedPlan(plan: Option[Array[Byte]]) {
 
 case class CometProjectExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     projectList: Seq[NamedExpression],
     child: SparkPlan,
@@ -429,6 +443,7 @@ case class CometProjectExec(
 
 case class CometFilterExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     condition: Expression,
     child: SparkPlan,
@@ -467,6 +482,7 @@ case class CometFilterExec(
 
 case class CometSortExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val outputOrdering: Seq[SortOrder],
     sortOrder: Seq[SortOrder],
@@ -503,6 +519,7 @@ case class CometSortExec(
 
 case class CometLocalLimitExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     limit: Int,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
@@ -534,6 +551,7 @@ case class CometLocalLimitExec(
 
 case class CometGlobalLimitExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     limit: Int,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
@@ -563,6 +581,7 @@ case class CometGlobalLimitExec(
 
 case class CometExpandExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     projections: Seq[Seq[Expression]],
     child: SparkPlan,
@@ -593,7 +612,10 @@ case class CometExpandExec(
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
 }
 
-case class CometUnionExec(override val output: Seq[Attribute], children: Seq[SparkPlan])
+case class CometUnionExec(
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    children: Seq[SparkPlan])
     extends CometExec {
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     sparkContext.union(children.map(_.executeColumnar()))
@@ -626,6 +648,7 @@ case class CometUnionExec(override val output: Seq[Attribute], children: Seq[Spa
 
 case class CometHashAggregateExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     groupingExpressions: Seq[NamedExpression],
     aggregateExpressions: Seq[AggregateExpression],
@@ -673,6 +696,7 @@ case class CometHashAggregateExec(
 
 case class CometHashJoinExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val outputOrdering: Seq[SortOrder],
     leftKeys: Seq[Expression],
@@ -726,6 +750,7 @@ case class CometHashJoinExec(
 
 case class CometBroadcastHashJoinExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val outputOrdering: Seq[SortOrder],
     leftKeys: Seq[Expression],
@@ -861,6 +886,7 @@ case class CometBroadcastHashJoinExec(
 
 case class CometSortMergeJoinExec(
     override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val outputOrdering: Seq[SortOrder],
     leftKeys: Seq[Expression],
@@ -917,10 +943,9 @@ case class CometSortMergeJoinExec(
       "join_time" -> SQLMetrics.createNanoTimingMetric(sparkContext, "Total time for joining"))
 }
 
-case class CometScanWrapper(override val nativeOp: Operator, originalPlan: SparkPlan)
+case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
-  override def output: Seq[Attribute] = originalPlan.output
   override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
   override def stringArgs: Iterator[Any] = Iterator(originalPlan.output, originalPlan)
 }
@@ -934,11 +959,9 @@ case class CometScanWrapper(override val nativeOp: Operator, originalPlan: Spark
  */
 case class CometSinkPlaceHolder(
     override val nativeOp: Operator, // Must be a Scan
-    originalPlan: SparkPlan,
+    override val originalPlan: SparkPlan,
     child: SparkPlan)
     extends CometUnaryExec {
-  override def output: Seq[Attribute] = originalPlan.output
-
   override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {

@@ -32,6 +32,7 @@ import com.google.common.base.Objects
  * more efficient when including it in a Comet query plan.
  */
 case class CometCoalesceExec(
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     numPartitions: Int,
     child: SparkPlan)

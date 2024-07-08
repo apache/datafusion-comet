@@ -42,6 +42,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, wi
  * executions separated by a Comet shuffle exchange.
  */
 case class CometWindowExec(
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     windowExpression: Seq[NamedExpression],
     partitionSpec: Seq[Expression],

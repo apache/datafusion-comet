@@ -35,6 +35,7 @@ trait ShimCometShuffleExchangeExec {
     CometShuffleExchangeExec(
       s.outputPartitioning,
       s.child,
+      s,
       s.shuffleOrigin,
       shuffleType,
       advisoryPartitionSize)

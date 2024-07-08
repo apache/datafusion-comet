@@ -41,6 +41,7 @@ import org.apache.comet.shims.ShimCometTakeOrderedAndProjectExec
  * contains two native executions separated by a Comet shuffle exchange.
  */
 case class CometTakeOrderedAndProjectExec(
+    override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     limit: Int,
     sortOrder: Seq[SortOrder],
