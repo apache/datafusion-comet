@@ -126,6 +126,10 @@ impl ExecutionPlan for CopyExec {
     fn properties(&self) -> &PlanProperties {
         &self.cache
     }
+
+    fn name(&self) -> &str {
+        "CopyExec"
+    }
 }
 
 struct CopyStream {

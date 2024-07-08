@@ -20,6 +20,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use datafusion::prelude::{BitAnd, BitOr, BitXor};
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -27,12 +28,15 @@ use datafusion::{
     common::DataFusionError,
     execution::FunctionRegistry,
     logical_expr::Operator as DataFusionOperator,
+    functions_aggregate::count::Count,
+    functions_aggregate::sum::Sum,
+    functions_aggregate::first_last::{FirstValue, LastValue},
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
-            in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
-            FirstValue, IsNotNullExpr, IsNullExpr, LastValue, Literal as DataFusionLiteral, Max,
-            Min, NotExpr, Sum,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column,
+            IsNotNullExpr, IsNullExpr, Literal as DataFusionLiteral, Max,
+            Min, NotExpr
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -647,7 +651,7 @@ impl PhysicalPlanner {
         let left = self.create_expr(left, input_schema.clone())?;
         let right = self.create_expr(right, input_schema.clone())?;
         match (
-            op,
+            &op,
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
@@ -672,7 +676,7 @@ impl PhysicalPlanner {
                     DataType::Decimal256(p2, s2),
                     EvalMode::Legacy,
                 ));
-                let child = Arc::new(BinaryExpr::new(left, op, right));
+                let child = Arc::new(BinaryExpr::new(left, op.clone(), right));
                 Ok(Arc::new(Cast::new_without_timezone(
                     child,
                     data_type,
@@ -1203,16 +1207,17 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn AggregateExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
-                let children = expr
-                    .children
-                    .iter()
-                    .map(|child| self.create_expr(child, schema.clone()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(Count::new_with_multiple_exprs(
-                    children,
-                    "count",
-                    DataType::Int64,
-                )))
+                // let children = expr
+                //     .children
+                //     .iter()
+                //     .map(|child| self.create_expr(child, schema.clone()))
+                //     .collect::<Result<Vec<_>, _>>()?;
+                // Ok(Arc::new(Count::new_with_multiple_exprs(
+                //     children,
+                //     "count",
+                //     DataType::Int64,
+                // )))
+                todo!()
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
@@ -1236,7 +1241,8 @@ impl PhysicalPlanner {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
                         let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-                        Ok(Arc::new(Sum::new(child, "sum", datatype)))
+                        // Ok(Arc::new(Sum::new(child, "sum", datatype)))
+                        todo!()
                     }
                 }
             }
@@ -1264,30 +1270,37 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(FirstValue::new());
 
-                create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
-                    .map_err(|e| e.into())
+                // create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
+                //     .map_err(|e| e.into())
+
+                todo!()
             }
             AggExprStruct::Last(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(LastValue::new());
 
-                create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
-                    .map_err(|e| e.into())
+                // create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
+                //     .map_err(|e| e.into())
+
+                todo!()
             }
             AggExprStruct::BitAndAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
+                // Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
+                todo!()
             }
             AggExprStruct::BitOrAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
+                // Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
+                todo!()
             }
             AggExprStruct::BitXorAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+                // Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+                todo!()
             }
             AggExprStruct::Covariance(expr) => {
                 let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
@@ -1479,17 +1492,19 @@ impl PhysicalPlanner {
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
 
-        datafusion::physical_plan::windows::create_window_expr(
-            &window_func,
-            window_func_name,
-            &window_args,
-            partition_by,
-            sort_exprs,
-            window_frame.into(),
-            &input_schema,
-            false, // TODO: Ignore nulls
-        )
-        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+        // datafusion::physical_plan::windows::create_window_expr(
+        //     &window_func,
+        //     window_func_name,
+        //     &window_args,
+        //     partition_by,
+        //     sort_exprs,
+        //     window_frame.into(),
+        //     &input_schema,
+        //     false, // TODO: Ignore nulls
+        // )
+        // .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+
+        todo!()
     }
 
     fn process_agg_func(agg_func: &AggExpr) -> Result<(String, Vec<Expr>), ExecutionError> {
