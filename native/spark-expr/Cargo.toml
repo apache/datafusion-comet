@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "datafusion-comet-expr"
+name = "datafusion-spark-expr"
 description = "DataFusion expressions that emulate Apache Spark's behavior"
 version = { workspace = true }
 homepage = { workspace = true }
@@ -34,5 +34,5 @@ datafusion-common = { workspace = true }
 datafusion-functions = { workspace = true }
 
 [lib]
-name = "datafusion_comet_expr"
+name = "datafusion_spark_expr"
 path = "src/lib.rs"

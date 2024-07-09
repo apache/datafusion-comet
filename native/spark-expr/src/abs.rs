@@ -71,7 +71,7 @@ impl ScalarUDFImpl for Abs {
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
         match self.inner_abs_func.invoke(args) {
-            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), _trace))
+            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), _))
                 if msg.contains("overflow") =>
             {
                 if self.eval_mode == EvalMode::Legacy {
