@@ -208,7 +208,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr match {
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
-            case _: Min | _: Max | _: Count =>
+            case _: Min | _: Max =>
               Some(agg)
             case _ =>
               withInfo(windowExpr, "Unsupported aggregate", expr)
