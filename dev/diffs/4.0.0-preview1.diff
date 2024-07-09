@@ -415,7 +415,7 @@ index 16a493b5290..3f0b70e2d59 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..50a2ce86117 100644
+index 2c24cc7d570..d46dc5e138a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -442,7 +442,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("partition pruning in broadcast hash joins with aliases") {
 +  test("partition pruning in broadcast hash joins with aliases",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      Given("alias with simple join condition, using attribute names only")
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
@@ -452,7 +452,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("partition pruning in broadcast hash joins") {
 +  test("partition pruning in broadcast hash joins",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      Given("disable broadcast pruning and disable subquery duplication")
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
@@ -462,7 +462,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("different broadcast subqueries with identical children") {
 +  test("different broadcast subqueries with identical children",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withTable("fact", "dim") {
          spark.range(100).select(
@@ -492,7 +492,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("SPARK-32817: DPP throws error when the broadcast side is empty") {
 +  test("SPARK-32817: DPP throws error when the broadcast side is empty",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
@@ -502,7 +502,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning") {
 +  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
@@ -521,7 +521,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec") {
 +  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withTable("duplicate_keys") {
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
          Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
@@ -531,7 +531,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty") {
 +  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
@@ -541,7 +541,7 @@ index 2c24cc7d570..50a2ce86117 100644
  
 -  test("SPARK-39217: Makes DPP support the pruning side has Union") {
 +  test("SPARK-39217: Makes DPP support the pruning side has Union",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
@@ -1159,7 +1159,7 @@ index 15de4c5cc5b..6a85dfb6883 100644
  
    setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-index b5bac8079c4..544c1ddc697 100644
+index b5bac8079c4..a3731888e12 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 @@ -17,7 +17,8 @@
@@ -1190,7 +1190,7 @@ index b5bac8079c4..544c1ddc697 100644
  
 -  test("join with ordering requirement") {
 +  test("join with ordering requirement",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
      val query = "select * from (select key, a, c, b from testView) as t1 join " +
        "(select key, a, b, c from testView) as t2 on t1.key = t2.key where t2.a > 50"
      assertProjectExec(query, 2, 2)
@@ -2590,7 +2590,7 @@ index af07aceaed1..ed0b5e6d9be 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index 5fbf379644f..32711763ec1 100644
+index 5fbf379644f..6153046a787 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
