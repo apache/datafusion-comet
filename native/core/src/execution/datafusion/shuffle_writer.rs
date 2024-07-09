@@ -160,6 +160,10 @@ impl ExecutionPlan for ShuffleWriterExec {
     fn properties(&self) -> &PlanProperties {
         &self.cache
     }
+
+    fn name(&self) -> &str {
+        "ShuffleWriterExec"
+    }
 }
 
 impl ShuffleWriterExec {
