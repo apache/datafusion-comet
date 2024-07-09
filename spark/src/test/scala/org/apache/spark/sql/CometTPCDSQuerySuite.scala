@@ -27,10 +27,6 @@ import org.apache.comet.CometConf
 
 class CometTPCDSQuerySuite
     extends {
-      override val excludedTpcdsQueries: Set[String] = Set()
-
-      // This is private in `TPCDSBase` and `excludedTpcdsQueries` is private too.
-      // So we cannot override `excludedTpcdsQueries` to exclude the queries.
       val tpcdsAllQueries: Seq[String] = Seq(
         "q1",
         "q2",
@@ -112,7 +108,9 @@ class CometTPCDSQuerySuite
         "q69",
         "q70",
         "q71",
-        "q72",
+        // TODO: unknown failure (seems memory usage over Github action runner) in CI with q72 in
+        // https://github.com/apache/datafusion-comet/pull/613.
+        // "q72",
         "q73",
         "q74",
         "q75",
@@ -141,9 +139,45 @@ class CometTPCDSQuerySuite
         "q98",
         "q99")
 
-      // TODO: enable the 3 queries after fixing the issues #1358.
-      override val tpcdsQueries: Seq[String] =
-        tpcdsAllQueries.filterNot(excludedTpcdsQueries.contains)
+      val tpcdsAllQueriesV2_7_0: Seq[String] = Seq(
+        "q5a",
+        "q6",
+        "q10a",
+        "q11",
+        "q12",
+        "q14",
+        "q14a",
+        "q18a",
+        "q20",
+        "q22",
+        "q22a",
+        "q24",
+        "q27a",
+        "q34",
+        "q35",
+        "q35a",
+        "q36a",
+        "q47",
+        "q49",
+        "q51a",
+        "q57",
+        "q64",
+        "q67a",
+        "q70a",
+        // TODO: unknown failure (seems memory usage over Github action runner) in CI with q72-v2.7
+        // in https://github.com/apache/datafusion-comet/pull/613.
+        // "q72",
+        "q74",
+        "q75",
+        "q77a",
+        "q78",
+        "q80a",
+        "q86a",
+        "q98")
+
+      override val tpcdsQueries: Seq[String] = tpcdsAllQueries
+
+      override val tpcdsQueriesV2_7_0: Seq[String] = tpcdsAllQueriesV2_7_0
     }
     with CometTPCDSQueryTestSuite
     with ShimCometTPCDSQuerySuite {
