@@ -138,7 +138,7 @@ jobs:
       - name: Run TPC-DS queries (Sort merge join)
         if: matrix.join == 'sort_merge'
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -e -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
