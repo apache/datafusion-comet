@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# datafusion-spark-expr: Spark-compatible Expressions
+# datafusion-comet-spark-expr: Spark-compatible Expressions
 
 This crate provides Apache Spark-compatible expressions for use with DataFusion and is maintained as part of the 
 [Apache DataFusion Comet](https://github.com/apache/datafusion-comet/) subproject.
