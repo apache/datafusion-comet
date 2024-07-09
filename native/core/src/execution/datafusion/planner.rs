@@ -105,7 +105,7 @@ use crate::{
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
-use datafusion_comet_expr::abs::Abs;
+use datafusion_spark_expr::abs::Abs;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
