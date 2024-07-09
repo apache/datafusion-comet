@@ -331,8 +331,8 @@ class CometSparkSessionExtensions
               CometProjectExec(
                 nativeOp,
                 op,
-                op.projectList,
                 op.output,
+                op.projectList,
                 op.child,
                 SerializedPlan(None))
             case None =>
@@ -343,7 +343,13 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometFilterExec(nativeOp, op, op.condition, op.child, SerializedPlan(None))
+              CometFilterExec(
+                nativeOp,
+                op,
+                op.output,
+                op.condition,
+                op.child,
+                SerializedPlan(None))
             case None =>
               op
           }
@@ -352,7 +358,14 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometSortExec(nativeOp, op, op.sortOrder, op.child, SerializedPlan(None))
+              CometSortExec(
+                nativeOp,
+                op,
+                op.output,
+                op.outputOrdering,
+                op.sortOrder,
+                op.child,
+                SerializedPlan(None))
             case None =>
               op
           }
@@ -393,12 +406,27 @@ class CometSparkSessionExtensions
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
-              CometExpandExec(nativeOp, op, op.projections, op.child, SerializedPlan(None))
+              CometExpandExec(
+                nativeOp,
+                op,
+                op.output,
+                op.projections,
+                op.child,
+                SerializedPlan(None))
             case None =>
               op
           }
 
-        case op @ HashAggregateExec(_, _, _, groupingExprs, aggExprs, _, _, _, child) =>
+        case op @ HashAggregateExec(
+              _,
+              _,
+              _,
+              groupingExprs,
+              aggExprs,
+              _,
+              _,
+              resultExpressions,
+              child) =>
           val modes = aggExprs.map(_.mode).distinct
 
           if (!modes.isEmpty && modes.size != 1) {
@@ -425,8 +453,10 @@ class CometSparkSessionExtensions
                   CometHashAggregateExec(
                     nativeOp,
                     op,
+                    op.output,
                     groupingExprs,
                     aggExprs,
+                    resultExpressions,
                     child.output,
                     if (modes.nonEmpty) Some(modes.head) else None,
                     child,
@@ -446,6 +476,8 @@ class CometSparkSessionExtensions
               CometHashJoinExec(
                 nativeOp,
                 op,
+                op.output,
+                op.outputOrdering,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -478,6 +510,8 @@ class CometSparkSessionExtensions
               CometBroadcastHashJoinExec(
                 nativeOp,
                 op,
+                op.output,
+                op.outputOrdering,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -499,6 +533,8 @@ class CometSparkSessionExtensions
               CometSortMergeJoinExec(
                 nativeOp,
                 op,
+                op.output,
+                op.outputOrdering,
                 op.leftKeys,
                 op.rightKeys,
                 op.joinType,
@@ -535,7 +571,7 @@ class CometSparkSessionExtensions
               && isCometNative(child) =>
           QueryPlanSerde.operator2Proto(c) match {
             case Some(nativeOp) =>
-              val cometOp = CometCoalesceExec(c, numPartitions, child)
+              val cometOp = CometCoalesceExec(c, c.output, numPartitions, child)
               CometSinkPlaceHolder(nativeOp, c, cometOp)
             case None =>
               c
@@ -559,7 +595,13 @@ class CometSparkSessionExtensions
           QueryPlanSerde.operator2Proto(s) match {
             case Some(nativeOp) =>
               val cometOp =
-                CometTakeOrderedAndProjectExec(s, s.limit, s.sortOrder, s.projectList, s.child)
+                CometTakeOrderedAndProjectExec(
+                  s,
+                  s.output,
+                  s.limit,
+                  s.sortOrder,
+                  s.projectList,
+                  s.child)
               CometSinkPlaceHolder(nativeOp, s, cometOp)
             case None =>
               s
@@ -580,7 +622,13 @@ class CometSparkSessionExtensions
           newOp match {
             case Some(nativeOp) =>
               val cometOp =
-                CometWindowExec(w, w.windowExpression, w.partitionSpec, w.orderSpec, w.child)
+                CometWindowExec(
+                  w,
+                  w.output,
+                  w.windowExpression,
+                  w.partitionSpec,
+                  w.orderSpec,
+                  w.child)
               CometSinkPlaceHolder(nativeOp, w, cometOp)
             case None =>
               w
@@ -591,7 +639,7 @@ class CometSparkSessionExtensions
               u.children.forall(isCometNative) =>
           QueryPlanSerde.operator2Proto(u) match {
             case Some(nativeOp) =>
-              val cometOp = CometUnionExec(u, u.children)
+              val cometOp = CometUnionExec(u, u.output, u.children)
               CometSinkPlaceHolder(nativeOp, u, cometOp)
             case None =>
               u
@@ -631,7 +679,7 @@ class CometSparkSessionExtensions
                   isSpark34Plus => // Spark 3.4+ only
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
-                  val cometOp = CometBroadcastExchangeExec(b, b.child)
+                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
                   CometSinkPlaceHolder(nativeOp, b, cometOp)
                 case None => b
               }

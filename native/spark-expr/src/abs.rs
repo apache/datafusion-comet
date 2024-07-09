@@ -40,7 +40,7 @@ impl Abs {
     pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, DataFusionError> {
         if let EvalMode::Legacy | EvalMode::Ansi = eval_mode {
             Ok(Self {
-                inner_abs_func: math::abs().inner(),
+                inner_abs_func: math::abs().inner().clone(),
                 eval_mode,
                 data_type_name,
             })
