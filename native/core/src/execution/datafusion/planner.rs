@@ -675,7 +675,7 @@ impl PhysicalPlanner {
                     DataType::Decimal256(p2, s2),
                     EvalMode::Legacy,
                 ));
-                let child = Arc::new(BinaryExpr::new(left, op.clone(), right));
+                let child = Arc::new(BinaryExpr::new(left, op, right));
                 Ok(Arc::new(Cast::new_without_timezone(
                     child,
                     data_type,
