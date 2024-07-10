@@ -15,34 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Spark-compatible implementation of abs function
+
+use std::{any::Any, sync::Arc};
+
 use arrow::datatypes::DataType;
 use arrow_schema::ArrowError;
+
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature};
 use datafusion_common::DataFusionError;
 use datafusion_functions::math;
-use std::{any::Any, sync::Arc};
 
-use crate::execution::operators::ExecutionError;
+use super::{EvalMode, SparkError};
 
-use super::{arithmetic_overflow_error, EvalMode};
-
+/// Spark-compatible ABS expression
 #[derive(Debug)]
-pub struct CometAbsFunc {
+pub struct Abs {
     inner_abs_func: Arc<dyn ScalarUDFImpl>,
     eval_mode: EvalMode,
     data_type_name: String,
 }
 
-impl CometAbsFunc {
-    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, ExecutionError> {
+impl Abs {
+    pub fn new(eval_mode: EvalMode, data_type_name: String) -> Result<Self, DataFusionError> {
         if let EvalMode::Legacy | EvalMode::Ansi = eval_mode {
             Ok(Self {
-                inner_abs_func: math::abs().inner(),
+                inner_abs_func: math::abs().inner().clone(),
                 eval_mode,
                 data_type_name,
             })
         } else {
-            Err(ExecutionError::GeneralError(format!(
+            Err(DataFusionError::Execution(format!(
                 "Invalid EvalMode: \"{:?}\"",
                 eval_mode
             )))
@@ -50,7 +53,7 @@ impl CometAbsFunc {
     }
 }
 
-impl ScalarUDFImpl for CometAbsFunc {
+impl ScalarUDFImpl for Abs {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -68,17 +71,15 @@ impl ScalarUDFImpl for CometAbsFunc {
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
         match self.inner_abs_func.invoke(args) {
-            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), trace))
+            Err(DataFusionError::ArrowError(ArrowError::ComputeError(msg), _))
                 if msg.contains("overflow") =>
             {
                 if self.eval_mode == EvalMode::Legacy {
                     Ok(args[0].clone())
                 } else {
-                    let msg = arithmetic_overflow_error(&self.data_type_name).to_string();
-                    Err(DataFusionError::ArrowError(
-                        ArrowError::ComputeError(msg),
-                        trace,
-                    ))
+                    Err(DataFusionError::External(Box::new(
+                        SparkError::ArithmeticOverflow(self.data_type_name.clone()),
+                    )))
                 }
             }
             other => other,

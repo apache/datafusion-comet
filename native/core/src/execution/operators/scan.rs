@@ -270,6 +270,10 @@ impl ExecutionPlan for ScanExec {
     fn properties(&self) -> &PlanProperties {
         &self.cache
     }
+
+    fn name(&self) -> &str {
+        "ScanExec"
+    }
 }
 
 impl DisplayAs for ScanExec {

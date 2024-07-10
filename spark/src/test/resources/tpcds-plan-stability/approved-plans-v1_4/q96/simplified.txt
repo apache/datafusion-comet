@@ -5,25 +5,25 @@ WholeStageCodegen (2)
         WholeStageCodegen (1)
           ColumnarToRow
             InputAdapter
-              CometHashAggregate
+              CometHashAggregate [count]
                 CometProject
                   CometBroadcastHashJoin [ss_store_sk,s_store_sk]
                     CometProject [ss_store_sk]
-                      CometBroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                      CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
                         CometProject [ss_sold_time_sk,ss_store_sk]
-                          CometBroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                          CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                             CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                              CometFilter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                              CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                 CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                            CometBroadcastExchange #2
+                            CometBroadcastExchange [hd_demo_sk] #2
                               CometProject [hd_demo_sk]
-                                CometFilter [hd_dep_count,hd_demo_sk]
+                                CometFilter [hd_demo_sk,hd_dep_count]
                                   CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
-                        CometBroadcastExchange #3
+                        CometBroadcastExchange [t_time_sk] #3
                           CometProject [t_time_sk]
-                            CometFilter [t_hour,t_minute,t_time_sk]
+                            CometFilter [t_time_sk,t_hour,t_minute]
                               CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                    CometBroadcastExchange #4
+                    CometBroadcastExchange [s_store_sk] #4
                       CometProject [s_store_sk]
-                        CometFilter [s_store_name,s_store_sk]
+                        CometFilter [s_store_sk,s_store_name]
                           CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name]

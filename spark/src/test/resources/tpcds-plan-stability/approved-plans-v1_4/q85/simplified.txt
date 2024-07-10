@@ -6,23 +6,23 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
           WholeStageCodegen (1)
             ColumnarToRow
               InputAdapter
-                CometHashAggregate [r_reason_desc,ws_quantity,wr_refunded_cash,wr_fee]
+                CometHashAggregate [r_reason_desc,sum,count,sum,count,sum,count,ws_quantity,wr_refunded_cash,wr_fee]
                   CometProject [ws_quantity,wr_fee,wr_refunded_cash,r_reason_desc]
-                    CometBroadcastHashJoin [wr_reason_sk,r_reason_sk]
+                    CometBroadcastHashJoin [ws_quantity,wr_reason_sk,wr_fee,wr_refunded_cash,r_reason_sk,r_reason_desc]
                       CometProject [ws_quantity,wr_reason_sk,wr_fee,wr_refunded_cash]
-                        CometBroadcastHashJoin [ws_sold_date_sk,d_date_sk]
+                        CometBroadcastHashJoin [ws_quantity,ws_sold_date_sk,wr_reason_sk,wr_fee,wr_refunded_cash,d_date_sk]
                           CometProject [ws_quantity,ws_sold_date_sk,wr_reason_sk,wr_fee,wr_refunded_cash]
-                            CometBroadcastHashJoin [wr_refunded_addr_sk,ca_address_sk,ca_state,ws_net_profit]
+                            CometBroadcastHashJoin [ws_quantity,ws_net_profit,ws_sold_date_sk,wr_refunded_addr_sk,wr_reason_sk,wr_fee,wr_refunded_cash,ca_address_sk,ca_state]
                               CometProject [ws_quantity,ws_net_profit,ws_sold_date_sk,wr_refunded_addr_sk,wr_reason_sk,wr_fee,wr_refunded_cash]
-                                CometBroadcastHashJoin [wr_returning_cdemo_sk,cd_marital_status,cd_education_status,cd_demo_sk,cd_marital_status,cd_education_status]
+                                CometBroadcastHashJoin [ws_quantity,ws_net_profit,ws_sold_date_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash,cd_marital_status,cd_education_status,cd_demo_sk,cd_marital_status,cd_education_status]
                                   CometProject [ws_quantity,ws_net_profit,ws_sold_date_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash,cd_marital_status,cd_education_status]
-                                    CometBroadcastHashJoin [wr_refunded_cdemo_sk,cd_demo_sk,cd_marital_status,cd_education_status,ws_sales_price]
+                                    CometBroadcastHashJoin [ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash,cd_demo_sk,cd_marital_status,cd_education_status]
                                       CometProject [ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash]
-                                        CometBroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
+                                        CometBroadcastHashJoin [ws_web_page_sk,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash,wp_web_page_sk]
                                           CometProject [ws_web_page_sk,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_fee,wr_refunded_cash]
-                                            CometBroadcastHashJoin [ws_item_sk,ws_order_number,wr_item_sk,wr_order_number]
-                                              CometBroadcastExchange #2
-                                                CometFilter [ws_item_sk,ws_order_number,ws_web_page_sk,ws_sales_price,ws_net_profit]
+                                            CometBroadcastHashJoin [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash]
+                                              CometBroadcastExchange [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk] #2
+                                                CometFilter [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk]
                                                   CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #3
@@ -30,28 +30,28 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
                                                           ColumnarToRow
                                                             InputAdapter
                                                               CometProject [d_date_sk]
-                                                                CometFilter [d_year,d_date_sk]
+                                                                CometFilter [d_date_sk,d_year]
                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                               CometProject [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash]
-                                                CometFilter [wr_item_sk,wr_order_number,wr_refunded_cdemo_sk,wr_returning_cdemo_sk,wr_refunded_addr_sk,wr_reason_sk]
+                                                CometFilter [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash,wr_returned_date_sk]
                                                   CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash,wr_returned_date_sk]
-                                          CometBroadcastExchange #4
+                                          CometBroadcastExchange [wp_web_page_sk] #4
                                             CometFilter [wp_web_page_sk]
                                               CometScan parquet spark_catalog.default.web_page [wp_web_page_sk]
-                                      CometBroadcastExchange #5
+                                      CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #5
                                         CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
                                           CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
-                                  CometBroadcastExchange #6
+                                  CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
                                     CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
                                       CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
-                              CometBroadcastExchange #7
+                              CometBroadcastExchange [ca_address_sk,ca_state] #7
                                 CometProject [ca_address_sk,ca_state]
-                                  CometFilter [ca_country,ca_address_sk,ca_state]
+                                  CometFilter [ca_address_sk,ca_state,ca_country]
                                     CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
-                          CometBroadcastExchange #8
+                          CometBroadcastExchange [d_date_sk] #8
                             CometProject [d_date_sk]
-                              CometFilter [d_year,d_date_sk]
+                              CometFilter [d_date_sk,d_year]
                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                      CometBroadcastExchange #9
-                        CometFilter [r_reason_sk]
+                      CometBroadcastExchange [r_reason_sk,r_reason_desc] #9
+                        CometFilter [r_reason_sk,r_reason_desc]
                           CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
