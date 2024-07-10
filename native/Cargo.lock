@@ -867,6 +867,7 @@ dependencies = [
  "criterion",
  "datafusion",
  "datafusion-comet-spark-expr",
+ "datafusion-comet-utils",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-physical-expr",
@@ -904,6 +905,19 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "datafusion",
+ "datafusion-comet-utils",
+ "datafusion-common",
+ "datafusion-functions",
+ "datafusion-physical-expr",
+]
+
+[[package]]
+name = "datafusion-comet-utils"
 version = "0.1.0"
 dependencies = [
  "arrow",
