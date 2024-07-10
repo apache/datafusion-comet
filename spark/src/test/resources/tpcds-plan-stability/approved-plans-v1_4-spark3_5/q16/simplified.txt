@@ -26,7 +26,7 @@ WholeStageCodegen (12)
                                                   ColumnarToRow
                                                     InputAdapter
                                                       CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
-                                                        CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk]
+                                                        CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
                                                           CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
                                       InputAdapter
                                         WholeStageCodegen (4)
@@ -54,7 +54,7 @@ WholeStageCodegen (12)
                                   ColumnarToRow
                                     InputAdapter
                                       CometProject [d_date_sk]
-                                        CometFilter [d_date,d_date_sk]
+                                        CometFilter [d_date_sk,d_date]
                                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                         InputAdapter
                           BroadcastExchange #6
@@ -62,7 +62,7 @@ WholeStageCodegen (12)
                               ColumnarToRow
                                 InputAdapter
                                   CometProject [ca_address_sk]
-                                    CometFilter [ca_state,ca_address_sk]
+                                    CometFilter [ca_address_sk,ca_state]
                                       CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     InputAdapter
                       BroadcastExchange #7
@@ -70,5 +70,5 @@ WholeStageCodegen (12)
                           ColumnarToRow
                             InputAdapter
                               CometProject [cc_call_center_sk]
-                                CometFilter [cc_county,cc_call_center_sk]
+                                CometFilter [cc_call_center_sk,cc_county]
                                   CometScan parquet spark_catalog.default.call_center [cc_call_center_sk,cc_county]

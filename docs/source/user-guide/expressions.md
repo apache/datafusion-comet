@@ -119,6 +119,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Cos        |                                                                     |
 | Exp        |                                                                     |
 | Floor      |                                                                     |
+| IsNaN      |                                                                     |
 | Log        | log(0) will produce `-Infinity` unlike Spark which returns `null`   |
 | Log2       | log2(0) will produce `-Infinity` unlike Spark which returns `null`  |
 | Log10      | log10(0) will produce `-Infinity` unlike Spark which returns `null` |
@@ -190,3 +191,4 @@ The following Spark expressions are currently available. Any known compatibility
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
+| CreateNamedStruct       |                                                                                 |

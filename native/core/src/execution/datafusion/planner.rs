@@ -20,17 +20,22 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::count::count_udaf;
+use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     execution::FunctionRegistry,
+    functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         execution_props::ExecutionProps,
         expressions::{
-            in_list, BinaryExpr, BitAnd, BitOr, BitXor, CaseExpr, CastExpr, Column, Count,
-            FirstValue, IsNotNullExpr, IsNullExpr, LastValue, Literal as DataFusionLiteral, Max,
-            Min, NotExpr, Sum,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
+            Literal as DataFusionLiteral, Max, Min, NotExpr,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -50,12 +55,17 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::ScalarUDF;
+use datafusion_expr::expr::find_df_window_func;
+use datafusion_expr::{ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits};
+use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 
+use crate::execution::spark_operator::lower_window_frame_bound::LowerFrameBoundStruct;
+use crate::execution::spark_operator::upper_window_frame_bound::UpperFrameBoundStruct;
+use crate::execution::spark_operator::WindowFrameType;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -97,7 +107,7 @@ use crate::{
     },
 };
 
-use super::expressions::{abs::CometAbsFunc, EvalMode};
+use super::expressions::{abs::CometAbsFunc, create_named_struct::CreateNamedStruct, EvalMode};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -584,6 +594,15 @@ impl PhysicalPlanner {
                     value_expr,
                 )?))
             }
+            ExprStruct::CreateNamedStruct(expr) => {
+                let values = expr
+                    .values
+                    .iter()
+                    .map(|expr| self.create_expr(expr, input_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -631,7 +650,7 @@ impl PhysicalPlanner {
         let left = self.create_expr(left, input_schema.clone())?;
         let right = self.create_expr(right, input_schema.clone())?;
         match (
-            op,
+            &op,
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
@@ -900,7 +919,7 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().downcast_ref::<ScanExec>().is_some() {
+                let child = if child.as_any().is::<ScanExec>() {
                     Arc::new(CopyExec::new(child))
                 } else {
                     child
@@ -979,6 +998,47 @@ impl PhysicalPlanner {
                 };
 
                 Ok((scans, hash_join))
+            }
+            OpStruct::Window(wnd) => {
+                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let input_schema = child.schema();
+                let sort_exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = wnd
+                    .order_by_list
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, input_schema.clone()))
+                    .collect();
+
+                let partition_exprs: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = wnd
+                    .partition_by_list
+                    .iter()
+                    .map(|expr| self.create_expr(expr, input_schema.clone()))
+                    .collect();
+
+                let sort_exprs = &sort_exprs?;
+                let partition_exprs = &partition_exprs?;
+
+                let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
+                    .window_expr
+                    .iter()
+                    .map(|expr| {
+                        self.create_window_expr(
+                            expr,
+                            input_schema.clone(),
+                            partition_exprs,
+                            sort_exprs,
+                        )
+                    })
+                    .collect();
+
+                Ok((
+                    scans,
+                    Arc::new(BoundedWindowAggExec::try_new(
+                        window_expr?,
+                        child,
+                        partition_exprs.to_vec(),
+                        InputOrderMode::Sorted,
+                    )?),
+                ))
             }
         }
     }
@@ -1151,11 +1211,19 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|child| self.create_expr(child, schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(Count::new_with_multiple_exprs(
-                    children,
+
+                create_aggregate_expr(
+                    &count_udaf(),
+                    &children,
+                    &[],
+                    &[],
+                    &[],
+                    schema.as_ref(),
                     "count",
-                    DataType::Int64,
-                )))
+                    false,
+                    false,
+                )
+                .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
@@ -1179,7 +1247,18 @@ impl PhysicalPlanner {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
                         let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-                        Ok(Arc::new(Sum::new(child, "sum", datatype)))
+                        create_aggregate_expr(
+                            &sum_udaf(),
+                            &[child],
+                            &[],
+                            &[],
+                            &[],
+                            schema.as_ref(),
+                            "sum",
+                            false,
+                            false,
+                        )
+                        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                 }
             }
@@ -1206,31 +1285,79 @@ impl PhysicalPlanner {
             AggExprStruct::First(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(FirstValue::new());
-
-                create_aggregate_expr(&func, &[child], &[], &[], &schema, "first", false, false)
-                    .map_err(|e| e.into())
+                create_aggregate_expr(
+                    &func,
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "first",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::Last(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let func = datafusion_expr::AggregateUDF::new_from_impl(LastValue::new());
-
-                create_aggregate_expr(&func, &[child], &[], &[], &schema, "last", false, false)
-                    .map_err(|e| e.into())
+                create_aggregate_expr(
+                    &func,
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "last",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitAnd::new(child, "bit_and", datatype)))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                create_aggregate_expr(
+                    &bit_and_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_and",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitOrAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitOr::new(child, "bit_or", datatype)))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                create_aggregate_expr(
+                    &bit_or_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_or",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::BitXorAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(BitXor::new(child, "bit_xor", datatype)))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                create_aggregate_expr(
+                    &bit_xor_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    &schema,
+                    "bit_xor",
+                    false,
+                    false,
+                )
+                .map_err(|e| e.into())
             }
             AggExprStruct::Covariance(expr) => {
                 let child1 = self.create_expr(expr.child1.as_ref().unwrap(), schema.clone())?;
@@ -1322,6 +1449,153 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Create a DataFusion windows physical expression from Spark physical expression
+    fn create_window_expr<'a>(
+        &'a self,
+        spark_expr: &'a crate::execution::spark_operator::WindowExpr,
+        input_schema: SchemaRef,
+        partition_by: &[Arc<dyn PhysicalExpr>],
+        sort_exprs: &[PhysicalSortExpr],
+    ) -> Result<Arc<dyn WindowExpr>, ExecutionError> {
+        let (mut window_func_name, mut window_func_args) = (String::new(), Vec::new());
+        if let Some(func) = &spark_expr.built_in_window_function {
+            match &func.expr_struct {
+                Some(ExprStruct::ScalarFunc(f)) => {
+                    window_func_name.clone_from(&f.func);
+                    window_func_args.clone_from(&f.args);
+                }
+                other => {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "{other:?} not supported for window function"
+                    )))
+                }
+            };
+        } else if let Some(agg_func) = &spark_expr.agg_func {
+            let result = Self::process_agg_func(agg_func)?;
+            window_func_name = result.0;
+            window_func_args = result.1;
+        } else {
+            return Err(ExecutionError::GeneralError(
+                "Both func and agg_func are not set".to_string(),
+            ));
+        }
+
+        let window_func = match find_df_window_func(&window_func_name) {
+            Some(f) => f,
+            _ => {
+                return Err(ExecutionError::GeneralError(format!(
+                    "{window_func_name} not supported for window function"
+                )))
+            }
+        };
+
+        let window_args = window_func_args
+            .iter()
+            .map(|expr| self.create_expr(expr, input_schema.clone()))
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+
+        let spark_window_frame = match spark_expr
+            .spec
+            .as_ref()
+            .and_then(|inner| inner.frame_specification.as_ref())
+        {
+            Some(frame) => frame,
+            _ => {
+                return Err(ExecutionError::DeserializeError(
+                    "Cannot deserialize window frame".to_string(),
+                ))
+            }
+        };
+
+        let units = match spark_window_frame.frame_type() {
+            WindowFrameType::Rows => WindowFrameUnits::Rows,
+            WindowFrameType::Range => WindowFrameUnits::Range,
+        };
+
+        let lower_bound: WindowFrameBound = match spark_window_frame
+            .lower_bound
+            .as_ref()
+            .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
+        {
+            Some(l) => match l {
+                LowerFrameBoundStruct::UnboundedPreceding(_) => {
+                    WindowFrameBound::Preceding(ScalarValue::UInt64(None))
+                }
+                LowerFrameBoundStruct::Preceding(offset) => {
+                    let offset_value = offset.offset.unsigned_abs() as u64;
+                    WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value)))
+                }
+                LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
+            },
+            None => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+        };
+
+        let upper_bound: WindowFrameBound = match spark_window_frame
+            .upper_bound
+            .as_ref()
+            .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
+        {
+            Some(u) => match u {
+                UpperFrameBoundStruct::UnboundedFollowing(_) => {
+                    WindowFrameBound::Following(ScalarValue::UInt64(None))
+                }
+                UpperFrameBoundStruct::Following(offset) => {
+                    WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
+                }
+                UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
+            },
+            None => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+        };
+
+        let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+
+        datafusion::physical_plan::windows::create_window_expr(
+            &window_func,
+            window_func_name,
+            &window_args,
+            &[],
+            partition_by,
+            sort_exprs,
+            window_frame.into(),
+            &input_schema,
+            false, // TODO: Ignore nulls
+        )
+        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+    }
+
+    fn process_agg_func(agg_func: &AggExpr) -> Result<(String, Vec<Expr>), ExecutionError> {
+        fn optional_expr_to_vec(expr_option: &Option<Expr>) -> Vec<Expr> {
+            expr_option
+                .as_ref()
+                .cloned()
+                .map_or_else(Vec::new, |e| vec![e])
+        }
+
+        fn int_to_stats_type(value: i32) -> Option<StatsType> {
+            match value {
+                0 => Some(StatsType::Sample),
+                1 => Some(StatsType::Population),
+                _ => None,
+            }
+        }
+
+        match &agg_func.expr_struct {
+            Some(AggExprStruct::Count(expr)) => {
+                let args = &expr.children;
+                Ok(("count".to_string(), args.to_vec()))
+            }
+            Some(AggExprStruct::Min(expr)) => {
+                Ok(("min".to_string(), optional_expr_to_vec(&expr.child)))
+            }
+            Some(AggExprStruct::Max(expr)) => {
+                Ok(("max".to_string(), optional_expr_to_vec(&expr.child)))
+            }
+            other => Err(ExecutionError::GeneralError(format!(
+                "{other:?} not supported for window function"
+            ))),
+        }
+    }
+
     /// Create a DataFusion physical partitioning from Spark physical partitioning
     fn create_partitioning(
         &self,
@@ -1406,10 +1680,10 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().downcast_ref::<ScanExec>().is_some()
-        || op.as_any().downcast_ref::<LocalLimitExec>().is_some()
-        || op.as_any().downcast_ref::<ProjectionExec>().is_some()
-        || op.as_any().downcast_ref::<FilterExec>().is_some()
+    op.as_any().is::<ScanExec>()
+        || op.as_any().is::<LocalLimitExec>()
+        || op.as_any().is::<ProjectionExec>()
+        || op.as_any().is::<FilterExec>()
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression
