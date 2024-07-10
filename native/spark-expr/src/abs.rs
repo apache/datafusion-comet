@@ -77,9 +77,9 @@ impl ScalarUDFImpl for Abs {
                 if self.eval_mode == EvalMode::Legacy {
                     Ok(args[0].clone())
                 } else {
-                    Err(DataFusionError::External(Box::new(
-                        SparkError::ArithmeticOverflow(self.data_type_name.clone()),
-                    )))
+Err(DataFusionError::External(Box::new(
+    SparkError::ArithmeticOverflow(self.data_type_name.clone()),
+)))
                 }
             }
             other => other,

@@ -27,11 +27,7 @@ license = { workspace = true }
 edition = { workspace = true }
 
 [dependencies]
-arrow = { workspace = true }
-arrow-schema = { workspace = true }
-datafusion = { workspace = true }
-datafusion-common = { workspace = true }
-datafusion-functions = { workspace = true }
+datafusion-physical-plan = { workspace = true }
 
 [lib]
 name = "datafusion_comet_utils"

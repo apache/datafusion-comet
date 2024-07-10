@@ -43,6 +43,7 @@ datafusion-common = { git = "https://github.com/apache/datafusion.git", rev = "4
 datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", features = ["unicode_expressions", "crypto_expressions"] }
 datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", features = ["crypto_expressions"] }
 datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", default-features = false }
+datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", default-features = false }
 datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", default-features = false }
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.1.0" }

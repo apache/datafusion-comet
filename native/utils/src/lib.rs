@@ -18,7 +18,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use datafusion::physical_plan::PhysicalExpr;
+use datafusion_physical_plan::PhysicalExpr;
 
 /// A utility function from DataFusion. It is not exposed by DataFusion.
 pub fn down_cast_any_ref(any: &dyn Any) -> &dyn Any {
