@@ -162,6 +162,7 @@ mod test {
     use twox_hash::XxHash64;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_xxhash64_random() {
         let mut rng = rand::thread_rng();
         for len in 0..128 {

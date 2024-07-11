@@ -93,6 +93,7 @@ twox-hash = "1.6.3"
 
 [features]
 default = []
+nightly = []
 
 [lib]
 name = "comet"
