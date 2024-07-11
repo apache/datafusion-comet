@@ -855,7 +855,7 @@ class CometSparkSessionExtensions
             logWarning(
               "Comet cannot execute some parts of this plan natively " +
                 s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
-                s"to disable this logging):\n" +
+                "to disable this logging):\n" +
                 s"${info.generateVerboseExtendedInfo(newPlan)}")
           }
         }
