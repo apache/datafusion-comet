@@ -15,16 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_schema::ArrowError;
-use datafusion_common::DataFusionError;
-use std::error::Error;
-use std::fmt::{Display, Formatter};
-
 mod abs;
 pub mod cast;
+mod error;
 mod if_expr;
 
 pub use abs::Abs;
+pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
@@ -44,61 +41,4 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
-}
-
-#[derive(Debug)]
-pub enum SparkError {
-    ArithmeticOverflow(String),
-    CastOverFlow {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-    CastInvalidValue {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-    NumericValueOutOfRange {
-        value: String,
-        precision: u8,
-        scale: i8,
-    },
-    Arrow(ArrowError),
-    Internal(String),
-}
-
-pub type SparkResult<T> = Result<T, SparkError>;
-
-impl From<ArrowError> for SparkError {
-    fn from(value: ArrowError) -> Self {
-        SparkError::Arrow(value)
-    }
-}
-
-impl From<SparkError> for DataFusionError {
-    fn from(value: SparkError) -> Self {
-        DataFusionError::External(Box::new(value))
-    }
-}
-
-impl Error for SparkError {}
-
-impl Display for SparkError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ArithmeticOverflow(data_type) =>
-                write!(f, "[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", data_type),
-            Self::CastOverFlow { value, from_type, to_type } => write!(f, "[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-       due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
-       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
-            Self::CastInvalidValue { value, from_type, to_type } => write!(f, "[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-       because it is malformed. Correct the value as per the syntax, or change its target type. \
-       Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
-       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
-            Self::NumericValueOutOfRange { value, precision, scale } => write!(f, "[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead."),
-            Self::Arrow(e) => write!(f, "ArrowError: {e}"),
-            Self::Internal(e) => write!(f, "{e}"),
-        }
-    }
 }

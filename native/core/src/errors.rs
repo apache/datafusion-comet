@@ -63,15 +63,10 @@ pub enum CometError {
     #[error("Comet Internal Error: {0}")]
     Internal(String),
 
-    #[error("[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
-    NumericValueOutOfRange {
-        value: String,
-        precision: u8,
-        scale: i8,
-    },
-
-    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    ArithmeticOverflow { from_type: String },
+    /// CometError::Spark is typically used in native code to emulate the same errors
+    /// that Spark would return
+    #[error(transparent)]
+    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -147,9 +142,6 @@ pub enum CometError {
         msg: String,
         throwable: GlobalRef,
     },
-
-    #[error(transparent)]
-    Spark(SparkError),
 }
 
 pub fn init() {
@@ -222,7 +214,7 @@ impl jni::errors::ToException for CometError {
                 class: "java/lang/NullPointerException".to_string(),
                 msg: self.to_string(),
             },
-            CometError::Spark(_) => Exception {
+            CometError::Spark { .. } => Exception {
                 class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },
