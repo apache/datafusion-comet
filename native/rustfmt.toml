@@ -17,9 +17,3 @@
 
 edition = "2021"
 max_width = 100
-
-reorder_imports = true
-reorder_modules = true
-
-# this feature is only available in nightly
-#group_imports = "StdExternalCrate"
