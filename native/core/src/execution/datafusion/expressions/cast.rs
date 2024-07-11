@@ -1646,6 +1646,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
         // write for all formats
         assert_eq!(
@@ -1683,6 +1684,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_cast_string_to_timestamp() {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020-01-01T12:34:56.123456"),

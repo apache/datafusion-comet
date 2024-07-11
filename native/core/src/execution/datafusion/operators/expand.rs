@@ -126,6 +126,10 @@ impl ExecutionPlan for CometExpandExec {
     fn properties(&self) -> &PlanProperties {
         &self.cache
     }
+
+    fn name(&self) -> &str {
+        "CometExpandExec"
+    }
 }
 
 pub struct ExpandStream {

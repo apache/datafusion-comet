@@ -11,7 +11,7 @@ WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
-                          CometFilter [ss_quantity]
+                          CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #1
     ReusedSubquery [mergedValue] #1
@@ -26,7 +26,7 @@ WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
-                          CometFilter [ss_quantity]
+                          CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #2
     ReusedSubquery [mergedValue] #2
@@ -41,7 +41,7 @@ WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
-                          CometFilter [ss_quantity]
+                          CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #3
     ReusedSubquery [mergedValue] #3
@@ -56,7 +56,7 @@ WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
-                          CometFilter [ss_quantity]
+                          CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #4
     ReusedSubquery [mergedValue] #4
@@ -71,7 +71,7 @@ WholeStageCodegen (1)
                     ColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
-                          CometFilter [ss_quantity]
+                          CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5

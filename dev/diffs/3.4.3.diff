@@ -2491,8 +2491,8 @@ index dd55fcfe42c..293e9dc2986 100644
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
-+      case CometFilterExec(_, _, _, child, _) => child
-+      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, child, _), _) => child
++      case CometFilterExec(_, _, _, _, child, _) => child
++      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, _, child, _), _) => child
      }
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)

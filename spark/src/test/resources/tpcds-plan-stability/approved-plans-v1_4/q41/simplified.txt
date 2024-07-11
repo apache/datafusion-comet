@@ -10,7 +10,7 @@ TakeOrderedAndProject [i_product_name]
                   ColumnarToRow
                     InputAdapter
                       CometProject [i_manufact,i_product_name]
-                        CometFilter [i_manufact_id,i_manufact]
+                        CometFilter [i_manufact_id,i_manufact,i_product_name]
                           CometScan parquet spark_catalog.default.item [i_manufact_id,i_manufact,i_product_name]
                   InputAdapter
                     BroadcastExchange #2
@@ -23,7 +23,7 @@ TakeOrderedAndProject [i_product_name]
                                   WholeStageCodegen (1)
                                     ColumnarToRow
                                       InputAdapter
-                                        CometHashAggregate [i_manufact]
+                                        CometHashAggregate [i_manufact,count]
                                           CometProject [i_manufact]
-                                            CometFilter [i_category,i_color,i_units,i_size,i_manufact]
+                                            CometFilter [i_category,i_manufact,i_size,i_color,i_units]
                                               CometScan parquet spark_catalog.default.item [i_category,i_manufact,i_size,i_color,i_units]
