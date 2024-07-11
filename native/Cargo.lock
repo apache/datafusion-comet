@@ -920,6 +920,11 @@ dependencies = [
 name = "datafusion-comet-utils"
 version = "0.1.0"
 dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "chrono",
+ "chrono-tz 0.8.6",
  "datafusion-physical-plan",
 ]
 

@@ -27,6 +27,11 @@ license = { workspace = true }
 edition = { workspace = true }
 
 [dependencies]
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
 datafusion-physical-plan = { workspace = true }
 
 [lib]
