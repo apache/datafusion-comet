@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{cast::as_boolean_array, Result};
 use datafusion_physical_expr::PhysicalExpr;
 
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
+use datafusion_comet_utils::down_cast_any_ref;
 
 #[derive(Debug, Hash)]
 pub struct IfExpr {
@@ -147,15 +147,6 @@ impl PartialEq<dyn Any> for IfExpr {
     }
 }
 
-/// Create an If expression
-pub fn if_fn(
-    if_expr: Arc<dyn PhysicalExpr>,
-    true_expr: Arc<dyn PhysicalExpr>,
-    false_expr: Arc<dyn PhysicalExpr>,
-) -> Result<Arc<dyn PhysicalExpr>> {
-    Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
-}
-
 #[cfg(test)]
 mod tests {
     use arrow::{array::StringArray, datatypes::*};
@@ -164,6 +155,15 @@ mod tests {
     use datafusion_physical_expr::expressions::{binary, col, lit};
 
     use super::*;
+
+    /// Create an If expression
+    fn if_fn(
+        if_expr: Arc<dyn PhysicalExpr>,
+        true_expr: Arc<dyn PhysicalExpr>,
+        false_expr: Arc<dyn PhysicalExpr>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
+    }
 
     #[test]
     fn test_if_1() -> Result<()> {

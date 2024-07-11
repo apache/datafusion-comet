@@ -79,7 +79,6 @@ use crate::{
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
                 covariance::Covariance,
-                if_expr::IfExpr,
                 negative,
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
@@ -108,7 +107,7 @@ use crate::{
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
-use datafusion_comet_spark_expr::abs::Abs;
+use datafusion_comet_spark_expr::{Abs, IfExpr};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
