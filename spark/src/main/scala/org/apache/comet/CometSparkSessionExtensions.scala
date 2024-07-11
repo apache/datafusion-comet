@@ -855,7 +855,7 @@ class CometSparkSessionExtensions
           if (info.extensionInfo(newPlan).nonEmpty) {
             logWarning(
               "Comet cannot execute some parts of this plan natively:\n" +
-                s"${info.generateExtendedInfo(newPlan)}")
+                s"${info.generateVerboseExtendedInfo(newPlan)}")
           }
         }
 
