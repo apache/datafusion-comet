@@ -812,7 +812,6 @@ class CometSparkSessionExtensions
             // Broadcast exchange exec is transformed by the parent node. We include
             // this case specially here so we do not add a misleading 'info' message
             case _: BroadcastExchangeExec => op
-            case _: AQEShuffleReadExec => op
             case _: CometExec | _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec => op
             case o =>
               withInfo(o, s"${o.nodeName} is not supported")
