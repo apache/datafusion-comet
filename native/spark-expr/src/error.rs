@@ -15,14 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub enum SparkError {
-    ArithmeticOverflow(String),
+    ArithmeticOverflow {
+        from_type: String,
+    },
     CastInvalidValue {
         value: String,
         from_type: String,
@@ -39,7 +41,7 @@ pub enum SparkError {
         scale: i8,
     },
     Arrow(ArrowError),
-    Internal(String)
+    Internal(String),
 }
 
 pub type SparkResult<T> = Result<T, SparkError>;
@@ -50,7 +52,7 @@ impl From<ArrowError> for SparkError {
     }
 }
 
-impl From<SparkError> for DataFusionError    {
+impl From<SparkError> for DataFusionError {
     fn from(value: SparkError) -> Self {
         DataFusionError::External(Box::new(value))
     }
@@ -61,8 +63,8 @@ impl Error for SparkError {}
 impl Display for SparkError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ArithmeticOverflow(data_type) =>
-                write!(f, "[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", data_type),
+            Self::ArithmeticOverflow { from_type } =>
+                write!(f, "[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
             Self::CastOverFlow { value, from_type, to_type } => write!(f, "[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
        due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),

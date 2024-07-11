@@ -78,7 +78,9 @@ impl ScalarUDFImpl for Abs {
                     Ok(args[0].clone())
                 } else {
                     Err(DataFusionError::External(Box::new(
-                        SparkError::ArithmeticOverflow(self.data_type_name.clone()),
+                        SparkError::ArithmeticOverflow {
+                            from_type: self.data_type_name.clone(),
+                        },
                     )))
                 }
             }
