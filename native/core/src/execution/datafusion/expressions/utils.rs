@@ -30,24 +30,10 @@ use arrow_array::{cast::AsArray, types::ArrowPrimitiveType};
 use arrow_schema::DataType;
 use chrono::{DateTime, Offset, TimeZone};
 use datafusion_common::cast::as_generic_string_array;
-use datafusion_physical_expr::PhysicalExpr;
 use num::integer::div_floor;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
-/// An utility function from DataFusion. It is not exposed by DataFusion.
-pub fn down_cast_any_ref(any: &dyn Any) -> &dyn Any {
-    if any.is::<Arc<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Arc<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else if any.is::<Box<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Box<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else {
-        any
-    }
-}
+pub use datafusion_comet_utils::down_cast_any_ref;
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.

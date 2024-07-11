@@ -15,38 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+use std::any::Any;
+use std::sync::Arc;
 
-pub mod bitwise_not;
-pub mod cast;
-pub mod checkoverflow;
-mod normalize_nan;
-pub mod scalar_funcs;
-pub use normalize_nan::NormalizeNaNAndZero;
+use datafusion_physical_plan::PhysicalExpr;
 
-use crate::errors::CometError;
-pub mod avg;
-pub mod avg_decimal;
-pub mod bloom_filter_might_contain;
-pub mod correlation;
-pub mod covariance;
-pub mod create_named_struct;
-pub mod negative;
-pub mod stats;
-pub mod stddev;
-pub mod strings;
-pub mod subquery;
-pub mod sum_decimal;
-pub mod temporal;
-pub mod unbound;
-mod utils;
-pub mod variance;
-pub mod xxhash64;
-
-pub use datafusion_comet_spark_expr::EvalMode;
-
-fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::ArithmeticOverflow {
-        from_type: from_type.to_string(),
+/// A utility function from DataFusion. It is not exposed by DataFusion.
+pub fn down_cast_any_ref(any: &dyn Any) -> &dyn Any {
+    if any.is::<Arc<dyn PhysicalExpr>>() {
+        any.downcast_ref::<Arc<dyn PhysicalExpr>>()
+            .unwrap()
+            .as_any()
+    } else if any.is::<Box<dyn PhysicalExpr>>() {
+        any.downcast_ref::<Box<dyn PhysicalExpr>>()
+            .unwrap()
+            .as_any()
+    } else {
+        any
     }
 }
