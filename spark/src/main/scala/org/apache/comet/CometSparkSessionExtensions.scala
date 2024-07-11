@@ -812,6 +812,7 @@ class CometSparkSessionExtensions
             // Broadcast exchange exec is transformed by the parent node. We include
             // this case specially here so we do not add a misleading 'info' message
             case _: BroadcastExchangeExec => op
+            case _: AQEShuffleReadExec => op
             case _: CometExec | _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec => op
             case o =>
               withInfo(o, s"${o.nodeName} is not supported")
@@ -850,17 +851,11 @@ class CometSparkSessionExtensions
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
         if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
-          new ExtendedExplainInfo().extensionInfo(newPlan) match {
-            case reasons if reasons.size == 1 =>
-              logWarning(
-                "Comet cannot execute some parts of this plan natively " +
-                  s"because ${reasons.head}")
-            case reasons if reasons.size > 1 =>
-              logWarning(
-                "Comet cannot execute some parts of this plan natively" +
-                  s" because:\n\t- ${reasons.mkString("\n\t- ")}")
-            case _ =>
-            // no reasons recorded
+          val info = new ExtendedExplainInfo()
+          if (info.extensionInfo(newPlan).nonEmpty) {
+            logWarning(
+              "Comet cannot execute some parts of this plan natively:\n" +
+                s"${info.generateExtendedInfo(newPlan)}")
           }
         }
 
