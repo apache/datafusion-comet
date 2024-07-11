@@ -21,6 +21,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 mod abs;
+pub mod cast;
 mod if_expr;
 
 pub use abs::Abs;
@@ -88,9 +89,16 @@ impl Display for SparkError {
         match self {
             Self::ArithmeticOverflow(data_type) =>
                 write!(f, "[ARITHMETIC_OVERFLOW] {} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.", data_type),
-            Self::CastOverFlow { .. } => todo!(),
-            Self::Internal(_) => todo!(),
-            _ => todo!()
+            Self::CastOverFlow { value, from_type, to_type } => write!(f, "[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+       due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
+       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
+            Self::CastInvalidValue { value, from_type, to_type } => write!(f, "[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+       because it is malformed. Correct the value as per the syntax, or change its target type. \
+       Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
+       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
+            Self::NumericValueOutOfRange { value, precision, scale } => write!(f, "[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead."),
+            Self::Arrow(e) => write!(f, "ArrowError: {e}"),
+            Self::Internal(e) => write!(f, "{e}"),
         }
     }
 }

@@ -908,12 +908,17 @@ name = "datafusion-comet-spark-expr"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "arrow-array",
  "arrow-schema",
+ "chrono",
+ "chrono-tz 0.8.6",
  "datafusion",
  "datafusion-comet-utils",
  "datafusion-common",
  "datafusion-functions",
  "datafusion-physical-expr",
+ "num",
+ "regex",
 ]
 
 [[package]]

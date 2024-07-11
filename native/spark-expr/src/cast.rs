@@ -24,6 +24,7 @@ use std::{
 };
 
 use super::EvalMode;
+use crate::{SparkError, SparkResult};
 use arrow::{
     compute::{cast_with_options, unary, CastOptions},
     datatypes::{
@@ -43,11 +44,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::{SparkError, SparkResult};
 use datafusion_comet_utils::{array_with_timezone, down_cast_any_ref};
 use datafusion_common::{
-    cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
-    ScalarValue,
+    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_physical_expr::PhysicalExpr;
 use num::{
@@ -605,11 +604,7 @@ impl Cast {
                 )))
             }
         };
-        Ok(spark_cast(
-            cast_result.map_err(|e| <SparkError as Into<DataFusionError>>::into(e))?,
-            from_type,
-            to_type,
-        ))
+        Ok(spark_cast(cast_result?, from_type, to_type))
     }
 
     /// Determines if DataFusion supports the given cast in a way that is

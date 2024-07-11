@@ -50,6 +50,8 @@ datafusion-comet-spark-expr = { path = "spark-expr", version = "0.1.0" }
 datafusion-comet-utils = { path = "utils", version = "0.1.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
+num = "0.4"
+regex = "1.9.6"
 
 [profile.release]
 debug = true
