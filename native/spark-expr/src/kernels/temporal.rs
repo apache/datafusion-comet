@@ -250,7 +250,7 @@ fn trunc_date_to_microsec<T: Timelike>(dt: T) -> Option<T> {
 ///   array is an array of Date32 values. The array may be a dictionary array.
 ///
 ///   format is a scalar string specifying the format to apply to the timestamp value.
-pub fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, SparkError> {
+pub(crate) fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, SparkError> {
     match array.data_type().clone() {
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
@@ -273,7 +273,10 @@ pub fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, Spa
     }
 }
 
-pub fn date_trunc<T>(array: &PrimitiveArray<T>, format: String) -> Result<Date32Array, SparkError>
+pub(crate) fn date_trunc<T>(
+    array: &PrimitiveArray<T>,
+    format: String,
+) -> Result<Date32Array, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -322,7 +325,7 @@ where
 ///
 ///   format is an array of strings specifying the format to apply to the corresponding date value.
 ///             The array may be a dictionary array.
-pub fn date_trunc_array_fmt_dyn(
+pub(crate) fn date_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
 ) -> Result<ArrayRef, SparkError> {
@@ -494,7 +497,10 @@ where
 ///            timezone or no timezone. The array may be a dictionary array.
 ///
 ///   format is a scalar string specifying the format to apply to the timestamp value.
-pub fn timestamp_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, SparkError> {
+pub(crate) fn timestamp_trunc_dyn(
+    array: &dyn Array,
+    format: String,
+) -> Result<ArrayRef, SparkError> {
     match array.data_type().clone() {
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
@@ -517,7 +523,7 @@ pub fn timestamp_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef
     }
 }
 
-pub fn timestamp_trunc<T>(
+pub(crate) fn timestamp_trunc<T>(
     array: &PrimitiveArray<T>,
     format: String,
 ) -> Result<TimestampMicrosecondArray, SparkError>
@@ -602,7 +608,7 @@ where
 ///
 ///   format is an array of strings specifying the format to apply to the corresponding timestamp
 ///             value. The array may be a dictionary array.
-pub fn timestamp_trunc_array_fmt_dyn(
+pub(crate) fn timestamp_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
 ) -> Result<ArrayRef, SparkError> {
