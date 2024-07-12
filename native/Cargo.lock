@@ -866,7 +866,6 @@ dependencies = [
  "criterion",
  "datafusion",
  "datafusion-comet-spark-expr",
- "datafusion-comet-utils",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-physical-expr",
@@ -910,27 +909,16 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "chrono",
+ "chrono-tz 0.8.6",
  "datafusion",
- "datafusion-comet-utils",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-functions",
  "datafusion-physical-expr",
+ "datafusion-physical-plan",
  "num",
  "regex",
  "thiserror",
-]
-
-[[package]]
-name = "datafusion-comet-utils"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-schema",
- "chrono",
- "chrono-tz 0.8.6",
- "datafusion-physical-plan",
 ]
 
 [[package]]
