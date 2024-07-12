@@ -395,10 +395,7 @@ impl ColumnReader {
                             scale: _,
                         } => {
                             if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
-                                typed_reader!(
-                                    FLBADecimal32ColumnReader,
-                                    Int32
-                                )
+                                typed_reader!(FLBADecimal32ColumnReader, Int32)
                             } else if !use_decimal_128
                                 && promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
                             {
