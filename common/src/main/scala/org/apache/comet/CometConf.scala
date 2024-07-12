@@ -292,9 +292,10 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.explainFallback.enabled")
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
-          "why a query stage cannot be executed natively.")
+          "why a query stage cannot be executed natively. Set this to false to " +
+          "reduce the amount of logging.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")

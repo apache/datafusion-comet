@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::arithmetic_overflow_error;
 use crate::errors::CometError;
 use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeType};
 use arrow_array::RecordBatch;
@@ -24,6 +25,7 @@ use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
+use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
 use datafusion_physical_expr::aggregate::utils::down_cast_any_ref;
@@ -32,8 +34,6 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
-
-use super::arithmetic_overflow_error;
 
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
@@ -234,7 +234,7 @@ impl PhysicalExpr for NegativeExpr {
             || child_interval.lower() == &ScalarValue::Int64(Some(i64::MIN))
             || child_interval.upper() == &ScalarValue::Int64(Some(i64::MIN))
         {
-            return Err(CometError::ArithmeticOverflow {
+            return Err(SparkError::ArithmeticOverflow {
                 from_type: "long".to_string(),
             }
             .into());

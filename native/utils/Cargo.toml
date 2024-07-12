@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "datafusion-comet-spark-expr"
-description = "DataFusion expressions that emulate Apache Spark's behavior"
+name = "datafusion-comet-utils"
+description = "DataFusion Comet Utilities"
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -31,16 +31,9 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
-datafusion = { workspace = true }
-datafusion-common = { workspace = true }
-datafusion-functions = { workspace = true }
-datafusion-expr = { workspace = true }
-datafusion-physical-expr = { workspace = true }
-datafusion-comet-utils = { workspace = true }
-num = { workspace = true }
-regex = { workspace = true }
-thiserror = { workspace = true }
+chrono-tz = { workspace = true }
+datafusion-physical-plan = { workspace = true }
 
 [lib]
-name = "datafusion_comet_spark_expr"
+name = "datafusion_comet_utils"
 path = "src/lib.rs"

@@ -18,9 +18,8 @@
 //! Native DataFusion expressions
 
 pub mod bitwise_not;
-pub mod cast;
+pub use datafusion_comet_spark_expr::cast;
 pub mod checkoverflow;
-pub mod if_expr;
 mod normalize_nan;
 pub mod scalar_funcs;
 pub use normalize_nan::NormalizeNaNAndZero;
@@ -44,10 +43,10 @@ mod utils;
 pub mod variance;
 pub mod xxhash64;
 
-pub use datafusion_comet_spark_expr::EvalMode;
+pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
 
 fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::ArithmeticOverflow {
+    CometError::Spark(SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
-    }
+    })
 }
