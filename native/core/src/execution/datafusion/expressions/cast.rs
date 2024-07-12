@@ -514,12 +514,14 @@ impl Cast {
                     self.cast_array(dict_array.values().clone())?,
                 );
 
-                // casted dictionary to return type
-                let casted_result = cast_with_options(
-                    &casted_dictionary,
-                    to_type,
-                    &CAST_OPTIONS,
-                )?;
+                let casted_result = match to_type {
+                    DataType::Dictionary(_, _) => Arc::new(casted_dictionary),
+                    _ => cast_with_options(
+                        &casted_dictionary,
+                        to_type,
+                        &CAST_OPTIONS,
+                    )?
+                };
 
                 return Ok(spark_cast(casted_result, &from_type, to_type));
             }
