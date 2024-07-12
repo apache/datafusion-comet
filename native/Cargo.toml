@@ -48,6 +48,7 @@ datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0-rc1", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.1.0" }
 datafusion-comet-utils = { path = "utils", version = "0.1.0" }
+thiserror = "1"
 
 [profile.release]
 debug = true
