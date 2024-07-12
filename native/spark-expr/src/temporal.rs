@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 
-use datafusion_comet_utils::{array_with_timezone, down_cast_any_ref};
+use crate::utils::{array_with_timezone, down_cast_any_ref};
 
 use crate::kernels::temporal::{
     date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,

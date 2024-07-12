@@ -22,6 +22,8 @@ mod if_expr;
 
 mod kernels;
 mod temporal;
+pub mod timezone;
+pub mod utils;
 
 pub use abs::Abs;
 pub use cast::Cast;

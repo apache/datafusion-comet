@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-members = ["core", "spark-expr", "utils"]
+members = ["core", "spark-expr"]
 resolver = "2"
 
 [workspace.package]
@@ -47,7 +47,6 @@ datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", r
 datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0", default-features = false }
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "40.0.0", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.1.0" }
-datafusion-comet-utils = { path = "utils", version = "0.1.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 num = "0.4"
