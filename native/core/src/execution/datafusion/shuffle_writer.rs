@@ -1451,6 +1451,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_insert_larger_batch() {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
         let mut b = StringBuilder::new();
