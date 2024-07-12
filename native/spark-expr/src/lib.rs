@@ -20,9 +20,13 @@ pub mod cast;
 mod error;
 mod if_expr;
 
+mod kernels;
+mod temporal;
+
 pub use abs::Abs;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
+pub use temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec};
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
