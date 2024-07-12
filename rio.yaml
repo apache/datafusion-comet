@@ -47,9 +47,9 @@ builds:
       template: freestyle:v4:prb
       steps:
         # Verify that debuginfo is being stripped
-        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
+        - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
-        - cd core
+        - cd native
         - cargo fmt --all -- --check --color=never
         - cargo clippy --color=never -- -D warnings
         - cargo check --benches
@@ -65,7 +65,7 @@ builds:
         # an invalid XML file.  These can be aggregated by Formatting the results as JSON and using
         # cargo2junit to reformat the results as JUnit XML.
         # TODO: enable all-features
-        - cargo test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
+        - cargo +nightly test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
     reports: &reports
       junit:
         paths:
@@ -87,7 +87,7 @@ builds:
     build: &test_comet_java_build
       template: freestyle:v4:build
       steps:
-        - cd core
+        - cd native
         - cargo build
         - cd .. && ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install
     reports:
@@ -817,7 +817,7 @@ builds:
       template: freestyle:v4:publish
       steps:
         # Verify that debuginfo is being stripped
-        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
+        - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
         - make clean core-${RIO_ARCH}
@@ -1336,7 +1336,7 @@ builds:
         - ./mvnw com.apple.cie.rio:rio-maven-plugin:remove-snapshot org.codehaus.mojo:versions-maven-plugin:set
 
         # Verify that debuginfo is being stripped
-        - if [ $(grep '^strip = "debuginfo"$' core/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
+        - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
         - make clean core-${RIO_ARCH}
@@ -1748,7 +1748,7 @@ builds:
         - echo "COMET_VERSION=${COMET_VERSION}"
 
         # Change the strip configuration
-        - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" core/Cargo.toml; fi
+        - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" native/Cargo.toml; fi
 
         # Build Comet
         - make clean core-${RIO_ARCH}
