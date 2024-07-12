@@ -837,7 +837,7 @@ macro_rules! make_plain_decimal_int_impl {
                     let src_scale = (if src_scale < 0 {0} else {src_scale}) as u32;
                     let dst_scale = match dst.arrow_type {
                         ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
-                        _ => unreachable!()
+                        _ => src_scale
                     };
 
                     for i in 0..num {

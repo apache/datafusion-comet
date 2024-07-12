@@ -397,10 +397,7 @@ impl ColumnReader {
                             if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
                                 typed_reader!(
                                     FLBADecimal32ColumnReader,
-                                    ArrowDataType::Decimal128(
-                                        promotion_info.precision as u8,
-                                        promotion_info.scale as i8
-                                    )
+                                    Int32
                                 )
                             } else if !use_decimal_128
                                 && promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
