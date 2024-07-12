@@ -48,7 +48,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 async-trait = "0.1"
 log = "0.4"
 log4rs = "1.2.0"
-thiserror = "1"
+thiserror = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 lazy_static = "1.4.0"
 prost = "0.12.1"
