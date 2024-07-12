@@ -482,7 +482,7 @@ macro_rules! make_int_decimal_variant_impl {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
                 let dst_slice = dst.value_buffer.as_slice_mut();
-                let dst_offset = dst.num_values * $type_width;
+                let dst_offset = dst.num_values * 8;
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
 
                 let src_scale = src.desc.type_scale();
@@ -510,16 +510,16 @@ macro_rules! make_int_decimal_variant_impl {
                     }
                 }
 
-                src.offset += 4 * num;
+                src.offset += $type_width * num;
             }
 
             fn skip(src: &mut PlainDecoderInner, num: usize) {
-                src.offset += 4 * num;
+                src.offset += $type_width * num;
             }
         }
     };
 }
-make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 8, i64);
+make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 4, i64);
 make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
 
 macro_rules! generate_cast_to_unsigned {
