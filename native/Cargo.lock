@@ -914,6 +914,7 @@ dependencies = [
  "datafusion-common",
  "datafusion-functions",
  "datafusion-physical-expr",
+ "thiserror",
 ]
 
 [[package]]
