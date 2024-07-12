@@ -518,7 +518,7 @@ impl Cast {
                     DataType::Dictionary(_, _) => Arc::new(casted_dictionary),
                     _ => cast_with_options(
                         &casted_dictionary,
-                        to_type,
+                        &casted_dictionary.value_type(),
                         &CAST_OPTIONS,
                     )?
                 };
