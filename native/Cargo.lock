@@ -913,6 +913,7 @@ dependencies = [
  "datafusion",
  "datafusion-comet-utils",
  "datafusion-common",
+ "datafusion-expr",
  "datafusion-functions",
  "datafusion-physical-expr",
  "num",

@@ -23,9 +23,14 @@ use std::{
     sync::Arc,
 };
 
-use super::EvalMode;
-use crate::{SparkError, SparkResult};
 use arrow::{
+    array::{
+        cast::AsArray,
+        types::{Date32Type, Int16Type, Int32Type, Int8Type},
+        Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array,
+        GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+        PrimitiveArray,
+    },
     compute::{cast_with_options, unary, CastOptions},
     datatypes::{
         ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type, Int64Type,
@@ -35,25 +40,24 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{
-    cast::AsArray,
-    types::{Date32Type, Int16Type, Int32Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
-};
 use arrow_schema::{DataType, Schema};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_utils::{array_with_timezone, down_cast_any_ref};
+
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
+use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
+
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
+
+use datafusion_comet_utils::{array_with_timezone, down_cast_any_ref};
+
+use crate::{EvalMode, SparkError, SparkResult};
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
