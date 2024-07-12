@@ -17,30 +17,44 @@
 
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum SparkError {
-    ArithmeticOverflow {
-        from_type: String,
-    },
+    // Note that this message format is based on Spark 3.4 and is more detailed than the message
+    // returned by Spark 3.3
+    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+        because it is malformed. Correct the value as per the syntax, or change its target type. \
+        Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     CastInvalidValue {
         value: String,
         from_type: String,
         to_type: String,
     },
-    CastOverFlow {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
+
+    #[error("[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
     NumericValueOutOfRange {
         value: String,
         precision: u8,
         scale: i8,
     },
+
+    #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+        due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    CastOverFlow {
+        value: String,
+        from_type: String,
+        to_type: String,
+    },
+
+    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    ArithmeticOverflow { from_type: String },
+
+    #[error("ArrowError: {0}.")]
     Arrow(ArrowError),
+
+    #[error("InternalError: {0}.")]
     Internal(String),
 }
 
@@ -55,26 +69,5 @@ impl From<ArrowError> for SparkError {
 impl From<SparkError> for DataFusionError {
     fn from(value: SparkError) -> Self {
         DataFusionError::External(Box::new(value))
-    }
-}
-
-impl Error for SparkError {}
-
-impl Display for SparkError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ArithmeticOverflow { from_type } =>
-                write!(f, "[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
-            Self::CastOverFlow { value, from_type, to_type } => write!(f, "[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-       due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
-       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
-            Self::CastInvalidValue { value, from_type, to_type } => write!(f, "[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-       because it is malformed. Correct the value as per the syntax, or change its target type. \
-       Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
-       set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."),
-            Self::NumericValueOutOfRange { value, precision, scale } => write!(f, "[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead."),
-            Self::Arrow(e) => write!(f, "ArrowError: {e}"),
-            Self::Internal(e) => write!(f, "{e}"),
-        }
     }
 }

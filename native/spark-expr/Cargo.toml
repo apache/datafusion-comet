@@ -38,6 +38,7 @@ datafusion-physical-expr = { workspace = true }
 datafusion-comet-utils = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
+thiserror = { workspace = true }
 
 [lib]
 name = "datafusion_comet_spark_expr"

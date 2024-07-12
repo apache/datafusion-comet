@@ -52,6 +52,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 num = "0.4"
 regex = "1.9.6"
+thiserror = "1"
 
 [profile.release]
 debug = true
