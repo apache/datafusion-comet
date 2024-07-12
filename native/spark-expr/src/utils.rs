@@ -23,14 +23,12 @@ use arrow_schema::{ArrowError, DataType};
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::timezone::Tz;
 use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
 use chrono::{DateTime, Offset, TimeZone};
-use timezone::Tz;
-
-pub mod timezone;
 
 use datafusion_physical_plan::PhysicalExpr;
 
