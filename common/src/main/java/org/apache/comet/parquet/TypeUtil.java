@@ -283,8 +283,23 @@ public class TypeUtil {
                   || (decimalType.getScale() <= d.scale()
                       && decimalType.getPrecision() - decimalType.getScale()
                           <= d.precision() - d.scale())));
-    } else if (isSpark40Plus() && !SQLConf.get().parquetVectorizedReaderEnabled()) {
-      return typeAnnotation instanceof IntLogicalTypeAnnotation || typeAnnotation == null;
+    } else if (isSpark40Plus()) {
+      boolean isNullTypeAnnotation = typeAnnotation == null;
+      boolean isIntTypeAnnotation = typeAnnotation instanceof IntLogicalTypeAnnotation;
+      if (!SQLConf.get().parquetVectorizedReaderEnabled()) {
+        return isNullTypeAnnotation || isIntTypeAnnotation;
+      } else if (isNullTypeAnnotation
+          || (isIntTypeAnnotation && ((IntLogicalTypeAnnotation) typeAnnotation).isSigned())) {
+        PrimitiveType.PrimitiveTypeName typeName =
+            descriptor.getPrimitiveType().getPrimitiveTypeName();
+        int integerPrecision = d.precision() - d.scale();
+        switch (typeName) {
+          case INT32:
+            return integerPrecision >= DecimalType$.MODULE$.IntDecimal().precision();
+          case INT64:
+            return integerPrecision >= DecimalType$.MODULE$.LongDecimal().precision();
+        }
+      }
     }
     return false;
   }
