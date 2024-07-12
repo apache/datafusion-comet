@@ -33,10 +33,7 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::{
-    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array,
-    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray,
+    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type}, Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -500,7 +497,6 @@ impl Cast {
         let to_type = &self.data_type;
         let array = array_with_timezone(array, self.timezone.clone(), Some(to_type))?;
         let from_type = array.data_type().clone();
-
         let array = match &from_type {
             DataType::Dictionary(key_type, value_type)
                 if key_type.as_ref() == &DataType::Int32
@@ -511,14 +507,21 @@ impl Cast {
                     .as_any()
                     .downcast_ref::<DictionaryArray<Int32Type>>()
                     .expect("Expected a dictionary array");
-                let values = dict_array.values();
-                let cast_values = self.cast_array(values.clone())?;
-                let cast_array = Arc::new(DictionaryArray::<Int32Type>::new(
-                    dict_array.keys().clone(),
-                    cast_values,
-                )) as ArrayRef;
 
-                cast_with_options(&cast_array, value_type, &CAST_OPTIONS)?
+                // cast dictionary values directly
+                let casted_dictionary = DictionaryArray::<Int32Type>::new(
+                    dict_array.keys().clone(),
+                    self.cast_array(dict_array.values().clone())?,
+                );
+
+                // casted dictionary to return type
+                let casted_result = cast_with_options(
+                    &casted_dictionary,
+                    to_type,
+                    &CAST_OPTIONS,
+                )?;
+
+                return Ok(spark_cast(casted_result, &from_type, to_type));
             }
             _ => array,
         };
@@ -1718,6 +1721,40 @@ mod tests {
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_cast_dict_string_to_dict_timestamp() -> DataFusionResult<()> {
+        // prepare input data
+        let keys = Int32Array::from(vec![0, 1]);
+        let values: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56.123456"),
+            Some("T2"),
+        ]));
+        let dict_array = Arc::new(DictionaryArray::new(keys, values));
+
+        // prepare cast expression
+        let timezone = "UTC".to_string();
+        let expr = Arc::new(Column::new("a", 0)); // this is not used by the test
+        let cast = Cast::new(
+            expr,
+            DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.clone().into())),
+            EvalMode::Legacy,
+            timezone.clone(),
+        );
+
+        // test casting string dictionary array to timestamp array
+        let result = cast.cast_array(dict_array)?;
+        assert_eq!(
+            *result.data_type(),
+            DataType::Timestamp(
+                TimeUnit::Microsecond,
+                Some(timezone.into())
+            )
+        );
+        assert_eq!(result.len(), 2);
+
+        Ok(())
     }
 
     #[test]
