@@ -1723,7 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_dict_string_to_dict_timestamp() -> DataFusionResult<()> {
+    fn test_cast_dict_string_to_timestamp() -> DataFusionResult<()> {
         // prepare input data
         let keys = Int32Array::from(vec![0, 1]);
         let values: ArrayRef = Arc::new(StringArray::from(vec![
