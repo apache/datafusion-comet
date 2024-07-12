@@ -17,8 +17,8 @@
 
 use arrow_array::{builder::Int32Builder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion_comet_spark_expr::{Cast, EvalMode};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion_comet_spark_expr::{Cast, EvalMode};
 use datafusion_physical_expr::{expressions::Column, PhysicalExpr};
 use std::sync::Arc;
 
