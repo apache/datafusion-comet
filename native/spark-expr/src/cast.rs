@@ -24,35 +24,44 @@ use std::{
 };
 
 use arrow::{
-    compute::{cast_with_options, CastOptions},
+    array::{
+        cast::AsArray,
+        types::{Date32Type, Int16Type, Int32Type, Int8Type},
+        Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array,
+        GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+        PrimitiveArray,
+    },
+    compute::{cast_with_options, unary, CastOptions},
     datatypes::{
-        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type,
+        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type, Int64Type,
         TimestampMicrosecondType,
     },
+    error::ArrowError,
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{
-    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, GenericStringArray,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
-};
 use arrow_schema::{DataType, Schema};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::{SparkError, SparkResult};
-use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
+
+use datafusion_common::{
+    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
+};
+use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
-use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
+
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use num::{
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
+    ToPrimitive,
+};
 use regex::Regex;
 
-use crate::execution::datafusion::expressions::utils::{
-    array_with_timezone, down_cast_any_ref, spark_cast,
-};
+use datafusion_comet_utils::{array_with_timezone, down_cast_any_ref};
 
-use super::EvalMode;
+use crate::{EvalMode, SparkError, SparkResult};
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
+
+const MICROS_PER_SECOND: i64 = 1000000;
 
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
@@ -1630,6 +1639,84 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
+    }
+}
+
+/// This takes for special casting cases of Spark. E.g., Timestamp to Long.
+/// This function runs as a post process of the DataFusion cast(). By the time it arrives here,
+/// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
+/// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
+/// expressions/cast.rs, so it can be still Dictionary.
+fn spark_cast(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
+    match (from_type, to_type) {
+        (DataType::Timestamp(_, _), DataType::Int64) => {
+            // See Spark's `Cast` expression
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
+        }
+        (DataType::Dictionary(_, value_type), DataType::Int64)
+            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
+        {
+            // See Spark's `Cast` expression
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
+        }
+        (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
+        (DataType::Dictionary(_, value_type), DataType::Utf8)
+            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
+        {
+            remove_trailing_zeroes(array)
+        }
+        _ => array,
+    }
+}
+
+/// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
+fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
+where
+    T: ArrowPrimitiveType,
+    F: Fn(T::Native) -> T::Native,
+{
+    if let Some(d) = array.as_any_dictionary_opt() {
+        let new_values = unary_dyn::<F, T>(d.values(), op)?;
+        return Ok(Arc::new(d.with_values(Arc::new(new_values))));
+    }
+
+    match array.as_primitive_opt::<T>() {
+        Some(a) if PrimitiveArray::<T>::is_compatible(a.data_type()) => {
+            Ok(Arc::new(unary::<T, F, T>(
+                array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
+                op,
+            )))
+        }
+        _ => Err(ArrowError::NotYetImplemented(format!(
+            "Cannot perform unary operation of type {} on array of type {}",
+            T::DATA_TYPE,
+            array.data_type()
+        ))),
+    }
+}
+
+/// Remove any trailing zeroes in the string if they occur after in the fractional seconds,
+/// to match Spark behavior
+/// example:
+/// "1970-01-01 05:29:59.900" => "1970-01-01 05:29:59.9"
+/// "1970-01-01 05:29:59.990" => "1970-01-01 05:29:59.99"
+/// "1970-01-01 05:29:59.999" => "1970-01-01 05:29:59.999"
+/// "1970-01-01 05:30:00"     => "1970-01-01 05:30:00"
+/// "1970-01-01 05:30:00.001" => "1970-01-01 05:30:00.001"
+fn remove_trailing_zeroes(array: ArrayRef) -> ArrayRef {
+    let string_array = as_generic_string_array::<i32>(&array).unwrap();
+    let result = string_array
+        .iter()
+        .map(|s| s.map(trim_end))
+        .collect::<GenericStringArray<i32>>();
+    Arc::new(result) as ArrayRef
+}
+
+fn trim_end(s: &str) -> &str {
+    if s.rfind('.').is_some() {
+        s.trim_end_matches('0')
+    } else {
+        s
     }
 }
 

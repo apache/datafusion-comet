@@ -18,7 +18,7 @@
 //! Native DataFusion expressions
 
 pub mod bitwise_not;
-pub mod cast;
+pub use datafusion_comet_spark_expr::cast;
 pub mod checkoverflow;
 mod normalize_nan;
 pub mod scalar_funcs;
