@@ -16,7 +16,7 @@
 // under the License.
 
 mod abs;
-pub mod cast;
+mod cast;
 mod error;
 mod if_expr;
 
@@ -24,6 +24,7 @@ mod kernels;
 mod temporal;
 
 pub use abs::Abs;
+pub use cast::Cast;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec};
