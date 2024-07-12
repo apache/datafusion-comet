@@ -24,7 +24,7 @@ use std::{
 };
 
 use arrow::{
-    compute::{cast_with_options, CastOptions},
+    compute::{cast_with_options, take, CastOptions},
     datatypes::{
         ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type,
         TimestampMicrosecondType,
@@ -33,7 +33,10 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::{
-    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type}, Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray
+    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
+    Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array,
+    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray,
 };
 use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -508,21 +511,15 @@ impl Cast {
                     .downcast_ref::<DictionaryArray<Int32Type>>()
                     .expect("Expected a dictionary array");
 
-                // cast dictionary values directly
                 let casted_dictionary = DictionaryArray::<Int32Type>::new(
                     dict_array.keys().clone(),
                     self.cast_array(dict_array.values().clone())?,
                 );
 
                 let casted_result = match to_type {
-                    DataType::Dictionary(_, _) => Arc::new(casted_dictionary),
-                    _ => cast_with_options(
-                        &casted_dictionary,
-                        &casted_dictionary.value_type(),
-                        &CAST_OPTIONS,
-                    )?
+                    DataType::Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
+                    _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
                 };
-
                 return Ok(spark_cast(casted_result, &from_type, to_type));
             }
             _ => array,
@@ -1749,10 +1746,7 @@ mod tests {
         let result = cast.cast_array(dict_array)?;
         assert_eq!(
             *result.data_type(),
-            DataType::Timestamp(
-                TimeUnit::Microsecond,
-                Some(timezone.into())
-            )
+            DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.into()))
         );
         assert_eq!(result.len(), 2);
 
