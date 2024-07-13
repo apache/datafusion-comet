@@ -1654,18 +1654,7 @@ impl PhysicalPlanner {
             data_type,
         ));
 
-        let is_unary = expr.args.len() == 1;
-        let unary_arg = expr
-            .args
-            .first()
-            .and_then(|x| self.create_expr(x, input_schema.clone()).ok());
-
-        let log_functions = ["ln", "log2", "log10"];
-
-        match fun_name.as_str() {
-            log if log_functions.contains(&log) && is_unary => spark_log(scalar_expr, unary_arg),
-            _ => Ok(scalar_expr),
-        }
+        Ok(scalar_expr)
     }
 }
 
@@ -1824,35 +1813,6 @@ fn rewrite_physical_expr(
 
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
-
-
-/// Modifies the physical expression for `log` functions so that it is defined as  null on numbers
-/// less than or equal to 0.  This matches Spark and Hive behavior, where values less than or
-/// equal to 0 eval to null, instead of NaN or -Infinity
-fn spark_log(
-    datafusion_expr: Arc<dyn PhysicalExpr>,
-    arg: Option<Arc<dyn PhysicalExpr>>,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    match arg {
-        Some(arg) => {
-            let less_than_0 = BinaryExpr::new(
-                arg,
-                DataFusionOperator::LtEq,
-                Arc::new(DataFusionLiteral::new(ScalarValue::Float64(Some(0.0)))),
-            );
-
-            let lit_null = Arc::new(DataFusionLiteral::new(ScalarValue::Float64(None)));
-
-            // values less than or equal to 0 eval to null in Hive, instead of NaN or -Infinity
-            let if_expr = IfExpr::new(Arc::new(less_than_0), lit_null, datafusion_expr);
-            Ok(Arc::new(if_expr))
-        }
-
-        // If a first arg could not be resolved
-        None => Ok(datafusion_expr),
-    }
-}
-
 
 fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
     match spark_expression::EvalMode::try_from(value)? {
