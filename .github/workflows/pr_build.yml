@@ -37,7 +37,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_VERSION: nightly
+  RUST_VERSION: stable
 
 jobs:
   linux-test:
@@ -46,7 +46,7 @@ jobs:
         os: [ubuntu-latest]
         java_version: [8, 11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4']
+        spark-version: ['3.5']
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -97,22 +97,11 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   linux-test-with-old-spark:
     strategy:
@@ -120,15 +109,8 @@ jobs:
         os: [ubuntu-latest]
         java_version: [8, 11, 17]
         test-target: [java]
-        spark-version: ['3.2', '3.3']
+        spark-version: ['3.3', '3.4']
         scala-version: ['2.12', '2.13']
-        exclude:
-          - java_version: 17
-            spark-version: '3.2'
-          - java_version: 11
-            spark-version: '3.2'
-          - spark-version: '3.2'
-            scala-version: '2.13'
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
@@ -152,7 +134,7 @@ jobs:
         os: [macos-13]
         java_version: [8, 11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4']
+        spark-version: ['3.4', '3.5']
         scala-version: ['2.12', '2.13']
       fail-fast: false
     if: github.event_name == 'push'
@@ -179,7 +161,7 @@ jobs:
       matrix:
         java_version: [8, 11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4']
+        spark-version: ['3.4', '3.5']
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -225,22 +207,11 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   macos-aarch64-test-with-spark4_0:
     strategy:
@@ -265,37 +236,22 @@ jobs:
           jdk-version: ${{ matrix.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
-      - name: Clone Spark
-        uses: actions/checkout@v4
-        with:
-          repository: "apache/spark"
-          path: "apache-spark"
-      - name: Install Spark
-        shell: bash
-        working-directory: ./apache-spark
-        run: build/mvn install -Phive -Phadoop-cloud -DskipTests
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          # TODO: remove -DskipTests after fixing tests
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DskipTests"
-          # TODO: upload test reports after enabling tests
-          upload-test-reports: false
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
 
   macos-aarch64-test-with-old-spark:
     strategy:
       matrix:
         java_version: [8, 17]
         test-target: [java]
-        spark-version: ['3.2', '3.3']
+        spark-version: ['3.3', '3.4']
         scala-version: ['2.12', '2.13']
         exclude:
-          - java_version: 17
-            spark-version: '3.2'
           - java_version: 8
             spark-version: '3.3'
-          - spark-version: '3.2'
-            scala-version: '2.13'
       fail-fast: false
     name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: macos-14

@@ -152,7 +152,7 @@ under the License.
             <configuration>
               <protocArtifact>com.google.protobuf:protoc:${protobuf.version}</protocArtifact>
               <inputDirectories>
-                <include>../core/src/execution/proto</include>
+                <include>../native/core/src/execution/proto</include>
               </inputDirectories>
             </configuration>
           </execution>
@@ -252,6 +252,8 @@ under the License.
               <sources>
                 <source>src/test/${additional.3_3.test.source}</source>
                 <source>src/test/${additional.3_4.test.source}</source>
+                <source>src/test/${additional.3_5.test.source}</source>
+                <source>src/test/${additional.pre35.test.source}</source>
                 <source>src/test/${shims.majorVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
@@ -267,6 +269,7 @@ under the License.
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
+                <source>src/main/${shims.pre35Src}</source>
               </sources>
             </configuration>
           </execution>

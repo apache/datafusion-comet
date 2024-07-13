@@ -39,6 +39,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometPlan}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec.{METRIC_NATIVE_TIME_DESCRIPTION, METRIC_NATIVE_TIME_NAME}
 import org.apache.spark.sql.comet.shims.ShimCometShuffleWriteProcessor
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeLike, ShuffleOrigin}
@@ -77,8 +78,8 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "shuffleReadElapsedCompute" ->
-      SQLMetrics.createNanoTimingMetric(sparkContext, "shuffle read elapsed compute at native"),
+    METRIC_NATIVE_TIME_NAME ->
+      SQLMetrics.createNanoTimingMetric(sparkContext, METRIC_NATIVE_TIME_DESCRIPTION),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -220,6 +221,9 @@ case class CometShuffleExchangeExec(
 }
 
 object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
+  val METRIC_NATIVE_TIME_NAME = "shuffleNativeTotalTime"
+  val METRIC_NATIVE_TIME_DESCRIPTION = "shuffle native code time"
+
   def prepareShuffleDependency(
       rdd: RDD[ColumnarBatch],
       outputAttributes: Seq[Attribute],
@@ -479,7 +483,7 @@ class CometShuffleWriteProcessor(
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
-      "elapsed_compute" -> metrics("shuffleReadElapsedCompute"))
+      "elapsed_compute" -> metrics("shuffleNativeTotalTime"))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
@@ -583,14 +587,14 @@ class CometShuffleWriteProcessor(
 }
 
 /**
- * Copied from Spark `PartitionIdPassthrough` as it is private in Spark 3.2.
+ * Copied from Spark `PartitionIdPassthrough` as it is private in Spark 3.3.
  */
 private[spark] class PartitionIdPassthrough(override val numPartitions: Int) extends Partitioner {
   override def getPartition(key: Any): Int = key.asInstanceOf[Int]
 }
 
 /**
- * Copied from Spark `ConstantPartitioner` as it doesn't exist in Spark 3.2.
+ * Copied from Spark `ConstantPartitioner` as it doesn't exist in Spark 3.3.
  */
 private[spark] class ConstantPartitioner extends Partitioner {
   override def numPartitions: Int = 1

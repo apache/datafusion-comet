@@ -28,7 +28,7 @@ Make sure the following requirements are met and software installed on your mach
 
 ## Requirements
 
-- Apache Spark 3.2, 3.3, or 3.4
+- Apache Spark 3.3, or 3.4
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
@@ -55,6 +55,12 @@ Note that the project builds for Scala 2.12 by default but can be built for Scal
 
 ```console
 make release PROFILES="-Pspark-3.4 -Pscala-2.13"
+```
+
+To build Comet from the source distribution on an isolated environment without an access to `github.com` it is necessary to disable `git-commit-id-maven-plugin`, otherwise you will face errors that there is no access to the git during the build process. In that case you may use:
+
+```console
+make release-nogit PROFILES="-Pspark-3.4"
 ```
 
 ## Run Spark Shell with Comet enabled

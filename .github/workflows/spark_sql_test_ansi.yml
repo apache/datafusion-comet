@@ -22,30 +22,28 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  # enable the following once Ansi support is completed
-  #  push:
-  #    paths-ignore:
-  #      - "doc/**"
-  #      - "**.md"
-  #  pull_request:
-  #    paths-ignore:
-  #      - "doc/**"
-  #      - "**.md"
-
-  # manual trigger ONLY
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
 env:
-  RUST_VERSION: nightly
+  RUST_VERSION: stable
 
 jobs:
   spark-sql-catalyst:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.2'}]
+        java-version: [17]
+        spark-version: [{short: '4.0', full: '4.0.0-preview1'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -75,7 +73,8 @@ jobs:
       - name: Run Spark tests
         run: |
           cd apache-spark
-          ENABLE_COMET=true ENABLE_COMET_ANSI_MODE=true build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          RUST_BACKTRACE=1 ENABLE_COMET=true ENABLE_COMET_ANSI_MODE=true build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
         env:
           LC_ALL: "C.UTF-8"
 

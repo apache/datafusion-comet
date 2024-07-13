@@ -31,7 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
-import org.apache.comet.expressions.{CometCast, Compatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -76,7 +76,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else {
               val testIgnored =
                 tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
-              CometCast.isSupported(fromType, toType, None, "LEGACY") match {
+              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
                 case Compatible(_) =>
                   if (testIgnored) {
                     fail(
@@ -571,9 +571,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to DateType") {
-    // error message for invalid dates in Spark 3.2 not supported by Comet see below issue.
-    // https://github.com/apache/datafusion-comet/issues/440
-    assume(CometSparkSessionExtensions.isSpark33Plus)
     val validDates = Seq(
       "262142-01-01",
       "262142-01-01 ",
@@ -780,7 +777,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to LongType") {
     assume(CometSparkSessionExtensions.isSpark33Plus)
-    castTest(generateTimestamps(), DataTypes.LongType)
+    castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
   ignore("cast TimestampType to FloatType") {
@@ -884,6 +881,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
   }
 
+  // Extended values are Timestamps that are outside dates supported chrono::DateTime and
+  // therefore not supported by operations using it.
+  private def generateTimestampsExtended(): DataFrame = {
+    val values = Seq("290000-12-31T01:00:00+02:00")
+    generateTimestamps().unionByName(
+      values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
+  }
+
   private def generateTimestamps(): DataFrame = {
     val values =
       Seq(
@@ -948,7 +953,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def castTest(input: DataFrame, toType: DataType): Unit = {
 
-    // we now support the TryCast expression in Spark 3.2 and 3.3
+    // we now support the TryCast expression in Spark 3.3
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -982,15 +987,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             fail(s"Comet should have failed with ${e.getCause.getMessage}")
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
-            val sparkMessage = sparkException.getCause.getMessage
-            // We have to workaround https://github.com/apache/datafusion-comet/issues/293 here by
-            // removing the "Execution error: " error message prefix that is added by DataFusion
+            val sparkMessage =
+              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
             val cometMessage = cometException.getCause.getMessage
-              .replace("Execution error: ", "")
-            if (CometSparkSessionExtensions.isSpark34Plus) {
+            if (CometSparkSessionExtensions.isSpark40Plus) {
+              // for Spark 4 we expect to sparkException carries the message
+              assert(
+                sparkException.getMessage
+                  .replace(".WITH_SUGGESTION] ", "]")
+                  .startsWith(cometMessage))
+            } else if (CometSparkSessionExtensions.isSpark34Plus) {
               // for Spark 3.4 we expect to reproduce the error message exactly
               assert(cometMessage == sparkMessage)
-            } else if (CometSparkSessionExtensions.isSpark33Plus) {
+            } else {
               // for Spark 3.3 we just need to strip the prefix from the Comet message
               // before comparing
               val cometMessageModified = cometMessage
@@ -1002,19 +1011,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 assert(cometMessage.contains("cannot be represented as"))
               } else {
                 assert(cometMessageModified == sparkMessage)
-              }
-            } else {
-              // for Spark 3.2 we just make sure we are seeing a similar type of error
-              if (sparkMessage.contains("causes overflow")) {
-                assert(cometMessage.contains("due to an overflow"))
-              } else if (sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("cannot be represented as"))
-              } else {
-                // assume that this is an invalid input message in the form:
-                // `invalid input syntax for type numeric: -9223372036854775809`
-                // we just check that the Comet message contains the same literal value
-                val sparkInvalidValue = sparkMessage.substring(sparkMessage.indexOf(':') + 2)
-                assert(cometMessage.contains(sparkInvalidValue))
               }
             }
         }

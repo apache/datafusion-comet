@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -1055,7 +1055,11 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[AnalysisException] {
           sql("CREATE TABLE t2(name STRING, part INTERVAL) USING PARQUET PARTITIONED BY (part)")
         }.getMessage
-        assert(e.contains("Cannot use interval"))
+        if (isSpark40Plus) {
+          assert(e.contains(" Cannot use \"INTERVAL\""))
+        } else {
+          assert(e.contains("Cannot use interval"))
+        }
       }
     }
   }
@@ -1425,6 +1429,33 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometRowToColumnarExec]))
       }
     })
+  }
+
+  test("Windows support") {
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
+          val aggregateFunctions =
+            List("MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
+
+          aggregateFunctions.foreach { function =>
+            val queries = Seq(
+              s"SELECT $function OVER() FROM t1",
+              s"SELECT $function OVER(order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2 desc) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
+              s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
+              s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
+
+            queries.foreach { query =>
+              checkSparkAnswerAndOperator(query)
+            }
+          }
+        }
+      })
   }
 }
 

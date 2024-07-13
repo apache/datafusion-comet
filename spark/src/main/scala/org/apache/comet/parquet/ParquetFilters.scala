@@ -45,8 +45,8 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimSQLConf
 
 /**
- * Copied from Spark 3.2 & 3.4, in order to fix Parquet shading issue. TODO: find a way to remove
- * this duplication
+ * Copied from Spark 3.4, in order to fix Parquet shading issue. TODO: find a way to remove this
+ * duplication
  *
  * Some utility function to convert Spark data source filters to Parquet filters.
  */

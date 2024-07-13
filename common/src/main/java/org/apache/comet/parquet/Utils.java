@@ -115,7 +115,7 @@ public class Utils {
       promotionInfo = new TypePromotionInfo(readType);
     } else {
       // If type promotion is not enable, we'll just use the Parquet primitive type and precision.
-      promotionInfo = new TypePromotionInfo(primitiveTypeId, precision);
+      promotionInfo = new TypePromotionInfo(primitiveTypeId, precision, scale);
     }
 
     return Native.initColumnReader(
@@ -131,6 +131,7 @@ public class Utils {
         precision,
         promotionInfo.precision,
         scale,
+        promotionInfo.scale,
         tu,
         isAdjustedUtc,
         batchSize,
@@ -144,10 +145,13 @@ public class Utils {
     int physicalTypeId;
     // Decimal precision from the Spark read schema, or -1 if it's not decimal type.
     int precision;
+    // Decimal scale from the Spark read schema, or -1 if it's not decimal type.
+    int scale;
 
-    TypePromotionInfo(int physicalTypeId, int precision) {
+    TypePromotionInfo(int physicalTypeId, int precision, int scale) {
       this.physicalTypeId = physicalTypeId;
       this.precision = precision;
+      this.scale = scale;
     }
 
     TypePromotionInfo(DataType sparkReadType) {
@@ -159,13 +163,16 @@ public class Utils {
       int physicalTypeId = getPhysicalTypeId(primitiveType.getPrimitiveTypeName());
       LogicalTypeAnnotation annotation = primitiveType.getLogicalTypeAnnotation();
       int precision = -1;
+      int scale = -1;
       if (annotation instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
         LogicalTypeAnnotation.DecimalLogicalTypeAnnotation decimalAnnotation =
             (LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) annotation;
         precision = decimalAnnotation.getPrecision();
+        scale = decimalAnnotation.getScale();
       }
       this.physicalTypeId = physicalTypeId;
       this.precision = precision;
+      this.scale = scale;
     }
   }
 

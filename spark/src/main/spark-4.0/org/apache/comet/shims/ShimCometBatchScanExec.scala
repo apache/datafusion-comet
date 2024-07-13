@@ -19,16 +19,11 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
-import org.apache.spark.sql.connector.read.InputPartition
+import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 trait ShimCometBatchScanExec {
   def wrapped: BatchScanExec
-
-  def keyGroupedPartitioning: Option[Seq[Expression]] = wrapped.keyGroupedPartitioning
-
-  def inputPartitions: Seq[InputPartition] = wrapped.inputPartitions
 
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
 }

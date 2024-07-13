@@ -29,7 +29,7 @@ Comet aims to support:
 - a native Parquet implementation, including both reader and writer
 - full implementation of Spark operators, including
   Filter/Project/Aggregation/Join/Exchange etc.
-- full implementation of Spark built-in expressions
+- full implementation of Spark built-in expressions.
 - a UDF framework for users to migrate their existing UDF to native
 
 ## Architecture
@@ -40,7 +40,19 @@ The following diagram illustrates the architecture of Comet:
 
 ## Current Status
 
-The project is currently integrated into Apache Spark 3.2, 3.3, and 3.4.
+Comet currently supports the following versions of Apache Spark:
+
+- 3.3.x
+- 3.4.x
+
+Experimental support is provided for the following versions of Apache Spark and is intended for development/testing 
+use only and should not be used in production yet.
+
+- 3.5.x
+- 4.0.0-preview1
+
+Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by 
+Cloud Service Providers. 
 
 ## Feature Parity with Apache Spark
 

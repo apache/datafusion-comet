@@ -60,6 +60,14 @@ allowed_expr+="|^x86_64/libarrow_cdata_jni.so$"
 allowed_expr+="|^x86_64/libarrow_cdata_jni.dylib$"
 allowed_expr+="|^x86_64/arrow_cdata_jni.dll$"
 allowed_expr+="|^aarch_64/libarrow_cdata_jni.dylib$"
+
+allowed_expr+="|^arrow_cdata_jni/"
+allowed_expr+="|^arrow_cdata_jni/x86_64/"
+allowed_expr+="|^arrow_cdata_jni/aarch_64/"
+allowed_expr+="|^arrow_cdata_jni/x86_64/libarrow_cdata_jni.so$"
+allowed_expr+="|^arrow_cdata_jni/x86_64/libarrow_cdata_jni.dylib$"
+allowed_expr+="|^arrow_cdata_jni/x86_64/arrow_cdata_jni.dll$"
+allowed_expr+="|^arrow_cdata_jni/aarch_64/libarrow_cdata_jni.dylib$"
 # Two classes in Arrow C module: StructVectorLoader and StructVectorUnloader, are not
 # under org/apache/arrow/c, so we'll need to treat them specially.
 allowed_expr+="|^org/apache/arrow/$"

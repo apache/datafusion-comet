@@ -33,6 +33,7 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
+    <module>fuzz-testing</module>
   </modules>
 
   <properties>
@@ -52,11 +53,13 @@ under the License.
     <protobuf.version>3.19.6</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
-    <arrow.version>14.0.2</arrow.version>
+    <arrow.version>16.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
-    <jni.dir>${project.basedir}/../core/target/debug</jni.dir>
+    <semanticdb.version>4.8.8</semanticdb.version>
+    <slf4j.version>2.0.6</slf4j.version>
+    <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
     <comet.shade.packageName>org.apache.comet.shaded</comet.shade.packageName>
@@ -88,8 +91,11 @@ under the License.
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
+    <additional.3_5.test.source>not-needed</additional.3_5.test.source>
+    <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+    <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
   </properties>
 
   <dependencyManagement>
@@ -119,6 +125,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -137,7 +148,7 @@ under the License.
           <!-- Comet uses arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -230,6 +241,12 @@ under the License.
         <artifactId>protobuf-java</artifactId>
         <version>${protobuf.version}</version>
       </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+        <scope>${spark.maven.scope}</scope>
+      </dependency>
 
       <!-- Shaded deps marked as provided. These are promoted to compile scope
            in the modules where we want the shaded classes to appear in the
@@ -257,7 +274,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -283,7 +300,7 @@ under the License.
           <!-- We are using arrow-memory-unsafe -->
           <exclusion>
             <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-memory-netty</artifactId>
+            <artifactId>*</artifactId>
           </exclusion>
 
           <!-- We're using "org.slf4j:jcl-over-slf4j" -->
@@ -323,6 +340,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -338,6 +360,10 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -399,6 +425,11 @@ under the License.
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
           </exclusion>
+
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
 
@@ -409,6 +440,12 @@ under the License.
         <scope>test</scope>
       </dependency>
 
+      <dependency>
+        <groupId>org.rogach</groupId>
+        <artifactId>scallop_${scala.binary.version}</artifactId>
+        <version>5.1.0</version>
+      </dependency>
+
     </dependencies>
 
   </dependencyManagement>
@@ -417,7 +454,7 @@ under the License.
     <profile>
       <id>release</id>
       <properties>
-        <jni.dir>${project.basedir}/../core/target/release</jni.dir>
+        <jni.dir>${project.basedir}/../native/target/release</jni.dir>
       </properties>
     </profile>
 
@@ -492,26 +529,13 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-3.2</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.2.2</spark.version>
-        <spark.version.short>3.2</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <!-- we don't add special test suits for spark-3.2, so a not existed dir is specified-->
-        <additional.3_3.test.source>not-needed-yet</additional.3_3.test.source>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.2</shims.minorVerSrc>
-      </properties>
-    </profile>
-
-    <profile>
       <id>spark-3.3</id>
       <properties>
         <scala.version>2.12.15</scala.version>
         <spark.version>3.3.2</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
+        <slf4j.version>1.7.32</slf4j.version>
         <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
         <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
@@ -527,17 +551,36 @@ under the License.
     </profile>
 
     <profile>
-      <!-- FIXME: this is WIP. Tests may fail -->
+      <id>spark-3.5</id>
+      <properties>
+        <scala.version>2.12.18</scala.version>
+        <spark.version>3.5.1</spark.version>
+        <spark.version.short>3.5</spark.version.short>
+        <parquet.version>1.13.1</parquet.version>
+        <slf4j.version>2.0.7</slf4j.version>
+        <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+        <shims.pre35Src>not-needed</shims.pre35Src>
+        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
+        <additional.3_5.test.source>spark-3.5</additional.3_5.test.source>
+      </properties>
+    </profile>
+
+    <profile>
+      <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
       <id>spark-4.0</id>
       <properties>
         <!-- Use Scala 2.13 by default -->
-        <scala.version>2.13.13</scala.version>
+        <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.0-SNAPSHOT</spark.version>
+        <spark.version>4.0.0-preview1</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <semanticdb.version>4.9.5</semanticdb.version>
+        <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <shims.pre35Src>not-needed</shims.pre35Src>
+        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -548,8 +591,9 @@ under the License.
     <profile>
       <id>scala-2.13</id>
       <properties>
-        <scala.version>2.13.8</scala.version>
+        <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
+        <semanticdb.version>4.9.5</semanticdb.version>
       </properties>
     </profile>
 
@@ -620,7 +664,7 @@ under the License.
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
                     <artifactId>semanticdb-scalac_${scala.version}</artifactId>
-                    <version>4.8.8</version>
+                    <version>${semanticdb.version}</version>
                   </compilerPlugin>
                 </compilerPlugins>
               </configuration>
@@ -915,6 +959,8 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <exclude>dev/release/rat_exclude_files.txt</exclude>
+            <exclude>dev/release/requirements.txt</exclude>
           </excludes>
         </configuration>
       </plugin>
