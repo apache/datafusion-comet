@@ -24,38 +24,45 @@ use std::{
 };
 
 use arrow::{
-    compute::{cast_with_options, take, CastOptions},
+    array::{
+        cast::AsArray,
+        types::{Date32Type, Int16Type, Int32Type, Int8Type},
+        Array, ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array,
+        GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+        PrimitiveArray,
+    },
+    compute::{cast_with_options, take, unary, CastOptions},
     datatypes::{
-        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type,
+        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type, Int64Type,
         TimestampMicrosecondType,
     },
+    error::ArrowError,
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::{
-    types::{Date32Type, Int16Type, Int32Type, Int64Type, Int8Type},
-    Array, ArrayRef, BooleanArray, Decimal128Array, DictionaryArray, Float32Array, Float64Array,
-    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray,
-};
+use arrow_array::DictionaryArray;
 use arrow_schema::{DataType, Schema};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
+
+use datafusion_common::{
+    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
+};
+use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
-use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, Num, ToPrimitive};
+
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use num::{
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
+    ToPrimitive,
+};
 use regex::Regex;
 
-use crate::{
-    errors::{CometError, CometResult},
-    execution::datafusion::expressions::utils::{
-        array_with_timezone, down_cast_any_ref, spark_cast,
-    },
-};
+use crate::utils::{array_with_timezone, down_cast_any_ref};
 
-use super::EvalMode;
+use crate::{EvalMode, SparkError, SparkResult};
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
+
+const MICROS_PER_SECOND: i64 = 1000000;
 
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
@@ -88,7 +95,7 @@ macro_rules! cast_utf8_to_int {
                 cast_array.append_null()
             }
         }
-        let result: CometResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
+        let result: SparkResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
         result
     }};
 }
@@ -116,7 +123,7 @@ macro_rules! cast_float_to_string {
         fn cast<OffsetSize>(
             from: &dyn Array,
             _eval_mode: EvalMode,
-        ) -> CometResult<ArrayRef>
+        ) -> SparkResult<ArrayRef>
         where
             OffsetSize: OffsetSizeTrait, {
                 let array = from.as_any().downcast_ref::<$output_type>().unwrap();
@@ -169,7 +176,7 @@ macro_rules! cast_float_to_string {
                         Some(value) => Ok(Some(value.to_string())),
                         _ => Ok(None),
                     })
-                    .collect::<Result<GenericStringArray<OffsetSize>, CometError>>()?;
+                    .collect::<Result<GenericStringArray<OffsetSize>, SparkError>>()?;
 
                 Ok(Arc::new(output_array))
             }
@@ -205,7 +212,7 @@ macro_rules! cast_int_to_int_macro {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        Ok::<Option<$to_native_type>, CometError>(Some(value as $to_native_type))
+                        Ok::<Option<$to_native_type>, SparkError>(Some(value as $to_native_type))
                     }
                     _ => Ok(None),
                 })
@@ -222,14 +229,14 @@ macro_rules! cast_int_to_int_macro {
                                 $spark_to_data_type_name,
                             ))
                         } else {
-                            Ok::<Option<$to_native_type>, CometError>(Some(res.unwrap()))
+                            Ok::<Option<$to_native_type>, SparkError>(Some(res.unwrap()))
                         }
                     }
                     _ => Ok(None),
                 })
                 .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
         }?;
-        let result: CometResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
+        let result: SparkResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
         result
     }};
 }
@@ -286,7 +293,7 @@ macro_rules! cast_float_to_int16_down {
                 .map(|value| match value {
                     Some(value) => {
                         let i32_value = value as i32;
-                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
                             i32_value as $rust_dest_type,
                         ))
                     }
@@ -339,7 +346,7 @@ macro_rules! cast_float_to_int32_up {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        Ok::<Option<$rust_dest_type>, CometError>(Some(value as $rust_dest_type))
+                        Ok::<Option<$rust_dest_type>, SparkError>(Some(value as $rust_dest_type))
                     }
                     None => Ok(None),
                 })
@@ -402,7 +409,7 @@ macro_rules! cast_decimal_to_int16_down {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
                         let i32_value = (value / divisor) as i32;
-                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
                             i32_value as $rust_dest_type,
                         ))
                     }
@@ -456,7 +463,7 @@ macro_rules! cast_decimal_to_int32_up {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
                         let truncated = value / divisor;
-                        Ok::<Option<$rust_dest_type>, CometError>(Some(
+                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
                             truncated as $rust_dest_type,
                         ))
                     }
@@ -604,7 +611,7 @@ impl Cast {
                 // we should never reach this code because the Scala code should be checking
                 // for supported cast operations and falling back to Spark for anything that
                 // is not yet supported
-                Err(CometError::Internal(format!(
+                Err(SparkError::Internal(format!(
                     "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
                 )))
             }
@@ -688,7 +695,7 @@ impl Cast {
         to_type: &DataType,
         array: &ArrayRef,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<OffsetSize>>()
@@ -719,7 +726,7 @@ impl Cast {
         array: &ArrayRef,
         to_type: &DataType,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -756,7 +763,7 @@ impl Cast {
         array: &ArrayRef,
         to_type: &DataType,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -781,7 +788,7 @@ impl Cast {
         precision: u8,
         scale: i8,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         Self::cast_floating_point_to_decimal128::<Float64Type>(array, precision, scale, eval_mode)
     }
 
@@ -790,7 +797,7 @@ impl Cast {
         precision: u8,
         scale: i8,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         Self::cast_floating_point_to_decimal128::<Float32Type>(array, precision, scale, eval_mode)
     }
 
@@ -799,7 +806,7 @@ impl Cast {
         precision: u8,
         scale: i8,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef>
+    ) -> SparkResult<ArrayRef>
     where
         <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
     {
@@ -819,7 +826,7 @@ impl Cast {
                     Some(v) => {
                         if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
                             if eval_mode == EvalMode::Ansi {
-                                return Err(CometError::NumericValueOutOfRange {
+                                return Err(SparkError::NumericValueOutOfRange {
                                     value: input_value.to_string(),
                                     precision,
                                     scale,
@@ -832,7 +839,7 @@ impl Cast {
                     }
                     None => {
                         if eval_mode == EvalMode::Ansi {
-                            return Err(CometError::NumericValueOutOfRange {
+                            return Err(SparkError::NumericValueOutOfRange {
                                 value: input_value.to_string(),
                                 precision,
                                 scale,
@@ -856,7 +863,7 @@ impl Cast {
     fn spark_cast_float64_to_utf8<OffsetSize>(
         from: &dyn Array,
         _eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef>
+    ) -> SparkResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
@@ -866,7 +873,7 @@ impl Cast {
     fn spark_cast_float32_to_utf8<OffsetSize>(
         from: &dyn Array,
         _eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef>
+    ) -> SparkResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
@@ -878,7 +885,7 @@ impl Cast {
         eval_mode: EvalMode,
         from_type: &DataType,
         to_type: &DataType,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         match (from_type, to_type) {
             (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
                 array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
@@ -908,7 +915,7 @@ impl Cast {
     fn spark_cast_utf8_to_boolean<OffsetSize>(
         from: &dyn Array,
         eval_mode: EvalMode,
-    ) -> CometResult<ArrayRef>
+    ) -> SparkResult<ArrayRef>
     where
         OffsetSize: OffsetSizeTrait,
     {
@@ -923,7 +930,7 @@ impl Cast {
                 Some(value) => match value.to_ascii_lowercase().trim() {
                     "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
                     "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
-                    _ if eval_mode == EvalMode::Ansi => Err(CometError::CastInvalidValue {
+                    _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
                         value: value.to_string(),
                         from_type: "STRING".to_string(),
                         to_type: "BOOLEAN".to_string(),
@@ -942,7 +949,7 @@ impl Cast {
         eval_mode: EvalMode,
         from_type: &DataType,
         to_type: &DataType,
-    ) -> CometResult<ArrayRef> {
+    ) -> SparkResult<ArrayRef> {
         match (from_type, to_type) {
             (DataType::Float32, DataType::Int8) => cast_float_to_int16_down!(
                 array,
@@ -1079,7 +1086,7 @@ impl Cast {
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
-fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> {
+fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
     Ok(cast_string_to_int_with_range_check(
         str,
         eval_mode,
@@ -1091,7 +1098,7 @@ fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> CometResult<Option<i8>> 
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
-fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>> {
+fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i16>> {
     Ok(cast_string_to_int_with_range_check(
         str,
         eval_mode,
@@ -1103,12 +1110,12 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> CometResult<Option<i16>
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
-fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
     do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
 }
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper intWrapper)
-fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
+fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
     do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
 }
 
@@ -1118,7 +1125,7 @@ fn cast_string_to_int_with_range_check(
     type_name: &str,
     min: i32,
     max: i32,
-) -> CometResult<Option<i32>> {
+) -> SparkResult<Option<i32>> {
     match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
         None => Ok(None),
         Some(v) if v >= min && v <= max => Ok(Some(v)),
@@ -1137,7 +1144,7 @@ fn do_cast_string_to_int<
     eval_mode: EvalMode,
     type_name: &str,
     min_value: T,
-) -> CometResult<Option<T>> {
+) -> SparkResult<Option<T>> {
     let trimmed_str = str.trim();
     if trimmed_str.is_empty() {
         return none_or_err(eval_mode, type_name, str);
@@ -1221,9 +1228,9 @@ fn do_cast_string_to_int<
     Ok(Some(result))
 }
 
-/// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
+/// Either return Ok(None) or Err(SparkError::CastInvalidValue) depending on the evaluation mode
 #[inline]
-fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResult<Option<T>> {
+fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> SparkResult<Option<T>> {
     match eval_mode {
         EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
         _ => Ok(None),
@@ -1231,8 +1238,8 @@ fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> CometResul
 }
 
 #[inline]
-fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
-    CometError::CastInvalidValue {
+fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
+    SparkError::CastInvalidValue {
         value: value.to_string(),
         from_type: from_type.to_string(),
         to_type: to_type.to_string(),
@@ -1240,8 +1247,8 @@ fn invalid_value(value: &str, from_type: &str, to_type: &str) -> CometError {
 }
 
 #[inline]
-fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> CometError {
-    CometError::CastOverFlow {
+fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError {
+    SparkError::CastOverFlow {
         value: value.to_string(),
         from_type: from_type.to_string(),
         to_type: to_type.to_string(),
@@ -1329,7 +1336,7 @@ impl PhysicalExpr for Cast {
     }
 }
 
-fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>> {
+fn timestamp_parser(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -1338,7 +1345,7 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
     let patterns = &[
         (
             Regex::new(r"^\d{4}$").unwrap(),
-            parse_str_to_year_timestamp as fn(&str) -> CometResult<Option<i64>>,
+            parse_str_to_year_timestamp as fn(&str) -> SparkResult<Option<i64>>,
         ),
         (
             Regex::new(r"^\d{4}-\d{2}$").unwrap(),
@@ -1382,7 +1389,7 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
 
     if timestamp.is_none() {
         return if eval_mode == EvalMode::Ansi {
-            Err(CometError::CastInvalidValue {
+            Err(SparkError::CastInvalidValue {
                 value: value.to_string(),
                 from_type: "STRING".to_string(),
                 to_type: "TIMESTAMP".to_string(),
@@ -1394,20 +1401,20 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> CometResult<Option<i64>
 
     match timestamp {
         Some(ts) => Ok(Some(ts)),
-        None => Err(CometError::Internal(
+        None => Err(SparkError::Internal(
             "Failed to parse timestamp".to_string(),
         )),
     }
 }
 
-fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> CometResult<Option<i64>> {
+fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> SparkResult<Option<i64>> {
     let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0);
 
     // Check if datetime is not None
     let utc_datetime = match datetime.single() {
         Some(dt) => dt.with_timezone(&chrono::Utc),
         None => {
-            return Err(CometError::Internal(
+            return Err(SparkError::Internal(
                 "Failed to parse timestamp".to_string(),
             ));
         }
@@ -1424,7 +1431,7 @@ fn parse_hms_timestamp(
     minute: u32,
     second: u32,
     microsecond: u32,
-) -> CometResult<Option<i64>> {
+) -> SparkResult<Option<i64>> {
     let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
 
     // Check if datetime is not None
@@ -1433,7 +1440,7 @@ fn parse_hms_timestamp(
             .with_timezone(&chrono::Utc)
             .with_nanosecond(microsecond * 1000),
         None => {
-            return Err(CometError::Internal(
+            return Err(SparkError::Internal(
                 "Failed to parse timestamp".to_string(),
             ));
         }
@@ -1442,7 +1449,7 @@ fn parse_hms_timestamp(
     let result = match utc_datetime {
         Some(dt) => dt.timestamp_micros(),
         None => {
-            return Err(CometError::Internal(
+            return Err(SparkError::Internal(
                 "Failed to parse timestamp".to_string(),
             ));
         }
@@ -1451,7 +1458,7 @@ fn parse_hms_timestamp(
     Ok(Some(result))
 }
 
-fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option<i64>> {
+fn get_timestamp_values(value: &str, timestamp_type: &str) -> SparkResult<Option<i64>> {
     let values: Vec<_> = value
         .split(|c| c == 'T' || c == '-' || c == ':' || c == '.')
         .collect();
@@ -1471,7 +1478,7 @@ fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option
         "minute" => parse_hms_timestamp(year, month, day, hour, minute, 0, 0),
         "second" => parse_hms_timestamp(year, month, day, hour, minute, second, 0),
         "microsecond" => parse_hms_timestamp(year, month, day, hour, minute, second, microsecond),
-        _ => Err(CometError::CastInvalidValue {
+        _ => Err(SparkError::CastInvalidValue {
             value: value.to_string(),
             from_type: "STRING".to_string(),
             to_type: "TIMESTAMP".to_string(),
@@ -1479,35 +1486,35 @@ fn get_timestamp_values(value: &str, timestamp_type: &str) -> CometResult<Option
     }
 }
 
-fn parse_str_to_year_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_year_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "year")
 }
 
-fn parse_str_to_month_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_month_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "month")
 }
 
-fn parse_str_to_day_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_day_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "day")
 }
 
-fn parse_str_to_hour_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_hour_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "hour")
 }
 
-fn parse_str_to_minute_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_minute_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "minute")
 }
 
-fn parse_str_to_second_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_second_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "second")
 }
 
-fn parse_str_to_microsecond_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_microsecond_timestamp(value: &str) -> SparkResult<Option<i64>> {
     get_timestamp_values(value, "microsecond")
 }
 
-fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
+fn parse_str_to_time_only_timestamp(value: &str) -> SparkResult<Option<i64>> {
     let values: Vec<&str> = value.split('T').collect();
     let time_values: Vec<u32> = values[1]
         .split(':')
@@ -1527,7 +1534,7 @@ fn parse_str_to_time_only_timestamp(value: &str) -> CometResult<Option<i64>> {
 }
 
 //a string to date parser - port of spark's SparkDateTimeUtils#stringToDate.
-fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
     // local functions
     fn get_trimmed_start(bytes: &[u8]) -> usize {
         let mut start = 0;
@@ -1558,9 +1565,9 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
             || (segment != 0 && digits > 0 && digits <= 2)
     }
 
-    fn return_result(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> {
+    fn return_result(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
         if eval_mode == EvalMode::Ansi {
-            Err(CometError::CastInvalidValue {
+            Err(SparkError::CastInvalidValue {
                 value: date_str.to_string(),
                 from_type: "STRING".to_string(),
                 to_type: "DATE".to_string(),
@@ -1648,6 +1655,84 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> CometResult<Option<i32>> 
     }
 }
 
+/// This takes for special casting cases of Spark. E.g., Timestamp to Long.
+/// This function runs as a post process of the DataFusion cast(). By the time it arrives here,
+/// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
+/// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
+/// expressions/cast.rs, so it can be still Dictionary.
+fn spark_cast(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
+    match (from_type, to_type) {
+        (DataType::Timestamp(_, _), DataType::Int64) => {
+            // See Spark's `Cast` expression
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
+        }
+        (DataType::Dictionary(_, value_type), DataType::Int64)
+            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
+        {
+            // See Spark's `Cast` expression
+            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
+        }
+        (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
+        (DataType::Dictionary(_, value_type), DataType::Utf8)
+            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
+        {
+            remove_trailing_zeroes(array)
+        }
+        _ => array,
+    }
+}
+
+/// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
+fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
+where
+    T: ArrowPrimitiveType,
+    F: Fn(T::Native) -> T::Native,
+{
+    if let Some(d) = array.as_any_dictionary_opt() {
+        let new_values = unary_dyn::<F, T>(d.values(), op)?;
+        return Ok(Arc::new(d.with_values(Arc::new(new_values))));
+    }
+
+    match array.as_primitive_opt::<T>() {
+        Some(a) if PrimitiveArray::<T>::is_compatible(a.data_type()) => {
+            Ok(Arc::new(unary::<T, F, T>(
+                array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
+                op,
+            )))
+        }
+        _ => Err(ArrowError::NotYetImplemented(format!(
+            "Cannot perform unary operation of type {} on array of type {}",
+            T::DATA_TYPE,
+            array.data_type()
+        ))),
+    }
+}
+
+/// Remove any trailing zeroes in the string if they occur after in the fractional seconds,
+/// to match Spark behavior
+/// example:
+/// "1970-01-01 05:29:59.900" => "1970-01-01 05:29:59.9"
+/// "1970-01-01 05:29:59.990" => "1970-01-01 05:29:59.99"
+/// "1970-01-01 05:29:59.999" => "1970-01-01 05:29:59.999"
+/// "1970-01-01 05:30:00"     => "1970-01-01 05:30:00"
+/// "1970-01-01 05:30:00.001" => "1970-01-01 05:30:00.001"
+fn remove_trailing_zeroes(array: ArrayRef) -> ArrayRef {
+    let string_array = as_generic_string_array::<i32>(&array).unwrap();
+    let result = string_array
+        .iter()
+        .map(|s| s.map(trim_end))
+        .collect::<GenericStringArray<i32>>();
+    Arc::new(result) as ArrayRef
+}
+
+fn trim_end(s: &str) -> &str {
+    if s.rfind('.').is_some() {
+        s.trim_end_matches('0')
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::TimestampMicrosecondType;
@@ -1659,6 +1744,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
         // write for all formats
         assert_eq!(
@@ -1696,6 +1782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_cast_string_to_timestamp() {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020-01-01T12:34:56.123456"),

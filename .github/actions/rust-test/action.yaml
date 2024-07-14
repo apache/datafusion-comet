@@ -37,6 +37,12 @@ runs:
         cd native
         cargo check --benches
 
+    - name: Check unused dependencies
+      shell: bash
+      run: |
+        cd native
+        cargo install cargo-machete && cargo machete
+
     - name: Cache Maven dependencies
       uses: actions/cache@v4
       with:

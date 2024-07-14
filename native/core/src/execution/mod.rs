@@ -26,7 +26,7 @@ pub mod operators;
 pub mod serde;
 pub mod shuffle;
 pub(crate) mod sort;
-mod timezone;
+pub use datafusion_comet_spark_expr::timezone;
 pub(crate) mod utils;
 
 mod memory_pool;

@@ -8,20 +8,20 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
               ColumnarToRow
                 InputAdapter
                   CometProject [ss_net_profit,sr_net_loss,cs_net_profit,s_store_id,s_store_name,i_item_id,i_item_desc]
-                    CometBroadcastHashJoin [ss_item_sk,i_item_sk]
+                    CometBroadcastHashJoin [ss_item_sk,ss_net_profit,sr_net_loss,cs_net_profit,s_store_id,s_store_name,i_item_sk,i_item_id,i_item_desc]
                       CometProject [ss_item_sk,ss_net_profit,sr_net_loss,cs_net_profit,s_store_id,s_store_name]
-                        CometBroadcastHashJoin [ss_store_sk,s_store_sk]
+                        CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,cs_net_profit,s_store_sk,s_store_id,s_store_name]
                           CometProject [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,cs_net_profit]
-                            CometBroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                            CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,cs_net_profit,cs_sold_date_sk,d_date_sk]
                               CometProject [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,cs_net_profit,cs_sold_date_sk]
-                                CometBroadcastHashJoin [sr_returned_date_sk,d_date_sk]
+                                CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,sr_returned_date_sk,cs_net_profit,cs_sold_date_sk,d_date_sk]
                                   CometProject [ss_item_sk,ss_store_sk,ss_net_profit,sr_net_loss,sr_returned_date_sk,cs_net_profit,cs_sold_date_sk]
-                                    CometBroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                    CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk,sr_net_loss,sr_returned_date_sk,cs_net_profit,cs_sold_date_sk,d_date_sk]
                                       CometProject [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk,sr_net_loss,sr_returned_date_sk,cs_net_profit,cs_sold_date_sk]
-                                        CometBroadcastHashJoin [sr_customer_sk,sr_item_sk,cs_bill_customer_sk,cs_item_sk]
+                                        CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_net_loss,sr_returned_date_sk,cs_bill_customer_sk,cs_item_sk,cs_net_profit,cs_sold_date_sk]
                                           CometProject [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_net_loss,sr_returned_date_sk]
-                                            CometBroadcastHashJoin [ss_customer_sk,ss_item_sk,ss_ticket_number,sr_customer_sk,sr_item_sk,sr_ticket_number]
-                                              CometFilter [ss_customer_sk,ss_item_sk,ss_ticket_number,ss_store_sk]
+                                            CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_profit,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_ticket_number,sr_net_loss,sr_returned_date_sk]
+                                              CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_profit,ss_sold_date_sk]
                                                 CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_profit,ss_sold_date_sk]
                                                   SubqueryBroadcast [d_date_sk] #1
                                                     BroadcastExchange #2
@@ -29,10 +29,10 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                                                         ColumnarToRow
                                                           InputAdapter
                                                             CometProject [d_date_sk]
-                                                              CometFilter [d_moy,d_year,d_date_sk]
+                                                              CometFilter [d_date_sk,d_year,d_moy]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                              CometBroadcastExchange #3
-                                                CometFilter [sr_customer_sk,sr_item_sk,sr_ticket_number]
+                                              CometBroadcastExchange [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_net_loss,sr_returned_date_sk] #3
+                                                CometFilter [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_net_loss,sr_returned_date_sk]
                                                   CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_net_loss,sr_returned_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #2
                                                       BroadcastExchange #4
@@ -40,24 +40,24 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                                                           ColumnarToRow
                                                             InputAdapter
                                                               CometProject [d_date_sk]
-                                                                CometFilter [d_moy,d_year,d_date_sk]
+                                                                CometFilter [d_date_sk,d_year,d_moy]
                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange #5
-                                            CometFilter [cs_bill_customer_sk,cs_item_sk]
+                                          CometBroadcastExchange [cs_bill_customer_sk,cs_item_sk,cs_net_profit,cs_sold_date_sk] #5
+                                            CometFilter [cs_bill_customer_sk,cs_item_sk,cs_net_profit,cs_sold_date_sk]
                                               CometScan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_net_profit,cs_sold_date_sk]
                                                 ReusedSubquery [d_date_sk] #2
-                                      CometBroadcastExchange #6
+                                      CometBroadcastExchange [d_date_sk] #6
                                         CometProject [d_date_sk]
-                                          CometFilter [d_moy,d_year,d_date_sk]
+                                          CometFilter [d_date_sk,d_year,d_moy]
                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                  CometBroadcastExchange #7
+                                  CometBroadcastExchange [d_date_sk] #7
                                     CometProject [d_date_sk]
-                                      CometFilter [d_moy,d_year,d_date_sk]
+                                      CometFilter [d_date_sk,d_year,d_moy]
                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                               ReusedExchange [d_date_sk] #7
-                          CometBroadcastExchange #8
-                            CometFilter [s_store_sk]
+                          CometBroadcastExchange [s_store_sk,s_store_id,s_store_name] #8
+                            CometFilter [s_store_sk,s_store_id,s_store_name]
                               CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
-                      CometBroadcastExchange #9
-                        CometFilter [i_item_sk]
+                      CometBroadcastExchange [i_item_sk,i_item_id,i_item_desc] #9
+                        CometFilter [i_item_sk,i_item_id,i_item_desc]
                           CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]

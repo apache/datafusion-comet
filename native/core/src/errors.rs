@@ -38,6 +38,7 @@ use std::{
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
 use crate::execution::operators::ExecutionError;
+use datafusion_comet_spark_expr::SparkError;
 use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
@@ -62,36 +63,10 @@ pub enum CometError {
     #[error("Comet Internal Error: {0}")]
     Internal(String),
 
-    // Note that this message format is based on Spark 3.4 and is more detailed than the message
-    // returned by Spark 3.3
-    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-        because it is malformed. Correct the value as per the syntax, or change its target type. \
-        Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
-        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    CastInvalidValue {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-
-    #[error("[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
-    NumericValueOutOfRange {
-        value: String,
-        precision: u8,
-        scale: i8,
-    },
-
-    #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-        due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
-        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    CastOverFlow {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-
-    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    ArithmeticOverflow { from_type: String },
+    /// CometError::Spark is typically used in native code to emulate the same errors
+    /// that Spark would return
+    #[error(transparent)]
+    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -239,11 +214,7 @@ impl jni::errors::ToException for CometError {
                 class: "java/lang/NullPointerException".to_string(),
                 msg: self.to_string(),
             },
-            CometError::CastInvalidValue { .. } => Exception {
-                class: "org/apache/spark/SparkException".to_string(),
-                msg: self.to_string(),
-            },
-            CometError::NumericValueOutOfRange { .. } => Exception {
+            CometError::Spark { .. } => Exception {
                 class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },
@@ -586,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn error_from_panic() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -604,6 +576,7 @@ mod tests {
     // Verify that functions that return an object are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn object_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -621,6 +594,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jlong_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -637,6 +611,7 @@ mod tests {
     // Verify that functions that return an array can handle throwing exceptions.  The test
     // causes an exception by dividing by zero.
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jlong_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -657,6 +632,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jlong_result_ok() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -673,6 +649,7 @@ mod tests {
     // Verify that functions that return an native time are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jlong_result_err() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -693,6 +670,7 @@ mod tests {
     // Verify that functions that return an array are handled correctly.  This is basically
     // a test of the "happy path".
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jint_array_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -713,6 +691,7 @@ mod tests {
     // Verify that functions that return an array can handle throwing exceptions.  The test
     // causes an exception by dividing by zero.
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn jint_array_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
@@ -736,6 +715,7 @@ mod tests {
     /// See [`object_panic_exception`] for a test which involves generating a panic and verifying
     /// that the resulting stack trace includes the offending call.
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
     pub fn stacktrace_string() {
         // Setup: Start with a backtrace that includes all of the expected scenarios, including
         // cases where the file and location are not provided as part of the backtrace capture
