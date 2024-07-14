@@ -63,12 +63,6 @@ use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 
-use datafusion_comet_proto::spark_operator::{
-    self,
-    lower_window_frame_bound::LowerFrameBoundStruct,
-    upper_window_frame_bound::UpperFrameBoundStruct,
-    WindowFrameType
-};
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -99,12 +93,14 @@ use crate::{
         },
         operators::{CopyExec, ExecutionError, ScanExec},
         serde::to_arrow_datatype,
-
     },
+};
+use datafusion_comet_proto::spark_operator::{
+    self, lower_window_frame_bound::LowerFrameBoundStruct,
+    upper_window_frame_bound::UpperFrameBoundStruct, WindowFrameType,
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
-use datafusion_comet_spark_expr::{Abs, IfExpr};
 use datafusion_comet_proto::{
     spark_expression,
     spark_expression::{
@@ -114,6 +110,7 @@ use datafusion_comet_proto::{
     spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::{Abs, IfExpr};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -1839,17 +1836,14 @@ mod tests {
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
-    use crate::execution::{
-        datafusion::planner::PhysicalPlanner,
-        operators::InputBatch,
-    };
+    use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
 
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{
+        spark_expression::expr::ExprStruct::*,
         spark_expression::{self, literal},
         spark_operator,
-        spark_expression::expr::ExprStruct::*,
-        spark_operator::{operator::OpStruct, Operator}
+        spark_operator::{operator::OpStruct, Operator},
     };
 
     #[test]

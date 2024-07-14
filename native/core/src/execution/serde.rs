@@ -18,21 +18,21 @@
 //! Ser/De for expression/operators.
 
 use super::operators::ExecutionError;
-use crate::{
-    errors::ExpressionError,
-};
+use crate::errors::ExpressionError;
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 use arrow_schema::{Field, Fields};
-use prost::Message;
-use std::{io::Cursor, sync::Arc};
 use datafusion_comet_proto::{
-    spark_expression, spark_expression::DataType, spark_operator,
+    spark_expression,
     spark_expression::data_type::{
         data_type_info::DatatypeStruct,
         DataTypeId,
         DataTypeId::{Bool, Bytes, Decimal, Double, Float, Int16, Int32, Int64, Int8, String},
-    }
+    },
+    spark_expression::DataType,
+    spark_operator,
 };
+use prost::Message;
+use std::{io::Cursor, sync::Arc};
 
 impl From<prost::DecodeError> for ExpressionError {
     fn from(error: prost::DecodeError) -> ExpressionError {

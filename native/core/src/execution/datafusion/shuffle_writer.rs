@@ -575,10 +575,6 @@ struct ShuffleRepartitioner {
     runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     reservation: MemoryReservation,
-    /// Hashes for each row in the current batch
-    hashes_buf: Vec<u32>,
-    /// Partition ids for each row in the current batch
-    partition_ids: Vec<u64>,
     /// The configured batch size
     batch_size: usize,
 }
