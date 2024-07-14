@@ -49,10 +49,10 @@ use crate::{
     execution::{
         datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
         serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
-        spark_operator::Operator,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
+use datafusion_comet_proto::spark_operator::Operator;
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
