@@ -8,7 +8,7 @@ derby.log
 metastore_db/
 spark-warehouse/
 dependency-reduced-pom.xml
-core/src/execution/generated
+native/core/src/execution/generated
 prebuild
 .flattened-pom.xml
 rat.txt

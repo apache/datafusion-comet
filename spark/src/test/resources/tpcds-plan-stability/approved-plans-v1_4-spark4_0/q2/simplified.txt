@@ -15,14 +15,14 @@ WholeStageCodegen (7)
                             ColumnarToRow
                               InputAdapter
                                 CometProject [sales_price,d_week_seq,d_day_name]
-                                  CometBroadcastHashJoin [sold_date_sk,d_date_sk]
-                                    CometUnion
+                                  CometBroadcastHashJoin [sold_date_sk,sales_price,d_date_sk,d_week_seq,d_day_name]
+                                    CometUnion [sold_date_sk,sales_price]
                                       CometProject [ws_sold_date_sk,ws_ext_sales_price] [sold_date_sk,sales_price]
                                         CometScan parquet spark_catalog.default.web_sales [ws_ext_sales_price,ws_sold_date_sk]
                                       CometProject [cs_sold_date_sk,cs_ext_sales_price] [sold_date_sk,sales_price]
                                         CometScan parquet spark_catalog.default.catalog_sales [cs_ext_sales_price,cs_sold_date_sk]
-                                    CometBroadcastExchange #3
-                                      CometFilter [d_date_sk,d_week_seq]
+                                    CometBroadcastExchange [d_date_sk,d_week_seq,d_day_name] #3
+                                      CometFilter [d_date_sk,d_week_seq,d_day_name]
                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
                   InputAdapter
                     BroadcastExchange #4
@@ -30,7 +30,7 @@ WholeStageCodegen (7)
                         ColumnarToRow
                           InputAdapter
                             CometProject [d_week_seq]
-                              CometFilter [d_year,d_week_seq]
+                              CometFilter [d_week_seq,d_year]
                                 CometScan parquet spark_catalog.default.date_dim [d_week_seq,d_year]
               InputAdapter
                 BroadcastExchange #5
@@ -46,5 +46,5 @@ WholeStageCodegen (7)
                               ColumnarToRow
                                 InputAdapter
                                   CometProject [d_week_seq]
-                                    CometFilter [d_year,d_week_seq]
+                                    CometFilter [d_week_seq,d_year]
                                       CometScan parquet spark_catalog.default.date_dim [d_week_seq,d_year]

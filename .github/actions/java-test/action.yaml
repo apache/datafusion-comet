@@ -33,7 +33,7 @@ runs:
     - name: Run Cargo build
       shell: bash
       run: |
-        cd core
+        cd native
         cargo build
 
     - name: Cache Maven dependencies

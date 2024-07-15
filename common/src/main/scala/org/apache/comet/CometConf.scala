@@ -274,13 +274,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.verbose.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide a verbose tree representation of " +
+          "the extended information.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
-          "why a query stage cannot be executed natively.")
+          "why a query stage cannot be executed natively. Set this to false to " +
+          "reduce the amount of logging.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")

@@ -1,0 +1,181 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+
+
+syntax = "proto3";
+
+package spark.spark_operator;
+
+import "expr.proto";
+import "partitioning.proto";
+
+option java_package = "org.apache.comet.serde";
+
+// The basic message representing a Spark operator.
+message Operator {
+  // The child operators of this
+  repeated Operator children = 1;
+
+  oneof op_struct {
+    Scan scan = 100;
+    Projection projection = 101;
+    Filter filter = 102;
+    Sort sort = 103;
+    HashAggregate hash_agg = 104;
+    Limit limit = 105;
+    ShuffleWriter shuffle_writer = 106;
+    Expand expand = 107;
+    SortMergeJoin sort_merge_join = 108;
+    HashJoin hash_join = 109;
+    Window window = 110;
+  }
+}
+
+message Scan {
+  repeated spark.spark_expression.DataType fields = 1;
+}
+
+message Projection {
+  repeated spark.spark_expression.Expr project_list = 1;
+}
+
+message Filter {
+  spark.spark_expression.Expr predicate = 1;
+}
+
+message Sort {
+  repeated spark.spark_expression.Expr sort_orders = 1;
+  optional int32 fetch = 3;
+}
+
+message HashAggregate {
+  repeated spark.spark_expression.Expr grouping_exprs = 1;
+  repeated spark.spark_expression.AggExpr agg_exprs = 2;
+  repeated spark.spark_expression.Expr result_exprs = 3;
+  AggregateMode mode = 5;
+}
+
+message Limit {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ShuffleWriter {
+  spark.spark_partitioning.Partitioning partitioning = 1;
+  string output_data_file = 3;
+  string output_index_file = 4;
+}
+
+enum AggregateMode {
+  Partial = 0;
+  Final = 1;
+}
+
+message Expand {
+  repeated spark.spark_expression.Expr project_list = 1;
+  int32 num_expr_per_project = 3;
+}
+
+message HashJoin {
+  repeated spark.spark_expression.Expr left_join_keys = 1;
+  repeated spark.spark_expression.Expr right_join_keys = 2;
+  JoinType join_type = 3;
+  optional spark.spark_expression.Expr condition = 4;
+  BuildSide build_side = 5;
+}
+
+message SortMergeJoin {
+  repeated spark.spark_expression.Expr left_join_keys = 1;
+  repeated spark.spark_expression.Expr right_join_keys = 2;
+  JoinType join_type = 3;
+  repeated spark.spark_expression.Expr sort_options = 4;
+}
+
+enum JoinType {
+  Inner = 0;
+  LeftOuter = 1;
+  RightOuter = 2;
+  FullOuter = 3;
+  LeftSemi = 4;
+  RightSemi = 5;
+  LeftAnti = 6;
+  RightAnti = 7;
+}
+
+enum BuildSide {
+  BuildLeft = 0;
+  BuildRight = 1;
+}
+
+message WindowExpr {
+  spark.spark_expression.Expr built_in_window_function = 1;
+  spark.spark_expression.AggExpr agg_func = 2;
+  WindowSpecDefinition spec = 3;
+}
+
+enum WindowFrameType {
+  Rows = 0;
+  Range = 1;
+}
+
+message WindowFrame {
+  WindowFrameType frame_type = 1;
+  LowerWindowFrameBound lower_bound = 2;
+  UpperWindowFrameBound upper_bound = 3;
+}
+
+message LowerWindowFrameBound {
+  oneof lower_frame_bound_struct {
+    UnboundedPreceding unboundedPreceding = 1;
+    Preceding preceding = 2;
+    CurrentRow currentRow = 3;
+  }
+}
+
+message UpperWindowFrameBound {
+  oneof upper_frame_bound_struct {
+    UnboundedFollowing unboundedFollowing = 1;
+    Following following = 2;
+    CurrentRow currentRow = 3;
+  }
+}
+
+message Preceding {
+  int32 offset = 1;
+}
+
+message Following {
+  int32 offset = 1;
+}
+
+message UnboundedPreceding {}
+message UnboundedFollowing {}
+message CurrentRow {}
+
+message WindowSpecDefinition {
+  repeated spark.spark_expression.Expr partitionSpec = 1;
+  repeated spark.spark_expression.Expr orderSpec = 2;
+  WindowFrame frameSpecification = 3;
+}
+
+message Window {
+  repeated WindowExpr window_expr = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  repeated spark.spark_expression.Expr partition_by_list = 3;
+  Operator child = 4;
+}
