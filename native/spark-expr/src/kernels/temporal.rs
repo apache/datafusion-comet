@@ -32,24 +32,18 @@ use arrow_array::{
 
 use arrow_schema::TimeUnit;
 
-use crate::errors::ExpressionError;
+use crate::SparkError;
 
 // Copied from arrow_arith/temporal.rs
 macro_rules! return_compute_error_with {
     ($msg:expr, $param:expr) => {
-        return {
-            Err(ExpressionError::ArrowError(format!(
-                "{}: {:?}",
-                $msg, $param
-            )))
-        }
+        return { Err(SparkError::Internal(format!("{}: {:?}", $msg, $param))) }
     };
 }
 
 // The number of days between the beginning of the proleptic gregorian calendar (0001-01-01)
 // and the beginning of the Unix Epoch (1970-01-01)
 const DAYS_TO_UNIX_EPOCH: i32 = 719_163;
-const MICROS_TO_UNIX_EPOCH: i64 = 62_167_132_800 * 1_000_000;
 
 // Copied from arrow_arith/temporal.rs with modification to the output datatype
 // Transforms a array of NaiveDate to an array of Date32 after applying an operation
@@ -102,7 +96,7 @@ fn as_timestamp_tz_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalT
     mut builder: PrimitiveBuilder<TimestampMicrosecondType>,
     tz: &str,
     op: F,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     F: Fn(DateTime<Tz>) -> i64,
     i64: From<T::Native>,
@@ -113,7 +107,7 @@ where
             Some(value) => match as_datetime_with_timezone::<T>(value.into(), tz) {
                 Some(time) => builder.append_value(op(time)),
                 _ => {
-                    return Err(ExpressionError::ArrowError(
+                    return Err(SparkError::Internal(
                         "Unable to read value as datetime".to_string(),
                     ));
                 }
@@ -129,7 +123,7 @@ fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
     builder: &mut PrimitiveBuilder<TimestampMicrosecondType>,
     tz: &Tz,
     op: F,
-) -> Result<(), ExpressionError>
+) -> Result<(), SparkError>
 where
     F: Fn(DateTime<Tz>) -> i64,
     i64: From<T::Native>,
@@ -138,7 +132,7 @@ where
         Some(value) => match as_datetime_with_timezone::<T>(value.into(), *tz) {
             Some(time) => builder.append_value(op(time)),
             _ => {
-                return Err(ExpressionError::ArrowError(
+                return Err(SparkError::Internal(
                     "Unable to read value as datetime".to_string(),
                 ));
             }
@@ -256,7 +250,7 @@ fn trunc_date_to_microsec<T: Timelike>(dt: T) -> Option<T> {
 ///   array is an array of Date32 values. The array may be a dictionary array.
 ///
 ///   format is a scalar string specifying the format to apply to the timestamp value.
-pub fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, ExpressionError> {
+pub(crate) fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, SparkError> {
     match array.data_type().clone() {
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
@@ -279,10 +273,10 @@ pub fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, Exp
     }
 }
 
-pub fn date_trunc<T>(
+pub(crate) fn date_trunc<T>(
     array: &PrimitiveArray<T>,
     format: String,
-) -> Result<Date32Array, ExpressionError>
+) -> Result<Date32Array, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -311,7 +305,7 @@ where
                 builder,
                 |dt| as_days_from_unix_epoch(trunc_date_to_week(dt)),
             )),
-            _ => Err(ExpressionError::ArrowError(format!(
+            _ => Err(SparkError::Internal(format!(
                 "Unsupported format: {:?} for function 'date_trunc'",
                 format
             ))),
@@ -331,10 +325,10 @@ where
 ///
 ///   format is an array of strings specifying the format to apply to the corresponding date value.
 ///             The array may be a dictionary array.
-pub fn date_trunc_array_fmt_dyn(
+pub(crate) fn date_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
-) -> Result<ArrayRef, ExpressionError> {
+) -> Result<ArrayRef, SparkError> {
     match (array.data_type().clone(), formats.data_type().clone()) {
         (DataType::Dictionary(_, v), DataType::Dictionary(_, f)) => {
             if !matches!(*v, DataType::Date32) {
@@ -403,7 +397,7 @@ pub fn date_trunc_array_fmt_dyn(
                 .expect("Unexpected value type in formats"),
         )
         .map(|a| Arc::new(a) as ArrayRef),
-        (dt, fmt) => Err(ExpressionError::ArrowError(format!(
+        (dt, fmt) => Err(SparkError::Internal(format!(
             "Unsupported datatype: {:}, format: {:?} for function 'date_trunc'",
             dt, fmt
         ))),
@@ -434,7 +428,7 @@ macro_rules! date_trunc_array_fmt_helper {
                         "WEEK" => Ok(as_datetime_with_op_single(val, &mut builder, |dt| {
                             as_days_from_unix_epoch(trunc_date_to_week(dt))
                         })),
-                        _ => Err(ExpressionError::ArrowError(format!(
+                        _ => Err(SparkError::Internal(format!(
                             "Unsupported format: {:?} for function 'date_trunc'",
                             $formats.value(index)
                         ))),
@@ -454,7 +448,7 @@ macro_rules! date_trunc_array_fmt_helper {
 fn date_trunc_array_fmt_plain_plain(
     array: &Date32Array,
     formats: &StringArray,
-) -> Result<Date32Array, ExpressionError>
+) -> Result<Date32Array, SparkError>
 where
 {
     let data_type = array.data_type();
@@ -464,7 +458,7 @@ where
 fn date_trunc_array_fmt_plain_dict<K>(
     array: &Date32Array,
     formats: &TypedDictionaryArray<K, StringArray>,
-) -> Result<Date32Array, ExpressionError>
+) -> Result<Date32Array, SparkError>
 where
     K: ArrowDictionaryKeyType,
 {
@@ -475,7 +469,7 @@ where
 fn date_trunc_array_fmt_dict_plain<K>(
     array: &TypedDictionaryArray<K, Date32Array>,
     formats: &StringArray,
-) -> Result<Date32Array, ExpressionError>
+) -> Result<Date32Array, SparkError>
 where
     K: ArrowDictionaryKeyType,
 {
@@ -486,7 +480,7 @@ where
 fn date_trunc_array_fmt_dict_dict<K, F>(
     array: &TypedDictionaryArray<K, Date32Array>,
     formats: &TypedDictionaryArray<F, StringArray>,
-) -> Result<Date32Array, ExpressionError>
+) -> Result<Date32Array, SparkError>
 where
     K: ArrowDictionaryKeyType,
     F: ArrowDictionaryKeyType,
@@ -503,7 +497,10 @@ where
 ///            timezone or no timezone. The array may be a dictionary array.
 ///
 ///   format is a scalar string specifying the format to apply to the timestamp value.
-pub fn timestamp_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, ExpressionError> {
+pub(crate) fn timestamp_trunc_dyn(
+    array: &dyn Array,
+    format: String,
+) -> Result<ArrayRef, SparkError> {
     match array.data_type().clone() {
         DataType::Dictionary(_, _) => {
             downcast_dictionary_array!(
@@ -526,10 +523,10 @@ pub fn timestamp_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef
     }
 }
 
-pub fn timestamp_trunc<T>(
+pub(crate) fn timestamp_trunc<T>(
     array: &PrimitiveArray<T>,
     format: String,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -589,7 +586,7 @@ where
                         as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
                     })
                 }
-                _ => Err(ExpressionError::ArrowError(format!(
+                _ => Err(SparkError::Internal(format!(
                     "Unsupported format: {:?} for function 'timestamp_trunc'",
                     format
                 ))),
@@ -611,10 +608,10 @@ where
 ///
 ///   format is an array of strings specifying the format to apply to the corresponding timestamp
 ///             value. The array may be a dictionary array.
-pub fn timestamp_trunc_array_fmt_dyn(
+pub(crate) fn timestamp_trunc_array_fmt_dyn(
     array: &dyn Array,
     formats: &dyn Array,
-) -> Result<ArrayRef, ExpressionError> {
+) -> Result<ArrayRef, SparkError> {
     match (array.data_type().clone(), formats.data_type().clone()) {
         (DataType::Dictionary(_, _), DataType::Dictionary(_, _)) => {
             downcast_dictionary_array!(
@@ -669,7 +666,7 @@ pub fn timestamp_trunc_array_fmt_dyn(
                 dt => return_compute_error_with!("timestamp_trunc does not support", dt),
             )
         }
-        (dt, fmt) => Err(ExpressionError::ArrowError(format!(
+        (dt, fmt) => Err(SparkError::Internal(format!(
             "Unsupported datatype: {:}, format: {:?} for function 'timestamp_trunc'",
             dt, fmt
         ))),
@@ -740,7 +737,7 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                                 as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
                             })
                         }
-                        _ => Err(ExpressionError::ArrowError(format!(
+                        _ => Err(SparkError::Internal(format!(
                             "Unsupported format: {:?} for function 'timestamp_trunc'",
                             $formats.value(index)
                         ))),
@@ -762,7 +759,7 @@ macro_rules! timestamp_trunc_array_fmt_helper {
 fn timestamp_trunc_array_fmt_plain_plain<T>(
     array: &PrimitiveArray<T>,
     formats: &StringArray,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -773,7 +770,7 @@ where
 fn timestamp_trunc_array_fmt_plain_dict<T, K>(
     array: &PrimitiveArray<T>,
     formats: &TypedDictionaryArray<K, StringArray>,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -786,7 +783,7 @@ where
 fn timestamp_trunc_array_fmt_dict_plain<T, K>(
     array: &TypedDictionaryArray<K, PrimitiveArray<T>>,
     formats: &StringArray,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -799,7 +796,7 @@ where
 fn timestamp_trunc_array_fmt_dict_dict<T, K, F>(
     array: &TypedDictionaryArray<K, PrimitiveArray<T>>,
     formats: &TypedDictionaryArray<F, StringArray>,
-) -> Result<TimestampMicrosecondArray, ExpressionError>
+) -> Result<TimestampMicrosecondArray, SparkError>
 where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
@@ -812,7 +809,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::kernels::temporal::{
+    use crate::kernels::temporal::{
         date_trunc, date_trunc_array_fmt_dyn, timestamp_trunc, timestamp_trunc_array_fmt_dyn,
     };
     use arrow_array::{

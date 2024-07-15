@@ -64,7 +64,6 @@ bytes = "1.5.0"
 tempfile = "3.8.0"
 ahash = { version = "0.8", default-features = false }
 itertools = "0.11.0"
-chrono = { workspace = true }
 paste = "1.0.14"
 datafusion-common = { workspace = true }
 datafusion = {  workspace = true }

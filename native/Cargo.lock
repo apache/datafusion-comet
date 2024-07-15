@@ -861,7 +861,6 @@ dependencies = [
  "async-trait",
  "brotli",
  "bytes",
- "chrono",
  "crc32fast",
  "criterion",
  "datafusion",

@@ -72,7 +72,6 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::Cast,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
                 covariance::Covariance,
@@ -83,7 +82,6 @@ use crate::{
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
-                temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
                 unbound::UnboundColumn,
                 variance::Variance,
                 NormalizeNaNAndZero,
@@ -95,22 +93,23 @@ use crate::{
         serde::to_arrow_datatype,
     },
 };
-use datafusion_comet_proto::spark_operator::{
-    self, lower_window_frame_bound::LowerFrameBoundStruct,
-    upper_window_frame_bound::UpperFrameBoundStruct, WindowFrameType,
-};
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
 use datafusion_comet_proto::{
-    spark_expression,
     spark_expression::{
-        agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
-        ScalarFunc,
+        self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
+        Expr, ScalarFunc,
     },
-    spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
+    spark_operator::{
+        self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
+        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide, JoinType, Operator,
+        WindowFrameType,
+    },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
-use datafusion_comet_spark_expr::{Abs, IfExpr};
+use datafusion_comet_spark_expr::{
+    Abs, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec, TimestampTruncExec,
+};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
