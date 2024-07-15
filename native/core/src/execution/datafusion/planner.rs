@@ -75,7 +75,6 @@ use crate::{
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_might_contain::BloomFilterMightContain,
-                cast::Cast,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
                 covariance::Covariance,
@@ -86,7 +85,6 @@ use crate::{
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
-                temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec},
                 unbound::UnboundColumn,
                 variance::Variance,
                 NormalizeNaNAndZero,
@@ -107,7 +105,9 @@ use crate::{
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
-use datafusion_comet_spark_expr::{Abs, IfExpr};
+use datafusion_comet_spark_expr::{
+    Abs, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec, TimestampTruncExec,
+};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
