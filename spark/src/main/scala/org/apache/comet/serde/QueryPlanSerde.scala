@@ -1703,9 +1703,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               optExprWithInfo(optExpr, expr, child)
           }
 
-        /// The expression for `log` functions is defined as  null on numbers less than or equal
-        /// to 0.  This matches Spark and Hive behavior, where non positive values eval to null
-        /// instead of NaN or -Infinity
+        // The expression for `log` functions is defined as  null on numbers less than or equal
+        // to 0.  This matches Spark and Hive behavior, where non positive values eval to null
+        // instead of NaN or -Infinity
         case Log(child) =>
           val childExpr = exprToProtoInternal(nullIfNegative(child), inputs)
           val optExpr = scalarExprToProto("ln", childExpr)
