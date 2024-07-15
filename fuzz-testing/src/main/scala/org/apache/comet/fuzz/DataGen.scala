@@ -35,9 +35,16 @@ object DataGen {
       spark: SparkSession,
       numFiles: Int,
       numRows: Int,
-      numColumns: Int): Unit = {
+      numColumns: Int,
+      generateNegativeZero: Boolean): Unit = {
     for (i <- 0 until numFiles) {
-      generateRandomParquetFile(r, spark, s"test$i.parquet", numRows, numColumns)
+      generateRandomParquetFile(
+        r,
+        spark,
+        s"test$i.parquet",
+        numRows,
+        numColumns,
+        generateNegativeZero)
     }
   }
 
@@ -46,7 +53,8 @@ object DataGen {
       spark: SparkSession,
       filename: String,
       numRows: Int,
-      numColumns: Int): Unit = {
+      numColumns: Int,
+      generateNegativeZero: Boolean): Unit = {
 
     // generate schema using random data types
     val fields = Range(0, numColumns)
@@ -55,7 +63,8 @@ object DataGen {
     val schema = StructType(fields)
 
     // generate columnar data
-    val cols: Seq[Seq[Any]] = fields.map(f => generateColumn(r, f.dataType, numRows))
+    val cols: Seq[Seq[Any]] =
+      fields.map(f => generateColumn(r, f.dataType, numRows, generateNegativeZero))
 
     // convert to rows
     val rows = Range(0, numRows).map(rowIndex => {
@@ -66,18 +75,25 @@ object DataGen {
     df.write.mode(SaveMode.Overwrite).parquet(filename)
   }
 
-  def generateColumn(r: Random, dataType: DataType, numRows: Int): Seq[Any] = {
+  def generateColumn(
+      r: Random,
+      dataType: DataType,
+      numRows: Int,
+      generateNegativeZero: Boolean): Seq[Any] = {
     dataType match {
       case DataTypes.BooleanType =>
-        generateColumn(r, DataTypes.LongType, numRows)
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
           .map(_.asInstanceOf[Long].toShort)
           .map(s => s % 2 == 0)
       case DataTypes.ByteType =>
-        generateColumn(r, DataTypes.LongType, numRows).map(_.asInstanceOf[Long].toByte)
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toByte)
       case DataTypes.ShortType =>
-        generateColumn(r, DataTypes.LongType, numRows).map(_.asInstanceOf[Long].toShort)
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toShort)
       case DataTypes.IntegerType =>
-        generateColumn(r, DataTypes.LongType, numRows).map(_.asInstanceOf[Long].toInt)
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toInt)
       case DataTypes.LongType =>
         Range(0, numRows).map(_ => {
           r.nextInt(50) match {
@@ -103,7 +119,7 @@ object DataGen {
             case 3 => Float.MinValue
             case 4 => Float.MaxValue
             case 5 => 0.0f
-            case 6 => -0.0f
+            case 6 if generateNegativeZero => -0.0f
             case _ => r.nextFloat()
           }
         })
@@ -116,7 +132,7 @@ object DataGen {
             case 3 => Double.MinValue
             case 4 => Double.MaxValue
             case 5 => 0.0
-            case 6 => -0.0
+            case 6 if generateNegativeZero => -0.0
             case _ => r.nextDouble()
           }
         })
@@ -134,7 +150,7 @@ object DataGen {
           }
         })
       case DataTypes.BinaryType =>
-        generateColumn(r, DataTypes.StringType, numRows)
+        generateColumn(r, DataTypes.StringType, numRows, generateNegativeZero)
           .map {
             case x: String =>
               x.getBytes(Charset.defaultCharset())
