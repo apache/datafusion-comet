@@ -485,8 +485,7 @@ macro_rules! make_int_decimal_variant_impl {
                 let dst_offset = dst.num_values * 8;
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
 
-                let src_scale = src.desc.type_scale();
-                let src_scale = (if src_scale < 0 { 0 } else { src_scale }) as u32;
+                let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
                 let dst_scale = match dst.arrow_type {
                     ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                     _ => unreachable!(),
@@ -742,8 +741,7 @@ macro_rules! make_plain_decimal_impl {
 
                     debug_assert!(byte_width <= DECIMAL_BYTE_WIDTH);
 
-                    let src_scale = src.desc.type_scale();
-                    let src_scale = (if src_scale < 0 {0} else {src_scale}) as u32;
+                    let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
                     let dst_scale = match dst.arrow_type {
                         ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                         _ => unreachable!()
@@ -830,8 +828,7 @@ macro_rules! make_plain_decimal_int_impl {
 
                     let mut src_offset = 0;
 
-                    let src_scale = src.desc.type_scale();
-                    let src_scale = (if src_scale < 0 {0} else {src_scale}) as u32;
+                    let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
                     let dst_scale = match dst.arrow_type {
                         ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                         _ => src_scale
