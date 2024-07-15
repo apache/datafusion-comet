@@ -1419,11 +1419,11 @@ pub fn parse_decimal<T: DecimalType>(s: &str, precision: u8, scale: i8) -> Optio
         has_negative_exp,
     )?;
 
-    return Some(if negative {
+    Some(if negative {
         result.neg_wrapping()
     } else {
         result
-    });
+    })
 }
 
 fn parse_exponent(
@@ -1466,15 +1466,15 @@ fn parse_exponent(
         return None;
     }
     if !*has_negative_exp {
-        let cur_fractional = *fractionals as i8;
+        let cur_fractional = { *fractionals };
         *fractionals = max(0, *fractionals - exponent);
         exponent = max(0, exponent - cur_fractional);
     } else {
         *fractionals += exponent;
     }
-    *digits += exponent.abs() as u8;
+    *digits += exponent.unsigned_abs();
 
-    return Some(exponent);
+    Some(exponent)
 }
 
 fn adjust_decimal_scale<T: DecimalType + ArrowPrimitiveType>(
@@ -1503,7 +1503,7 @@ fn adjust_decimal_scale<T: DecimalType + ArrowPrimitiveType>(
                 res = if !has_negative_exp {
                     res.mul_wrapping(base.pow_wrapping(exponent as _))
                 } else {
-                    res.div_wrapping(base.pow_wrapping(exponent.abs() as _))
+                    res.div_wrapping(base.pow_wrapping(exponent.unsigned_abs() as _))
                 };
             }
             res = res.mul_wrapping(base.pow_wrapping(drop as _));
@@ -1528,7 +1528,7 @@ fn adjust_decimal_scale<T: DecimalType + ArrowPrimitiveType>(
         }
     }
 
-    return Some(res);
+    Some(res)
 }
 
 /// Either return Ok(None) or Err(CometError::CastInvalidValue) depending on the evaluation mode
@@ -2085,7 +2085,7 @@ mod tests {
             "2020-01-01T",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(18262));
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), Some(18262));
             }
         }
 
@@ -2106,14 +2106,14 @@ mod tests {
             "--262143-12-31 ",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
-            assert!(date_parser(*date, EvalMode::Ansi).is_err());
+            assert!(date_parser(date, EvalMode::Ansi).is_err());
         }
 
         for date in &["-3638-5"] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(-2048160));
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), Some(-2048160));
             }
         }
 
@@ -2129,7 +2129,7 @@ mod tests {
             "-0973250",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
         }
     }
