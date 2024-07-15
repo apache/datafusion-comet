@@ -15,28 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod datafusion;
-pub mod jni_api;
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_expression {
+    include!(concat!("generated", "/spark.spark_expression.rs"));
+}
 
-pub mod kernels; // for benchmarking
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_partitioning {
+    include!(concat!("generated", "/spark.spark_partitioning.rs"));
+}
 
-mod metrics;
-pub mod operators;
-pub mod serde;
-pub mod shuffle;
-pub(crate) mod sort;
-pub use datafusion_comet_spark_expr::timezone;
-pub(crate) mod utils;
-
-mod memory_pool;
-pub use memory_pool::*;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_operator {
+    include!(concat!("generated", "/spark.spark_operator.rs"));
 }

@@ -63,9 +63,6 @@ use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 
-use crate::execution::spark_operator::lower_window_frame_bound::LowerFrameBoundStruct;
-use crate::execution::spark_operator::upper_window_frame_bound::UpperFrameBoundStruct;
-use crate::execution::spark_operator::WindowFrameType;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -94,17 +91,22 @@ use crate::{
         },
         operators::{CopyExec, ExecutionError, ScanExec},
         serde::to_arrow_datatype,
-        spark_expression,
-        spark_expression::{
-            agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr, Expr,
-            ScalarFunc,
-        },
-        spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
-        spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
     },
 };
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
+use datafusion_comet_proto::{
+    spark_expression::{
+        self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
+        Expr, ScalarFunc,
+    },
+    spark_operator::{
+        self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
+        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide, JoinType, Operator,
+        WindowFrameType,
+    },
+    spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
+};
 use datafusion_comet_spark_expr::{
     Abs, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec, TimestampTruncExec,
 };
@@ -1452,7 +1454,7 @@ impl PhysicalPlanner {
     /// Create a DataFusion windows physical expression from Spark physical expression
     fn create_window_expr<'a>(
         &'a self,
-        spark_expr: &'a crate::execution::spark_operator::WindowExpr,
+        spark_expr: &'a spark_operator::WindowExpr,
         input_schema: SchemaRef,
         partition_by: &[Arc<dyn PhysicalExpr>],
         sort_exprs: &[PhysicalSortExpr],
@@ -1833,16 +1835,15 @@ mod tests {
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
-    use crate::execution::{
-        datafusion::planner::PhysicalPlanner,
-        operators::InputBatch,
-        spark_expression::{self, literal},
-        spark_operator,
-    };
+    use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
 
     use crate::execution::operators::ExecutionError;
-    use spark_expression::expr::ExprStruct::*;
-    use spark_operator::{operator::OpStruct, Operator};
+    use datafusion_comet_proto::{
+        spark_expression::expr::ExprStruct::*,
+        spark_expression::{self, literal},
+        spark_operator,
+        spark_operator::{operator::OpStruct, Operator},
+    };
 
     #[test]
     fn test_unpack_dictionary_primitive() {

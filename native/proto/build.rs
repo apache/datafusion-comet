@@ -20,20 +20,20 @@
 use std::{fs, io::Result, path::Path};
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/execution/proto/");
+    println!("cargo:rerun-if-changed=src/proto/");
 
-    let out_dir = "src/execution/generated";
+    let out_dir = "src/generated";
     if !Path::new(out_dir).is_dir() {
         fs::create_dir(out_dir)?;
     }
 
     prost_build::Config::new().out_dir(out_dir).compile_protos(
         &[
-            "src/execution/proto/expr.proto",
-            "src/execution/proto/partitioning.proto",
-            "src/execution/proto/operator.proto",
+            "src/proto/expr.proto",
+            "src/proto/partitioning.proto",
+            "src/proto/operator.proto",
         ],
-        &["src/execution/proto"],
+        &["src/proto"],
     )?;
     Ok(())
 }
