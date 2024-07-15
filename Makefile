@@ -78,7 +78,7 @@ release:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release-nogit:
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --features nightly --release
+	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: clean release
 	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
