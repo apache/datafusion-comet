@@ -118,65 +118,36 @@ pub(super) fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
 
                 Ok(ColumnarValue::Array(Arc::new(hexed)))
             }
-            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Int64) => {
+            DataType::Dictionary(_, value_type) => {
                 let dict = as_dictionary_array::<Int32Type>(&array);
 
-                let hexed_values = as_int64_array(dict.values())?;
-                let values = hexed_values
+                let values = match **value_type {
+                    DataType::Int64 => as_int64_array(dict.values())?
+                        .iter()
+                        .map(|v| v.map(hex_int64))
+                        .collect::<Vec<_>>(),
+                    DataType::Utf8 => as_string_array(dict.values())
+                        .iter()
+                        .map(|v| v.map(hex_bytes).transpose())
+                        .collect::<Result<_, _>>()?,
+                    DataType::Binary => as_binary_array(dict.values())?
+                        .iter()
+                        .map(|v| v.map(hex_bytes).transpose())
+                        .collect::<Result<_, _>>()?,
+                    _ => exec_err!(
+                        "hex got an unexpected argument type: {:?}",
+                        array.data_type()
+                    )?,
+                };
+
+                let new_values: Vec<Option<String>> = dict
+                    .keys()
                     .iter()
-                    .map(|v| v.map(hex_int64))
-                    .collect::<Vec<_>>();
+                    .map(|key| key.map(|k| values[k as usize].clone()).unwrap_or(None))
+                    .collect();
 
-                let keys = dict.keys().clone();
-                let mut new_keys = Vec::with_capacity(values.len());
+                let string_array_values = StringArray::from(new_values);
 
-                for key in keys.iter() {
-                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
-                    new_keys.push(key);
-                }
-
-                let string_array_values = StringArray::from(new_keys);
-                Ok(ColumnarValue::Array(Arc::new(string_array_values)))
-            }
-            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Utf8) => {
-                let dict = as_dictionary_array::<Int32Type>(&array);
-
-                let hexed_values = as_string_array(dict.values());
-                let values: Vec<Option<String>> = hexed_values
-                    .iter()
-                    .map(|v| v.map(hex_bytes).transpose())
-                    .collect::<Result<_, _>>()?;
-
-                let keys = dict.keys().clone();
-
-                let mut new_keys = Vec::with_capacity(values.len());
-
-                for key in keys.iter() {
-                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
-                    new_keys.push(key);
-                }
-
-                let string_array_values = StringArray::from(new_keys);
-                Ok(ColumnarValue::Array(Arc::new(string_array_values)))
-            }
-            DataType::Dictionary(_, value_type) if matches!(**value_type, DataType::Binary) => {
-                let dict = as_dictionary_array::<Int32Type>(&array);
-
-                let hexed_values = as_binary_array(dict.values())?;
-                let values: Vec<Option<String>> = hexed_values
-                    .iter()
-                    .map(|v| v.map(hex_bytes).transpose())
-                    .collect::<Result<_, _>>()?;
-
-                let keys = dict.keys().clone();
-                let mut new_keys = Vec::with_capacity(values.len());
-
-                for key in keys.iter() {
-                    let key = key.map(|k| values[k as usize].clone()).unwrap_or(None);
-                    new_keys.push(key);
-                }
-
-                let string_array_values = StringArray::from(new_keys);
                 Ok(ColumnarValue::Array(Arc::new(string_array_values)))
             }
             _ => exec_err!(
