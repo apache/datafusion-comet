@@ -152,7 +152,7 @@ under the License.
             <configuration>
               <protocArtifact>com.google.protobuf:protoc:${protobuf.version}</protocArtifact>
               <inputDirectories>
-                <include>../native/core/src/execution/proto</include>
+                <include>../native/proto/src/proto</include>
               </inputDirectories>
             </configuration>
           </execution>
