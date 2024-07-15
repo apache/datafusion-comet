@@ -748,6 +748,7 @@ macro_rules! make_plain_decimal_impl {
                         ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                         _ => unreachable!()
                     };
+                    let mul_div = 10_i128.pow(dst_scale.abs_diff(src_scale));
 
                     for _ in 0..num {
                         let s = &mut dst_data[dst_offset..];
@@ -773,18 +774,14 @@ macro_rules! make_plain_decimal_impl {
                         }
 
                         if dst_scale > src_scale {
-                            let exp = dst_scale - src_scale;
-                            let mul = 10_i128.pow(exp);
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
-                                 v.write_unaligned(v.read_unaligned() * mul);
+                                 v.write_unaligned(v.read_unaligned() * mul_div);
                             }
                         } else if dst_scale < src_scale {
-                            let exp = src_scale - dst_scale;
-                            let div = 10_i128.pow(exp);
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
-                                 v.write_unaligned(v.read_unaligned() / div);
+                                 v.write_unaligned(v.read_unaligned() / mul_div);
                             }
                         }
 
@@ -839,6 +836,7 @@ macro_rules! make_plain_decimal_int_impl {
                         ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
                         _ => src_scale
                     };
+                    let mul_div = 10_i64.pow(dst_scale.abs_diff(src_scale));
 
                     for i in 0..num {
                         let mut unscaled: i64 = 0;
@@ -848,9 +846,9 @@ macro_rules! make_plain_decimal_int_impl {
                         }
                         unscaled = (unscaled << (64 - num_bits)) >> (64 - num_bits);
                         if dst_scale > src_scale {
-                            unscaled *= 10_i64.pow(dst_scale - src_scale);
+                            unscaled *= mul_div;
                         } else if dst_scale < src_scale {
-                            unscaled /= 10_i64.pow(src_scale - dst_scale);
+                            unscaled /= mul_div;
                         }
                         bit::memcpy_value(&unscaled, $num_bytes, &mut dst_data[i *
                         $num_bytes..]);
