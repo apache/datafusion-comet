@@ -79,7 +79,7 @@ use crate::{
                 scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
-                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExec, SubstringExec},
+                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
                 sum_decimal::SumDecimal,
                 unbound::UnboundColumn,
@@ -108,7 +108,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec, TimestampTruncExec,
+    Abs, Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -378,32 +378,32 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let timezone = expr.timezone.clone();
 
-                Ok(Arc::new(HourExec::new(child, timezone)))
+                Ok(Arc::new(HourExpr::new(child, timezone)))
             }
             ExprStruct::Minute(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let timezone = expr.timezone.clone();
 
-                Ok(Arc::new(MinuteExec::new(child, timezone)))
+                Ok(Arc::new(MinuteExpr::new(child, timezone)))
             }
             ExprStruct::Second(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let timezone = expr.timezone.clone();
 
-                Ok(Arc::new(SecondExec::new(child, timezone)))
+                Ok(Arc::new(SecondExpr::new(child, timezone)))
             }
             ExprStruct::TruncDate(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
 
-                Ok(Arc::new(DateTruncExec::new(child, format)))
+                Ok(Arc::new(DateTruncExpr::new(child, format)))
             }
             ExprStruct::TruncTimestamp(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
                 let timezone = expr.timezone.clone();
 
-                Ok(Arc::new(TimestampTruncExec::new(child, format, timezone)))
+                Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
             }
             ExprStruct::Substring(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -412,7 +412,7 @@ impl PhysicalPlanner {
                 // substring negative len is treated as 0 in Spark
                 let len = std::cmp::max(expr.len, 0);
 
-                Ok(Arc::new(SubstringExec::new(
+                Ok(Arc::new(SubstringExpr::new(
                     child,
                     start as i64,
                     len as u64,
@@ -421,7 +421,7 @@ impl PhysicalPlanner {
             ExprStruct::StringSpace(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
 
-                Ok(Arc::new(StringSpaceExec::new(child)))
+                Ok(Arc::new(StringSpaceExpr::new(child)))
             }
             ExprStruct::Contains(expr) => {
                 let left = self.create_expr(expr.left.as_ref().unwrap(), input_schema.clone())?;
