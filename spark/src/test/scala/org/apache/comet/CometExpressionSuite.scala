@@ -1282,6 +1282,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int) using parquet")
           sql(s"insert into $table values(1), (NULL), (2), (2), (3), (3), (4), (5), (NULL)")
           checkSparkAnswerAndOperator(
+            s"SELECT CASE WHEN id > 2 THEN 3333 ELSE NULL END FROM $table")
+          checkSparkAnswerAndOperator(
+            s"SELECT CASE WHEN id > 2 THEN id + 1 ELSE NULL END FROM $table")
+          checkSparkAnswerAndOperator(
+            s"SELECT CASE WHEN id > 2 THEN id + 1 END FROM $table")
+          checkSparkAnswerAndOperator(
             s"SELECT CASE WHEN id > 2 THEN 3333 WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
           checkSparkAnswerAndOperator(
             s"SELECT CASE WHEN id > 2 THEN NULL WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
