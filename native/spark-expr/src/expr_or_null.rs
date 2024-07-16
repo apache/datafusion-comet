@@ -42,7 +42,7 @@ use crate::utils::down_cast_any_ref;
 /// than just the rows where the predicate is true.
 ///
 /// The performance advantage of this expression is that it
-/// avoids copying data and simply modified the null bitmask
+/// avoids copying data and simply modifies the null bitmask
 /// of the evaluated expression based on the inverse of the
 /// predicate expression.
 #[derive(Debug, Hash)]
