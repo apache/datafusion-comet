@@ -143,3 +143,69 @@ impl PartialEq<dyn Any> for CaseWhenExprOrNull {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::CaseWhenExprOrNull;
+    use arrow_array::builder::{Int32Builder, StringBuilder};
+    use arrow_array::{Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion_common::{Result, ScalarValue};
+    use datafusion_expr::{ColumnarValue, Operator};
+    use datafusion_physical_expr::expressions::{BinaryExpr, CaseExpr};
+    use datafusion_physical_expr_common::expressions::column::Column;
+    use datafusion_physical_expr_common::expressions::Literal;
+    use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+    use std::sync::Arc;
+
+    #[test]
+    fn test() -> Result<()> {
+        let mut c1 = Int32Builder::new();
+        let mut c2 = StringBuilder::new();
+        for i in 0..1000 {
+            c1.append_value(i);
+            if i % 7 == 0 {
+                c2.append_null();
+            } else {
+                c2.append_value(&format!("string {i}"));
+            }
+        }
+        let c1 = Arc::new(c1.finish());
+        let c2 = Arc::new(c2.finish());
+
+        let schema = Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Utf8, true),
+        ]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![c1, c2]).unwrap();
+
+        // use same predicate for all benchmarks
+        let predicate = Arc::new(BinaryExpr::new(
+            make_col("c1", 0),
+            Operator::LtEq,
+            make_lit_i32(250),
+        ));
+
+        // CaseWhenExprOrNull should produce same results as CaseExpr
+        let expr1 = CaseWhenExprOrNull::new(predicate.clone(), make_col("c2", 1));
+        let expr2 = CaseExpr::try_new(None, vec![(predicate, make_col("c2", 1))], None)?;
+
+        match (expr1.evaluate(&batch)?, expr2.evaluate(&batch)?) {
+            (ColumnarValue::Array(array1), ColumnarValue::Array(array2)) => {
+                assert_eq!(array1.len(), array2.len());
+                assert_eq!(array1.null_count(), array2.null_count());
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    fn make_col(name: &str, index: usize) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Column::new(name, index))
+    }
+
+    fn make_lit_i32(n: i32) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Literal::new(ScalarValue::Int32(Some(n))))
+    }
+}
