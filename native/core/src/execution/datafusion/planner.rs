@@ -59,6 +59,7 @@ use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
+use datafusion_physical_expr_common::expressions::Literal;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -545,10 +546,14 @@ impl PhysicalPlanner {
 
                 // optimized path for CASE WHEN predicate THEN expr ELSE null END
                 if else_phy_expr.is_none() && when_then_pairs.len() == 1 {
-                    return Ok(Arc::new(ExprOrNull::new(
-                        when_then_pairs[0].0.clone(),
-                        when_then_pairs[0].1.clone(),
-                    )));
+                    let when_then = &when_then_pairs[0];
+                    // ExprOrNull does not support scalar expressions
+                    if !when_then.1.as_any().is::<Literal>() {
+                        return Ok(Arc::new(ExprOrNull::new(
+                            when_then.0.clone(),
+                            when_then.1.clone(),
+                        )));
+                    }
                 }
 
                 Ok(Arc::new(CaseExpr::try_new(

@@ -91,10 +91,9 @@ impl PhysicalExpr for ExprOrNull {
             let bit_mask = arrow::compute::kernels::boolean::not(bit_mask)?;
             match self.expr.evaluate(batch)? {
                 ColumnarValue::Array(array) => Ok(ColumnarValue::Array(nullif(&array, &bit_mask)?)),
-                ColumnarValue::Scalar(value) => {
-                    let array = value.to_array_of_size(batch.num_rows())?;
-                    Ok(ColumnarValue::Array(nullif(&array, &bit_mask)?))
-                }
+                ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
+                    "expression did not evaluate to an array".to_string(),
+                )),
             }
         } else {
             Err(DataFusionError::Execution(
