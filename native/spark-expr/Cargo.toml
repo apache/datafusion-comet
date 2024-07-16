@@ -36,12 +36,20 @@ datafusion-common = { workspace = true }
 datafusion-functions = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-physical-expr = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
 datafusion-physical-plan = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+criterion = "0.5"
+
 [lib]
 name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
+
+[[bench]]
+harness = false
+name = "expr_or_null"

@@ -108,7 +108,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec, TimestampTruncExec,
+    Abs, Cast, DateTruncExec, ExprOrNull, HourExec, IfExpr, MinuteExec, SecondExec,
+    TimestampTruncExec,
 };
 
 // For clippy error on type_complexity.
@@ -541,6 +542,15 @@ impl PhysicalPlanner {
                         Some(self.create_expr(case_when.else_expr.as_ref().unwrap(), input_schema)?)
                     }
                 };
+
+                // optimized path for CASE WHEN predicate THEN expr ELSE null END
+                if else_phy_expr.is_none() && when_then_pairs.len() == 1 {
+                    return Ok(Arc::new(ExprOrNull::new(
+                        when_then_pairs[0].0.clone(),
+                        when_then_pairs[0].1.clone(),
+                    )));
+                }
+
                 Ok(Arc::new(CaseExpr::try_new(
                     None,
                     when_then_pairs,

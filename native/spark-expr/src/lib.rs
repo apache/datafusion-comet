@@ -20,6 +20,7 @@ mod cast;
 mod error;
 mod if_expr;
 
+mod expr_or_null;
 mod kernels;
 mod temporal;
 pub mod timezone;
@@ -28,6 +29,7 @@ pub mod utils;
 pub use abs::Abs;
 pub use cast::Cast;
 pub use error::{SparkError, SparkResult};
+pub use expr_or_null::ExprOrNull;
 pub use if_expr::IfExpr;
 pub use temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec};
 
