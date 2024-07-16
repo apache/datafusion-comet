@@ -146,17 +146,20 @@ impl PartialEq<dyn Any> for CaseWhenExprOrNull {
 
 #[cfg(test)]
 mod test {
-    use crate::CaseWhenExprOrNull;
+    use std::sync::Arc;
+
     use arrow_array::builder::{Int32Builder, StringBuilder};
     use arrow_array::{Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
+
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::{ColumnarValue, Operator};
     use datafusion_physical_expr::expressions::{BinaryExpr, CaseExpr};
     use datafusion_physical_expr_common::expressions::column::Column;
     use datafusion_physical_expr_common::expressions::Literal;
     use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
-    use std::sync::Arc;
+
+    use crate::CaseWhenExprOrNull;
 
     #[test]
     fn test() -> Result<()> {
