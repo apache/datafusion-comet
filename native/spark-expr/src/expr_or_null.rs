@@ -32,14 +32,28 @@ use datafusion_physical_plan::{DisplayAs, DisplayFormatType, PhysicalExpr};
 
 use crate::utils::down_cast_any_ref;
 
-/// Specialization of `CASE WHEN predicate THEN expr ELSE null END`
+/// Specialization of `CASE WHEN .. THEN .. ELSE null END` where
+/// the else condition is a null literal.
+///
+/// CaseWhenExprOrNull is only safe to use for expressions that do not
+/// have side effects, and it is only suitable to use for expressions
+/// that are inexpensive to compute (such as a column reference)
+/// because it will be evaluated for all rows in the batch rather
+/// than just the rows where the predicate is true.
+///
+/// The performance advantage of this expression is that it
+/// avoids copying data and simply modified the null bitmask
+/// of the evaluated expression based on the inverse of the
+/// predicate expression.
 #[derive(Debug, Hash)]
-pub struct ExprOrNull {
+pub struct CaseWhenExprOrNull {
+    /// The WHEN predicate
     predicate: Arc<dyn PhysicalExpr>,
+    /// The THEN expression
     expr: Arc<dyn PhysicalExpr>,
 }
 
-impl ExprOrNull {
+impl CaseWhenExprOrNull {
     pub fn new(predicate: Arc<dyn PhysicalExpr>, input: Arc<dyn PhysicalExpr>) -> Self {
         Self {
             predicate,
@@ -48,7 +62,7 @@ impl ExprOrNull {
     }
 }
 
-impl Display for ExprOrNull {
+impl Display for CaseWhenExprOrNull {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -58,7 +72,7 @@ impl Display for ExprOrNull {
     }
 }
 
-impl DisplayAs for ExprOrNull {
+impl DisplayAs for CaseWhenExprOrNull {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
@@ -68,7 +82,7 @@ impl DisplayAs for ExprOrNull {
     }
 }
 
-impl PhysicalExpr for ExprOrNull {
+impl PhysicalExpr for CaseWhenExprOrNull {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -121,7 +135,7 @@ impl PhysicalExpr for ExprOrNull {
     }
 }
 
-impl PartialEq<dyn Any> for ExprOrNull {
+impl PartialEq<dyn Any> for CaseWhenExprOrNull {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()

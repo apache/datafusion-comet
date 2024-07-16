@@ -108,7 +108,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, Cast, DateTruncExec, ExprOrNull, HourExec, IfExpr, MinuteExec, SecondExec,
+    Abs, CaseWhenExprOrNull, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec,
     TimestampTruncExec,
 };
 
@@ -546,10 +546,14 @@ impl PhysicalPlanner {
                 // optimized path for CASE WHEN predicate THEN expr ELSE null END
                 if else_phy_expr.is_none() && when_then_pairs.len() == 1 {
                     let when_then = &when_then_pairs[0];
-                    // ExprOrNull is only safe to use for expressions that do not
-                    // have side-effects. For now, limit the use to raw column references
+                    // CaseWhenExprOrNull is only safe to use for expressions that do not
+                    // have side effects, and it is only suitable to use for expressions
+                    // that are inexpensive to compute (such as a column reference)
+                    // because it will be evaluated for all rows in the batch rather
+                    // than just the rows where the predicate is true.
+                    // For now, we limit the use to raw column references
                     if when_then.1.as_any().is::<Column>() {
-                        return Ok(Arc::new(ExprOrNull::new(
+                        return Ok(Arc::new(CaseWhenExprOrNull::new(
                             when_then.0.clone(),
                             when_then.1.clone(),
                         )));

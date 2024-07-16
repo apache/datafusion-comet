@@ -20,7 +20,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::builder::{Int32Builder, StringBuilder};
 use arrow_schema::DataType;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use datafusion_comet_spark_expr::ExprOrNull;
+use datafusion_comet_spark_expr::CaseWhenExprOrNull;
 use datafusion_common::ScalarValue;
 use datafusion_expr::Operator;
 use datafusion_physical_expr::expressions::BinaryExpr;
@@ -66,7 +66,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // CASE WHEN expr THEN col ELSE null END
     c.bench_function("expr_or_null", |b| {
-        let expr = Arc::new(ExprOrNull::new(predicate.clone(), make_col("c2", 1)));
+        let expr = Arc::new(CaseWhenExprOrNull::new(
+            predicate.clone(),
+            make_col("c2", 1),
+        ));
         b.iter(|| black_box(expr.evaluate(black_box(&batch)).unwrap()))
     });
 }

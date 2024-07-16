@@ -29,7 +29,7 @@ pub mod utils;
 pub use abs::Abs;
 pub use cast::Cast;
 pub use error::{SparkError, SparkResult};
-pub use expr_or_null::ExprOrNull;
+pub use expr_or_null::CaseWhenExprOrNull;
 pub use if_expr::IfExpr;
 pub use temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec};
 
