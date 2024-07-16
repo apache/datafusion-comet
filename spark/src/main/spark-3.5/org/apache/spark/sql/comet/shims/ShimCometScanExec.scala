@@ -27,6 +27,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -49,16 +50,14 @@ trait ShimCometScanExec {
     filePartitions,
     readSchema,
     fileConstantMetadataColumns,
-    Map.empty,
+    fsRelation.fileFormat.fileConstantMetadataExtractors,
     options)
 
   protected def invalidBucketFile(path: String, sparkVersion: String): Throwable =
-    new SparkException("INVALID_BUCKET_FILE", Map("path" -> path), null)
+    QueryExecutionErrors.invalidBucketFile(path)
 
-  protected def isNeededForSchema(sparkSchema: StructType): Boolean = {
-    // TODO: remove after PARQUET-2161 becomes available in Parquet (tracked in SPARK-39634)
-    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema) >= 0
-  }
+  // see SPARK-39634
+  protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
     PartitionedFileUtil.getPartitionedFile(f, p.values)
