@@ -23,6 +23,8 @@ use log::debug;
 use parquet::{basic::Encoding, schema::types::ColumnDescPtr};
 
 use super::{PlainDecoderInner, PlainDecoding, PlainDictDecoding, ReadOptions};
+use crate::write_null;
+use crate::write_val_or_null;
 use crate::{
     common::bit::{self, BitReader},
     parquet::{data_type::*, read::DECIMAL_BYTE_WIDTH, ParquetMutableVector},
@@ -485,18 +487,20 @@ macro_rules! make_int_decimal_variant_impl {
                 let dst_offset = dst.num_values * 8;
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
 
+                let src_precision = src.desc.type_precision() as u32;
                 let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
-                let dst_scale = match dst.arrow_type {
-                    ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
+                let (dst_precision, dst_scale) = match dst.arrow_type {
+                    ArrowDataType::Decimal128(p, s) if s >= 0 => (p as u32, s as u32),
                     _ => unreachable!(),
                 };
+                let upper = (10 as $dst_type).pow(dst_precision);
                 let v = dst_slice[dst_offset..].as_mut_ptr() as *mut $dst_type;
                 if dst_scale > src_scale {
                     let mul = (10 as $dst_type).pow(dst_scale - src_scale);
                     for i in 0..num {
                         unsafe {
                             let v = v.add(i);
-                            v.write_unaligned(v.read_unaligned() * mul);
+                            write_val_or_null!(v, v.read_unaligned() * mul, upper, dst, i);
                         }
                     }
                 } else if dst_scale < src_scale {
@@ -504,7 +508,14 @@ macro_rules! make_int_decimal_variant_impl {
                     for i in 0..num {
                         unsafe {
                             let v = v.add(i);
-                            v.write_unaligned(v.read_unaligned() / div);
+                            write_val_or_null!(v, v.read_unaligned() / div, upper, dst, i);
+                        }
+                    }
+                } else if src_precision > dst_precision {
+                    for i in 0..num {
+                        unsafe {
+                            let v = v.add(i);
+                            write_null!(v.read_unaligned(), upper, dst, i);
                         }
                     }
                 }
@@ -520,6 +531,25 @@ macro_rules! make_int_decimal_variant_impl {
 }
 make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 4, i64);
 make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
+
+#[macro_export]
+macro_rules! write_val_or_null {
+    ($v: expr, $adjusted: expr, $upper: expr, $dst: expr, $i: expr) => {
+        let adjusted = $adjusted;
+        $v.write_unaligned(adjusted);
+        write_null!(adjusted, $upper, $dst, $i);
+    };
+}
+
+#[macro_export]
+macro_rules! write_null {
+    ($val: expr, $upper: expr, $dst: expr, $i: expr) => {
+        if $upper <= $val {
+            bit::unset_bit($dst.validity_buffer.as_slice_mut(), $dst.num_values + $i);
+            $dst.num_nulls += 1;
+        }
+    };
+}
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
@@ -741,14 +771,16 @@ macro_rules! make_plain_decimal_impl {
 
                     debug_assert!(byte_width <= DECIMAL_BYTE_WIDTH);
 
+                    let src_precision = src.desc.type_precision() as u32;
                     let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
-                    let dst_scale = match dst.arrow_type {
-                        ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
-                        _ => unreachable!()
+                    let (dst_precision, dst_scale) = match dst.arrow_type {
+                        ArrowDataType::Decimal128(p, s) if s >= 0 => (p as u32, s as u32),
+                        _ => unreachable!(),
                     };
+                    let upper = 10_i128.pow(dst_precision);
                     let mul_div = 10_i128.pow(dst_scale.abs_diff(src_scale));
 
-                    for _ in 0..num {
+                    for i in 0..num {
                         let s = &mut dst_data[dst_offset..];
 
                         bit::memcpy(
@@ -774,13 +806,16 @@ macro_rules! make_plain_decimal_impl {
                         if dst_scale > src_scale {
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
-                                 v.write_unaligned(v.read_unaligned() * mul_div);
+                                write_val_or_null!(v, v.read_unaligned() * mul_div, upper, dst, i);
                             }
                         } else if dst_scale < src_scale {
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
-                                 v.write_unaligned(v.read_unaligned() / mul_div);
+                                write_val_or_null!(v, v.read_unaligned() / mul_div, upper, dst, i);
                             }
+                        } else  if src_precision > dst_precision {
+                            let v = s.as_mut_ptr() as *mut i128;
+                            write_null!(unsafe { v.read_unaligned() }, upper, dst, i);
                         }
 
                         src_offset += byte_width;
@@ -828,11 +863,13 @@ macro_rules! make_plain_decimal_int_impl {
 
                     let mut src_offset = 0;
 
+                    let src_precision = src.desc.type_precision() as u32;
                     let src_scale = ::std::cmp::max(src.desc.type_scale(), 0) as u32;
-                    let dst_scale = match dst.arrow_type {
-                        ArrowDataType::Decimal128(_precision, scale) if scale >= 0 => scale as u32,
-                        _ => src_scale
+                    let (dst_precision, dst_scale) = match dst.arrow_type {
+                        ArrowDataType::Decimal128(p, s) if s >= 0 => (p as u32, s as u32),
+                        _ => (src_precision, src_scale),
                     };
+                    let upper = 10_i64.pow(dst_precision);
                     let mul_div = 10_i64.pow(dst_scale.abs_diff(src_scale));
 
                     for i in 0..num {
@@ -847,8 +884,10 @@ macro_rules! make_plain_decimal_int_impl {
                         } else if dst_scale < src_scale {
                             unscaled /= mul_div;
                         }
-                        bit::memcpy_value(&unscaled, $num_bytes, &mut dst_data[i *
-                        $num_bytes..]);
+                        bit::memcpy_value(&unscaled, $num_bytes, &mut dst_data[i * $num_bytes..]);
+                        if src_precision > dst_precision {
+                            write_null!(unscaled, upper, dst, i);
+                        }
                     }
 
                     src.offset += num * byte_width;
