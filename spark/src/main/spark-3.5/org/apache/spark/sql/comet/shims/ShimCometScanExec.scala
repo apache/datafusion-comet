@@ -19,11 +19,9 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.comet.shims.ShimFileFormat
 
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.SparkException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
