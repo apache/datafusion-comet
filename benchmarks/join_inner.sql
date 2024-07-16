@@ -15,6 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-select sum(ss_sales_price)
+select count(*)
 from date_dim join store_sales on d_date_sk = ss_sold_date_sk
 where d_year = 2000;

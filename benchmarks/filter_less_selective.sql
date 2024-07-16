@@ -15,4 +15,4 @@
 -- specific language governing permissions and limitations
 -- under the License.
                   
-select sum(ws_wholesale_cost) from web_sales where ws_wholesale_cost > 10;
+select count(*) from web_sales where ws_wholesale_cost > 10;

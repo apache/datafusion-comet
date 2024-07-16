@@ -17,7 +17,7 @@
 
 -- This is based on the first join in q72 when there is no join reordering
 
-select sum(cs_wholesale_cost * inv_quantity_on_hand)
+select count(*)
 from catalog_sales join inventory on cs_item_sk = inv_item_sk
 where cs_warehouse_sk = 1 and inv_quantity_on_hand = 666
 and inv_quantity_on_hand < cs_quantity;
