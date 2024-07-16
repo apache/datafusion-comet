@@ -2003,7 +2003,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..bc01ffd52ea 100644
+index 746f289c393..922e1fb4e04 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -25,10 +25,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -2120,18 +2120,7 @@ index 746f289c393..bc01ffd52ea 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1013,7 +1039,9 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
-     }
-   }
- 
--  test("bucket coalescing is applied when join expressions match with partitioning expressions") {
-+  // https://github.com/apache/datafusion-comet/issues/617
-+  test("bucket coalescing is applied when join expressions match with partitioning expressions",
-+      IgnoreComet("TODO: fix Comet for this test")) {
-     withTable("t1", "t2", "t3") {
-       df1.write.format("parquet").bucketBy(8, "i", "j").saveAsTable("t1")
-       df2.write.format("parquet").bucketBy(4, "i", "j").saveAsTable("t2")
-@@ -1029,15 +1057,23 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1029,15 +1055,23 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
@@ -2379,67 +2368,6 @@ index b4c4ec7acbf..20579284856 100644
          }
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-index 3e1bc57dfa2..662640af934 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-@@ -28,10 +28,7 @@ import org.apache.commons.io.FileUtils
- import org.scalatest.BeforeAndAfter
- 
- import org.apache.spark.scheduler.ExecutorCacheTaskLocation
--import org.apache.spark.sql.{DataFrame, Row, SparkSession}
--import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
--import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
--import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
-+import org.apache.spark.sql.{DataFrame, IgnoreComet, Row, SparkSession}
- import org.apache.spark.sql.execution.streaming.{MemoryStream, StatefulOperatorStateInfo, StreamingSymmetricHashJoinExec, StreamingSymmetricHashJoinHelper}
- import org.apache.spark.sql.execution.streaming.state.{RocksDBStateStoreProvider, StateStore, StateStoreProviderId}
- import org.apache.spark.sql.functions._
-@@ -594,40 +591,10 @@ class StreamingInnerJoinSuite extends StreamingJoinSuite {
-       CheckNewAnswer((5, 10, 5, 15, 5, 25)))
-   }
- 
--  test("streaming join should require StatefulOpClusteredDistribution from children") {
--    val input1 = MemoryStream[Int]
--    val input2 = MemoryStream[Int]
--
--    val df1 = input1.toDF
--      .select($"value" as Symbol("a"), $"value" * 2 as Symbol("b"))
--    val df2 = input2.toDF
--      .select($"value" as Symbol("a"), $"value" * 2 as Symbol("b"))
--      .repartition($"b")
--    val joined = df1.join(df2, Seq("a", "b")).select($"a")
--
--    testStream(joined)(
--      AddData(input1, 1.to(1000): _*),
--      AddData(input2, 1.to(1000): _*),
--      CheckAnswer(1.to(1000): _*),
--      Execute { query =>
--        // Verify the query plan
--        def partitionExpressionsColumns(expressions: Seq[Expression]): Seq[String] = {
--          expressions.flatMap {
--            case ref: AttributeReference => Some(ref.name)
--          }
--        }
--
--        val numPartitions = spark.sqlContext.conf.getConf(SQLConf.SHUFFLE_PARTITIONS)
--
--        assert(query.lastExecution.executedPlan.collect {
--          case j @ StreamingSymmetricHashJoinExec(_, _, _, _, _, _, _, _, _,
--            ShuffleExchangeExec(opA: HashPartitioning, _, _, _),
--            ShuffleExchangeExec(opB: HashPartitioning, _, _, _))
--              if partitionExpressionsColumns(opA.expressions) === Seq("a", "b")
--                && partitionExpressionsColumns(opB.expressions) === Seq("a", "b")
--                && opA.numPartitions == numPartitions && opB.numPartitions == numPartitions => j
--        }.size == 1)
--      })
-+  // https://github.com/apache/datafusion-comet/issues/617
-+  test("streaming join should require StatefulOpClusteredDistribution from children",
-+      IgnoreComet("TODO: fix Comet for this test")) {
-+    fail("TODO fix diff")
-   }
- 
-   test("SPARK-26187 restore the stream-stream inner join query from Spark 2.4") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index abe606ad9c1..2d930b64cca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
