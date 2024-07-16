@@ -160,6 +160,7 @@ mod test {
 
     #[test]
     fn test() -> Result<()> {
+        // create input data
         let mut c1 = Int32Builder::new();
         let mut c2 = StringBuilder::new();
         for i in 0..1000 {
@@ -172,24 +173,20 @@ mod test {
         }
         let c1 = Arc::new(c1.finish());
         let c2 = Arc::new(c2.finish());
-
         let schema = Schema::new(vec![
             Field::new("c1", DataType::Int32, true),
             Field::new("c2", DataType::Utf8, true),
         ]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![c1, c2]).unwrap();
 
-        // use same predicate for all benchmarks
+        // CaseWhenExprOrNull should produce same results as CaseExpr
         let predicate = Arc::new(BinaryExpr::new(
             make_col("c1", 0),
             Operator::LtEq,
             make_lit_i32(250),
         ));
-
-        // CaseWhenExprOrNull should produce same results as CaseExpr
         let expr1 = CaseWhenExprOrNull::new(predicate.clone(), make_col("c2", 1));
         let expr2 = CaseExpr::try_new(None, vec![(predicate, make_col("c2", 1))], None)?;
-
         match (expr1.evaluate(&batch)?, expr2.evaluate(&batch)?) {
             (ColumnarValue::Array(array1), ColumnarValue::Array(array2)) => {
                 assert_eq!(array1.len(), array2.len());
@@ -197,7 +194,6 @@ mod test {
             }
             _ => unreachable!(),
         }
-
         Ok(())
     }
 
