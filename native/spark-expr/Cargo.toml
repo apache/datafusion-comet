@@ -52,4 +52,4 @@ path = "src/lib.rs"
 
 [[bench]]
 harness = false
-name = "expr_or_null"
+name = "case_when"
