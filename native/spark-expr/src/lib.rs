@@ -27,9 +27,9 @@ pub mod timezone;
 pub mod utils;
 
 pub use abs::Abs;
+pub use case_expr_or_null::CaseWhenExprOrNull;
 pub use cast::Cast;
 pub use error::{SparkError, SparkResult};
-pub use case_expr_or_null::CaseWhenExprOrNull;
 pub use if_expr::IfExpr;
 pub use temporal::{DateTruncExec, HourExec, MinuteExec, SecondExec, TimestampTruncExec};
 
