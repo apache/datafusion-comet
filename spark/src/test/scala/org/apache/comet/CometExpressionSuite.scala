@@ -1285,8 +1285,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"SELECT CASE WHEN id > 2 THEN 3333 ELSE NULL END FROM $table")
           checkSparkAnswerAndOperator(
             s"SELECT CASE WHEN id > 2 THEN id + 1 ELSE NULL END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE WHEN id > 2 THEN id + 1 END FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT CASE WHEN id > 2 THEN id + 1 END FROM $table")
           checkSparkAnswerAndOperator(
             s"SELECT CASE WHEN id > 2 THEN 3333 WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
           checkSparkAnswerAndOperator(
