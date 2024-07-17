@@ -198,6 +198,7 @@ macro_rules! make_int_variant_dict_impl {
                 let src_ptr = src.value_buffer.as_ptr() as *const $src_ty;
                 let dst_ptr = dst.value_buffer.as_mut_ptr() as *mut $dst_ty;
                 unsafe {
+                    // SAFETY the caller must ensure `idx`th pointer is in bounds
                     dst_ptr
                         .add(idx)
                         .write_unaligned(src_ptr.add(val_idx).read_unaligned() as $dst_ty);
@@ -235,7 +236,7 @@ impl PlainDecoding for Int32DateType {
                     if unlikely(v.read_unaligned() < JULIAN_GREGORIAN_SWITCH_OFF_DAY) {
                         panic!(
                         "Encountered date value {}, which is before 1582-10-15 (counting backwards \
-                         from Unix eopch date 1970-01-01), and could be ambigous depending on \
+                         from Unix epoch date 1970-01-01), and could be ambigous depending on \
                          whether a legacy Julian/Gregorian hybrid calendar is used, or a Proleptic \
                          Gregorian calendar is used.",
                         *v
@@ -271,15 +272,14 @@ impl PlainDecoding for Int32TimestampMicrosType {
         {
             let mut offset = src.offset;
             for _ in 0..num {
-                let v = &src_data[offset..offset + byte_width] as *const [u8] as *const u8
-                    as *const i32;
+                let v = src_data[offset..offset + byte_width].as_ptr() as *const i32;
 
                 // TODO: optimize this further as checking value one by one is not very efficient
                 unsafe {
                     if unlikely(v.read_unaligned() < JULIAN_GREGORIAN_SWITCH_OFF_DAY) {
                         panic!(
                             "Encountered timestamp value {}, which is before 1582-10-15 (counting \
-                        backwards from Unix eopch date 1970-01-01), and could be ambigous \
+                        backwards from Unix epoch date 1970-01-01), and could be ambigous \
                         depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                         or a Proleptic Gregorian calendar is used.",
                             *v
@@ -295,8 +295,7 @@ impl PlainDecoding for Int32TimestampMicrosType {
         let dst_byte_width = byte_width * 2;
         let mut dst_offset = dst_byte_width * dst.num_values;
         for _ in 0..num {
-            let v =
-                &src_data[offset..offset + byte_width] as *const [u8] as *const u8 as *const i32;
+            let v = src_data[offset..offset + byte_width].as_ptr() as *const i32;
             let v = unsafe { v.read_unaligned() };
             let v = (v as i64).wrapping_mul(MICROS_PER_DAY);
             bit::memcpy_value(&v, dst_byte_width, &mut dst.value_buffer[dst_offset..]);
@@ -334,7 +333,7 @@ impl PlainDecoding for Int64TimestampMillisType {
                     if unlikely(v < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                         panic!(
                             "Encountered timestamp value {}, which is before 1582-10-15 (counting \
-                         backwards from Unix eopch date 1970-01-01), and could be ambigous \
+                         backwards from Unix epoch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                          or a Proleptic Gregorian calendar is used.",
                             v
@@ -389,7 +388,7 @@ impl PlainDecoding for Int64TimestampMicrosType {
                     if unlikely(v.read_unaligned() < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                         panic!(
                             "Encountered timestamp value {}, which is before 1582-10-15 (counting \
-                         backwards from Unix eopch date 1970-01-01), and could be ambigous \
+                         backwards from Unix epoch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                          or a Proleptic Gregorian calendar is used.",
                             *v
@@ -499,6 +498,7 @@ macro_rules! make_int_decimal_variant_impl {
                     let mul = (10 as $dst_type).pow(dst_scale - src_scale);
                     for i in 0..num {
                         unsafe {
+                            // SAFETY the caller must ensure `i`th pointer is in bounds
                             let v = v.add(i);
                             write_val_or_null!(v, v.read_unaligned() * mul, upper, dst, i);
                         }
@@ -507,6 +507,7 @@ macro_rules! make_int_decimal_variant_impl {
                     let div = (10 as $dst_type).pow(src_scale - dst_scale);
                     for i in 0..num {
                         unsafe {
+                            // SAFETY the caller must ensure `i`th pointer is in bounds
                             let v = v.add(i);
                             write_val_or_null!(v, v.read_unaligned() / div, upper, dst, i);
                         }
@@ -514,6 +515,7 @@ macro_rules! make_int_decimal_variant_impl {
                 } else if src_precision > dst_precision {
                     for i in 0..num {
                         unsafe {
+                            // SAFETY the caller must ensure `i`th pointer is in bounds
                             let v = v.add(i);
                             write_null!(v.read_unaligned(), upper, dst, i);
                         }
@@ -623,7 +625,7 @@ fn copy_i64_to_i64(src: &[u8], dst: &mut [u8], num: usize) {
         "Destination slice is too small"
     );
 
-    bit::memcpy_value(src, 8 * num, dst);
+    bit::memcpy_value(src, std::mem::size_of::<i64>() * num, dst);
 }
 
 // Shared implementation for variants of Binary type
@@ -806,11 +808,13 @@ macro_rules! make_plain_decimal_impl {
                         if dst_scale > src_scale {
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
+                                // SAFETY the caller must ensure `i`th pointer is in bounds
                                 write_val_or_null!(v, v.read_unaligned() * mul_div, upper, dst, i);
                             }
                         } else if dst_scale < src_scale {
                             let v = s.as_mut_ptr() as *mut i128;
                             unsafe {
+                                // SAFETY the caller must ensure `i`th pointer is in bounds
                                 write_val_or_null!(v, v.read_unaligned() / mul_div, upper, dst, i);
                             }
                         } else  if src_precision > dst_precision {
@@ -945,7 +949,7 @@ impl PlainDecoding for Int96TimestampMicrosType {
                 if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                     panic!(
                         "Encountered timestamp value {}, which is before 1582-10-15 (counting \
-                         backwards from Unix eopch date 1970-01-01), and could be ambigous \
+                         backwards from Unix epoch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
                          or a Proleptic Gregorian calendar is used.",
                         micros
