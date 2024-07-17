@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-FROM apache/spark:3.4.2 AS builder
+FROM apache/spark:3.4.3 AS builder
 
 USER root
 
@@ -38,7 +38,7 @@ RUN cd /opt \
     && cd datafusion-comet \
     && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
-FROM apache/spark:3.4.2
+FROM apache/spark:3.4.3
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 USER root
