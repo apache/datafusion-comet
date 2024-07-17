@@ -19,22 +19,20 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.comet.CometConf
+import scala.io.Source
+
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.catalyst.catalog.HiveTableRelation
 import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
-import org.apache.spark.sql.catalyst.util.resourceToString
-import org.apache.spark.sql.{TPCDSQueries, TPCDSSchema}
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark.tables
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmarkArguments
 import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.types.StructType
 
-import scala.io.Source
+import org.apache.comet.CometConf
 
 /**
- * Benchmark to measure Comet query performance with micro benchmarks that use the TPCDS data. These queries
- * represent subsets of the full TPCDS queries.
+ * Benchmark to measure Comet query performance with micro benchmarks that use the TPCDS data.
+ * These queries represent subsets of the full TPCDS queries.
  *
  * To run this benchmark:
  * {{{
@@ -52,7 +50,7 @@ import scala.io.Source
  *
  * Results will be written to "spark/benchmarks/CometTPCDSMicroBenchmark-**results.txt".
  */
-object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase with TPCDSQueries {
+object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
 
   val queries: Seq[String] = Seq(
     "add_many_decimals",
@@ -71,8 +69,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase with TPCDSQue
     "join_exploding_output",
     "join_inner",
     "join_left_outer",
-    "join_semi"
-  )
+    "join_semi")
 
   override def runQueries(
       queryLocation: String,
@@ -121,7 +118,6 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase with TPCDSQue
       benchmark.run()
     }
   }
-
 
   override def runBenchmarkSuite(mainArgs: Array[String]): Unit = {
     val benchmarkArgs = new TPCDSQueryBenchmarkArguments(mainArgs)
