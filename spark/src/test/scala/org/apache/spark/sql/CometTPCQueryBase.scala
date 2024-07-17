@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import java.io.{File, FileNotFoundException}
+
 import scala.util.Try
 
 import org.apache.spark.SparkConf
@@ -28,8 +30,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
-
-import java.io.{File, FileNotFoundException}
 
 /**
  * Base trait for TPC related query execution
@@ -81,7 +81,8 @@ trait CometTPCQueryBase extends Logging {
       } else if (new File(tableFilePathAlt).exists()) {
         tableFilePathAlt
       } else {
-        throw new FileNotFoundException(s"Table does not exist at $tableFilePathDefault or $tableFilePathAlt")
+        throw new FileNotFoundException(
+          s"Table does not exist at $tableFilePathDefault or $tableFilePathAlt")
       }
       if (createTempView) {
         cometSpark.read.parquet(tableFilePath).createOrReplaceTempView(tableName)
