@@ -900,7 +900,7 @@ index 56c364e2084..11779ee3b4b 100644
        withTable("dt") {
          sql("create table dt using parquet as select 9000000000BD as d")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 68f14f13bbd..4b8e967102f 100644
+index 68f14f13bbd..abeeabf58f9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
@@ -938,16 +938,42 @@ index 68f14f13bbd..4b8e967102f 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2668,7 +2675,8 @@ class SubquerySuite extends QueryTest
-     }
-   }
- 
--  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
-+  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
+@@ -2672,18 +2679,26 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
+-      val fileSourceScanExec = collect(df.queryExecution.executedPlan) {
+-        case f: FileSourceScanExec => f
+-      }
+       sparkContext.listenerBus.waitUntilEmpty()
+-      assert(fileSourceScanExec.size === 1)
+-      val scalarSubquery = fileSourceScanExec.head.dataFilters.flatMap(_.collect {
+-        case s: ScalarSubquery => s
+-      })
++      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
++        case f: FileSourceScanLike => f
++        case c: CometScanExec => c
++      }
++      assert(dataSourceScanExec.size === 1)
++      val scalarSubquery = dataSourceScanExec.head match {
++        case f: FileSourceScanLike =>
++          f.dataFilters.flatMap(_.collect {
++            case s: ScalarSubquery => s
++          })
++        case c: CometScanExec =>
++          c.dataFilters.flatMap(_.collect {
++            case s: ScalarSubquery => s
++          })
++      }
+       assert(scalarSubquery.length === 1)
+       assert(scalarSubquery.head.plan.isInstanceOf[ReusedSubqueryExec])
+-      assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
+-      assert(fileSourceScanExec.head.metrics("numOutputRows").value === answer.size)
++      assert(dataSourceScanExec.head.metrics("numFiles").value === 1)
++      assert(dataSourceScanExec.head.metrics("numOutputRows").value === answer.size)
+     }
+ 
+     withTable("t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
 index 1de535df246..cc7ffc4eeb3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala

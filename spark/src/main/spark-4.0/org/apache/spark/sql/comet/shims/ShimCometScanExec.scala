@@ -23,7 +23,7 @@ import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources._
@@ -68,4 +68,11 @@ trait ShimCometScanExec {
                            maxSplitBytes: Long,
                            partitionValues: InternalRow): Seq[PartitionedFile] =
     PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
+
+  protected def isFileSourceConstantMetadataAttribute(attr: Attribute): Boolean = {
+    attr.getClass.getName match {
+      case " org.apache.spark.sql.catalyst.expressions.FileSourceConstantMetadataAttribute" => true
+      case _ => false
+    }
+  }
 }
