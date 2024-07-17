@@ -2003,7 +2003,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..922e1fb4e04 100644
+index 746f289c393..7d7a39ba82b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -25,10 +25,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -2126,12 +2126,11 @@ index 746f289c393..922e1fb4e04 100644
                val plan = sql(query).queryExecution.executedPlan
 -              val shuffles = collect(plan) { case s: ShuffleExchangeExec => s }
 +              val shuffles = collect(plan) {
-+            case s: ShuffleExchangeLike => s
-+          }
++                case s: ShuffleExchangeLike => s
++              }
                assert(shuffles.length == expectedNumShuffles)
  
--              val scans = collect(plan) {
-+              val scans = plan.collect {
+               val scans = collect(plan) {
                  case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
 +                case b: CometScanExec if b.optionalNumCoalescedBuckets.isDefined => b
                }
