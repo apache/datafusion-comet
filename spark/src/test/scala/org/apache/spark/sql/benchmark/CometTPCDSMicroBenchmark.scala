@@ -79,7 +79,10 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       nameSuffix: String = ""): Unit = {
     queries.foreach { name =>
       val source = Source.fromFile(s"spark/src/test/resources/tpcds-micro-benchmarks/$name.sql")
-      val queryString = source.getLines().mkString("\n")
+      val queryString = source
+        .getLines()
+        .filterNot(_.startsWith("--"))
+        .mkString("\n")
       source.close()
 
       // This is an indirect hack to estimate the size of each query's input by traversing the
