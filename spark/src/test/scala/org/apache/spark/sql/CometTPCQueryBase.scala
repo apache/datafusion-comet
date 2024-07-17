@@ -72,6 +72,8 @@ trait CometTPCQueryBase extends Logging {
       tables: Seq[String],
       tableColumns: Map[String, StructType] = Map.empty): Map[String, Long] = {
     tables.map { tableName =>
+      // some tools will generate TPC-* Parquet files with a `.parquet` extension
+      // and others will not, so let's support both cases
       val tableFilePathDefault = s"$dataLocation/$tableName"
       val tableFilePathAlt = s"$dataLocation/$tableName.parquet"
       val tableFilePath = if (new File(tableFilePathDefault).exists()) {
