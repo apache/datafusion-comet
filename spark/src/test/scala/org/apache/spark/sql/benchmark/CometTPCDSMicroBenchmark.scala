@@ -102,9 +102,6 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix") { _ =>
-        cometSpark.sql(queryString).noop()
-      }
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
         withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
