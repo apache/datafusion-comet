@@ -31,6 +31,7 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val numFiles: ScallopOption[Int] = opt[Int](required = true)
     val numRows: ScallopOption[Int] = opt[Int](required = true)
     val numColumns: ScallopOption[Int] = opt[Int](required = true)
+    val excludeNegativeZero: ScallopOption[Boolean] = opt[Boolean](required = false)
   }
   addSubcommand(generateData)
   object generateQueries extends Subcommand("queries") {
@@ -64,7 +65,8 @@ object Main {
           spark,
           numFiles = conf.generateData.numFiles(),
           numRows = conf.generateData.numRows(),
-          numColumns = conf.generateData.numColumns())
+          numColumns = conf.generateData.numColumns(),
+          generateNegativeZero = !conf.generateData.excludeNegativeZero())
       case Some(conf.generateQueries) =>
         QueryGen.generateRandomQueries(
           r,

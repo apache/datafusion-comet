@@ -42,13 +42,15 @@ object QueryGen {
     val uniqueQueries = mutable.HashSet[String]()
 
     for (_ <- 0 until numQueries) {
-      val sql = r.nextInt().abs % 6 match {
+      val sql = r.nextInt().abs % 8 match {
         case 0 => generateJoin(r, spark, numFiles)
         case 1 => generateAggregate(r, spark, numFiles)
         case 2 => generateScalar(r, spark, numFiles)
         case 3 => generateCast(r, spark, numFiles)
         case 4 => generateUnaryArithmetic(r, spark, numFiles)
         case 5 => generateBinaryArithmetic(r, spark, numFiles)
+        case 6 => generateBinaryComparison(r, spark, numFiles)
+        case _ => generateConditional(r, spark, numFiles)
       }
       if (!uniqueQueries.contains(sql)) {
         uniqueQueries += sql
@@ -117,6 +119,34 @@ object QueryGen {
 
     // Example SELECT a, b, a+b FROM test0
     s"SELECT $a, $b, $a $op $b " +
+      s"FROM $tableName " +
+      s"ORDER BY $a, $b;"
+  }
+
+  private def generateBinaryComparison(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val op = Utils.randomChoice(Meta.comparisonOps, r)
+    val a = Utils.randomChoice(table.columns, r)
+    val b = Utils.randomChoice(table.columns, r)
+
+    // Example SELECT a, b, a <=> b FROM test0
+    s"SELECT $a, $b, $a $op $b " +
+      s"FROM $tableName " +
+      s"ORDER BY $a, $b;"
+  }
+
+  private def generateConditional(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val op = Utils.randomChoice(Meta.comparisonOps, r)
+    val a = Utils.randomChoice(table.columns, r)
+    val b = Utils.randomChoice(table.columns, r)
+
+    // Example SELECT a, b, IF(a <=> b, 1, 2), CASE WHEN a <=> b THEN 1 ELSE 2 END FROM test0
+    s"SELECT $a, $b, $a $op $b, IF($a $op $b, 1, 2), CASE WHEN $a $op $b THEN 1 ELSE 2 END " +
       s"FROM $tableName " +
       s"ORDER BY $a, $b;"
   }
