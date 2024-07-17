@@ -38,6 +38,7 @@ use std::{
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
 use crate::execution::operators::ExecutionError;
+use datafusion_comet_spark_expr::SparkError;
 use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
@@ -62,36 +63,10 @@ pub enum CometError {
     #[error("Comet Internal Error: {0}")]
     Internal(String),
 
-    // Note that this message format is based on Spark 3.4 and is more detailed than the message
-    // returned by Spark 3.3
-    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-        because it is malformed. Correct the value as per the syntax, or change its target type. \
-        Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
-        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    CastInvalidValue {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-
-    #[error("[NUMERIC_VALUE_OUT_OF_RANGE] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
-    NumericValueOutOfRange {
-        value: String,
-        precision: u8,
-        scale: i8,
-    },
-
-    #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
-        due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
-        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    CastOverFlow {
-        value: String,
-        from_type: String,
-        to_type: String,
-    },
-
-    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    ArithmeticOverflow { from_type: String },
+    /// CometError::Spark is typically used in native code to emulate the same errors
+    /// that Spark would return
+    #[error(transparent)]
+    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -239,11 +214,7 @@ impl jni::errors::ToException for CometError {
                 class: "java/lang/NullPointerException".to_string(),
                 msg: self.to_string(),
             },
-            CometError::CastInvalidValue { .. } => Exception {
-                class: "org/apache/spark/SparkException".to_string(),
-                msg: self.to_string(),
-            },
-            CometError::NumericValueOutOfRange { .. } => Exception {
+            CometError::Spark { .. } => Exception {
                 class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },

@@ -15,22 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-use std::sync::Arc;
+//! Build script for generating codes from .proto files.
 
-use datafusion_physical_plan::PhysicalExpr;
+use std::{fs, io::Result, path::Path};
 
-/// A utility function from DataFusion. It is not exposed by DataFusion.
-pub fn down_cast_any_ref(any: &dyn Any) -> &dyn Any {
-    if any.is::<Arc<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Arc<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else if any.is::<Box<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Box<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else {
-        any
+fn main() -> Result<()> {
+    println!("cargo:rerun-if-changed=src/proto/");
+
+    let out_dir = "src/generated";
+    if !Path::new(out_dir).is_dir() {
+        fs::create_dir(out_dir)?;
     }
+
+    prost_build::Config::new().out_dir(out_dir).compile_protos(
+        &[
+            "src/proto/expr.proto",
+            "src/proto/partitioning.proto",
+            "src/proto/operator.proto",
+        ],
+        &["src/proto"],
+    )?;
+    Ok(())
 }

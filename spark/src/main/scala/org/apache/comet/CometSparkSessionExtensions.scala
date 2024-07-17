@@ -850,17 +850,13 @@ class CometSparkSessionExtensions
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
         if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
-          new ExtendedExplainInfo().extensionInfo(newPlan) match {
-            case reasons if reasons.size == 1 =>
-              logWarning(
-                "Comet cannot execute some parts of this plan natively " +
-                  s"because ${reasons.head}")
-            case reasons if reasons.size > 1 =>
-              logWarning(
-                "Comet cannot execute some parts of this plan natively" +
-                  s" because:\n\t- ${reasons.mkString("\n\t- ")}")
-            case _ =>
-            // no reasons recorded
+          val info = new ExtendedExplainInfo()
+          if (info.extensionInfo(newPlan).nonEmpty) {
+            logWarning(
+              "Comet cannot execute some parts of this plan natively " +
+                s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
+                "to disable this logging):\n" +
+                s"${info.generateVerboseExtendedInfo(newPlan)}")
           }
         }
 

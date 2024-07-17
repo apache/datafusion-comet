@@ -15,25 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Build script for generating codes from .proto files.
+//! Kernels
 
-use std::{fs, io::Result, path::Path};
-
-fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/execution/proto/");
-
-    let out_dir = "src/execution/generated";
-    if !Path::new(out_dir).is_dir() {
-        fs::create_dir(out_dir)?;
-    }
-
-    prost_build::Config::new().out_dir(out_dir).compile_protos(
-        &[
-            "src/execution/proto/expr.proto",
-            "src/execution/proto/partitioning.proto",
-            "src/execution/proto/operator.proto",
-        ],
-        &["src/execution/proto"],
-    )?;
-    Ok(())
-}
+pub(crate) mod temporal;

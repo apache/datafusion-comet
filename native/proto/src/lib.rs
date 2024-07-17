@@ -15,36 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_expression {
+    include!(concat!("generated", "/spark.spark_expression.rs"));
+}
 
-pub mod bitwise_not;
-pub mod checkoverflow;
-mod normalize_nan;
-pub mod scalar_funcs;
-pub use normalize_nan::NormalizeNaNAndZero;
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_partitioning {
+    include!(concat!("generated", "/spark.spark_partitioning.rs"));
+}
 
-use crate::errors::CometError;
-pub mod avg;
-pub mod avg_decimal;
-pub mod bloom_filter_might_contain;
-pub mod correlation;
-pub mod covariance;
-pub mod create_named_struct;
-pub mod negative;
-pub mod stats;
-pub mod stddev;
-pub mod strings;
-pub mod subquery;
-pub mod sum_decimal;
-pub mod unbound;
-mod utils;
-pub mod variance;
-pub mod xxhash64;
-
-pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
-
-fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::Spark(SparkError::ArithmeticOverflow {
-        from_type: from_type.to_string(),
-    })
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_operator {
+    include!(concat!("generated", "/spark.spark_operator.rs"));
 }

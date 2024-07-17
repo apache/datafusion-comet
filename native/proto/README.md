@@ -17,6 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# datafusion-comet-utils
+# Apache DataFusion Comet: Intermediate Representation of Query Plan
 
-This crate provides utilities for use in the [Apache DataFusion Comet](https://github.com/apache/datafusion-comet/) project.
+This crate contains the protocol buffer definitions of Spark physical query plans 
+and is intended to be used as part of the Apache DataFusion Comet project.

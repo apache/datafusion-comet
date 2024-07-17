@@ -26,29 +26,11 @@ pub mod operators;
 pub mod serde;
 pub mod shuffle;
 pub(crate) mod sort;
-mod timezone;
+pub use datafusion_comet_spark_expr::timezone;
 pub(crate) mod utils;
 
 mod memory_pool;
 pub use memory_pool::*;
-
-// Include generated modules from .proto files.
-#[allow(missing_docs)]
-pub mod spark_expression {
-    include!(concat!("generated", "/spark.spark_expression.rs"));
-}
-
-// Include generated modules from .proto files.
-#[allow(missing_docs)]
-pub mod spark_partitioning {
-    include!(concat!("generated", "/spark.spark_partitioning.rs"));
-}
-
-// Include generated modules from .proto files.
-#[allow(missing_docs)]
-pub mod spark_operator {
-    include!(concat!("generated", "/spark.spark_operator.rs"));
-}
 
 #[cfg(test)]
 mod tests {
