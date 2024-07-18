@@ -67,6 +67,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
     max_dl: jint,
     max_rl: jint,
     bit_width: jint,
+    read_bit_width: jint,
     is_signed: jboolean,
     type_length: jint,
     precision: jint,
@@ -95,8 +96,12 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
             is_adjusted_utc,
             jni_path,
         )?;
-        let promotion_info =
-            TypePromotionInfo::new_from_jni(read_primitive_type, read_precision, read_scale);
+        let promotion_info = TypePromotionInfo::new_from_jni(
+            read_primitive_type,
+            read_precision,
+            read_scale,
+            read_bit_width,
+        );
         let ctx = Context {
             column_reader: ColumnReader::get(
                 desc,

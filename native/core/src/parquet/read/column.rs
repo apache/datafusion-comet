@@ -51,13 +51,18 @@ pub enum ColumnReader {
     Int8ColumnReader(TypedColumnReader<Int8Type>),
     UInt8ColumnReader(TypedColumnReader<UInt8Type>),
     Int16ColumnReader(TypedColumnReader<Int16Type>),
+    Int16ToDoubleColumnReader(TypedColumnReader<Int16ToDoubleType>),
     UInt16ColumnReader(TypedColumnReader<UInt16Type>),
     Int32ColumnReader(TypedColumnReader<Int32Type>),
     Int32To64ColumnReader(TypedColumnReader<Int32To64Type>),
+    Int32ToDecimal64ColumnReader(TypedColumnReader<Int32ToDecimal64Type>),
+    Int32ToDoubleColumnReader(TypedColumnReader<Int32ToDoubleType>),
     UInt32ColumnReader(TypedColumnReader<UInt32Type>),
     Int32DecimalColumnReader(TypedColumnReader<Int32DecimalType>),
     Int32DateColumnReader(TypedColumnReader<Int32DateType>),
+    Int32TimestampMicrosColumnReader(TypedColumnReader<Int32TimestampMicrosType>),
     Int64ColumnReader(TypedColumnReader<Int64Type>),
+    Int64ToDecimal64ColumnReader(TypedColumnReader<Int64ToDecimal64Type>),
     UInt64DecimalColumnReader(TypedColumnReader<UInt64Type>),
     Int64DecimalColumnReader(TypedColumnReader<Int64DecimalType>),
     Int64TimestampMillisColumnReader(TypedColumnReader<Int64TimestampMillisType>),
@@ -124,19 +129,81 @@ impl ColumnReader {
                             bit_width,
                             is_signed,
                         } => match (bit_width, is_signed) {
-                            (8, true) => typed_reader!(Int8ColumnReader, Int8),
+                            (8, true) => match promotion_info.physical_type {
+                                PhysicalType::FIXED_LEN_BYTE_ARRAY => {
+                                    if promotion_info.precision <= DECIMAL_MAX_INT_DIGITS
+                                        && promotion_info.scale < 1
+                                    {
+                                        typed_reader!(Int32ColumnReader, Int32)
+                                    } else if promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS {
+                                        typed_reader!(
+                                            Int32ToDecimal64ColumnReader,
+                                            ArrowDataType::Decimal128(
+                                                promotion_info.precision as u8,
+                                                promotion_info.scale as i8
+                                            )
+                                        )
+                                    } else {
+                                        typed_reader!(
+                                            Int32DecimalColumnReader,
+                                            ArrowDataType::Decimal128(
+                                                promotion_info.precision as u8,
+                                                promotion_info.scale as i8
+                                            )
+                                        )
+                                    }
+                                }
+                                _ => typed_reader!(Int8ColumnReader, Int8),
+                            },
                             (8, false) => typed_reader!(UInt8ColumnReader, Int16),
-                            (16, true) => typed_reader!(Int16ColumnReader, Int16),
+                            (16, true) => match promotion_info.physical_type {
+                                PhysicalType::DOUBLE => {
+                                    typed_reader!(Int16ToDoubleColumnReader, Float64)
+                                }
+                                PhysicalType::INT32 if promotion_info.bit_width == 32 => {
+                                    typed_reader!(Int32ColumnReader, Int32)
+                                }
+                                PhysicalType::FIXED_LEN_BYTE_ARRAY => {
+                                    if promotion_info.precision <= DECIMAL_MAX_INT_DIGITS
+                                        && promotion_info.scale < 1
+                                    {
+                                        typed_reader!(Int32ColumnReader, Int32)
+                                    } else if promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS {
+                                        typed_reader!(
+                                            Int32ToDecimal64ColumnReader,
+                                            ArrowDataType::Decimal128(
+                                                promotion_info.precision as u8,
+                                                promotion_info.scale as i8
+                                            )
+                                        )
+                                    } else {
+                                        typed_reader!(
+                                            Int32DecimalColumnReader,
+                                            ArrowDataType::Decimal128(
+                                                promotion_info.precision as u8,
+                                                promotion_info.scale as i8
+                                            )
+                                        )
+                                    }
+                                }
+                                _ => typed_reader!(Int16ColumnReader, Int16),
+                            },
                             (16, false) => typed_reader!(UInt16ColumnReader, Int32),
-                            (32, true) => typed_reader!(Int32ColumnReader, Int32),
+                            (32, true) => match promotion_info.physical_type {
+                                PhysicalType::INT32 if promotion_info.bit_width == 16 => {
+                                    typed_reader!(Int16ColumnReader, Int16)
+                                }
+                                _ => typed_reader!(Int32ColumnReader, Int32),
+                            },
                             (32, false) => typed_reader!(UInt32ColumnReader, Int64),
                             _ => unimplemented!("Unsupported INT32 annotation: {:?}", lt),
                         },
                         LogicalType::Decimal {
-                            scale,
+                            scale: _,
                             precision: _,
                         } => {
-                            if use_decimal_128 || scale < &promotion_info.scale {
+                            if use_decimal_128 || promotion_info.precision > DECIMAL_MAX_LONG_DIGITS
+                            {
                                 typed_reader!(
                                     Int32DecimalColumnReader,
                                     ArrowDataType::Decimal128(
@@ -145,17 +212,56 @@ impl ColumnReader {
                                     )
                                 )
                             } else {
-                                typed_reader!(Int32ColumnReader, Int32)
+                                typed_reader!(
+                                    Int32ToDecimal64ColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
                             }
                         }
-                        LogicalType::Date => typed_reader!(Int32DateColumnReader, Date32),
+                        LogicalType::Date => match promotion_info.physical_type {
+                            PhysicalType::INT64 => typed_reader!(
+                                Int32TimestampMicrosColumnReader,
+                                ArrowDataType::Timestamp(TimeUnit::Microsecond, None)
+                            ),
+                            _ => typed_reader!(Int32DateColumnReader, Date32),
+                        },
                         lt => unimplemented!("Unsupported logical type for INT32: {:?}", lt),
                     }
                 } else {
                     // We support type promotion from int to long
                     match promotion_info.physical_type {
+                        PhysicalType::INT32 if promotion_info.bit_width == 16 => {
+                            typed_reader!(Int16ColumnReader, Int16)
+                        }
                         PhysicalType::INT32 => typed_reader!(Int32ColumnReader, Int32),
                         PhysicalType::INT64 => typed_reader!(Int32To64ColumnReader, Int64),
+                        PhysicalType::DOUBLE => typed_reader!(Int32ToDoubleColumnReader, Float64),
+                        PhysicalType::FIXED_LEN_BYTE_ARRAY => {
+                            if promotion_info.precision <= DECIMAL_MAX_INT_DIGITS
+                                && promotion_info.scale < 1
+                            {
+                                typed_reader!(Int32ColumnReader, Int32)
+                            } else if promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS {
+                                typed_reader!(
+                                    Int32ToDecimal64ColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
+                            } else {
+                                typed_reader!(
+                                    Int32DecimalColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
+                            }
+                        }
                         t => unimplemented!("Unsupported read physical type for INT32: {}", t),
                     }
                 }
@@ -175,10 +281,11 @@ impl ColumnReader {
                             _ => panic!("Unsupported INT64 annotation: {:?}", lt),
                         },
                         LogicalType::Decimal {
-                            scale,
+                            scale: _,
                             precision: _,
                         } => {
-                            if use_decimal_128 || scale < &promotion_info.scale {
+                            if use_decimal_128 || promotion_info.precision > DECIMAL_MAX_LONG_DIGITS
+                            {
                                 typed_reader!(
                                     Int64DecimalColumnReader,
                                     ArrowDataType::Decimal128(
@@ -187,7 +294,13 @@ impl ColumnReader {
                                     )
                                 )
                             } else {
-                                typed_reader!(Int64ColumnReader, Int64)
+                                typed_reader!(
+                                    Int64ToDecimal64ColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
                             }
                         }
                         LogicalType::Timestamp {
@@ -226,8 +339,25 @@ impl ColumnReader {
                         lt => panic!("Unsupported logical type for INT64: {:?}", lt),
                     }
                 } else {
-                    // By default it is INT(64, true)
-                    typed_reader!(Int64ColumnReader, Int64)
+                    match promotion_info.physical_type {
+                        PhysicalType::FIXED_LEN_BYTE_ARRAY => {
+                            if promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
+                                && promotion_info.scale < 1
+                            {
+                                typed_reader!(Int64ColumnReader, Int64)
+                            } else {
+                                typed_reader!(
+                                    Int64DecimalColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
+                            }
+                        }
+                        // By default it is INT(64, true)
+                        _ => typed_reader!(Int64ColumnReader, Int64),
+                    }
                 }
             }
             PhysicalType::INT96 => {
@@ -266,8 +396,16 @@ impl ColumnReader {
                         } => {
                             if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
                                 typed_reader!(FLBADecimal32ColumnReader, Int32)
-                            } else if !use_decimal_128 && precision <= DECIMAL_MAX_LONG_DIGITS {
-                                typed_reader!(FLBADecimal64ColumnReader, Int64)
+                            } else if !use_decimal_128
+                                && promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
+                            {
+                                typed_reader!(
+                                    FLBADecimal64ColumnReader,
+                                    ArrowDataType::Decimal128(
+                                        promotion_info.precision as u8,
+                                        promotion_info.scale as i8
+                                    )
+                                )
                             } else {
                                 typed_reader!(
                                     FLBADecimalColumnReader,
@@ -306,13 +444,18 @@ macro_rules! make_func {
             Self::Int8ColumnReader(ref typed) => typed.$func($($args),*),
             Self::UInt8ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int16ColumnReader(ref typed) => typed.$func($($args),*),
+            Self::Int16ToDoubleColumnReader(ref typed) => typed.$func($($args), *),
             Self::UInt16ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32To64ColumnReader(ref typed) => typed.$func($($args), *),
+            Self::Int32ToDecimal64ColumnReader(ref typed) => typed.$func($($args), *),
+            Self::Int32ToDoubleColumnReader(ref typed) => typed.$func($($args), *),
             Self::UInt32ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32DateColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32DecimalColumnReader(ref typed) => typed.$func($($args),*),
+            Self::Int32TimestampMicrosColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64ColumnReader(ref typed) => typed.$func($($args),*),
+            Self::Int64ToDecimal64ColumnReader(ref typed) => typed.$func($($args), *),
             Self::UInt64DecimalColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64DecimalColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64TimestampMillisColumnReader(ref typed) => typed.$func($($args),*),
@@ -339,13 +482,18 @@ macro_rules! make_func_mut {
             Self::Int8ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::UInt8ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int16ColumnReader(ref mut typed) => typed.$func($($args),*),
+            Self::Int16ToDoubleColumnReader(ref mut typed) => typed.$func($($args), *),
             Self::UInt16ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32To64ColumnReader(ref mut typed) => typed.$func($($args), *),
+            Self::Int32ToDecimal64ColumnReader(ref mut typed) => typed.$func($($args), *),
+            Self::Int32ToDoubleColumnReader(ref mut typed) => typed.$func($($args), *),
             Self::UInt32ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32DateColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
+            Self::Int32TimestampMicrosColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64ColumnReader(ref mut typed) => typed.$func($($args),*),
+            Self::Int64ToDecimal64ColumnReader(ref mut typed) => typed.$func($($args), *),
             Self::UInt64DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64TimestampMillisColumnReader(ref mut typed) => typed.$func($($args),*),
