@@ -1,7 +1,7 @@
 == Physical Plan ==
-* HashAggregate (33)
-+- Exchange (32)
-   +- * ColumnarToRow (31)
+* ColumnarToRow (33)
++- CometHashAggregate (32)
+   +- CometColumnarExchange (31)
       +- CometHashAggregate (30)
          +- CometProject (29)
             +- CometBroadcastHashJoin (28)
@@ -179,19 +179,17 @@ Input [3]: [ss_quantity#5, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 Keys: []
 Functions [4]: [partial_avg(ss_quantity#5), partial_avg(UnscaledValue(ss_ext_sales_price#7)), partial_avg(UnscaledValue(ss_ext_wholesale_cost#8)), partial_sum(UnscaledValue(ss_ext_wholesale_cost#8))]
 
-(31) ColumnarToRow [codegen id : 1]
+(31) CometColumnarExchange
 Input [7]: [sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(32) Exchange
-Input [7]: [sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=1]
-
-(33) HashAggregate [codegen id : 2]
+(32) CometHashAggregate
 Input [7]: [sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29]
 Keys: []
 Functions [4]: [avg(ss_quantity#5), avg(UnscaledValue(ss_ext_sales_price#7)), avg(UnscaledValue(ss_ext_wholesale_cost#8)), sum(UnscaledValue(ss_ext_wholesale_cost#8))]
-Aggregate Attributes [4]: [avg(ss_quantity#5)#30, avg(UnscaledValue(ss_ext_sales_price#7))#31, avg(UnscaledValue(ss_ext_wholesale_cost#8))#32, sum(UnscaledValue(ss_ext_wholesale_cost#8))#33]
-Results [4]: [avg(ss_quantity#5)#30 AS avg(ss_quantity)#34, cast((avg(UnscaledValue(ss_ext_sales_price#7))#31 / 100.0) as decimal(11,6)) AS avg(ss_ext_sales_price)#35, cast((avg(UnscaledValue(ss_ext_wholesale_cost#8))#32 / 100.0) as decimal(11,6)) AS avg(ss_ext_wholesale_cost)#36, MakeDecimal(sum(UnscaledValue(ss_ext_wholesale_cost#8))#33,17,2) AS sum(ss_ext_wholesale_cost)#37]
+
+(33) ColumnarToRow [codegen id : 1]
+Input [4]: [avg(ss_quantity)#30, avg(ss_ext_sales_price)#31, avg(ss_ext_wholesale_cost)#32, sum(ss_ext_wholesale_cost)#33]
 
 ===== Subqueries =====
 

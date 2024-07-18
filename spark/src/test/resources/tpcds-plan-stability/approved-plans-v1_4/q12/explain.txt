@@ -2,11 +2,11 @@
 TakeOrderedAndProject (22)
 +- * Project (21)
    +- Window (20)
-      +- * Sort (19)
-         +- Exchange (18)
-            +- * HashAggregate (17)
-               +- Exchange (16)
-                  +- * ColumnarToRow (15)
+      +- * ColumnarToRow (19)
+         +- CometSort (18)
+            +- CometColumnarExchange (17)
+               +- CometHashAggregate (16)
+                  +- CometColumnarExchange (15)
                      +- CometHashAggregate (14)
                         +- CometProject (13)
                            +- CometBroadcastHashJoin (12)
@@ -92,39 +92,37 @@ Input [6]: [ws_ext_sales_price#2, i_item_id#6, i_item_desc#7, i_current_price#8,
 Keys [5]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8]
 Functions [1]: [partial_sum(UnscaledValue(ws_ext_sales_price#2))]
 
-(15) ColumnarToRow [codegen id : 1]
+(15) CometColumnarExchange
 Input [6]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, sum#13]
+Arguments: hashpartitioning(i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(16) Exchange
-Input [6]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, sum#13]
-Arguments: hashpartitioning(i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(17) HashAggregate [codegen id : 2]
+(16) CometHashAggregate
 Input [6]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, sum#13]
 Keys [5]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8]
 Functions [1]: [sum(UnscaledValue(ws_ext_sales_price#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ws_ext_sales_price#2))#14]
-Results [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, MakeDecimal(sum(UnscaledValue(ws_ext_sales_price#2))#14,17,2) AS itemrevenue#15, MakeDecimal(sum(UnscaledValue(ws_ext_sales_price#2))#14,17,2) AS _w0#16, i_item_id#6]
 
-(18) Exchange
-Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, _w0#16, i_item_id#6]
-Arguments: hashpartitioning(i_class#9, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(17) CometColumnarExchange
+Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
+Arguments: hashpartitioning(i_class#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(19) Sort [codegen id : 3]
-Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, _w0#16, i_item_id#6]
-Arguments: [i_class#9 ASC NULLS FIRST], false, 0
+(18) CometSort
+Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
+Arguments: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6], [i_class#9 ASC NULLS FIRST]
+
+(19) ColumnarToRow [codegen id : 1]
+Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
 
 (20) Window
-Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, _w0#16, i_item_id#6]
-Arguments: [sum(_w0#16) windowspecdefinition(i_class#9, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS _we0#17], [i_class#9]
+Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
+Arguments: [sum(_w0#15) windowspecdefinition(i_class#9, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS _we0#16], [i_class#9]
 
-(21) Project [codegen id : 4]
-Output [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, ((_w0#16 * 100) / _we0#17) AS revenueratio#18, i_item_id#6]
-Input [8]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, _w0#16, i_item_id#6, _we0#17]
+(21) Project [codegen id : 2]
+Output [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, ((_w0#15 * 100) / _we0#16) AS revenueratio#17, i_item_id#6]
+Input [8]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6, _we0#16]
 
 (22) TakeOrderedAndProject
-Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, revenueratio#18, i_item_id#6]
-Arguments: 100, [i_category#10 ASC NULLS FIRST, i_class#9 ASC NULLS FIRST, i_item_id#6 ASC NULLS FIRST, i_item_desc#7 ASC NULLS FIRST, revenueratio#18 ASC NULLS FIRST], [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#15, revenueratio#18]
+Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17, i_item_id#6]
+Arguments: 100, [i_category#10 ASC NULLS FIRST, i_class#9 ASC NULLS FIRST, i_item_id#6 ASC NULLS FIRST, i_item_desc#7 ASC NULLS FIRST, revenueratio#17 ASC NULLS FIRST], [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17]
 
 ===== Subqueries =====
 

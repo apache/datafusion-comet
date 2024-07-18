@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (34)
-+- * HashAggregate (33)
-   +- Exchange (32)
-      +- * ColumnarToRow (31)
+* ColumnarToRow (34)
++- CometTakeOrderedAndProject (33)
+   +- CometHashAggregate (32)
+      +- CometColumnarExchange (31)
          +- CometHashAggregate (30)
             +- CometProject (29)
                +- CometBroadcastHashJoin (28)
@@ -180,21 +180,19 @@ Input [5]: [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i
 Keys [4]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#7))]
 
-(31) ColumnarToRow [codegen id : 1]
+(31) CometColumnarExchange
 Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#21]
+Arguments: hashpartitioning(i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(32) Exchange
-Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#21]
-Arguments: hashpartitioning(i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(33) HashAggregate [codegen id : 2]
+(32) CometHashAggregate
 Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#21]
 Keys [4]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#7))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#7))#22]
-Results [5]: [i_brand_id#10 AS brand_id#23, i_brand#11 AS brand#24, i_manufact_id#12, i_manufact#13, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#7))#22,17,2) AS ext_price#25]
 
-(34) TakeOrderedAndProject
-Input [5]: [brand_id#23, brand#24, i_manufact_id#12, i_manufact#13, ext_price#25]
-Arguments: 100, [ext_price#25 DESC NULLS LAST, brand#24 ASC NULLS FIRST, brand_id#23 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#13 ASC NULLS FIRST], [brand_id#23, brand#24, i_manufact_id#12, i_manufact#13, ext_price#25]
+(33) CometTakeOrderedAndProject
+Input [5]: [brand_id#22, brand#23, i_manufact_id#12, i_manufact#13, ext_price#24]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#24 DESC NULLS LAST,brand#23 ASC NULLS FIRST,brand_id#22 ASC NULLS FIRST,i_manufact_id#12 ASC NULLS FIRST,i_manufact#13 ASC NULLS FIRST], output=[brand_id#22,brand#23,i_manufact_id#12,i_manufact#13,ext_price#24]), [brand_id#22, brand#23, i_manufact_id#12, i_manufact#13, ext_price#24], 100, [ext_price#24 DESC NULLS LAST, brand#23 ASC NULLS FIRST, brand_id#22 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#13 ASC NULLS FIRST], [brand_id#22, brand#23, i_manufact_id#12, i_manufact#13, ext_price#24]
+
+(34) ColumnarToRow [codegen id : 1]
+Input [5]: [brand_id#22, brand#23, i_manufact_id#12, i_manufact#13, ext_price#24]
 
