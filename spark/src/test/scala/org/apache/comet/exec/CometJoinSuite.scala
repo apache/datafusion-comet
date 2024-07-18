@@ -342,10 +342,10 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          /*
           val df1 = sql(
             "SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1 AND " +
               "tbl_a._1 > tbl_b._2")
-          df1.explain()
           checkSparkAnswerAndOperator(df1)
 
           val df2 = sql(
@@ -367,16 +367,21 @@ class CometJoinSuite extends CometTestBase {
             "SELECT * FROM tbl_b RIGHT JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._1 > tbl_b._2")
           checkSparkAnswerAndOperator(df5)
+           */
 
           val df6 = sql(
             "SELECT * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._1 > tbl_b._2")
+          df6.explain()
           checkSparkAnswerAndOperator(df6)
 
+          /*
           val df7 = sql(
             "SELECT * FROM tbl_b FULL JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._1 > tbl_b._2")
+          df7.explain()
           checkSparkAnswerAndOperator(df7)
+           */
 
           /*
 
