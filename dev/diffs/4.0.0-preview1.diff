@@ -1693,6 +1693,29 @@ index a7efd0aa75e..fa65bda2051 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
+index 05872d41131..0dd83608bbd 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
+@@ -21,7 +21,7 @@ import java.io.File
+ 
+ import org.apache.hadoop.fs.{FileStatus, Path}
+ 
+-import org.apache.spark.sql.{DataFrame, Dataset, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, Dataset, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Expression, FileSourceConstantMetadataStructField, FileSourceGeneratedMetadataStructField, Literal}
+ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+@@ -134,7 +134,8 @@ class FileSourceCustomMetadataStructSuite extends QueryTest with SharedSparkSess
+     }
+   }
+ 
+-  test("[SPARK-43226] extra constant metadata fields with extractors") {
++  test("[SPARK-43226] extra constant metadata fields with extractors",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
+     withTempData("parquet", FILE_SCHEMA) { (_, f0, f1) =>
+       val format = new TestFileFormat(extraConstantMetadataFields) {
+         val extractPartitionNumber = { pf: PartitionedFile =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index 0a0b23d1e60..5685926250f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
