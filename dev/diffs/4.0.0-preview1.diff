@@ -2012,28 +2012,39 @@ index 25f6af1cc33..37b40cb5524 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 4bd35e0789b..6bfedb65078 100644
+index 4bd35e0789b..6544d86dbe0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-@@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
- import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+@@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
+     withClue(
+       s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
+         s"'$timestampRebaseMode''") {
+-      withAllParquetWriters {
++      // TODO: Comet cannot read DELTA_BINARY_PACKED created by V2 writer
++      // https://github.com/apache/datafusion-comet/issues/574
++      // withAllParquetWriters {
+         withTempDir { dir =>
+           val expected =
+             writeParquetFiles(dir, values, fromType, dictionaryEnabled, timestampRebaseMode)
+@@ -86,7 +88,7 @@ class ParquetTypeWideningSuite
+             }
+           }
+         }
+-      }
++      // }
+     }
+   }
  
- import org.apache.spark.SparkException
--import org.apache.spark.sql.{DataFrame, QueryTest, Row}
-+import org.apache.spark.sql.{DataFrame, IgnoreCometSuite, QueryTest, Row}
- import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
- import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
- import org.apache.spark.sql.functions.col
-@@ -38,7 +38,8 @@ class ParquetTypeWideningSuite
-     extends QueryTest
-     with ParquetTest
-     with SharedSparkSession
--    with AdaptiveSparkPlanHelper {
-+    with AdaptiveSparkPlanHelper
-+    with IgnoreCometSuite { // TODO: https://github.com/apache/datafusion-comet/issues/551
- 
-   import testImplicits._
- 
+@@ -190,7 +192,8 @@ class ParquetTypeWideningSuite
+       (Seq("1", "2", Short.MinValue.toString), ShortType, DoubleType),
+       (Seq("1", "2", Int.MinValue.toString), IntegerType, DoubleType),
+       (Seq("1.23", "10.34"), FloatType, DoubleType),
+-      (Seq("2020-01-01", "2020-01-02", "1312-02-27"), DateType, TimestampNTZType)
++      // TODO: Comet cannot handle older than "1582-10-15"
++      (Seq("2020-01-01", "2020-01-02"/* , "1312-02-27" */), DateType, TimestampNTZType)
+     )
+   }
+   test(s"parquet widening conversion $fromType -> $toType") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

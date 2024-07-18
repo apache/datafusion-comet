@@ -115,7 +115,7 @@ public class Utils {
       promotionInfo = new TypePromotionInfo(readType);
     } else {
       // If type promotion is not enable, we'll just use the Parquet primitive type and precision.
-      promotionInfo = new TypePromotionInfo(primitiveTypeId, precision, scale);
+      promotionInfo = new TypePromotionInfo(primitiveTypeId, precision, scale, bitWidth);
     }
 
     return Native.initColumnReader(
@@ -126,6 +126,7 @@ public class Utils {
         descriptor.getMaxDefinitionLevel(),
         descriptor.getMaxRepetitionLevel(),
         bitWidth,
+        promotionInfo.bitWidth,
         isSigned,
         primitiveType.getTypeLength(),
         precision,
@@ -147,11 +148,14 @@ public class Utils {
     int precision;
     // Decimal scale from the Spark read schema, or -1 if it's not decimal type.
     int scale;
+    // Integer bit width from the Spark read schema, or -1 if it's not integer type.
+    int bitWidth;
 
-    TypePromotionInfo(int physicalTypeId, int precision, int scale) {
+    TypePromotionInfo(int physicalTypeId, int precision, int scale, int bitWidth) {
       this.physicalTypeId = physicalTypeId;
       this.precision = precision;
       this.scale = scale;
+      this.bitWidth = bitWidth;
     }
 
     TypePromotionInfo(DataType sparkReadType) {
@@ -164,15 +168,22 @@ public class Utils {
       LogicalTypeAnnotation annotation = primitiveType.getLogicalTypeAnnotation();
       int precision = -1;
       int scale = -1;
+      int bitWidth = -1;
       if (annotation instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
         LogicalTypeAnnotation.DecimalLogicalTypeAnnotation decimalAnnotation =
             (LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) annotation;
         precision = decimalAnnotation.getPrecision();
         scale = decimalAnnotation.getScale();
       }
+      if (annotation instanceof LogicalTypeAnnotation.IntLogicalTypeAnnotation) {
+        LogicalTypeAnnotation.IntLogicalTypeAnnotation intAnnotation =
+            (LogicalTypeAnnotation.IntLogicalTypeAnnotation) annotation;
+        bitWidth = intAnnotation.getBitWidth();
+      }
       this.physicalTypeId = physicalTypeId;
       this.precision = precision;
       this.scale = scale;
+      this.bitWidth = bitWidth;
     }
   }
 
