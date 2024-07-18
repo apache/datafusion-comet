@@ -21,6 +21,17 @@ under the License.
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
+## Memory Tuning
+
+Comet currently doesn't share the memory allocation from Spark but owns its own memory allocation.
+That's said, Comet requires additional memory to be allocated. Comet provides some memory related configurations to help you tune the memory usage.
+
+By default, the amount of memory is `spark.comet.memory.overhead.factor` * `spark.executor.memory`.
+`COMET_MEMORY_OVERHEAD_FACTOR`'s default value is 0.2. You can increase the factor to require more
+memory for Comet to use, if you see OOM error.
+
+Besides, you can also set the memory explicitly by setting `spark.comet.memoryOverhead` to the desired value.
+Comet will allocate at least `spark.comet.memory.overhead.min` memory.
 
 ## Shuffle
 
