@@ -1,20 +1,20 @@
 TakeOrderedAndProject [channel,id,sales,returns,profit]
-  WholeStageCodegen (8)
+  WholeStageCodegen (5)
     HashAggregate [channel,id,spark_grouping_id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
-      InputAdapter
-        Exchange [channel,id,spark_grouping_id] #1
-          WholeStageCodegen (7)
-            HashAggregate [channel,id,spark_grouping_id,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
-              Expand [sales,returns,profit,channel,id]
-                InputAdapter
-                  Union
-                    WholeStageCodegen (2)
-                      HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
-                        InputAdapter
-                          Exchange [s_store_id] #2
-                            WholeStageCodegen (1)
-                              ColumnarToRow
-                                InputAdapter
+      ColumnarToRow
+        InputAdapter
+          CometColumnarExchange [channel,id,spark_grouping_id] #1
+            RowToColumnar
+              WholeStageCodegen (4)
+                HashAggregate [channel,id,spark_grouping_id,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                  Expand [sales,returns,profit,channel,id]
+                    InputAdapter
+                      Union
+                        WholeStageCodegen (1)
+                          HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [s_store_id] #2
                                   CometHashAggregate [s_store_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
                                     CometProject [sales_price,profit,return_amt,net_loss,s_store_id]
                                       CometBroadcastHashJoin [store_sk,sales_price,profit,return_amt,net_loss,s_store_sk,s_store_id]
@@ -43,13 +43,11 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         CometBroadcastExchange [s_store_sk,s_store_id] #5
                                           CometFilter [s_store_sk,s_store_id]
                                             CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
-                    WholeStageCodegen (4)
-                      HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
-                        InputAdapter
-                          Exchange [cp_catalog_page_id] #6
-                            WholeStageCodegen (3)
-                              ColumnarToRow
-                                InputAdapter
+                        WholeStageCodegen (2)
+                          HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [cp_catalog_page_id] #6
                                   CometHashAggregate [cp_catalog_page_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
                                     CometProject [sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
                                       CometBroadcastHashJoin [page_sk,sales_price,profit,return_amt,net_loss,cp_catalog_page_sk,cp_catalog_page_id]
@@ -68,13 +66,11 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         CometBroadcastExchange [cp_catalog_page_sk,cp_catalog_page_id] #7
                                           CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
                                             CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
-                    WholeStageCodegen (6)
-                      HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
-                        InputAdapter
-                          Exchange [web_site_id] #8
-                            WholeStageCodegen (5)
-                              ColumnarToRow
-                                InputAdapter
+                        WholeStageCodegen (3)
+                          HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                            ColumnarToRow
+                              InputAdapter
+                                CometColumnarExchange [web_site_id] #8
                                   CometHashAggregate [web_site_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
                                     CometProject [sales_price,profit,return_amt,net_loss,web_site_id]
                                       CometBroadcastHashJoin [wsr_web_site_sk,sales_price,profit,return_amt,net_loss,web_site_sk,web_site_id]

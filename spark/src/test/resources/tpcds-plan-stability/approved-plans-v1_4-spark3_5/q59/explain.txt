@@ -1,47 +1,43 @@
 == Physical Plan ==
-TakeOrderedAndProject (43)
-+- * Project (42)
-   +- * BroadcastHashJoin Inner BuildRight (41)
-      :- * Project (24)
-      :  +- * BroadcastHashJoin Inner BuildRight (23)
-      :     :- * Project (17)
-      :     :  +- * BroadcastHashJoin Inner BuildRight (16)
-      :     :     :- * HashAggregate (11)
-      :     :     :  +- Exchange (10)
-      :     :     :     +- * ColumnarToRow (9)
-      :     :     :        +- CometHashAggregate (8)
-      :     :     :           +- CometProject (7)
-      :     :     :              +- CometBroadcastHashJoin (6)
-      :     :     :                 :- CometFilter (2)
-      :     :     :                 :  +- CometScan parquet spark_catalog.default.store_sales (1)
-      :     :     :                 +- CometBroadcastExchange (5)
-      :     :     :                    +- CometFilter (4)
-      :     :     :                       +- CometScan parquet spark_catalog.default.date_dim (3)
-      :     :     +- BroadcastExchange (15)
-      :     :        +- * ColumnarToRow (14)
-      :     :           +- CometFilter (13)
-      :     :              +- CometScan parquet spark_catalog.default.store (12)
-      :     +- BroadcastExchange (22)
-      :        +- * ColumnarToRow (21)
-      :           +- CometProject (20)
-      :              +- CometFilter (19)
-      :                 +- CometScan parquet spark_catalog.default.date_dim (18)
-      +- BroadcastExchange (40)
-         +- * Project (39)
-            +- * BroadcastHashJoin Inner BuildRight (38)
-               :- * Project (32)
-               :  +- * BroadcastHashJoin Inner BuildRight (31)
-               :     :- * HashAggregate (26)
-               :     :  +- ReusedExchange (25)
-               :     +- BroadcastExchange (30)
-               :        +- * ColumnarToRow (29)
-               :           +- CometFilter (28)
-               :              +- CometScan parquet spark_catalog.default.store (27)
-               +- BroadcastExchange (37)
-                  +- * ColumnarToRow (36)
-                     +- CometProject (35)
-                        +- CometFilter (34)
-                           +- CometScan parquet spark_catalog.default.date_dim (33)
+* ColumnarToRow (39)
++- CometTakeOrderedAndProject (38)
+   +- CometProject (37)
+      +- CometBroadcastHashJoin (36)
+         :- CometProject (21)
+         :  +- CometBroadcastHashJoin (20)
+         :     :- CometProject (15)
+         :     :  +- CometBroadcastHashJoin (14)
+         :     :     :- CometHashAggregate (10)
+         :     :     :  +- CometColumnarExchange (9)
+         :     :     :     +- CometHashAggregate (8)
+         :     :     :        +- CometProject (7)
+         :     :     :           +- CometBroadcastHashJoin (6)
+         :     :     :              :- CometFilter (2)
+         :     :     :              :  +- CometScan parquet spark_catalog.default.store_sales (1)
+         :     :     :              +- CometBroadcastExchange (5)
+         :     :     :                 +- CometFilter (4)
+         :     :     :                    +- CometScan parquet spark_catalog.default.date_dim (3)
+         :     :     +- CometBroadcastExchange (13)
+         :     :        +- CometFilter (12)
+         :     :           +- CometScan parquet spark_catalog.default.store (11)
+         :     +- CometBroadcastExchange (19)
+         :        +- CometProject (18)
+         :           +- CometFilter (17)
+         :              +- CometScan parquet spark_catalog.default.date_dim (16)
+         +- CometBroadcastExchange (35)
+            +- CometProject (34)
+               +- CometBroadcastHashJoin (33)
+                  :- CometProject (28)
+                  :  +- CometBroadcastHashJoin (27)
+                  :     :- CometHashAggregate (23)
+                  :     :  +- ReusedExchange (22)
+                  :     +- CometBroadcastExchange (26)
+                  :        +- CometFilter (25)
+                  :           +- CometScan parquet spark_catalog.default.store (24)
+                  +- CometBroadcastExchange (32)
+                     +- CometProject (31)
+                        +- CometFilter (30)
+                           +- CometScan parquet spark_catalog.default.date_dim (29)
 
 
 (1) Scan parquet spark_catalog.default.store_sales
@@ -85,165 +81,144 @@ Input [4]: [ss_store_sk#1, ss_sales_price#2, d_week_seq#5, d_day_name#6]
 Keys [2]: [d_week_seq#5, ss_store_sk#1]
 Functions [7]: [partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Sunday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Monday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Tuesday  ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Wednesday) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Thursday ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Friday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Saturday ) THEN ss_sales_price#2 END))]
 
-(9) ColumnarToRow [codegen id : 1]
+(9) CometColumnarExchange
 Input [9]: [d_week_seq#5, ss_store_sk#1, sum#7, sum#8, sum#9, sum#10, sum#11, sum#12, sum#13]
+Arguments: hashpartitioning(d_week_seq#5, ss_store_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(10) Exchange
-Input [9]: [d_week_seq#5, ss_store_sk#1, sum#7, sum#8, sum#9, sum#10, sum#11, sum#12, sum#13]
-Arguments: hashpartitioning(d_week_seq#5, ss_store_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(11) HashAggregate [codegen id : 8]
+(10) CometHashAggregate
 Input [9]: [d_week_seq#5, ss_store_sk#1, sum#7, sum#8, sum#9, sum#10, sum#11, sum#12, sum#13]
 Keys [2]: [d_week_seq#5, ss_store_sk#1]
 Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#6 = Sunday   ) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Monday   ) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Tuesday  ) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Wednesday) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Thursday ) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Friday   ) THEN ss_sales_price#2 END)), sum(UnscaledValue(CASE WHEN (d_day_name#6 = Saturday ) THEN ss_sales_price#2 END))]
-Aggregate Attributes [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#6 = Sunday   ) THEN ss_sales_price#2 END))#14, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Monday   ) THEN ss_sales_price#2 END))#15, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Tuesday  ) THEN ss_sales_price#2 END))#16, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Wednesday) THEN ss_sales_price#2 END))#17, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Thursday ) THEN ss_sales_price#2 END))#18, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Friday   ) THEN ss_sales_price#2 END))#19, sum(UnscaledValue(CASE WHEN (d_day_name#6 = Saturday ) THEN ss_sales_price#2 END))#20]
-Results [9]: [d_week_seq#5, ss_store_sk#1, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Sunday   ) THEN ss_sales_price#2 END))#14,17,2) AS sun_sales#21, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Monday   ) THEN ss_sales_price#2 END))#15,17,2) AS mon_sales#22, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Tuesday  ) THEN ss_sales_price#2 END))#16,17,2) AS tue_sales#23, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Wednesday) THEN ss_sales_price#2 END))#17,17,2) AS wed_sales#24, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Thursday ) THEN ss_sales_price#2 END))#18,17,2) AS thu_sales#25, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Friday   ) THEN ss_sales_price#2 END))#19,17,2) AS fri_sales#26, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#6 = Saturday ) THEN ss_sales_price#2 END))#20,17,2) AS sat_sales#27]
 
-(12) Scan parquet spark_catalog.default.store
-Output [3]: [s_store_sk#28, s_store_id#29, s_store_name#30]
+(11) Scan parquet spark_catalog.default.store
+Output [3]: [s_store_sk#14, s_store_id#15, s_store_name#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
 PushedFilters: [IsNotNull(s_store_sk), IsNotNull(s_store_id)]
 ReadSchema: struct<s_store_sk:int,s_store_id:string,s_store_name:string>
 
-(13) CometFilter
-Input [3]: [s_store_sk#28, s_store_id#29, s_store_name#30]
-Condition : (isnotnull(s_store_sk#28) AND isnotnull(s_store_id#29))
+(12) CometFilter
+Input [3]: [s_store_sk#14, s_store_id#15, s_store_name#16]
+Condition : (isnotnull(s_store_sk#14) AND isnotnull(s_store_id#15))
 
-(14) ColumnarToRow [codegen id : 2]
-Input [3]: [s_store_sk#28, s_store_id#29, s_store_name#30]
+(13) CometBroadcastExchange
+Input [3]: [s_store_sk#14, s_store_id#15, s_store_name#16]
+Arguments: [s_store_sk#14, s_store_id#15, s_store_name#16]
 
-(15) BroadcastExchange
-Input [3]: [s_store_sk#28, s_store_id#29, s_store_name#30]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=2]
+(14) CometBroadcastHashJoin
+Left output [9]: [d_week_seq#5, ss_store_sk#1, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23]
+Right output [3]: [s_store_sk#14, s_store_id#15, s_store_name#16]
+Arguments: [ss_store_sk#1], [s_store_sk#14], Inner, BuildRight
 
-(16) BroadcastHashJoin [codegen id : 8]
-Left keys [1]: [ss_store_sk#1]
-Right keys [1]: [s_store_sk#28]
-Join type: Inner
-Join condition: None
+(15) CometProject
+Input [12]: [d_week_seq#5, ss_store_sk#1, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23, s_store_sk#14, s_store_id#15, s_store_name#16]
+Arguments: [d_week_seq#5, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23, s_store_id#15, s_store_name#16], [d_week_seq#5, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23, s_store_id#15, s_store_name#16]
 
-(17) Project [codegen id : 8]
-Output [10]: [d_week_seq#5, sun_sales#21, mon_sales#22, tue_sales#23, wed_sales#24, thu_sales#25, fri_sales#26, sat_sales#27, s_store_id#29, s_store_name#30]
-Input [12]: [d_week_seq#5, ss_store_sk#1, sun_sales#21, mon_sales#22, tue_sales#23, wed_sales#24, thu_sales#25, fri_sales#26, sat_sales#27, s_store_sk#28, s_store_id#29, s_store_name#30]
-
-(18) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_month_seq#31, d_week_seq#32]
+(16) Scan parquet spark_catalog.default.date_dim
+Output [2]: [d_month_seq#24, d_week_seq#25]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), GreaterThanOrEqual(d_month_seq,1212), LessThanOrEqual(d_month_seq,1223), IsNotNull(d_week_seq)]
 ReadSchema: struct<d_month_seq:int,d_week_seq:int>
 
-(19) CometFilter
-Input [2]: [d_month_seq#31, d_week_seq#32]
-Condition : (((isnotnull(d_month_seq#31) AND (d_month_seq#31 >= 1212)) AND (d_month_seq#31 <= 1223)) AND isnotnull(d_week_seq#32))
+(17) CometFilter
+Input [2]: [d_month_seq#24, d_week_seq#25]
+Condition : (((isnotnull(d_month_seq#24) AND (d_month_seq#24 >= 1212)) AND (d_month_seq#24 <= 1223)) AND isnotnull(d_week_seq#25))
 
-(20) CometProject
-Input [2]: [d_month_seq#31, d_week_seq#32]
-Arguments: [d_week_seq#32], [d_week_seq#32]
+(18) CometProject
+Input [2]: [d_month_seq#24, d_week_seq#25]
+Arguments: [d_week_seq#25], [d_week_seq#25]
 
-(21) ColumnarToRow [codegen id : 3]
-Input [1]: [d_week_seq#32]
+(19) CometBroadcastExchange
+Input [1]: [d_week_seq#25]
+Arguments: [d_week_seq#25]
 
-(22) BroadcastExchange
-Input [1]: [d_week_seq#32]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
+(20) CometBroadcastHashJoin
+Left output [10]: [d_week_seq#5, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23, s_store_id#15, s_store_name#16]
+Right output [1]: [d_week_seq#25]
+Arguments: [d_week_seq#5], [d_week_seq#25], Inner, BuildRight
 
-(23) BroadcastHashJoin [codegen id : 8]
-Left keys [1]: [d_week_seq#5]
-Right keys [1]: [d_week_seq#32]
-Join type: Inner
-Join condition: None
+(21) CometProject
+Input [11]: [d_week_seq#5, sun_sales#17, mon_sales#18, tue_sales#19, wed_sales#20, thu_sales#21, fri_sales#22, sat_sales#23, s_store_id#15, s_store_name#16, d_week_seq#25]
+Arguments: [s_store_name1#26, d_week_seq1#27, s_store_id1#28, sun_sales1#29, mon_sales1#30, tue_sales1#31, wed_sales1#32, thu_sales1#33, fri_sales1#34, sat_sales1#35], [s_store_name#16 AS s_store_name1#26, d_week_seq#5 AS d_week_seq1#27, s_store_id#15 AS s_store_id1#28, sun_sales#17 AS sun_sales1#29, mon_sales#18 AS mon_sales1#30, tue_sales#19 AS tue_sales1#31, wed_sales#20 AS wed_sales1#32, thu_sales#21 AS thu_sales1#33, fri_sales#22 AS fri_sales1#34, sat_sales#23 AS sat_sales1#35]
 
-(24) Project [codegen id : 8]
-Output [10]: [s_store_name#30 AS s_store_name1#33, d_week_seq#5 AS d_week_seq1#34, s_store_id#29 AS s_store_id1#35, sun_sales#21 AS sun_sales1#36, mon_sales#22 AS mon_sales1#37, tue_sales#23 AS tue_sales1#38, wed_sales#24 AS wed_sales1#39, thu_sales#25 AS thu_sales1#40, fri_sales#26 AS fri_sales1#41, sat_sales#27 AS sat_sales1#42]
-Input [11]: [d_week_seq#5, sun_sales#21, mon_sales#22, tue_sales#23, wed_sales#24, thu_sales#25, fri_sales#26, sat_sales#27, s_store_id#29, s_store_name#30, d_week_seq#32]
+(22) ReusedExchange [Reuses operator id: 9]
+Output [9]: [d_week_seq#36, ss_store_sk#37, sum#38, sum#39, sum#40, sum#41, sum#42, sum#43, sum#44]
 
-(25) ReusedExchange [Reuses operator id: 10]
-Output [9]: [d_week_seq#43, ss_store_sk#44, sum#45, sum#46, sum#47, sum#48, sum#49, sum#50, sum#51]
+(23) CometHashAggregate
+Input [9]: [d_week_seq#36, ss_store_sk#37, sum#38, sum#39, sum#40, sum#41, sum#42, sum#43, sum#44]
+Keys [2]: [d_week_seq#36, ss_store_sk#37]
+Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#45 = Sunday   ) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Monday   ) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Tuesday  ) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Wednesday) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Thursday ) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Friday   ) THEN ss_sales_price#46 END)), sum(UnscaledValue(CASE WHEN (d_day_name#45 = Saturday ) THEN ss_sales_price#46 END))]
 
-(26) HashAggregate [codegen id : 7]
-Input [9]: [d_week_seq#43, ss_store_sk#44, sum#45, sum#46, sum#47, sum#48, sum#49, sum#50, sum#51]
-Keys [2]: [d_week_seq#43, ss_store_sk#44]
-Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#52 = Sunday   ) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Monday   ) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Tuesday  ) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Wednesday) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Thursday ) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Friday   ) THEN ss_sales_price#53 END)), sum(UnscaledValue(CASE WHEN (d_day_name#52 = Saturday ) THEN ss_sales_price#53 END))]
-Aggregate Attributes [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#52 = Sunday   ) THEN ss_sales_price#53 END))#14, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Monday   ) THEN ss_sales_price#53 END))#15, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Tuesday  ) THEN ss_sales_price#53 END))#16, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Wednesday) THEN ss_sales_price#53 END))#17, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Thursday ) THEN ss_sales_price#53 END))#18, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Friday   ) THEN ss_sales_price#53 END))#19, sum(UnscaledValue(CASE WHEN (d_day_name#52 = Saturday ) THEN ss_sales_price#53 END))#20]
-Results [9]: [d_week_seq#43, ss_store_sk#44, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Sunday   ) THEN ss_sales_price#53 END))#14,17,2) AS sun_sales#54, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Monday   ) THEN ss_sales_price#53 END))#15,17,2) AS mon_sales#55, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Tuesday  ) THEN ss_sales_price#53 END))#16,17,2) AS tue_sales#56, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Wednesday) THEN ss_sales_price#53 END))#17,17,2) AS wed_sales#57, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Thursday ) THEN ss_sales_price#53 END))#18,17,2) AS thu_sales#58, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Friday   ) THEN ss_sales_price#53 END))#19,17,2) AS fri_sales#59, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#52 = Saturday ) THEN ss_sales_price#53 END))#20,17,2) AS sat_sales#60]
-
-(27) Scan parquet spark_catalog.default.store
-Output [2]: [s_store_sk#61, s_store_id#62]
+(24) Scan parquet spark_catalog.default.store
+Output [2]: [s_store_sk#47, s_store_id#48]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
 PushedFilters: [IsNotNull(s_store_sk), IsNotNull(s_store_id)]
 ReadSchema: struct<s_store_sk:int,s_store_id:string>
 
-(28) CometFilter
-Input [2]: [s_store_sk#61, s_store_id#62]
-Condition : (isnotnull(s_store_sk#61) AND isnotnull(s_store_id#62))
+(25) CometFilter
+Input [2]: [s_store_sk#47, s_store_id#48]
+Condition : (isnotnull(s_store_sk#47) AND isnotnull(s_store_id#48))
 
-(29) ColumnarToRow [codegen id : 5]
-Input [2]: [s_store_sk#61, s_store_id#62]
+(26) CometBroadcastExchange
+Input [2]: [s_store_sk#47, s_store_id#48]
+Arguments: [s_store_sk#47, s_store_id#48]
 
-(30) BroadcastExchange
-Input [2]: [s_store_sk#61, s_store_id#62]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=4]
+(27) CometBroadcastHashJoin
+Left output [9]: [d_week_seq#36, ss_store_sk#37, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55]
+Right output [2]: [s_store_sk#47, s_store_id#48]
+Arguments: [ss_store_sk#37], [s_store_sk#47], Inner, BuildRight
 
-(31) BroadcastHashJoin [codegen id : 7]
-Left keys [1]: [ss_store_sk#44]
-Right keys [1]: [s_store_sk#61]
-Join type: Inner
-Join condition: None
+(28) CometProject
+Input [11]: [d_week_seq#36, ss_store_sk#37, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55, s_store_sk#47, s_store_id#48]
+Arguments: [d_week_seq#36, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55, s_store_id#48], [d_week_seq#36, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55, s_store_id#48]
 
-(32) Project [codegen id : 7]
-Output [9]: [d_week_seq#43, sun_sales#54, mon_sales#55, tue_sales#56, wed_sales#57, thu_sales#58, fri_sales#59, sat_sales#60, s_store_id#62]
-Input [11]: [d_week_seq#43, ss_store_sk#44, sun_sales#54, mon_sales#55, tue_sales#56, wed_sales#57, thu_sales#58, fri_sales#59, sat_sales#60, s_store_sk#61, s_store_id#62]
-
-(33) Scan parquet spark_catalog.default.date_dim
-Output [2]: [d_month_seq#63, d_week_seq#64]
+(29) Scan parquet spark_catalog.default.date_dim
+Output [2]: [d_month_seq#56, d_week_seq#57]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), GreaterThanOrEqual(d_month_seq,1224), LessThanOrEqual(d_month_seq,1235), IsNotNull(d_week_seq)]
 ReadSchema: struct<d_month_seq:int,d_week_seq:int>
 
-(34) CometFilter
-Input [2]: [d_month_seq#63, d_week_seq#64]
-Condition : (((isnotnull(d_month_seq#63) AND (d_month_seq#63 >= 1224)) AND (d_month_seq#63 <= 1235)) AND isnotnull(d_week_seq#64))
+(30) CometFilter
+Input [2]: [d_month_seq#56, d_week_seq#57]
+Condition : (((isnotnull(d_month_seq#56) AND (d_month_seq#56 >= 1224)) AND (d_month_seq#56 <= 1235)) AND isnotnull(d_week_seq#57))
 
-(35) CometProject
-Input [2]: [d_month_seq#63, d_week_seq#64]
-Arguments: [d_week_seq#64], [d_week_seq#64]
+(31) CometProject
+Input [2]: [d_month_seq#56, d_week_seq#57]
+Arguments: [d_week_seq#57], [d_week_seq#57]
 
-(36) ColumnarToRow [codegen id : 6]
-Input [1]: [d_week_seq#64]
+(32) CometBroadcastExchange
+Input [1]: [d_week_seq#57]
+Arguments: [d_week_seq#57]
 
-(37) BroadcastExchange
-Input [1]: [d_week_seq#64]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
+(33) CometBroadcastHashJoin
+Left output [9]: [d_week_seq#36, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55, s_store_id#48]
+Right output [1]: [d_week_seq#57]
+Arguments: [d_week_seq#36], [d_week_seq#57], Inner, BuildRight
 
-(38) BroadcastHashJoin [codegen id : 7]
-Left keys [1]: [d_week_seq#43]
-Right keys [1]: [d_week_seq#64]
-Join type: Inner
-Join condition: None
+(34) CometProject
+Input [10]: [d_week_seq#36, sun_sales#49, mon_sales#50, tue_sales#51, wed_sales#52, thu_sales#53, fri_sales#54, sat_sales#55, s_store_id#48, d_week_seq#57]
+Arguments: [d_week_seq2#58, s_store_id2#59, sun_sales2#60, mon_sales2#61, tue_sales2#62, wed_sales2#63, thu_sales2#64, fri_sales2#65, sat_sales2#66], [d_week_seq#36 AS d_week_seq2#58, s_store_id#48 AS s_store_id2#59, sun_sales#49 AS sun_sales2#60, mon_sales#50 AS mon_sales2#61, tue_sales#51 AS tue_sales2#62, wed_sales#52 AS wed_sales2#63, thu_sales#53 AS thu_sales2#64, fri_sales#54 AS fri_sales2#65, sat_sales#55 AS sat_sales2#66]
 
-(39) Project [codegen id : 7]
-Output [9]: [d_week_seq#43 AS d_week_seq2#65, s_store_id#62 AS s_store_id2#66, sun_sales#54 AS sun_sales2#67, mon_sales#55 AS mon_sales2#68, tue_sales#56 AS tue_sales2#69, wed_sales#57 AS wed_sales2#70, thu_sales#58 AS thu_sales2#71, fri_sales#59 AS fri_sales2#72, sat_sales#60 AS sat_sales2#73]
-Input [10]: [d_week_seq#43, sun_sales#54, mon_sales#55, tue_sales#56, wed_sales#57, thu_sales#58, fri_sales#59, sat_sales#60, s_store_id#62, d_week_seq#64]
+(35) CometBroadcastExchange
+Input [9]: [d_week_seq2#58, s_store_id2#59, sun_sales2#60, mon_sales2#61, tue_sales2#62, wed_sales2#63, thu_sales2#64, fri_sales2#65, sat_sales2#66]
+Arguments: [d_week_seq2#58, s_store_id2#59, sun_sales2#60, mon_sales2#61, tue_sales2#62, wed_sales2#63, thu_sales2#64, fri_sales2#65, sat_sales2#66]
 
-(40) BroadcastExchange
-Input [9]: [d_week_seq2#65, s_store_id2#66, sun_sales2#67, mon_sales2#68, tue_sales2#69, wed_sales2#70, thu_sales2#71, fri_sales2#72, sat_sales2#73]
-Arguments: HashedRelationBroadcastMode(List(input[1, string, true], (input[0, int, true] - 52)),false), [plan_id=6]
+(36) CometBroadcastHashJoin
+Left output [10]: [s_store_name1#26, d_week_seq1#27, s_store_id1#28, sun_sales1#29, mon_sales1#30, tue_sales1#31, wed_sales1#32, thu_sales1#33, fri_sales1#34, sat_sales1#35]
+Right output [9]: [d_week_seq2#58, s_store_id2#59, sun_sales2#60, mon_sales2#61, tue_sales2#62, wed_sales2#63, thu_sales2#64, fri_sales2#65, sat_sales2#66]
+Arguments: [s_store_id1#28, d_week_seq1#27], [s_store_id2#59, (d_week_seq2#58 - 52)], Inner, BuildRight
 
-(41) BroadcastHashJoin [codegen id : 8]
-Left keys [2]: [s_store_id1#35, d_week_seq1#34]
-Right keys [2]: [s_store_id2#66, (d_week_seq2#65 - 52)]
-Join type: Inner
-Join condition: None
+(37) CometProject
+Input [19]: [s_store_name1#26, d_week_seq1#27, s_store_id1#28, sun_sales1#29, mon_sales1#30, tue_sales1#31, wed_sales1#32, thu_sales1#33, fri_sales1#34, sat_sales1#35, d_week_seq2#58, s_store_id2#59, sun_sales2#60, mon_sales2#61, tue_sales2#62, wed_sales2#63, thu_sales2#64, fri_sales2#65, sat_sales2#66]
+Arguments: [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1 / sun_sales2)#67, (mon_sales1 / mon_sales2)#68, (tue_sales1 / tue_sales2)#69, (wed_sales1 / wed_sales2)#70, (thu_sales1 / thu_sales2)#71, (fri_sales1 / fri_sales2)#72, (sat_sales1 / sat_sales2)#73], [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1#29 / sun_sales2#60) AS (sun_sales1 / sun_sales2)#67, (mon_sales1#30 / mon_sales2#61) AS (mon_sales1 / mon_sales2)#68, (tue_sales1#31 / tue_sales2#62) AS (tue_sales1 / tue_sales2)#69, (wed_sales1#32 / wed_sales2#63) AS (wed_sales1 / wed_sales2)#70, (thu_sales1#33 / thu_sales2#64) AS (thu_sales1 / thu_sales2)#71, (fri_sales1#34 / fri_sales2#65) AS (fri_sales1 / fri_sales2)#72, (sat_sales1#35 / sat_sales2#66) AS (sat_sales1 / sat_sales2)#73]
 
-(42) Project [codegen id : 8]
-Output [10]: [s_store_name1#33, s_store_id1#35, d_week_seq1#34, (sun_sales1#36 / sun_sales2#67) AS (sun_sales1 / sun_sales2)#74, (mon_sales1#37 / mon_sales2#68) AS (mon_sales1 / mon_sales2)#75, (tue_sales1#38 / tue_sales2#69) AS (tue_sales1 / tue_sales2)#76, (wed_sales1#39 / wed_sales2#70) AS (wed_sales1 / wed_sales2)#77, (thu_sales1#40 / thu_sales2#71) AS (thu_sales1 / thu_sales2)#78, (fri_sales1#41 / fri_sales2#72) AS (fri_sales1 / fri_sales2)#79, (sat_sales1#42 / sat_sales2#73) AS (sat_sales1 / sat_sales2)#80]
-Input [19]: [s_store_name1#33, d_week_seq1#34, s_store_id1#35, sun_sales1#36, mon_sales1#37, tue_sales1#38, wed_sales1#39, thu_sales1#40, fri_sales1#41, sat_sales1#42, d_week_seq2#65, s_store_id2#66, sun_sales2#67, mon_sales2#68, tue_sales2#69, wed_sales2#70, thu_sales2#71, fri_sales2#72, sat_sales2#73]
+(38) CometTakeOrderedAndProject
+Input [10]: [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1 / sun_sales2)#67, (mon_sales1 / mon_sales2)#68, (tue_sales1 / tue_sales2)#69, (wed_sales1 / wed_sales2)#70, (thu_sales1 / thu_sales2)#71, (fri_sales1 / fri_sales2)#72, (sat_sales1 / sat_sales2)#73]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name1#26 ASC NULLS FIRST,s_store_id1#28 ASC NULLS FIRST,d_week_seq1#27 ASC NULLS FIRST], output=[s_store_name1#26,s_store_id1#28,d_week_seq1#27,(sun_sales1 / sun_sales2)#67,(mon_sales1 / mon_sales2)#68,(tue_sales1 / tue_sales2)#69,(wed_sales1 / wed_sales2)#70,(thu_sales1 / thu_sales2)#71,(fri_sales1 / fri_sales2)#72,(sat_sales1 / sat_sales2)#73]), [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1 / sun_sales2)#67, (mon_sales1 / mon_sales2)#68, (tue_sales1 / tue_sales2)#69, (wed_sales1 / wed_sales2)#70, (thu_sales1 / thu_sales2)#71, (fri_sales1 / fri_sales2)#72, (sat_sales1 / sat_sales2)#73], 100, [s_store_name1#26 ASC NULLS FIRST, s_store_id1#28 ASC NULLS FIRST, d_week_seq1#27 ASC NULLS FIRST], [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1 / sun_sales2)#67, (mon_sales1 / mon_sales2)#68, (tue_sales1 / tue_sales2)#69, (wed_sales1 / wed_sales2)#70, (thu_sales1 / thu_sales2)#71, (fri_sales1 / fri_sales2)#72, (sat_sales1 / sat_sales2)#73]
 
-(43) TakeOrderedAndProject
-Input [10]: [s_store_name1#33, s_store_id1#35, d_week_seq1#34, (sun_sales1 / sun_sales2)#74, (mon_sales1 / mon_sales2)#75, (tue_sales1 / tue_sales2)#76, (wed_sales1 / wed_sales2)#77, (thu_sales1 / thu_sales2)#78, (fri_sales1 / fri_sales2)#79, (sat_sales1 / sat_sales2)#80]
-Arguments: 100, [s_store_name1#33 ASC NULLS FIRST, s_store_id1#35 ASC NULLS FIRST, d_week_seq1#34 ASC NULLS FIRST], [s_store_name1#33, s_store_id1#35, d_week_seq1#34, (sun_sales1 / sun_sales2)#74, (mon_sales1 / mon_sales2)#75, (tue_sales1 / tue_sales2)#76, (wed_sales1 / wed_sales2)#77, (thu_sales1 / thu_sales2)#78, (fri_sales1 / fri_sales2)#79, (sat_sales1 / sat_sales2)#80]
+(39) ColumnarToRow [codegen id : 1]
+Input [10]: [s_store_name1#26, s_store_id1#28, d_week_seq1#27, (sun_sales1 / sun_sales2)#67, (mon_sales1 / mon_sales2)#68, (tue_sales1 / tue_sales2)#69, (wed_sales1 / wed_sales2)#70, (thu_sales1 / thu_sales2)#71, (fri_sales1 / fri_sales2)#72, (sat_sales1 / sat_sales2)#73]
 
