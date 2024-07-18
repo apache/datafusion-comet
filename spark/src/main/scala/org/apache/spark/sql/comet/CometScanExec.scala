@@ -33,12 +33,11 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.shims.ShimCometScanExec
-import org.apache.spark.sql.execution.{ScalarSubquery, _}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
-import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -95,7 +94,7 @@ case class CometScanExec(
     val startTime = System.nanoTime()
     val ret =
       relation.location.listFiles(partitionFilters.filterNot(isDynamicPruningFilter), dataFilters)
-    setFilesNumAndSizeMetric(collection.immutable.Seq(ret: _*), true)
+    setFilesNumAndSizeMetric(ret, true)
     val timeTakenMs =
       NANOSECONDS.toMillis((System.nanoTime() - startTime) + optimizerMetadataTimeNs)
     driverMetrics("metadataTime") = timeTakenMs
@@ -120,7 +119,7 @@ case class CometScanExec(
         },
         Nil)
       val ret = selectedPartitions.filter(p => boundPredicate.eval(p.values))
-      setFilesNumAndSizeMetric(collection.immutable.Seq(ret: _*), false)
+      setFilesNumAndSizeMetric(ret, false)
       val timeTakenMs = (System.nanoTime() - startTime) / 1000 / 1000
       driverMetrics("pruningTime") = timeTakenMs
       ret
@@ -135,43 +134,8 @@ case class CometScanExec(
   override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) =
     (wrapped.outputPartitioning, wrapped.outputOrdering)
 
-  def translateToV1Filters(
-      dataFilters: Seq[Expression],
-      scalarSubqueryToLiteral: ScalarSubquery => Literal): Seq[Filter] = {
-    val scalarSubqueryReplaced = dataFilters.map(_.transform {
-      // Replace scalar subquery to literal so that `DataSourceStrategy.translateFilter` can
-      // support translating it.
-      case scalarSubquery: ScalarSubquery => scalarSubqueryToLiteral(scalarSubquery)
-    })
-
-    val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
-    // `dataFilters` should not include any constant metadata col filters
-    // because the metadata struct has been flatted in FileSourceStrategy
-    // and thus metadata col filters are invalid to be pushed down. Metadata that is generated
-    // during the scan can be used for filters.
-    scalarSubqueryReplaced
-      .filterNot(_.references.exists {
-        isFileSourceConstantMetadataAttribute
-      })
-      .flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
-  }
-
   @transient
-  private lazy val pushedDownFilters =
-    translateToV1Filters(dataFilters, q => convertScalarSubqueryToLiteral(q))
-
-  private def convertScalarSubqueryToLiteral(subQuery: ScalarSubquery): Literal = {
-    val subqueryClass = classOf[ScalarSubquery]
-    try {
-      val toLiteralMethod = subqueryClass.getMethod("toLiteral")
-      toLiteralMethod.invoke(subQuery).asInstanceOf[Literal]
-    } catch {
-      case _: NoSuchMethodException =>
-        val result = subqueryClass.getDeclaredField("result")
-        result.setAccessible(true)
-        Literal.create(result, subQuery.dataType)
-    }
-  }
+  private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
 
   override lazy val metadata: Map[String, String] =
     if (wrapped == null) Map.empty else wrapped.metadata

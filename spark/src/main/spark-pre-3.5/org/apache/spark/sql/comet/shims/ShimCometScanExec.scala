@@ -20,16 +20,15 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.comet.shims.ShimFileFormat
-
 import org.apache.hadoop.fs.{FileStatus, Path}
-
 import org.apache.spark.SparkException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, PartitionDirectory, PartitionedFile}
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 
 trait ShimCometScanExec {
@@ -103,10 +102,9 @@ trait ShimCometScanExec {
                            partitionValues: InternalRow): Seq[PartitionedFile] =
     PartitionedFileUtil.splitFiles(sparkSession, file, filePath, isSplitable, maxSplitBytes, partitionValues)
 
-  protected def isFileSourceConstantMetadataAttribute(attr: Attribute): Boolean = {
-    attr.getClass.getName match {
-      case " org.apache.spark.sql.catalyst.expressions.FileSourceConstantMetadataAttribute" => true
-      case _ => false
-    }
+  protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
+    val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
+    dataFilters.flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
   }
+
 }

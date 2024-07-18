@@ -23,11 +23,12 @@ import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceConstantMetadataAttribute, Literal}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources._
-import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
+import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery}
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 
 trait ShimCometScanExec {
@@ -69,10 +70,29 @@ trait ShimCometScanExec {
                            partitionValues: InternalRow): Seq[PartitionedFile] =
     PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
 
-  protected def isFileSourceConstantMetadataAttribute(attr: Attribute): Boolean = {
-    attr.getClass.getName match {
-      case " org.apache.spark.sql.catalyst.expressions.FileSourceConstantMetadataAttribute" => true
-      case _ => false
-    }
+  protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
+    translateToV1Filters(dataFilters, _.toLiteral)
   }
+
+  // From Spark FileSourceScanLike
+  private def translateToV1Filters(relation: HadoopFsRelation,
+                                    dataFilters: Seq[Expression],
+                                    scalarSubqueryToLiteral: ScalarSubquery => Literal): Seq[Filter] = {
+    val scalarSubqueryReplaced = dataFilters.map(_.transform {
+      // Replace scalar subquery to literal so that `DataSourceStrategy.translateFilter` can
+      // support translating it.
+      case scalarSubquery: ScalarSubquery => scalarSubqueryToLiteral(scalarSubquery)
+    })
+
+    val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
+    // `dataFilters` should not include any constant metadata col filters
+    // because the metadata struct has been flatted in FileSourceStrategy
+    // and thus metadata col filters are invalid to be pushed down. Metadata that is generated
+    // during the scan can be used for filters.
+    scalarSubqueryReplaced.filterNot(_.references.exists {
+      case FileSourceConstantMetadataAttribute(_) => true
+      case _ => false
+    }).flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
+  }
+
 }
