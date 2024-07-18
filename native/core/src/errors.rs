@@ -234,6 +234,13 @@ impl jni::errors::ToException for CometError {
                 class: "org/apache/comet/ParquetRuntimeException".to_string(),
                 msg: self.to_string(),
             },
+            CometError::DataFusion {
+                msg: _,
+                source: DataFusionError::External(e),
+            } if matches!(e.downcast_ref(), Some(SparkError::CastOverFlow { .. })) => Exception {
+                class: "org/apache/spark/sql/comet/CometArithmeticException".to_string(),
+                msg: self.to_string(),
+            },
             _other => Exception {
                 class: "org/apache/comet/CometNativeException".to_string(),
                 msg: self.to_string(),
