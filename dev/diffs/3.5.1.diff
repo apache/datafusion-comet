@@ -2003,7 +2003,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..7d7a39ba82b 100644
+index 746f289c393..1a2f1f7e3fd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -25,10 +25,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -2120,14 +2120,12 @@ index 746f289c393..7d7a39ba82b 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1029,15 +1055,23 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1029,15 +1055,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
 -              val shuffles = collect(plan) { case s: ShuffleExchangeExec => s }
-+              val shuffles = collect(plan) {
-+                case s: ShuffleExchangeLike => s
-+              }
++              val shuffles = collect(plan) { case s: ShuffleExchangeLike => s }
                assert(shuffles.length == expectedNumShuffles)
  
                val scans = collect(plan) {
