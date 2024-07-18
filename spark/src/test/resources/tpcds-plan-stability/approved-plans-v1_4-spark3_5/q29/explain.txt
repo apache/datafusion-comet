@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (45)
-+- * HashAggregate (44)
-   +- Exchange (43)
-      +- * ColumnarToRow (42)
+* ColumnarToRow (45)
++- CometTakeOrderedAndProject (44)
+   +- CometHashAggregate (43)
+      +- CometColumnarExchange (42)
          +- CometHashAggregate (41)
             +- CometProject (40)
                +- CometBroadcastHashJoin (39)
@@ -245,23 +245,21 @@ Input [7]: [ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_store_id#28,
 Keys [4]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29]
 Functions [3]: [partial_sum(ss_quantity#5), partial_sum(sr_return_quantity#11), partial_sum(cs_quantity#16)]
 
-(42) ColumnarToRow [codegen id : 1]
+(42) CometColumnarExchange
 Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, sum#33, sum#34, sum#35]
+Arguments: hashpartitioning(i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(43) Exchange
-Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, sum#33, sum#34, sum#35]
-Arguments: hashpartitioning(i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(44) HashAggregate [codegen id : 2]
+(43) CometHashAggregate
 Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, sum#33, sum#34, sum#35]
 Keys [4]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29]
 Functions [3]: [sum(ss_quantity#5), sum(sr_return_quantity#11), sum(cs_quantity#16)]
-Aggregate Attributes [3]: [sum(ss_quantity#5)#36, sum(sr_return_quantity#11)#37, sum(cs_quantity#16)#38]
-Results [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, sum(ss_quantity#5)#36 AS store_sales_quantity#39, sum(sr_return_quantity#11)#37 AS store_returns_quantity#40, sum(cs_quantity#16)#38 AS catalog_sales_quantity#41]
 
-(45) TakeOrderedAndProject
-Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#39, store_returns_quantity#40, catalog_sales_quantity#41]
-Arguments: 100, [i_item_id#31 ASC NULLS FIRST, i_item_desc#32 ASC NULLS FIRST, s_store_id#28 ASC NULLS FIRST, s_store_name#29 ASC NULLS FIRST], [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#39, store_returns_quantity#40, catalog_sales_quantity#41]
+(44) CometTakeOrderedAndProject
+Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#36, store_returns_quantity#37, catalog_sales_quantity#38]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#31 ASC NULLS FIRST,i_item_desc#32 ASC NULLS FIRST,s_store_id#28 ASC NULLS FIRST,s_store_name#29 ASC NULLS FIRST], output=[i_item_id#31,i_item_desc#32,s_store_id#28,s_store_name#29,store_sales_quantity#36,store_returns_quantity#37,catalog_sales_quantity#38]), [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#36, store_returns_quantity#37, catalog_sales_quantity#38], 100, [i_item_id#31 ASC NULLS FIRST, i_item_desc#32 ASC NULLS FIRST, s_store_id#28 ASC NULLS FIRST, s_store_name#29 ASC NULLS FIRST], [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#36, store_returns_quantity#37, catalog_sales_quantity#38]
+
+(45) ColumnarToRow [codegen id : 1]
+Input [7]: [i_item_id#31, i_item_desc#32, s_store_id#28, s_store_name#29, store_sales_quantity#36, store_returns_quantity#37, catalog_sales_quantity#38]
 
 ===== Subqueries =====
 
