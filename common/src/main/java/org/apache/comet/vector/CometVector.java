@@ -19,7 +19,6 @@
 
 package org.apache.comet.vector;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 
 import org.apache.arrow.vector.FixedWidthVector;
@@ -79,14 +78,23 @@ public abstract class CometVector extends ColumnVector {
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
-      BigDecimal javaDecimal = new BigDecimal(bigInteger, scale);
       try {
-        return Decimal.apply(javaDecimal, precision, scale);
+        Decimal d = Decimal.apply(bigInteger);
+        boolean success = d.changePrecision(precision, scale);
+        if (!success) {
+          throw new ArithmeticException(
+              "Overflowing when convert "
+                  + bigInteger
+                  + " to decimal with precision: "
+                  + precision
+                  + " and scale: "
+                  + scale);
+        }
+        return d;
       } catch (ArithmeticException e) {
         throw new ArithmeticException(
             "Cannot convert "
-                + javaDecimal
-                + " (bytes: "
+                + "(bytes: "
                 + bytes
                 + ", integer: "
                 + bigInteger
