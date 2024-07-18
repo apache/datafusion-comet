@@ -19,34 +19,71 @@
 
 package org.apache.spark.sql.benchmark
 
+import scala.io.Source
+
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{CometTPCQueryBase, SparkSession}
 import org.apache.spark.sql.catalyst.catalog.HiveTableRelation
 import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
-import org.apache.spark.sql.catalyst.util.resourceToString
-import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
+import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark.tables
+import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmarkArguments
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 
 import org.apache.comet.CometConf
 
 /**
- * Base class for CometTPCDSQueryBenchmark and CometTPCHQueryBenchmark Mostly copied from
- * TPCDSQueryBenchmark. TODO: make TPCDSQueryBenchmark extensible to avoid copies
+ * Benchmark to measure Comet query performance with micro benchmarks that use the TPCDS data.
+ * These queries represent subsets of the full TPCDS queries.
+ *
+ * To run this benchmark:
+ * {{{
+ * // Build [tpcds-kit](https://github.com/databricks/tpcds-kit)
+ * cd /tmp && git clone https://github.com/databricks/tpcds-kit.git
+ * cd tpcds-kit/tools && make OS=MACOS
+ *
+ * // GenTPCDSData
+ * cd $COMET_HOME && mkdir /tmp/tpcds
+ * make benchmark-org.apache.spark.sql.GenTPCDSData -- --dsdgenDir /tmp/tpcds-kit/tools --location /tmp/tpcds --scaleFactor 1
+ *
+ * // CometTPCDSMicroBenchmark
+ * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
+ * }}}
+ *
+ * Results will be written to "spark/benchmarks/CometTPCDSMicroBenchmark-**results.txt".
  */
-trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBase with Logging {
-  override def getSparkSession: SparkSession = cometSpark
+object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
 
-  protected def runQueries(
+  val queries: Seq[String] = Seq(
+    "add_many_decimals",
+    "add_many_integers",
+    "agg_high_cardinality",
+    "agg_low_cardinality",
+    "agg_sum_decimals_no_grouping",
+    "agg_sum_integers_no_grouping",
+    "case_when_column_or_null",
+    "case_when_scalar",
+    "filter_highly_selective",
+    "filter_less_selective",
+    "if_column_or_null",
+    "join_anti",
+    "join_condition",
+    "join_exploding_output",
+    "join_inner",
+    "join_left_outer",
+    "join_semi")
+
+  override def runQueries(
       queryLocation: String,
       queries: Seq[String],
       tableSizes: Map[String, Long],
       benchmarkName: String,
       nameSuffix: String = ""): Unit = {
     queries.foreach { name =>
-      val queryString = resourceToString(
-        s"$queryLocation/$name.sql",
-        classLoader = Thread.currentThread().getContextClassLoader)
+      val source = Source.fromFile(s"spark/src/test/resources/tpcds-micro-benchmarks/$name.sql")
+      val queryString = source
+        .getLines()
+        .filterNot(_.startsWith("--"))
+        .mkString("\n")
+      source.close()
 
       // This is an indirect hack to estimate the size of each query's input by traversing the
       // logical plan and adding up the sizes of all tables that appear in the plan.
@@ -80,5 +117,22 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
       }
       benchmark.run()
     }
+  }
+
+  override def runBenchmarkSuite(mainArgs: Array[String]): Unit = {
+    val benchmarkArgs = new TPCDSQueryBenchmarkArguments(mainArgs)
+
+    // If `--query-filter` defined, filters the queries that this option selects
+    val queriesToRun = filterQueries(queries, benchmarkArgs.queryFilter)
+
+    val tableSizes = setupTables(
+      benchmarkArgs.dataLocation,
+      createTempView = false,
+      tables,
+      TPCDSSchemaHelper.getTableColumns)
+
+    setupCBO(cometSpark, benchmarkArgs.cboEnabled, tables)
+
+    runQueries("tpcdsmicro", queries = queriesToRun, tableSizes, "TPCDS Micro Benchmarks")
   }
 }
