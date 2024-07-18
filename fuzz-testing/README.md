@@ -63,6 +63,10 @@ $SPARK_HOME/bin/spark-submit \
     data --num-files=2 --num-rows=200 --num-columns=100
 ```
 
+There is an optional `--exclude-negative-zero` flag for excluding `-0.0` from the generated data, which is 
+sometimes useful because we already know that we often have different behavior for this edge case due to 
+differences between Rust and Java handling of this value.
+
 ### Generating Queries
 
 Generate random queries that are based on the available test files.

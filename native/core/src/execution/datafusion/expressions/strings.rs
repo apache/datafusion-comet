@@ -146,30 +146,30 @@ make_predicate_function!(Contains, contains_dyn, contains_utf8_scalar_dyn);
 // make_predicate_function!(RLike, rlike_dyn, rlike_utf8_scalar_dyn);
 
 #[derive(Debug, Hash)]
-pub struct SubstringExec {
+pub struct SubstringExpr {
     pub child: Arc<dyn PhysicalExpr>,
     pub start: i64,
     pub len: u64,
 }
 
 #[derive(Debug, Hash)]
-pub struct StringSpaceExec {
+pub struct StringSpaceExpr {
     pub child: Arc<dyn PhysicalExpr>,
 }
 
-impl SubstringExec {
+impl SubstringExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>, start: i64, len: u64) -> Self {
         Self { child, start, len }
     }
 }
 
-impl StringSpaceExec {
+impl StringSpaceExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>) -> Self {
         Self { child }
     }
 }
 
-impl Display for SubstringExec {
+impl Display for SubstringExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -179,13 +179,13 @@ impl Display for SubstringExec {
     }
 }
 
-impl Display for StringSpaceExec {
+impl Display for StringSpaceExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "StringSpace [child: {}] ", self.child)
     }
 }
 
-impl PartialEq<dyn Any> for SubstringExec {
+impl PartialEq<dyn Any> for SubstringExpr {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
@@ -194,7 +194,7 @@ impl PartialEq<dyn Any> for SubstringExec {
     }
 }
 
-impl PhysicalExpr for SubstringExec {
+impl PhysicalExpr for SubstringExpr {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -229,7 +229,7 @@ impl PhysicalExpr for SubstringExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(SubstringExec::new(
+        Ok(Arc::new(SubstringExpr::new(
             children[0].clone(),
             self.start,
             self.len,
@@ -245,7 +245,7 @@ impl PhysicalExpr for SubstringExec {
     }
 }
 
-impl PartialEq<dyn Any> for StringSpaceExec {
+impl PartialEq<dyn Any> for StringSpaceExpr {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
@@ -254,7 +254,7 @@ impl PartialEq<dyn Any> for StringSpaceExec {
     }
 }
 
-impl PhysicalExpr for StringSpaceExec {
+impl PhysicalExpr for StringSpaceExpr {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -294,7 +294,7 @@ impl PhysicalExpr for StringSpaceExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(StringSpaceExec::new(children[0].clone())))
+        Ok(Arc::new(StringSpaceExpr::new(children[0].clone())))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
