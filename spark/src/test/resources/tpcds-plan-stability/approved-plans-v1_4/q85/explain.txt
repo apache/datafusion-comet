@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (45)
-+- * HashAggregate (44)
-   +- Exchange (43)
-      +- * ColumnarToRow (42)
+* ColumnarToRow (45)
++- CometTakeOrderedAndProject (44)
+   +- CometHashAggregate (43)
+      +- CometColumnarExchange (42)
          +- CometHashAggregate (41)
             +- CometProject (40)
                +- CometBroadcastHashJoin (39)
@@ -243,23 +243,21 @@ Input [4]: [ws_quantity#4, wr_fee#15, wr_refunded_cash#16, r_reason_desc#31]
 Keys [1]: [r_reason_desc#31]
 Functions [3]: [partial_avg(ws_quantity#4), partial_avg(UnscaledValue(wr_refunded_cash#16)), partial_avg(UnscaledValue(wr_fee#15))]
 
-(42) ColumnarToRow [codegen id : 1]
+(42) CometColumnarExchange
 Input [7]: [r_reason_desc#31, sum#32, count#33, sum#34, count#35, sum#36, count#37]
+Arguments: hashpartitioning(r_reason_desc#31, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(43) Exchange
-Input [7]: [r_reason_desc#31, sum#32, count#33, sum#34, count#35, sum#36, count#37]
-Arguments: hashpartitioning(r_reason_desc#31, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(44) HashAggregate [codegen id : 2]
+(43) CometHashAggregate
 Input [7]: [r_reason_desc#31, sum#32, count#33, sum#34, count#35, sum#36, count#37]
 Keys [1]: [r_reason_desc#31]
 Functions [3]: [avg(ws_quantity#4), avg(UnscaledValue(wr_refunded_cash#16)), avg(UnscaledValue(wr_fee#15))]
-Aggregate Attributes [3]: [avg(ws_quantity#4)#38, avg(UnscaledValue(wr_refunded_cash#16))#39, avg(UnscaledValue(wr_fee#15))#40]
-Results [4]: [substr(r_reason_desc#31, 1, 20) AS substr(r_reason_desc, 1, 20)#41, avg(ws_quantity#4)#38 AS avg(ws_quantity)#42, cast((avg(UnscaledValue(wr_refunded_cash#16))#39 / 100.0) as decimal(11,6)) AS avg(wr_refunded_cash)#43, cast((avg(UnscaledValue(wr_fee#15))#40 / 100.0) as decimal(11,6)) AS avg(wr_fee)#44]
 
-(45) TakeOrderedAndProject
-Input [4]: [substr(r_reason_desc, 1, 20)#41, avg(ws_quantity)#42, avg(wr_refunded_cash)#43, avg(wr_fee)#44]
-Arguments: 100, [substr(r_reason_desc, 1, 20)#41 ASC NULLS FIRST, avg(ws_quantity)#42 ASC NULLS FIRST, avg(wr_refunded_cash)#43 ASC NULLS FIRST, avg(wr_fee)#44 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#41, avg(ws_quantity)#42, avg(wr_refunded_cash)#43, avg(wr_fee)#44]
+(44) CometTakeOrderedAndProject
+Input [4]: [substr(r_reason_desc, 1, 20)#38, avg(ws_quantity)#39, avg(wr_refunded_cash)#40, avg(wr_fee)#41]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[substr(r_reason_desc, 1, 20)#38 ASC NULLS FIRST,avg(ws_quantity)#39 ASC NULLS FIRST,avg(wr_refunded_cash)#40 ASC NULLS FIRST,avg(wr_fee)#41 ASC NULLS FIRST], output=[substr(r_reason_desc, 1, 20)#38,avg(ws_quantity)#39,avg(wr_refunded_cash)#40,avg(wr_fee)#41]), [substr(r_reason_desc, 1, 20)#38, avg(ws_quantity)#39, avg(wr_refunded_cash)#40, avg(wr_fee)#41], 100, [substr(r_reason_desc, 1, 20)#38 ASC NULLS FIRST, avg(ws_quantity)#39 ASC NULLS FIRST, avg(wr_refunded_cash)#40 ASC NULLS FIRST, avg(wr_fee)#41 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#38, avg(ws_quantity)#39, avg(wr_refunded_cash)#40, avg(wr_fee)#41]
+
+(45) ColumnarToRow [codegen id : 1]
+Input [4]: [substr(r_reason_desc, 1, 20)#38, avg(ws_quantity)#39, avg(wr_refunded_cash)#40, avg(wr_fee)#41]
 
 ===== Subqueries =====
 

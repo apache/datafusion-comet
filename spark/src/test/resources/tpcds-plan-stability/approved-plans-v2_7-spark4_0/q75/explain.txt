@@ -1,136 +1,137 @@
 == Physical Plan ==
-TakeOrderedAndProject (132)
-+- * Project (131)
-   +- * SortMergeJoin Inner (130)
-      :- * Sort (72)
-      :  +- Exchange (71)
-      :     +- * Filter (70)
-      :        +- * HashAggregate (69)
-      :           +- Exchange (68)
-      :              +- * HashAggregate (67)
-      :                 +- * HashAggregate (66)
-      :                    +- Exchange (65)
-      :                       +- * HashAggregate (64)
-      :                          +- Union (63)
-      :                             :- * Project (24)
-      :                             :  +- * SortMergeJoin LeftOuter (23)
-      :                             :     :- * Sort (16)
-      :                             :     :  +- Exchange (15)
-      :                             :     :     +- * ColumnarToRow (14)
-      :                             :     :        +- CometProject (13)
-      :                             :     :           +- CometBroadcastHashJoin (12)
-      :                             :     :              :- CometProject (8)
-      :                             :     :              :  +- CometBroadcastHashJoin (7)
-      :                             :     :              :     :- CometFilter (2)
-      :                             :     :              :     :  +- CometScan parquet spark_catalog.default.catalog_sales (1)
-      :                             :     :              :     +- CometBroadcastExchange (6)
-      :                             :     :              :        +- CometProject (5)
-      :                             :     :              :           +- CometFilter (4)
-      :                             :     :              :              +- CometScan parquet spark_catalog.default.item (3)
-      :                             :     :              +- CometBroadcastExchange (11)
-      :                             :     :                 +- CometFilter (10)
-      :                             :     :                    +- CometScan parquet spark_catalog.default.date_dim (9)
-      :                             :     +- * Sort (22)
-      :                             :        +- Exchange (21)
-      :                             :           +- * ColumnarToRow (20)
-      :                             :              +- CometProject (19)
-      :                             :                 +- CometFilter (18)
-      :                             :                    +- CometScan parquet spark_catalog.default.catalog_returns (17)
-      :                             :- * Project (43)
-      :                             :  +- * SortMergeJoin LeftOuter (42)
-      :                             :     :- * Sort (35)
-      :                             :     :  +- Exchange (34)
-      :                             :     :     +- * ColumnarToRow (33)
-      :                             :     :        +- CometProject (32)
-      :                             :     :           +- CometBroadcastHashJoin (31)
-      :                             :     :              :- CometProject (29)
-      :                             :     :              :  +- CometBroadcastHashJoin (28)
-      :                             :     :              :     :- CometFilter (26)
-      :                             :     :              :     :  +- CometScan parquet spark_catalog.default.store_sales (25)
-      :                             :     :              :     +- ReusedExchange (27)
-      :                             :     :              +- ReusedExchange (30)
-      :                             :     +- * Sort (41)
-      :                             :        +- Exchange (40)
-      :                             :           +- * ColumnarToRow (39)
-      :                             :              +- CometProject (38)
-      :                             :                 +- CometFilter (37)
-      :                             :                    +- CometScan parquet spark_catalog.default.store_returns (36)
-      :                             +- * Project (62)
-      :                                +- * SortMergeJoin LeftOuter (61)
-      :                                   :- * Sort (54)
-      :                                   :  +- Exchange (53)
-      :                                   :     +- * ColumnarToRow (52)
-      :                                   :        +- CometProject (51)
-      :                                   :           +- CometBroadcastHashJoin (50)
-      :                                   :              :- CometProject (48)
-      :                                   :              :  +- CometBroadcastHashJoin (47)
-      :                                   :              :     :- CometFilter (45)
-      :                                   :              :     :  +- CometScan parquet spark_catalog.default.web_sales (44)
-      :                                   :              :     +- ReusedExchange (46)
-      :                                   :              +- ReusedExchange (49)
-      :                                   +- * Sort (60)
-      :                                      +- Exchange (59)
-      :                                         +- * ColumnarToRow (58)
-      :                                            +- CometProject (57)
-      :                                               +- CometFilter (56)
-      :                                                  +- CometScan parquet spark_catalog.default.web_returns (55)
-      +- * Sort (129)
-         +- Exchange (128)
-            +- * Filter (127)
-               +- * HashAggregate (126)
-                  +- Exchange (125)
-                     +- * HashAggregate (124)
-                        +- * HashAggregate (123)
-                           +- Exchange (122)
-                              +- * HashAggregate (121)
-                                 +- Union (120)
-                                    :- * Project (89)
-                                    :  +- * SortMergeJoin LeftOuter (88)
-                                    :     :- * Sort (85)
-                                    :     :  +- Exchange (84)
-                                    :     :     +- * ColumnarToRow (83)
-                                    :     :        +- CometProject (82)
-                                    :     :           +- CometBroadcastHashJoin (81)
-                                    :     :              :- CometProject (77)
-                                    :     :              :  +- CometBroadcastHashJoin (76)
-                                    :     :              :     :- CometFilter (74)
-                                    :     :              :     :  +- CometScan parquet spark_catalog.default.catalog_sales (73)
-                                    :     :              :     +- ReusedExchange (75)
-                                    :     :              +- CometBroadcastExchange (80)
-                                    :     :                 +- CometFilter (79)
-                                    :     :                    +- CometScan parquet spark_catalog.default.date_dim (78)
-                                    :     +- * Sort (87)
-                                    :        +- ReusedExchange (86)
-                                    :- * Project (104)
-                                    :  +- * SortMergeJoin LeftOuter (103)
-                                    :     :- * Sort (100)
-                                    :     :  +- Exchange (99)
-                                    :     :     +- * ColumnarToRow (98)
-                                    :     :        +- CometProject (97)
-                                    :     :           +- CometBroadcastHashJoin (96)
-                                    :     :              :- CometProject (94)
-                                    :     :              :  +- CometBroadcastHashJoin (93)
-                                    :     :              :     :- CometFilter (91)
-                                    :     :              :     :  +- CometScan parquet spark_catalog.default.store_sales (90)
-                                    :     :              :     +- ReusedExchange (92)
-                                    :     :              +- ReusedExchange (95)
-                                    :     +- * Sort (102)
-                                    :        +- ReusedExchange (101)
-                                    +- * Project (119)
-                                       +- * SortMergeJoin LeftOuter (118)
-                                          :- * Sort (115)
-                                          :  +- Exchange (114)
-                                          :     +- * ColumnarToRow (113)
-                                          :        +- CometProject (112)
-                                          :           +- CometBroadcastHashJoin (111)
-                                          :              :- CometProject (109)
-                                          :              :  +- CometBroadcastHashJoin (108)
-                                          :              :     :- CometFilter (106)
-                                          :              :     :  +- CometScan parquet spark_catalog.default.web_sales (105)
-                                          :              :     +- ReusedExchange (107)
-                                          :              +- ReusedExchange (110)
-                                          +- * Sort (117)
-                                             +- ReusedExchange (116)
+TakeOrderedAndProject (133)
++- * Project (132)
+   +- * SortMergeJoin Inner (131)
+      :- * ColumnarToRow (71)
+      :  +- CometSort (70)
+      :     +- CometColumnarExchange (69)
+      :        +- RowToColumnar (68)
+      :           +- * Filter (67)
+      :              +- * HashAggregate (66)
+      :                 +- * ColumnarToRow (65)
+      :                    +- CometColumnarExchange (64)
+      :                       +- RowToColumnar (63)
+      :                          +- * HashAggregate (62)
+      :                             +- * ColumnarToRow (61)
+      :                                +- CometHashAggregate (60)
+      :                                   +- CometColumnarExchange (59)
+      :                                      +- CometHashAggregate (58)
+      :                                         +- CometUnion (57)
+      :                                            :- CometProject (22)
+      :                                            :  +- CometSortMergeJoin (21)
+      :                                            :     :- CometSort (15)
+      :                                            :     :  +- CometColumnarExchange (14)
+      :                                            :     :     +- CometProject (13)
+      :                                            :     :        +- CometBroadcastHashJoin (12)
+      :                                            :     :           :- CometProject (8)
+      :                                            :     :           :  +- CometBroadcastHashJoin (7)
+      :                                            :     :           :     :- CometFilter (2)
+      :                                            :     :           :     :  +- CometScan parquet spark_catalog.default.catalog_sales (1)
+      :                                            :     :           :     +- CometBroadcastExchange (6)
+      :                                            :     :           :        +- CometProject (5)
+      :                                            :     :           :           +- CometFilter (4)
+      :                                            :     :           :              +- CometScan parquet spark_catalog.default.item (3)
+      :                                            :     :           +- CometBroadcastExchange (11)
+      :                                            :     :              +- CometFilter (10)
+      :                                            :     :                 +- CometScan parquet spark_catalog.default.date_dim (9)
+      :                                            :     +- CometSort (20)
+      :                                            :        +- CometColumnarExchange (19)
+      :                                            :           +- CometProject (18)
+      :                                            :              +- CometFilter (17)
+      :                                            :                 +- CometScan parquet spark_catalog.default.catalog_returns (16)
+      :                                            :- CometProject (39)
+      :                                            :  +- CometSortMergeJoin (38)
+      :                                            :     :- CometSort (32)
+      :                                            :     :  +- CometColumnarExchange (31)
+      :                                            :     :     +- CometProject (30)
+      :                                            :     :        +- CometBroadcastHashJoin (29)
+      :                                            :     :           :- CometProject (27)
+      :                                            :     :           :  +- CometBroadcastHashJoin (26)
+      :                                            :     :           :     :- CometFilter (24)
+      :                                            :     :           :     :  +- CometScan parquet spark_catalog.default.store_sales (23)
+      :                                            :     :           :     +- ReusedExchange (25)
+      :                                            :     :           +- ReusedExchange (28)
+      :                                            :     +- CometSort (37)
+      :                                            :        +- CometColumnarExchange (36)
+      :                                            :           +- CometProject (35)
+      :                                            :              +- CometFilter (34)
+      :                                            :                 +- CometScan parquet spark_catalog.default.store_returns (33)
+      :                                            +- CometProject (56)
+      :                                               +- CometSortMergeJoin (55)
+      :                                                  :- CometSort (49)
+      :                                                  :  +- CometColumnarExchange (48)
+      :                                                  :     +- CometProject (47)
+      :                                                  :        +- CometBroadcastHashJoin (46)
+      :                                                  :           :- CometProject (44)
+      :                                                  :           :  +- CometBroadcastHashJoin (43)
+      :                                                  :           :     :- CometFilter (41)
+      :                                                  :           :     :  +- CometScan parquet spark_catalog.default.web_sales (40)
+      :                                                  :           :     +- ReusedExchange (42)
+      :                                                  :           +- ReusedExchange (45)
+      :                                                  +- CometSort (54)
+      :                                                     +- CometColumnarExchange (53)
+      :                                                        +- CometProject (52)
+      :                                                           +- CometFilter (51)
+      :                                                              +- CometScan parquet spark_catalog.default.web_returns (50)
+      +- * ColumnarToRow (130)
+         +- CometSort (129)
+            +- CometColumnarExchange (128)
+               +- RowToColumnar (127)
+                  +- * Filter (126)
+                     +- * HashAggregate (125)
+                        +- * ColumnarToRow (124)
+                           +- CometColumnarExchange (123)
+                              +- RowToColumnar (122)
+                                 +- * HashAggregate (121)
+                                    +- * ColumnarToRow (120)
+                                       +- CometHashAggregate (119)
+                                          +- CometColumnarExchange (118)
+                                             +- CometHashAggregate (117)
+                                                +- CometUnion (116)
+                                                   :- CometProject (87)
+                                                   :  +- CometSortMergeJoin (86)
+                                                   :     :- CometSort (83)
+                                                   :     :  +- CometColumnarExchange (82)
+                                                   :     :     +- CometProject (81)
+                                                   :     :        +- CometBroadcastHashJoin (80)
+                                                   :     :           :- CometProject (76)
+                                                   :     :           :  +- CometBroadcastHashJoin (75)
+                                                   :     :           :     :- CometFilter (73)
+                                                   :     :           :     :  +- CometScan parquet spark_catalog.default.catalog_sales (72)
+                                                   :     :           :     +- ReusedExchange (74)
+                                                   :     :           +- CometBroadcastExchange (79)
+                                                   :     :              +- CometFilter (78)
+                                                   :     :                 +- CometScan parquet spark_catalog.default.date_dim (77)
+                                                   :     +- CometSort (85)
+                                                   :        +- ReusedExchange (84)
+                                                   :- CometProject (101)
+                                                   :  +- CometSortMergeJoin (100)
+                                                   :     :- CometSort (97)
+                                                   :     :  +- CometColumnarExchange (96)
+                                                   :     :     +- CometProject (95)
+                                                   :     :        +- CometBroadcastHashJoin (94)
+                                                   :     :           :- CometProject (92)
+                                                   :     :           :  +- CometBroadcastHashJoin (91)
+                                                   :     :           :     :- CometFilter (89)
+                                                   :     :           :     :  +- CometScan parquet spark_catalog.default.store_sales (88)
+                                                   :     :           :     +- ReusedExchange (90)
+                                                   :     :           +- ReusedExchange (93)
+                                                   :     +- CometSort (99)
+                                                   :        +- ReusedExchange (98)
+                                                   +- CometProject (115)
+                                                      +- CometSortMergeJoin (114)
+                                                         :- CometSort (111)
+                                                         :  +- CometColumnarExchange (110)
+                                                         :     +- CometProject (109)
+                                                         :        +- CometBroadcastHashJoin (108)
+                                                         :           :- CometProject (106)
+                                                         :           :  +- CometBroadcastHashJoin (105)
+                                                         :           :     :- CometFilter (103)
+                                                         :           :     :  +- CometScan parquet spark_catalog.default.web_sales (102)
+                                                         :           :     +- ReusedExchange (104)
+                                                         :           +- ReusedExchange (107)
+                                                         +- CometSort (113)
+                                                            +- ReusedExchange (112)
 
 
 (1) Scan parquet spark_catalog.default.catalog_sales
@@ -197,54 +198,47 @@ Arguments: [cs_sold_date_sk#5], [d_date_sk#13], Inner, BuildRight
 Input [11]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, cs_sold_date_sk#5, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_date_sk#13, d_year#14]
 Arguments: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14], [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
 
-(14) ColumnarToRow [codegen id : 1]
+(14) CometColumnarExchange
 Input [9]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
+Arguments: hashpartitioning(cs_order_number#2, cs_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(15) Exchange
+(15) CometSort
 Input [9]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
-Arguments: hashpartitioning(cs_order_number#2, cs_item_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+Arguments: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14], [cs_order_number#2 ASC NULLS FIRST, cs_item_sk#1 ASC NULLS FIRST]
 
-(16) Sort [codegen id : 2]
-Input [9]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
-Arguments: [cs_order_number#2 ASC NULLS FIRST, cs_item_sk#1 ASC NULLS FIRST], false, 0
-
-(17) Scan parquet spark_catalog.default.catalog_returns
+(16) Scan parquet spark_catalog.default.catalog_returns
 Output [5]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18, cr_returned_date_sk#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
 PushedFilters: [IsNotNull(cr_order_number), IsNotNull(cr_item_sk)]
 ReadSchema: struct<cr_item_sk:int,cr_order_number:int,cr_return_quantity:int,cr_return_amount:decimal(7,2)>
 
-(18) CometFilter
+(17) CometFilter
 Input [5]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18, cr_returned_date_sk#19]
 Condition : (isnotnull(cr_order_number#16) AND isnotnull(cr_item_sk#15))
 
-(19) CometProject
+(18) CometProject
 Input [5]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18, cr_returned_date_sk#19]
 Arguments: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18], [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
 
-(20) ColumnarToRow [codegen id : 3]
+(19) CometColumnarExchange
 Input [4]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
+Arguments: hashpartitioning(cr_order_number#16, cr_item_sk#15, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(21) Exchange
+(20) CometSort
 Input [4]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
-Arguments: hashpartitioning(cr_order_number#16, cr_item_sk#15, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+Arguments: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18], [cr_order_number#16 ASC NULLS FIRST, cr_item_sk#15 ASC NULLS FIRST]
 
-(22) Sort [codegen id : 4]
-Input [4]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
-Arguments: [cr_order_number#16 ASC NULLS FIRST, cr_item_sk#15 ASC NULLS FIRST], false, 0
+(21) CometSortMergeJoin
+Left output [9]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14]
+Right output [4]: [cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
+Arguments: [cs_order_number#2, cs_item_sk#1], [cr_order_number#16, cr_item_sk#15], LeftOuter
 
-(23) SortMergeJoin [codegen id : 5]
-Left keys [2]: [cs_order_number#2, cs_item_sk#1]
-Right keys [2]: [cr_order_number#16, cr_item_sk#15]
-Join type: LeftOuter
-Join condition: None
-
-(24) Project [codegen id : 5]
-Output [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, (cs_quantity#3 - coalesce(cr_return_quantity#17, 0)) AS sales_cnt#20, (cs_ext_sales_price#4 - coalesce(cr_return_amount#18, 0.00)) AS sales_amt#21]
+(22) CometProject
 Input [13]: [cs_item_sk#1, cs_order_number#2, cs_quantity#3, cs_ext_sales_price#4, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, d_year#14, cr_item_sk#15, cr_order_number#16, cr_return_quantity#17, cr_return_amount#18]
+Arguments: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21], [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, (cs_quantity#3 - coalesce(cr_return_quantity#17, 0)) AS sales_cnt#20, (cs_ext_sales_price#4 - coalesce(cr_return_amount#18, 0.00)) AS sales_amt#21]
 
-(25) Scan parquet spark_catalog.default.store_sales
+(23) Scan parquet spark_catalog.default.store_sales
 Output [5]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26]
 Batched: true
 Location: InMemoryFileIndex []
@@ -252,82 +246,75 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#26), dynamicpruningexpression(ss_so
 PushedFilters: [IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_ticket_number:int,ss_quantity:int,ss_ext_sales_price:decimal(7,2)>
 
-(26) CometFilter
+(24) CometFilter
 Input [5]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26]
 Condition : isnotnull(ss_item_sk#22)
 
-(27) ReusedExchange [Reuses operator id: 6]
+(25) ReusedExchange [Reuses operator id: 6]
 Output [5]: [i_item_sk#28, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32]
 
-(28) CometBroadcastHashJoin
+(26) CometBroadcastHashJoin
 Left output [5]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26]
 Right output [5]: [i_item_sk#28, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32]
 Arguments: [ss_item_sk#22], [i_item_sk#28], Inner, BuildRight
 
-(29) CometProject
+(27) CometProject
 Input [10]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26, i_item_sk#28, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32]
 Arguments: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32], [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32]
 
-(30) ReusedExchange [Reuses operator id: 11]
+(28) ReusedExchange [Reuses operator id: 11]
 Output [2]: [d_date_sk#33, d_year#34]
 
-(31) CometBroadcastHashJoin
+(29) CometBroadcastHashJoin
 Left output [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32]
 Right output [2]: [d_date_sk#33, d_year#34]
 Arguments: [ss_sold_date_sk#26], [d_date_sk#33], Inner, BuildRight
 
-(32) CometProject
+(30) CometProject
 Input [11]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, ss_sold_date_sk#26, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_date_sk#33, d_year#34]
 Arguments: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34], [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
 
-(33) ColumnarToRow [codegen id : 6]
+(31) CometColumnarExchange
 Input [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
+Arguments: hashpartitioning(ss_ticket_number#23, ss_item_sk#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(34) Exchange
+(32) CometSort
 Input [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
-Arguments: hashpartitioning(ss_ticket_number#23, ss_item_sk#22, 5), ENSURE_REQUIREMENTS, [plan_id=3]
+Arguments: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34], [ss_ticket_number#23 ASC NULLS FIRST, ss_item_sk#22 ASC NULLS FIRST]
 
-(35) Sort [codegen id : 7]
-Input [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
-Arguments: [ss_ticket_number#23 ASC NULLS FIRST, ss_item_sk#22 ASC NULLS FIRST], false, 0
-
-(36) Scan parquet spark_catalog.default.store_returns
+(33) Scan parquet spark_catalog.default.store_returns
 Output [5]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38, sr_returned_date_sk#39]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
 PushedFilters: [IsNotNull(sr_ticket_number), IsNotNull(sr_item_sk)]
 ReadSchema: struct<sr_item_sk:int,sr_ticket_number:int,sr_return_quantity:int,sr_return_amt:decimal(7,2)>
 
-(37) CometFilter
+(34) CometFilter
 Input [5]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38, sr_returned_date_sk#39]
 Condition : (isnotnull(sr_ticket_number#36) AND isnotnull(sr_item_sk#35))
 
-(38) CometProject
+(35) CometProject
 Input [5]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38, sr_returned_date_sk#39]
 Arguments: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38], [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
 
-(39) ColumnarToRow [codegen id : 8]
+(36) CometColumnarExchange
 Input [4]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
+Arguments: hashpartitioning(sr_ticket_number#36, sr_item_sk#35, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(40) Exchange
+(37) CometSort
 Input [4]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
-Arguments: hashpartitioning(sr_ticket_number#36, sr_item_sk#35, 5), ENSURE_REQUIREMENTS, [plan_id=4]
+Arguments: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38], [sr_ticket_number#36 ASC NULLS FIRST, sr_item_sk#35 ASC NULLS FIRST]
 
-(41) Sort [codegen id : 9]
-Input [4]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
-Arguments: [sr_ticket_number#36 ASC NULLS FIRST, sr_item_sk#35 ASC NULLS FIRST], false, 0
+(38) CometSortMergeJoin
+Left output [9]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34]
+Right output [4]: [sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
+Arguments: [ss_ticket_number#23, ss_item_sk#22], [sr_ticket_number#36, sr_item_sk#35], LeftOuter
 
-(42) SortMergeJoin [codegen id : 10]
-Left keys [2]: [ss_ticket_number#23, ss_item_sk#22]
-Right keys [2]: [sr_ticket_number#36, sr_item_sk#35]
-Join type: LeftOuter
-Join condition: None
-
-(43) Project [codegen id : 10]
-Output [7]: [d_year#34, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, (ss_quantity#24 - coalesce(sr_return_quantity#37, 0)) AS sales_cnt#40, (ss_ext_sales_price#25 - coalesce(sr_return_amt#38, 0.00)) AS sales_amt#41]
+(39) CometProject
 Input [13]: [ss_item_sk#22, ss_ticket_number#23, ss_quantity#24, ss_ext_sales_price#25, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, d_year#34, sr_item_sk#35, sr_ticket_number#36, sr_return_quantity#37, sr_return_amt#38]
+Arguments: [d_year#34, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, sales_cnt#40, sales_amt#41], [d_year#34, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, (ss_quantity#24 - coalesce(sr_return_quantity#37, 0)) AS sales_cnt#40, (ss_ext_sales_price#25 - coalesce(sr_return_amt#38, 0.00)) AS sales_amt#41]
 
-(44) Scan parquet spark_catalog.default.web_sales
+(40) Scan parquet spark_catalog.default.web_sales
 Output [5]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46]
 Batched: true
 Location: InMemoryFileIndex []
@@ -335,132 +322,139 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#46), dynamicpruningexpression(ws_so
 PushedFilters: [IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_item_sk:int,ws_order_number:int,ws_quantity:int,ws_ext_sales_price:decimal(7,2)>
 
-(45) CometFilter
+(41) CometFilter
 Input [5]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46]
 Condition : isnotnull(ws_item_sk#42)
 
-(46) ReusedExchange [Reuses operator id: 6]
+(42) ReusedExchange [Reuses operator id: 6]
 Output [5]: [i_item_sk#48, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52]
 
-(47) CometBroadcastHashJoin
+(43) CometBroadcastHashJoin
 Left output [5]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46]
 Right output [5]: [i_item_sk#48, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52]
 Arguments: [ws_item_sk#42], [i_item_sk#48], Inner, BuildRight
 
-(48) CometProject
+(44) CometProject
 Input [10]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46, i_item_sk#48, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52]
 Arguments: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52], [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52]
 
-(49) ReusedExchange [Reuses operator id: 11]
+(45) ReusedExchange [Reuses operator id: 11]
 Output [2]: [d_date_sk#53, d_year#54]
 
-(50) CometBroadcastHashJoin
+(46) CometBroadcastHashJoin
 Left output [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52]
 Right output [2]: [d_date_sk#53, d_year#54]
 Arguments: [ws_sold_date_sk#46], [d_date_sk#53], Inner, BuildRight
 
-(51) CometProject
+(47) CometProject
 Input [11]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, ws_sold_date_sk#46, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_date_sk#53, d_year#54]
 Arguments: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54], [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
 
-(52) ColumnarToRow [codegen id : 11]
+(48) CometColumnarExchange
 Input [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
+Arguments: hashpartitioning(ws_order_number#43, ws_item_sk#42, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(53) Exchange
+(49) CometSort
 Input [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
-Arguments: hashpartitioning(ws_order_number#43, ws_item_sk#42, 5), ENSURE_REQUIREMENTS, [plan_id=5]
+Arguments: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54], [ws_order_number#43 ASC NULLS FIRST, ws_item_sk#42 ASC NULLS FIRST]
 
-(54) Sort [codegen id : 12]
-Input [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
-Arguments: [ws_order_number#43 ASC NULLS FIRST, ws_item_sk#42 ASC NULLS FIRST], false, 0
-
-(55) Scan parquet spark_catalog.default.web_returns
+(50) Scan parquet spark_catalog.default.web_returns
 Output [5]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58, wr_returned_date_sk#59]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
 PushedFilters: [IsNotNull(wr_order_number), IsNotNull(wr_item_sk)]
 ReadSchema: struct<wr_item_sk:int,wr_order_number:int,wr_return_quantity:int,wr_return_amt:decimal(7,2)>
 
-(56) CometFilter
+(51) CometFilter
 Input [5]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58, wr_returned_date_sk#59]
 Condition : (isnotnull(wr_order_number#56) AND isnotnull(wr_item_sk#55))
 
-(57) CometProject
+(52) CometProject
 Input [5]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58, wr_returned_date_sk#59]
 Arguments: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58], [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
 
-(58) ColumnarToRow [codegen id : 13]
+(53) CometColumnarExchange
 Input [4]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
+Arguments: hashpartitioning(wr_order_number#56, wr_item_sk#55, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(59) Exchange
+(54) CometSort
 Input [4]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
-Arguments: hashpartitioning(wr_order_number#56, wr_item_sk#55, 5), ENSURE_REQUIREMENTS, [plan_id=6]
+Arguments: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58], [wr_order_number#56 ASC NULLS FIRST, wr_item_sk#55 ASC NULLS FIRST]
 
-(60) Sort [codegen id : 14]
-Input [4]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
-Arguments: [wr_order_number#56 ASC NULLS FIRST, wr_item_sk#55 ASC NULLS FIRST], false, 0
+(55) CometSortMergeJoin
+Left output [9]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54]
+Right output [4]: [wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
+Arguments: [ws_order_number#43, ws_item_sk#42], [wr_order_number#56, wr_item_sk#55], LeftOuter
 
-(61) SortMergeJoin [codegen id : 15]
-Left keys [2]: [ws_order_number#43, ws_item_sk#42]
-Right keys [2]: [wr_order_number#56, wr_item_sk#55]
-Join type: LeftOuter
-Join condition: None
-
-(62) Project [codegen id : 15]
-Output [7]: [d_year#54, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, (ws_quantity#44 - coalesce(wr_return_quantity#57, 0)) AS sales_cnt#60, (ws_ext_sales_price#45 - coalesce(wr_return_amt#58, 0.00)) AS sales_amt#61]
+(56) CometProject
 Input [13]: [ws_item_sk#42, ws_order_number#43, ws_quantity#44, ws_ext_sales_price#45, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, d_year#54, wr_item_sk#55, wr_order_number#56, wr_return_quantity#57, wr_return_amt#58]
+Arguments: [d_year#54, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, sales_cnt#60, sales_amt#61], [d_year#54, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, (ws_quantity#44 - coalesce(wr_return_quantity#57, 0)) AS sales_cnt#60, (ws_ext_sales_price#45 - coalesce(wr_return_amt#58, 0.00)) AS sales_amt#61]
 
-(63) Union
+(57) CometUnion
+Child 0 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
+Child 1 Input [7]: [d_year#34, i_brand_id#29, i_class_id#30, i_category_id#31, i_manufact_id#32, sales_cnt#40, sales_amt#41]
+Child 2 Input [7]: [d_year#54, i_brand_id#49, i_class_id#50, i_category_id#51, i_manufact_id#52, sales_cnt#60, sales_amt#61]
 
-(64) HashAggregate [codegen id : 16]
+(58) CometHashAggregate
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Keys [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Functions: []
-Aggregate Attributes: []
-Results [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 
-(65) Exchange
+(59) CometColumnarExchange
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
-Arguments: hashpartitioning(d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21, 5), ENSURE_REQUIREMENTS, [plan_id=7]
+Arguments: hashpartitioning(d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(66) HashAggregate [codegen id : 17]
+(60) CometHashAggregate
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Keys [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Functions: []
-Aggregate Attributes: []
-Results [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 
-(67) HashAggregate [codegen id : 17]
+(61) ColumnarToRow [codegen id : 1]
+Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
+
+(62) HashAggregate [codegen id : 1]
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Keys [5]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12]
 Functions [2]: [partial_sum(sales_cnt#20), partial_sum(UnscaledValue(sales_amt#21))]
 Aggregate Attributes [2]: [sum#62, sum#63]
 Results [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum#64, sum#65]
 
-(68) Exchange
+(63) RowToColumnar
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum#64, sum#65]
-Arguments: hashpartitioning(d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, 5), ENSURE_REQUIREMENTS, [plan_id=8]
 
-(69) HashAggregate [codegen id : 18]
+(64) CometColumnarExchange
+Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum#64, sum#65]
+Arguments: hashpartitioning(d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=8]
+
+(65) ColumnarToRow [codegen id : 2]
+Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum#64, sum#65]
+
+(66) HashAggregate [codegen id : 2]
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum#64, sum#65]
 Keys [5]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12]
 Functions [2]: [sum(sales_cnt#20), sum(UnscaledValue(sales_amt#21))]
 Aggregate Attributes [2]: [sum(sales_cnt#20)#66, sum(UnscaledValue(sales_amt#21))#67]
 Results [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sum(sales_cnt#20)#66 AS sales_cnt#68, MakeDecimal(sum(UnscaledValue(sales_amt#21))#67,18,2) AS sales_amt#69]
 
-(70) Filter [codegen id : 18]
+(67) Filter [codegen id : 2]
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
 Condition : isnotnull(sales_cnt#68)
 
-(71) Exchange
+(68) RowToColumnar
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
-Arguments: hashpartitioning(i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, 5), ENSURE_REQUIREMENTS, [plan_id=9]
 
-(72) Sort [codegen id : 19]
+(69) CometColumnarExchange
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
-Arguments: [i_brand_id#8 ASC NULLS FIRST, i_class_id#9 ASC NULLS FIRST, i_category_id#10 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST], false, 0
+Arguments: hashpartitioning(i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=9]
 
-(73) Scan parquet spark_catalog.default.catalog_sales
+(70) CometSort
+Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
+Arguments: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69], [i_brand_id#8 ASC NULLS FIRST, i_class_id#9 ASC NULLS FIRST, i_category_id#10 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST]
+
+(71) ColumnarToRow [codegen id : 3]
+Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69]
+
+(72) Scan parquet spark_catalog.default.catalog_sales
 Output [5]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74]
 Batched: true
 Location: InMemoryFileIndex []
@@ -468,75 +462,71 @@ PartitionFilters: [isnotnull(cs_sold_date_sk#74), dynamicpruningexpression(cs_so
 PushedFilters: [IsNotNull(cs_item_sk)]
 ReadSchema: struct<cs_item_sk:int,cs_order_number:int,cs_quantity:int,cs_ext_sales_price:decimal(7,2)>
 
-(74) CometFilter
+(73) CometFilter
 Input [5]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74]
 Condition : isnotnull(cs_item_sk#70)
 
-(75) ReusedExchange [Reuses operator id: 6]
+(74) ReusedExchange [Reuses operator id: 6]
 Output [5]: [i_item_sk#76, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 
-(76) CometBroadcastHashJoin
+(75) CometBroadcastHashJoin
 Left output [5]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74]
 Right output [5]: [i_item_sk#76, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Arguments: [cs_item_sk#70], [i_item_sk#76], Inner, BuildRight
 
-(77) CometProject
+(76) CometProject
 Input [10]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74, i_item_sk#76, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Arguments: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80], [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 
-(78) Scan parquet spark_catalog.default.date_dim
+(77) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#81, d_year#82]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(79) CometFilter
+(78) CometFilter
 Input [2]: [d_date_sk#81, d_year#82]
 Condition : ((isnotnull(d_year#82) AND (d_year#82 = 2001)) AND isnotnull(d_date_sk#81))
 
-(80) CometBroadcastExchange
+(79) CometBroadcastExchange
 Input [2]: [d_date_sk#81, d_year#82]
 Arguments: [d_date_sk#81, d_year#82]
 
-(81) CometBroadcastHashJoin
+(80) CometBroadcastHashJoin
 Left output [9]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Right output [2]: [d_date_sk#81, d_year#82]
 Arguments: [cs_sold_date_sk#74], [d_date_sk#81], Inner, BuildRight
 
-(82) CometProject
+(81) CometProject
 Input [11]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, cs_sold_date_sk#74, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_date_sk#81, d_year#82]
 Arguments: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82], [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82]
 
-(83) ColumnarToRow [codegen id : 20]
+(82) CometColumnarExchange
 Input [9]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82]
+Arguments: hashpartitioning(cs_order_number#71, cs_item_sk#70, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=10]
 
-(84) Exchange
+(83) CometSort
 Input [9]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82]
-Arguments: hashpartitioning(cs_order_number#71, cs_item_sk#70, 5), ENSURE_REQUIREMENTS, [plan_id=10]
+Arguments: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82], [cs_order_number#71 ASC NULLS FIRST, cs_item_sk#70 ASC NULLS FIRST]
 
-(85) Sort [codegen id : 21]
-Input [9]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82]
-Arguments: [cs_order_number#71 ASC NULLS FIRST, cs_item_sk#70 ASC NULLS FIRST], false, 0
-
-(86) ReusedExchange [Reuses operator id: 21]
+(84) ReusedExchange [Reuses operator id: 19]
 Output [4]: [cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86]
 
-(87) Sort [codegen id : 23]
+(85) CometSort
 Input [4]: [cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86]
-Arguments: [cr_order_number#84 ASC NULLS FIRST, cr_item_sk#83 ASC NULLS FIRST], false, 0
+Arguments: [cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86], [cr_order_number#84 ASC NULLS FIRST, cr_item_sk#83 ASC NULLS FIRST]
 
-(88) SortMergeJoin [codegen id : 24]
-Left keys [2]: [cs_order_number#71, cs_item_sk#70]
-Right keys [2]: [cr_order_number#84, cr_item_sk#83]
-Join type: LeftOuter
-Join condition: None
+(86) CometSortMergeJoin
+Left output [9]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82]
+Right output [4]: [cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86]
+Arguments: [cs_order_number#71, cs_item_sk#70], [cr_order_number#84, cr_item_sk#83], LeftOuter
 
-(89) Project [codegen id : 24]
-Output [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, (cs_quantity#72 - coalesce(cr_return_quantity#85, 0)) AS sales_cnt#87, (cs_ext_sales_price#73 - coalesce(cr_return_amount#86, 0.00)) AS sales_amt#88]
+(87) CometProject
 Input [13]: [cs_item_sk#70, cs_order_number#71, cs_quantity#72, cs_ext_sales_price#73, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, d_year#82, cr_item_sk#83, cr_order_number#84, cr_return_quantity#85, cr_return_amount#86]
+Arguments: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88], [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, (cs_quantity#72 - coalesce(cr_return_quantity#85, 0)) AS sales_cnt#87, (cs_ext_sales_price#73 - coalesce(cr_return_amount#86, 0.00)) AS sales_amt#88]
 
-(90) Scan parquet spark_catalog.default.store_sales
+(88) Scan parquet spark_catalog.default.store_sales
 Output [5]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93]
 Batched: true
 Location: InMemoryFileIndex []
@@ -544,63 +534,59 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#93), dynamicpruningexpression(ss_so
 PushedFilters: [IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_ticket_number:int,ss_quantity:int,ss_ext_sales_price:decimal(7,2)>
 
-(91) CometFilter
+(89) CometFilter
 Input [5]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93]
 Condition : isnotnull(ss_item_sk#89)
 
-(92) ReusedExchange [Reuses operator id: 6]
+(90) ReusedExchange [Reuses operator id: 6]
 Output [5]: [i_item_sk#95, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99]
 
-(93) CometBroadcastHashJoin
+(91) CometBroadcastHashJoin
 Left output [5]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93]
 Right output [5]: [i_item_sk#95, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99]
 Arguments: [ss_item_sk#89], [i_item_sk#95], Inner, BuildRight
 
-(94) CometProject
+(92) CometProject
 Input [10]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93, i_item_sk#95, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99]
 Arguments: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99], [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99]
 
-(95) ReusedExchange [Reuses operator id: 80]
+(93) ReusedExchange [Reuses operator id: 79]
 Output [2]: [d_date_sk#100, d_year#101]
 
-(96) CometBroadcastHashJoin
+(94) CometBroadcastHashJoin
 Left output [9]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99]
 Right output [2]: [d_date_sk#100, d_year#101]
 Arguments: [ss_sold_date_sk#93], [d_date_sk#100], Inner, BuildRight
 
-(97) CometProject
+(95) CometProject
 Input [11]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, ss_sold_date_sk#93, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_date_sk#100, d_year#101]
 Arguments: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101], [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101]
 
-(98) ColumnarToRow [codegen id : 25]
+(96) CometColumnarExchange
 Input [9]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101]
+Arguments: hashpartitioning(ss_ticket_number#90, ss_item_sk#89, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=11]
 
-(99) Exchange
+(97) CometSort
 Input [9]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101]
-Arguments: hashpartitioning(ss_ticket_number#90, ss_item_sk#89, 5), ENSURE_REQUIREMENTS, [plan_id=11]
+Arguments: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101], [ss_ticket_number#90 ASC NULLS FIRST, ss_item_sk#89 ASC NULLS FIRST]
 
-(100) Sort [codegen id : 26]
-Input [9]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101]
-Arguments: [ss_ticket_number#90 ASC NULLS FIRST, ss_item_sk#89 ASC NULLS FIRST], false, 0
-
-(101) ReusedExchange [Reuses operator id: 40]
+(98) ReusedExchange [Reuses operator id: 36]
 Output [4]: [sr_item_sk#102, sr_ticket_number#103, sr_return_quantity#104, sr_return_amt#105]
 
-(102) Sort [codegen id : 28]
+(99) CometSort
 Input [4]: [sr_item_sk#102, sr_ticket_number#103, sr_return_quantity#104, sr_return_amt#105]
-Arguments: [sr_ticket_number#103 ASC NULLS FIRST, sr_item_sk#102 ASC NULLS FIRST], false, 0
+Arguments: [sr_item_sk#102, sr_ticket_number#103, sr_return_quantity#104, sr_return_amt#105], [sr_ticket_number#103 ASC NULLS FIRST, sr_item_sk#102 ASC NULLS FIRST]
 
-(103) SortMergeJoin [codegen id : 29]
-Left keys [2]: [ss_ticket_number#90, ss_item_sk#89]
-Right keys [2]: [sr_ticket_number#103, sr_item_sk#102]
-Join type: LeftOuter
-Join condition: None
+(100) CometSortMergeJoin
+Left output [9]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101]
+Right output [4]: [sr_item_sk#102, sr_ticket_number#103, sr_return_quantity#104, sr_return_amt#105]
+Arguments: [ss_ticket_number#90, ss_item_sk#89], [sr_ticket_number#103, sr_item_sk#102], LeftOuter
 
-(104) Project [codegen id : 29]
-Output [7]: [d_year#101, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, (ss_quantity#91 - coalesce(sr_return_quantity#104, 0)) AS sales_cnt#106, (ss_ext_sales_price#92 - coalesce(sr_return_amt#105, 0.00)) AS sales_amt#107]
+(101) CometProject
 Input [13]: [ss_item_sk#89, ss_ticket_number#90, ss_quantity#91, ss_ext_sales_price#92, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, d_year#101, sr_item_sk#102, sr_ticket_number#103, sr_return_quantity#104, sr_return_amt#105]
+Arguments: [d_year#101, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, sales_cnt#106, sales_amt#107], [d_year#101, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, (ss_quantity#91 - coalesce(sr_return_quantity#104, 0)) AS sales_cnt#106, (ss_ext_sales_price#92 - coalesce(sr_return_amt#105, 0.00)) AS sales_amt#107]
 
-(105) Scan parquet spark_catalog.default.web_sales
+(102) Scan parquet spark_catalog.default.web_sales
 Output [5]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112]
 Batched: true
 Location: InMemoryFileIndex []
@@ -608,184 +594,194 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#112), dynamicpruningexpression(ws_s
 PushedFilters: [IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_item_sk:int,ws_order_number:int,ws_quantity:int,ws_ext_sales_price:decimal(7,2)>
 
-(106) CometFilter
+(103) CometFilter
 Input [5]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112]
 Condition : isnotnull(ws_item_sk#108)
 
-(107) ReusedExchange [Reuses operator id: 6]
+(104) ReusedExchange [Reuses operator id: 6]
 Output [5]: [i_item_sk#114, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118]
 
-(108) CometBroadcastHashJoin
+(105) CometBroadcastHashJoin
 Left output [5]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112]
 Right output [5]: [i_item_sk#114, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118]
 Arguments: [ws_item_sk#108], [i_item_sk#114], Inner, BuildRight
 
-(109) CometProject
+(106) CometProject
 Input [10]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112, i_item_sk#114, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118]
 Arguments: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118], [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118]
 
-(110) ReusedExchange [Reuses operator id: 80]
+(107) ReusedExchange [Reuses operator id: 79]
 Output [2]: [d_date_sk#119, d_year#120]
 
-(111) CometBroadcastHashJoin
+(108) CometBroadcastHashJoin
 Left output [9]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118]
 Right output [2]: [d_date_sk#119, d_year#120]
 Arguments: [ws_sold_date_sk#112], [d_date_sk#119], Inner, BuildRight
 
-(112) CometProject
+(109) CometProject
 Input [11]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, ws_sold_date_sk#112, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_date_sk#119, d_year#120]
 Arguments: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120], [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120]
 
-(113) ColumnarToRow [codegen id : 30]
+(110) CometColumnarExchange
 Input [9]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120]
+Arguments: hashpartitioning(ws_order_number#109, ws_item_sk#108, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=12]
 
-(114) Exchange
+(111) CometSort
 Input [9]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120]
-Arguments: hashpartitioning(ws_order_number#109, ws_item_sk#108, 5), ENSURE_REQUIREMENTS, [plan_id=12]
+Arguments: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120], [ws_order_number#109 ASC NULLS FIRST, ws_item_sk#108 ASC NULLS FIRST]
 
-(115) Sort [codegen id : 31]
-Input [9]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120]
-Arguments: [ws_order_number#109 ASC NULLS FIRST, ws_item_sk#108 ASC NULLS FIRST], false, 0
-
-(116) ReusedExchange [Reuses operator id: 59]
+(112) ReusedExchange [Reuses operator id: 53]
 Output [4]: [wr_item_sk#121, wr_order_number#122, wr_return_quantity#123, wr_return_amt#124]
 
-(117) Sort [codegen id : 33]
+(113) CometSort
 Input [4]: [wr_item_sk#121, wr_order_number#122, wr_return_quantity#123, wr_return_amt#124]
-Arguments: [wr_order_number#122 ASC NULLS FIRST, wr_item_sk#121 ASC NULLS FIRST], false, 0
+Arguments: [wr_item_sk#121, wr_order_number#122, wr_return_quantity#123, wr_return_amt#124], [wr_order_number#122 ASC NULLS FIRST, wr_item_sk#121 ASC NULLS FIRST]
 
-(118) SortMergeJoin [codegen id : 34]
-Left keys [2]: [ws_order_number#109, ws_item_sk#108]
-Right keys [2]: [wr_order_number#122, wr_item_sk#121]
-Join type: LeftOuter
-Join condition: None
+(114) CometSortMergeJoin
+Left output [9]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120]
+Right output [4]: [wr_item_sk#121, wr_order_number#122, wr_return_quantity#123, wr_return_amt#124]
+Arguments: [ws_order_number#109, ws_item_sk#108], [wr_order_number#122, wr_item_sk#121], LeftOuter
 
-(119) Project [codegen id : 34]
-Output [7]: [d_year#120, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, (ws_quantity#110 - coalesce(wr_return_quantity#123, 0)) AS sales_cnt#125, (ws_ext_sales_price#111 - coalesce(wr_return_amt#124, 0.00)) AS sales_amt#126]
+(115) CometProject
 Input [13]: [ws_item_sk#108, ws_order_number#109, ws_quantity#110, ws_ext_sales_price#111, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, d_year#120, wr_item_sk#121, wr_order_number#122, wr_return_quantity#123, wr_return_amt#124]
+Arguments: [d_year#120, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, sales_cnt#125, sales_amt#126], [d_year#120, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, (ws_quantity#110 - coalesce(wr_return_quantity#123, 0)) AS sales_cnt#125, (ws_ext_sales_price#111 - coalesce(wr_return_amt#124, 0.00)) AS sales_amt#126]
 
-(120) Union
+(116) CometUnion
+Child 0 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
+Child 1 Input [7]: [d_year#101, i_brand_id#96, i_class_id#97, i_category_id#98, i_manufact_id#99, sales_cnt#106, sales_amt#107]
+Child 2 Input [7]: [d_year#120, i_brand_id#115, i_class_id#116, i_category_id#117, i_manufact_id#118, sales_cnt#125, sales_amt#126]
 
-(121) HashAggregate [codegen id : 35]
+(117) CometHashAggregate
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Keys [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Functions: []
-Aggregate Attributes: []
-Results [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 
-(122) Exchange
+(118) CometColumnarExchange
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
-Arguments: hashpartitioning(d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88, 5), ENSURE_REQUIREMENTS, [plan_id=13]
+Arguments: hashpartitioning(d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=13]
 
-(123) HashAggregate [codegen id : 36]
+(119) CometHashAggregate
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Keys [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Functions: []
-Aggregate Attributes: []
-Results [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 
-(124) HashAggregate [codegen id : 36]
+(120) ColumnarToRow [codegen id : 4]
+Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
+
+(121) HashAggregate [codegen id : 4]
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Keys [5]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Functions [2]: [partial_sum(sales_cnt#87), partial_sum(UnscaledValue(sales_amt#88))]
 Aggregate Attributes [2]: [sum#127, sum#128]
 Results [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum#129, sum#130]
 
-(125) Exchange
+(122) RowToColumnar
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum#129, sum#130]
-Arguments: hashpartitioning(d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, 5), ENSURE_REQUIREMENTS, [plan_id=14]
 
-(126) HashAggregate [codegen id : 37]
+(123) CometColumnarExchange
+Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum#129, sum#130]
+Arguments: hashpartitioning(d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=14]
+
+(124) ColumnarToRow [codegen id : 5]
+Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum#129, sum#130]
+
+(125) HashAggregate [codegen id : 5]
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum#129, sum#130]
 Keys [5]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Functions [2]: [sum(sales_cnt#87), sum(UnscaledValue(sales_amt#88))]
 Aggregate Attributes [2]: [sum(sales_cnt#87)#66, sum(UnscaledValue(sales_amt#88))#67]
 Results [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sum(sales_cnt#87)#66 AS sales_cnt#131, MakeDecimal(sum(UnscaledValue(sales_amt#88))#67,18,2) AS sales_amt#132]
 
-(127) Filter [codegen id : 37]
+(126) Filter [codegen id : 5]
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
 Condition : isnotnull(sales_cnt#131)
 
-(128) Exchange
+(127) RowToColumnar
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
-Arguments: hashpartitioning(i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, 5), ENSURE_REQUIREMENTS, [plan_id=15]
 
-(129) Sort [codegen id : 38]
+(128) CometColumnarExchange
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
-Arguments: [i_brand_id#77 ASC NULLS FIRST, i_class_id#78 ASC NULLS FIRST, i_category_id#79 ASC NULLS FIRST, i_manufact_id#80 ASC NULLS FIRST], false, 0
+Arguments: hashpartitioning(i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=15]
 
-(130) SortMergeJoin [codegen id : 39]
+(129) CometSort
+Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
+Arguments: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132], [i_brand_id#77 ASC NULLS FIRST, i_class_id#78 ASC NULLS FIRST, i_category_id#79 ASC NULLS FIRST, i_manufact_id#80 ASC NULLS FIRST]
+
+(130) ColumnarToRow [codegen id : 6]
+Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
+
+(131) SortMergeJoin [codegen id : 7]
 Left keys [4]: [i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12]
 Right keys [4]: [i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80]
 Join type: Inner
 Join condition: ((cast(sales_cnt#68 as decimal(17,2)) / cast(sales_cnt#131 as decimal(17,2))) < 0.90000000000000000000)
 
-(131) Project [codegen id : 39]
+(132) Project [codegen id : 7]
 Output [10]: [d_year#82 AS prev_year#133, d_year#14 AS year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#131 AS prev_yr_cnt#135, sales_cnt#68 AS curr_yr_cnt#136, (sales_cnt#68 - sales_cnt#131) AS sales_cnt_diff#137, (sales_amt#69 - sales_amt#132) AS sales_amt_diff#138]
 Input [14]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#68, sales_amt#69, d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#131, sales_amt#132]
 
-(132) TakeOrderedAndProject
+(133) TakeOrderedAndProject
 Input [10]: [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]
 Arguments: 100, [sales_cnt_diff#137 ASC NULLS FIRST, sales_amt_diff#138 ASC NULLS FIRST], [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
-BroadcastExchange (136)
-+- * ColumnarToRow (135)
-   +- CometFilter (134)
-      +- CometScan parquet spark_catalog.default.date_dim (133)
+BroadcastExchange (137)
++- * ColumnarToRow (136)
+   +- CometFilter (135)
+      +- CometScan parquet spark_catalog.default.date_dim (134)
 
 
-(133) Scan parquet spark_catalog.default.date_dim
+(134) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#13, d_year#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2002), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(134) CometFilter
+(135) CometFilter
 Input [2]: [d_date_sk#13, d_year#14]
 Condition : ((isnotnull(d_year#14) AND (d_year#14 = 2002)) AND isnotnull(d_date_sk#13))
 
-(135) ColumnarToRow [codegen id : 1]
+(136) ColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#13, d_year#14]
 
-(136) BroadcastExchange
+(137) BroadcastExchange
 Input [2]: [d_date_sk#13, d_year#14]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=16]
 
-Subquery:2 Hosting operator id = 25 Hosting Expression = ss_sold_date_sk#26 IN dynamicpruning#6
+Subquery:2 Hosting operator id = 23 Hosting Expression = ss_sold_date_sk#26 IN dynamicpruning#6
 
-Subquery:3 Hosting operator id = 44 Hosting Expression = ws_sold_date_sk#46 IN dynamicpruning#6
+Subquery:3 Hosting operator id = 40 Hosting Expression = ws_sold_date_sk#46 IN dynamicpruning#6
 
-Subquery:4 Hosting operator id = 73 Hosting Expression = cs_sold_date_sk#74 IN dynamicpruning#75
-BroadcastExchange (140)
-+- * ColumnarToRow (139)
-   +- CometFilter (138)
-      +- CometScan parquet spark_catalog.default.date_dim (137)
+Subquery:4 Hosting operator id = 72 Hosting Expression = cs_sold_date_sk#74 IN dynamicpruning#75
+BroadcastExchange (141)
++- * ColumnarToRow (140)
+   +- CometFilter (139)
+      +- CometScan parquet spark_catalog.default.date_dim (138)
 
 
-(137) Scan parquet spark_catalog.default.date_dim
+(138) Scan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#81, d_year#82]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(138) CometFilter
+(139) CometFilter
 Input [2]: [d_date_sk#81, d_year#82]
 Condition : ((isnotnull(d_year#82) AND (d_year#82 = 2001)) AND isnotnull(d_date_sk#81))
 
-(139) ColumnarToRow [codegen id : 1]
+(140) ColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#81, d_year#82]
 
-(140) BroadcastExchange
+(141) BroadcastExchange
 Input [2]: [d_date_sk#81, d_year#82]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=17]
 
-Subquery:5 Hosting operator id = 90 Hosting Expression = ss_sold_date_sk#93 IN dynamicpruning#75
+Subquery:5 Hosting operator id = 88 Hosting Expression = ss_sold_date_sk#93 IN dynamicpruning#75
 
-Subquery:6 Hosting operator id = 105 Hosting Expression = ws_sold_date_sk#112 IN dynamicpruning#75
+Subquery:6 Hosting operator id = 102 Hosting Expression = ws_sold_date_sk#112 IN dynamicpruning#75
 
 
