@@ -208,7 +208,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr match {
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
-            case _: Min | _: Max | _: Count =>
+            // TODO add support for Count (this was removed when upgrading
+            // to DataFusion 40 because it is no longer a built-in window function)
+            // https://github.com/apache/datafusion-comet/issues/645
+            case _: Min | _: Max =>
               Some(agg)
             case _ =>
               withInfo(windowExpr, "Unsupported aggregate", expr)
@@ -1476,6 +1479,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case IsNaN(child) =>
+          val childExpr = exprToProtoInternal(child, inputs)
+          val optExpr =
+            scalarExprToProtoWithReturnType("isnan", BooleanType, childExpr)
+
+          optExprWithInfo(optExpr, expr, child)
+
         case SortOrder(child, direction, nullOrdering, _) =>
           val childExpr = exprToProtoInternal(child, inputs)
 
@@ -1693,18 +1703,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               optExprWithInfo(optExpr, expr, child)
           }
 
+        // The expression for `log` functions is defined as null on numbers less than or equal
+        // to 0. This matches Spark and Hive behavior, where non positive values eval to null
+        // instead of NaN or -Infinity.
         case Log(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
+          val childExpr = exprToProtoInternal(nullIfNegative(child), inputs)
           val optExpr = scalarExprToProto("ln", childExpr)
           optExprWithInfo(optExpr, expr, child)
 
         case Log10(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
+          val childExpr = exprToProtoInternal(nullIfNegative(child), inputs)
           val optExpr = scalarExprToProto("log10", childExpr)
           optExprWithInfo(optExpr, expr, child)
 
         case Log2(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
+          val childExpr = exprToProtoInternal(nullIfNegative(child), inputs)
           val optExpr = scalarExprToProto("log2", childExpr)
           optExprWithInfo(optExpr, expr, child)
 
@@ -2265,6 +2278,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             scalarExprToProtoWithReturnType(algorithm, StringType, childExpr)
           }
 
+        case struct @ CreateNamedStruct(_) =>
+          val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
+          val dataType = serializeDataType(struct.dataType)
+
+          if (valExprs.forall(_.isDefined) && dataType.isDefined) {
+            val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
+            structBuilder.addAllValues(valExprs.map(_.get).asJava)
+            structBuilder.setDatatype(dataType.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setCreateNamedStruct(structBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
+            None
+          }
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
@@ -2362,6 +2394,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
   } else {
     expression
+  }
+
+  def nullIfNegative(expression: Expression): Expression = {
+    val zero = Literal.default(expression.dataType)
+    If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
   }
 
   /**
@@ -2623,6 +2660,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
+          return None
+        }
+
+        if ((join.leftKeys ++ join.rightKeys).exists(_.dataType.isInstanceOf[StructType])) {
+          withInfo(join, "Unsupported struct data type in join keys")
           return None
         }
 

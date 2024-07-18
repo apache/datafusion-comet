@@ -65,9 +65,6 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
       benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix") { _ =>
-        cometSpark.sql(queryString).noop()
-      }
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
         withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()

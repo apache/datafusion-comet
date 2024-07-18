@@ -120,66 +120,69 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("HashJoin without join filter") {
-    withSQLConf(
-      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
-      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
-          // Inner join: build left
-          val df1 =
-            sql(
-              "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df1)
+    Seq(true, false).foreach { coalesceBatches =>
+      withSQLConf(
+        CometConf.COMET_COALESCE_BATCHES.key -> coalesceBatches.toString,
+        "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+        SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+          withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+            // Inner join: build left
+            val df1 =
+              sql(
+                "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df1)
 
-          // Right join: build left
-          val df2 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df2)
+            // Right join: build left
+            val df2 =
+              sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df2)
 
-          // Full join: build left
-          val df3 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df3)
+            // Full join: build left
+            val df3 =
+              sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df3)
 
-          // TODO: Spark 3.4 returns SortMergeJoin for this query even with SHUFFLE_HASH hint.
-          // Left join with build left and right join with build right in hash join is only supported
-          // in Spark 3.5 or above. See SPARK-36612.
-          //
-          // Left join: build left
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            // TODO: Spark 3.4 returns SortMergeJoin for this query even with SHUFFLE_HASH hint.
+            // Left join with build left and right join with build right in hash join is only supported
+            // in Spark 3.5 or above. See SPARK-36612.
+            //
+            // Left join: build left
+            // sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
 
-          // Inner join: build right
-          val df4 =
-            sql(
-              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df4)
+            // Inner join: build right
+            val df4 =
+              sql(
+                "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df4)
 
-          // Left join: build right
-          val df5 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df5)
+            // Left join: build right
+            val df5 =
+              sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df5)
 
-          // Right join: build right
-          val df6 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df6)
+            // Right join: build right
+            val df6 =
+              sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df6)
 
-          // Full join: build right
-          val df7 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df7)
+            // Full join: build right
+            val df7 =
+              sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+            checkSparkAnswerAndOperator(df7)
 
-          // Left semi and anti joins are only supported with build right in Spark.
-          val left = sql("SELECT * FROM tbl_a")
-          val right = sql("SELECT * FROM tbl_b")
+            // Left semi and anti joins are only supported with build right in Spark.
+            val left = sql("SELECT * FROM tbl_a")
+            val right = sql("SELECT * FROM tbl_b")
 
-          val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
-          checkSparkAnswerAndOperator(df8)
+            val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
+            checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+            // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
+            // left.join(right, left("_2") === right("_1"), "leftanti")
+          }
         }
       }
     }

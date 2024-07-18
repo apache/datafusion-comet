@@ -56,6 +56,15 @@ object Meta {
     Function("trim", 1),
     Function("ltrim", 1),
     Function("rtrim", 1),
+    Function("string_space", 1),
+    Function("rpad", 2),
+    Function("rpad", 3), // rpad can have 2 or 3 arguments
+    Function("hex", 1),
+    Function("unhex", 1),
+    Function("xxhash64", 1),
+    Function("sha1", 1),
+    // Function("sha2", 1), -- needs a second argument for number of bits
+    Function("substring", 3),
     Function("btrim", 1),
     Function("concat_ws", 2),
     Function("repeat", 2),
@@ -86,9 +95,16 @@ object Meta {
     Function("Sqrt", 1),
     Function("Tan", 1),
     Function("Ceil", 1),
-    Function("Floor", 1))
+    Function("Floor", 1),
+    Function("bool_and", 1),
+    Function("bool_or", 1),
+    Function("bitwise_not", 1))
 
-  val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++ mathScalarFunc
+  val miscScalarFunc: Seq[Function] =
+    Seq(Function("isnan", 1), Function("isnull", 1), Function("isnotnull", 1))
+
+  val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
+    mathScalarFunc ++ miscScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
     Function("min", 1),
@@ -108,6 +124,8 @@ object Meta {
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 
-  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%", "&", "|", "^")
+  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>")
+
+  val comparisonOps: Seq[String] = Seq("=", "<=>", ">", ">=", "<", "<=")
 
 }

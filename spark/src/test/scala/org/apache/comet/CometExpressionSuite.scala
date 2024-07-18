@@ -819,7 +819,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
-          (0 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
+          (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
           withDictionary = dictionary.toBoolean) {
           checkSparkAnswerWithTol(
@@ -1718,6 +1718,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
             checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
           }
+        }
+      }
+    }
+  }
+
+  test("isnan") {
+    Seq("true", "false").foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+        withParquetTable(
+          Seq(Some(1.0), Some(Double.NaN), None).map(i => Tuple1(i)),
+          "tbl",
+          withDictionary = dictionary.toBoolean) {
+          checkSparkAnswerAndOperator("SELECT isnan(_1), isnan(cast(_1 as float)) FROM tbl")
+          // Use inside a nullable statement to make sure isnan has correct behavior for null input
+          checkSparkAnswerAndOperator(
+            "SELECT CASE WHEN (_1 > 0) THEN NULL ELSE isnan(_1) END FROM tbl")
+        }
+      }
+    }
+  }
+
+  test("named_struct") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
       }
     }
