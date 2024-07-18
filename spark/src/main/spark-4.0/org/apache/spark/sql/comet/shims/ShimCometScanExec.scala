@@ -71,7 +71,7 @@ trait ShimCometScanExec {
     PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
 
   protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
-    translateToV1Filters(dataFilters, _.toLiteral)
+    translateToV1Filters(relation, dataFilters, _.toLiteral)
   }
 
   // From Spark FileSourceScanLike

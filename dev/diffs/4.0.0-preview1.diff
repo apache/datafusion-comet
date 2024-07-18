@@ -900,7 +900,7 @@ index 56c364e2084..11779ee3b4b 100644
        withTable("dt") {
          sql("create table dt using parquet as select 9000000000BD as d")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 68f14f13bbd..abeeabf58f9 100644
+index 68f14f13bbd..174636cefb5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
@@ -944,16 +944,15 @@ index 68f14f13bbd..abeeabf58f9 100644
        checkAnswer(df, answer)
 -      val fileSourceScanExec = collect(df.queryExecution.executedPlan) {
 -        case f: FileSourceScanExec => f
--      }
++      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
++        case f: FileSourceScanLike => f
++        case c: CometScanExec => c
+       }
        sparkContext.listenerBus.waitUntilEmpty()
 -      assert(fileSourceScanExec.size === 1)
 -      val scalarSubquery = fileSourceScanExec.head.dataFilters.flatMap(_.collect {
 -        case s: ScalarSubquery => s
 -      })
-+      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
-+        case f: FileSourceScanLike => f
-+        case c: CometScanExec => c
-+      }
 +      assert(dataSourceScanExec.size === 1)
 +      val scalarSubquery = dataSourceScanExec.head match {
 +        case f: FileSourceScanLike =>
