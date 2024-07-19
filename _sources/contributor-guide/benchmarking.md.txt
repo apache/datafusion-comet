@@ -87,7 +87,7 @@ you to run these benchmarks in your own environments.
 
 ### TPC-H
 
-Comet currently provides a 35% speedup for TPC-H @ SF=100GB.
+Comet currently provides a 54% speedup for TPC-H @ SF=100GB.
 
 ![](../../_static/images/benchmark-results/2024-07-19/tpch_allqueries.png)
 
@@ -107,7 +107,7 @@ The raw results of these benchmarks in JSON format is available here:
  
 ### TPC-DS
 
-Comet currently provides an 18% speedup for TPC-DS @ SF=100GB. Note that we used an optimized version of 
+Comet currently provides an 23% speedup for TPC-DS @ SF=100GB. Note that we used an optimized version of 
 query 72 with a better join order for these benchmarks since the focus of Spark (and Comet) is not on join 
 reordering algorithms but raw execution speed.
 
