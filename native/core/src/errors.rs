@@ -395,7 +395,7 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                     }) => {
                         let throwable: JThrowable = env
                             .new_object(
-                                "org/apache/spark/sql/comet/CometCastOverflowException",
+                                "org/apache/spark/sql/comet/CastOverflowException",
                                 "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                                 &[
                                     JValue::Object(&env.new_string(value).unwrap()),

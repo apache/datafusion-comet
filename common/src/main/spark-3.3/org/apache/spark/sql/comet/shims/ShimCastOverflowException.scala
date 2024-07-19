@@ -17,19 +17,16 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.SparkArithmeticException
 import org.apache.spark.sql.errors.QueryExecutionErrors.toSQLConf
 import org.apache.spark.sql.internal.SQLConf
 
-class CometCastOverflowException(t: String, from: String, to: String)
-    extends SparkArithmeticException(
-      "CAST_OVERFLOW",
-      Map(
-        "value" -> t,
-        "sourceType" -> from,
-        "targetType" -> to,
-        "ansiConfig" -> toSQLConf(SQLConf.ANSI_ENABLED.key)),
-      Array.empty,
-      "") {}
+// TODO: Only the Spark 3.3 version of this class is different from the others.
+//       Remove this class after dropping Spark 3.3 support.
+class ShimCastOverflowException(t: String, from: String, to: String)
+  extends SparkArithmeticException(
+    "CAST_OVERFLOW",
+    Array(t, from, to, toSQLConf(SQLConf.ANSI_ENABLED.key))
+  ) {}
