@@ -28,5 +28,5 @@ import org.apache.spark.sql.internal.SQLConf
 class ShimCastOverflowException(t: String, from: String, to: String)
   extends SparkArithmeticException(
     "CAST_OVERFLOW",
-    Array(t, from, to, toSQLConf(SQLConf.ANSI_ENABLED.key))
+    Array(t, s"\"$from\"", s"\"$to\"", toSQLConf(SQLConf.ANSI_ENABLED.key))
   ) {}

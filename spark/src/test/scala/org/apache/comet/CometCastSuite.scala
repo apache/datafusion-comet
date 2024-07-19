@@ -988,8 +988,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
             val sparkMessage =
-              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
-            val cometMessage = cometException.getCause.getMessage
+              if (sparkException.getCause != null) sparkException.getCause.getMessage else sparkException.getMessage
+            val cometMessage = if (cometException.getCause != null) cometException.getCause.getMessage else cometException.getMessage
             if (CometSparkSessionExtensions.isSpark40Plus) {
               // for Spark 4 we expect to sparkException carries the message
               assert(
