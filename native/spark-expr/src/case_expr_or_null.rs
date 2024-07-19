@@ -26,7 +26,7 @@ use arrow::compute::nullif;
 use arrow_array::{Array, BooleanArray, RecordBatch};
 use arrow_schema::{DataType, Schema};
 
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::{exec_err, Result};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_plan::{DisplayAs, DisplayFormatType, PhysicalExpr};
 
@@ -105,14 +105,10 @@ impl PhysicalExpr for CaseWhenExprOrNull {
             let bit_mask = arrow::compute::kernels::boolean::not(bit_mask)?;
             match self.expr.evaluate(batch)? {
                 ColumnarValue::Array(array) => Ok(ColumnarValue::Array(nullif(&array, &bit_mask)?)),
-                ColumnarValue::Scalar(_) => exec_err!(
-                    "expression did not evaluate to an array".to_string(),
-                )),
+                ColumnarValue::Scalar(_) => exec_err!("expression did not evaluate to an array"),
             }
         } else {
-            exec_err!
-                "predicate did not evaluate to an array".to_string(),
-            ))
+            exec_err!("predicate did not evaluate to an array")
         }
     }
 
