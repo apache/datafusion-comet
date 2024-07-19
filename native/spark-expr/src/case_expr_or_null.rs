@@ -105,7 +105,7 @@ impl PhysicalExpr for CaseWhenExprOrNull {
             let bit_mask = arrow::compute::kernels::boolean::not(bit_mask)?;
             match self.expr.evaluate(batch)? {
                 ColumnarValue::Array(array) => Ok(ColumnarValue::Array(nullif(&array, &bit_mask)?)),
-                ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
+                ColumnarValue::Scalar(_) => exec_err!(
                     "expression did not evaluate to an array".to_string(),
                 )),
             }
