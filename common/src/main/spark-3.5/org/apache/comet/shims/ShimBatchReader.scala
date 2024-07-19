@@ -35,4 +35,24 @@ object ShimBatchReader {
       0,
       0,
       Map.empty)
+
+  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] = {
+    val externalAccumsMethod = classOf[TaskMetrics].getDeclaredMethod("externalAccums")
+    externalAccumsMethod.setAccessible(true)
+    val returnType = externalAccumsMethod.getReturnType.getName
+    returnType match {
+      case "scala.collection.mutable.Buffer" =>
+        externalAccumsMethod
+          .invoke(taskMetrics)
+          .asInstanceOf[mutable.Buffer[AccumulatorV2[_, _]]]
+          .lastOption
+      case "scala.collection.Seq" =>
+        externalAccumsMethod
+          .invoke(taskMetrics)
+          .asInstanceOf[Seq[AccumulatorV2[_, _]]]
+          .lastOption
+      case _ =>
+        None
+    }
+  }
 }

@@ -345,7 +345,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // Note that this tries to get thread local TaskContext object, if this is called at other
     // thread, it won't update the accumulator.
     if (taskContext != null) {
-      Option<AccumulatorV2<?, ?>> accu = taskContext.taskMetrics().externalAccums().lastOption();
+      Option<AccumulatorV2<?, ?>> accu =
+          ShimBatchReader.getTaskAccumulator(taskContext.taskMetrics());
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
