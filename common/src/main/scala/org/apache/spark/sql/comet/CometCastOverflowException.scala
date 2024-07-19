@@ -20,6 +20,16 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.SparkArithmeticException
+import org.apache.spark.sql.errors.QueryExecutionErrors.toSQLConf
+import org.apache.spark.sql.internal.SQLConf
 
-class CometArithmeticException(message: String)
-    extends SparkArithmeticException("CAST_OVERFLOW", Map(), Array(), message) {}
+class CometCastOverflowException(t: String, from: String, to: String)
+    extends SparkArithmeticException(
+      "CAST_OVERFLOW",
+      Map(
+        "value" -> t,
+        "sourceType" -> from,
+        "targetType" -> to,
+        "ansiConfig" -> toSQLConf(SQLConf.ANSI_ENABLED.key)),
+      Array.empty,
+      "") {}
