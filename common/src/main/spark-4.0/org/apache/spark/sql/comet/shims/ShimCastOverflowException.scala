@@ -30,8 +30,8 @@ class ShimCastOverflowException(t: String, from: String, to: String)
     "CAST_OVERFLOW",
     Map(
       "value" -> t,
-      "sourceType" -> s"\"$from\"",
-      "targetType" -> s"\"$to\"",
+      "sourceType" -> s""""$from"""",
+      "targetType" -> s""""$to"""",
       "ansiConfig" -> toSQLConf(SQLConf.ANSI_ENABLED.key)),
     Array.empty,
     "") {}
