@@ -87,17 +87,17 @@ you to run these benchmarks in your own environments.
 
 ### TPC-H
 
-35% speedup
+Comet currently provides a 35% speedup for TPC-H @ SF=100GB.
 
-![](../../_static/images/tpch_allqueries.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.
 
-![](../../_static/images/tpch_queries_compare.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark. 
 
-![](../../_static/images/tpch_queries_speedup.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
@@ -111,16 +111,16 @@ Comet currently provides an 18% speedup for TPC-DS @ SF=100GB. Note that we used
 query 72 with a better join order for these benchmarks since the focus of Spark (and Comet) is not on join 
 reordering algorithms but raw execution speed.
 
-![](../../_static/images/tpcds_allqueries.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpcds_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each query. DataFusion is 
 not included here because it currently only supports around 90% of the TPC-DS queries.
 
-![](../../_static/images/tpcds_queries_compare.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpcds_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark.
 
-![](../../_static/images/tpcds_queries_speedup.png)
+![](../../_static/images/benchmark-results/2024-07-19/tpcds_queries_speedup.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
