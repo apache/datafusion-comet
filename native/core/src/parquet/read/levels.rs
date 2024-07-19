@@ -121,8 +121,8 @@ impl LevelDecoder {
             match self.mode {
                 Mode::RLE => {
                     if self.current_value as i16 == max_def_level {
-                        value_decoder.read_batch(vector, n);
                         bit::set_bits(vector.validity_buffer.as_slice_mut(), vector.num_values, n);
+                        value_decoder.read_batch(vector, n);
                         vector.num_values += n;
                     } else {
                         vector.put_nulls(n);
@@ -132,8 +132,8 @@ impl LevelDecoder {
                     for i in 0..n {
                         if self.current_buffer[self.current_buffer_idx + i] == max_def_level as i32
                         {
-                            value_decoder.read(vector);
                             bit::set_bit(vector.validity_buffer.as_slice_mut(), vector.num_values);
+                            value_decoder.read(vector);
                             vector.num_values += 1;
                         } else {
                             vector.put_null();

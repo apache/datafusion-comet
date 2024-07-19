@@ -289,7 +289,7 @@ object CometConf extends ShimCometConf {
           "why a query stage cannot be executed natively. Set this to false to " +
           "reduce the amount of logging.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
