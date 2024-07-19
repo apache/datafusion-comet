@@ -543,6 +543,9 @@ impl PhysicalPlanner {
                     }
                 };
 
+                // TODO remove this optimization when we upgrade to DataFusion 41,
+                // which contains https://github.com/apache/datafusion/pull/11534
+
                 // optimized path for CASE WHEN predicate THEN expr ELSE null END
                 if else_phy_expr.is_none() && when_then_pairs.len() == 1 {
                     let when_then = &when_then_pairs[0];
