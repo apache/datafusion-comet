@@ -104,7 +104,7 @@ The raw results of these benchmarks in JSON format is available here:
 - [Spark](./benchmark-results/2024-07-19/spark-tpch.json)
 - [Comet](./benchmark-results/2024-07-19/comet-tpch.json)
 - [DataFusion](./benchmark-results/2024-07-19/datafusion-tpch.json)
-- 
+ 
 ### TPC-DS
 
 Comet currently provides an 18% speedup for TPC-DS @ SF=100GB. Note that we used an optimized version of 
