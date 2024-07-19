@@ -110,7 +110,7 @@ impl PhysicalExpr for CaseWhenExprOrNull {
                 )),
             }
         } else {
-            Err(DataFusionError::Execution(
+            exec_err!
                 "predicate did not evaluate to an array".to_string(),
             ))
         }
