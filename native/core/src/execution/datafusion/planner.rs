@@ -108,8 +108,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, CaseWhenExprOrNull, Cast, DateTruncExec, HourExec, IfExpr, MinuteExec, SecondExec,
-    TimestampTruncExec,
+    Abs, CaseWhenExprOrNull, Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr,
+    TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -559,7 +559,6 @@ impl PhysicalPlanner {
                         return Ok(Arc::new(CaseWhenExprOrNull::new(
                             Arc::clone(&when_then.0),
                             Arc::clone(&when_then.1),
-                            when_then.1.clone(),
                         )));
                     }
                 }
