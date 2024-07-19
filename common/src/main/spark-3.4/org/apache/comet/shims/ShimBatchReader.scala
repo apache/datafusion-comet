@@ -19,13 +19,13 @@
 
 package org.apache.comet.shims
 
+import scala.collection.mutable
+
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.util.AccumulatorV2
-
-import scala.collection.mutable
 
 object ShimBatchReader {
 
