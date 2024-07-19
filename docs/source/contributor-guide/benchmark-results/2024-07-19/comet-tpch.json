@@ -4,199 +4,150 @@
     "data_path": "/mnt/bigdata/tpch/sf100/",
     "query_path": "../../tpch/queries",
     "spark_conf": {
-        "spark.comet.explainFallback.enabled": "true",
         "spark.eventLog.enabled": "true",
         "spark.jars": "file:///home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
         "spark.comet.cast.allowIncompatible": "true",
-        "spark.app.startTime": "1719691158901",
+        "spark.app.startTime": "1721402269156",
+        "spark.app.id": "app-20240719151749-0002",
         "spark.executor.extraClassPath": "/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
         "spark.comet.exec.shuffle.enabled": "true",
+        "spark.driver.port": "38495",
         "spark.app.name": "DataFusion Comet Benchmark derived from TPC-H / TPC-DS",
-        "spark.app.id": "app-20240629135919-0008",
-        "spark.comet.batchSize": "8192",
+        "spark.app.submitTime": "1721402268875",
         "spark.serializer.objectStreamReset": "100",
-        "spark.driver.host": "10.0.0.118",
         "spark.submit.deployMode": "client",
-        "spark.sql.autoBroadcastJoinThreshold": "-1",
         "spark.comet.exec.all.enabled": "true",
         "spark.executor.cores": "8",
+        "spark.driver.host": "woody.lan",
         "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
         "spark.comet.shuffle.enforceMode.enabled": "true",
         "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-benchmarks/runners/datafusion-comet/spark-warehouse",
         "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
-        "spark.app.submitTime": "1719691158623",
-        "spark.repl.local.jars": "file:///home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
         "spark.comet.exec.enabled": "true",
+        "spark.repl.local.jars": "file:///home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
         "spark.executor.id": "driver",
+        "spark.app.initial.jar.urls": "spark://woody.lan:38495/jars/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
         "spark.master": "spark://woody:7077",
         "spark.comet.exec.shuffle.mode": "auto",
-        "spark.driver.port": "34629",
         "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
         "spark.driver.memory": "8G",
         "spark.driver.extraClassPath": "/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
-        "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.executor.memory": "32G",
         "spark.rdd.compress": "True",
         "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
         "spark.executor.instances": "1",
         "spark.cores.max": "8",
         "spark.comet.enabled": "true",
-        "spark.submit.pyFiles": "",
-        "spark.app.initial.jar.urls": "spark://10.0.0.118:34629/jars/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar",
-        "spark.comet.cbo.enabled": "false"
+        "spark.submit.pyFiles": ""
     },
     "1": [
-        28.735982179641724,
-        27.904003858566284,
-        27.98918342590332,
-        27.998026847839355,
-        27.7985897064209
+        28.722949028015137,
+        27.5392906665802,
+        27.496358633041382
     ],
     "2": [
-        15.840301513671875,
-        15.137918710708618,
-        15.086657047271729,
-        15.252221584320068,
-        15.093742370605469
+        9.163376569747925,
+        8.315577268600464,
+        8.380951404571533
     ],
     "3": [
-        18.124080181121826,
-        18.498253345489502,
-        18.420130252838135,
-        18.309802055358887,
-        18.46897006034851
+        17.556873083114624,
+        17.497890949249268,
+        17.48395323753357
     ],
     "4": [
-        9.55617070198059,
-        9.518851518630981,
-        9.514896392822266,
-        9.583910465240479,
-        9.444581985473633
+        9.459511756896973,
+        9.35229229927063,
+        9.526184320449829
     ],
     "5": [
-        33.23771286010742,
-        33.053247690200806,
-        32.84638738632202,
-        32.790276765823364,
-        32.90981197357178
+        32.742212772369385,
+        32.53394556045532,
+        32.72231674194336
     ],
     "6": [
-        3.34500789642334,
-        2.9966821670532227,
-        3.0137181282043457,
-        2.9657068252563477,
-        2.919524908065796
+        3.11678147315979,
+        2.9885473251342773,
+        3.089282274246216
     ],
     "7": [
-        20.84096646308899,
-        20.373249053955078,
-        20.337918519973755,
-        20.32623314857483,
-        20.321190357208252
+        19.92447853088379,
+        19.889236450195312,
+        20.12239646911621
     ],
     "8": [
-        36.99943470954895,
-        36.097434520721436,
-        36.08603119850159,
-        36.26709461212158,
-        36.22776746749878
+        36.376123666763306,
+        36.56628465652466,
+        36.08057117462158
     ],
     "9": [
-        58.00954031944275,
-        56.75375247001648,
-        57.23253607749939,
-        57.04572892189026,
-        57.06179666519165
+        55.983471155166626,
+        55.55835008621216,
+        55.05353879928589
     ],
     "10": [
-        19.51328682899475,
-        19.17092227935791,
-        19.110991716384888,
-        19.05888819694519,
-        19.292072534561157
+        18.320690870285034,
+        17.953410148620605,
+        17.839956283569336
     ],
     "11": [
-        12.222111463546753,
-        12.186187267303467,
-        12.177972316741943,
-        12.100908517837524,
-        12.061741828918457
+        7.945342302322388,
+        7.947471618652344,
+        7.870803356170654
     ],
     "12": [
-        7.657347679138184,
-        7.598176002502441,
-        7.568347930908203,
-        7.4833292961120605,
-        7.551736116409302
+        7.797280550003052,
+        7.611949920654297,
+        7.625390291213989
     ],
     "13": [
-        9.64631199836731,
-        9.536576509475708,
-        9.564186096191406,
-        9.570204496383667,
-        9.662892580032349
+        11.711121082305908,
+        11.817307949066162,
+        11.80425763130188
     ],
     "14": [
-        6.022975921630859,
-        5.84771203994751,
-        6.049532175064087,
-        5.998222827911377,
-        5.899066925048828
+        6.106103897094727,
+        5.755920171737671,
+        5.686336040496826
     ],
     "15": [
-        10.946545600891113,
-        10.68128228187561,
-        10.473867416381836,
-        10.72830843925476,
-        10.45834231376648
+        11.505656242370605,
+        11.023053884506226,
+        10.784588813781738
     ],
     "16": [
-        7.951048851013184,
-        6.773421049118042,
-        6.630566120147705,
-        6.826274633407593,
-        6.515024185180664
+        8.015074729919434,
+        6.408633232116699,
+        6.315148591995239
     ],
     "17": [
-        46.03706979751587,
-        42.801599740982056,
-        42.59856081008911,
-        42.84500861167908,
-        42.899412870407104
+        34.54281425476074,
+        35.28704261779785,
+        34.809094190597534
     ],
     "18": [
-        34.244925022125244,
-        31.239882469177246,
-        31.353251695632935,
-        31.224499940872192,
-        31.53875970840454
+        31.605079889297485,
+        31.74153995513916,
+        31.957621574401855
     ],
     "19": [
-        7.07506251335144,
-        6.813824892044067,
-        6.79759407043457,
-        6.941055059432983,
-        6.83566427230835
+        6.488569974899292,
+        6.363597869873047,
+        6.369234323501587
     ],
     "20": [
-        10.964829683303833,
-        10.757019996643066,
-        10.806366205215454,
-        10.990953922271729,
-        10.887315273284912
+        8.480429410934448,
+        8.437273502349854,
+        8.329411745071411
     ],
     "21": [
-        44.07762622833252,
-        44.03535461425781,
-        43.978052377700806,
-        43.928617000579834,
-        43.93204379081726
+        41.91543126106262,
+        41.532346963882446,
+        42.07075548171997
     ],
     "22": [
-        4.871158599853516,
-        4.810696601867676,
-        4.873842239379883,
-        4.817774534225464,
-        4.927582740783691
+        4.895018100738525,
+        4.865969657897949,
+        4.903195858001709
     ]
 }
