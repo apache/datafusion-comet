@@ -280,6 +280,18 @@ under the License.
   <a class="reference internal nav-link" href="#current-performance">
    Current Performance
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#tpc-h">
+     TPC-H
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#tpc-ds">
+     TPC-DS
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -331,6 +343,7 @@ under the License.
 <h1>Comet Benchmarking Guide<a class="headerlink" href="#comet-benchmarking-guide" title="Link to this heading">¶</a></h1>
 <p>To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS. Data generation and
 benchmarking documentation and scripts are available in the <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">DataFusion Benchmarks</a> GitHub repository.</p>
+<p>We also have many micro benchmarks that can be run from an IDE located <a class="reference internal" href="#"><span class="xref myst">here</span></a>https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark).</p>
 <p>Here are example commands for running the benchmarks against a Spark cluster. This command will need to be
 adapted based on the Spark environment and location of data files.</p>
 <p>These commands are intended to be run from the <code class="docutils literal notranslate"><span class="pre">runners/datafusion-comet</span></code> directory in the <code class="docutils literal notranslate"><span class="pre">datafusion-benchmarks</span></code>
@@ -340,15 +353,15 @@ repository.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-submit<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--master<span class="w"> </span><span class="nv">$SPARK_MASTER</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.memory<span class="o">=</span>8G<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.cores.max<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.autoBroadcastJoinThreshold<span class="o">=</span>-1<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--data<span class="w"> </span>/mnt/bigdata/tpch/sf100/<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--queries<span class="w"> </span>../../tpch/queries<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--iterations<span class="w"> </span><span class="m">5</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">3</span>
 </pre></div>
 </div>
 </section>
@@ -361,7 +374,6 @@ repository.</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.cores.max<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.autoBroadcastJoinThreshold<span class="o">=</span>-1<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
@@ -370,9 +382,6 @@ repository.</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.all.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.cast.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.parquet.io.enabled<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.batchSize<span class="o">=</span><span class="m">8192</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.mode<span class="o">=</span>auto<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.shuffle.enforceMode.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
@@ -381,7 +390,7 @@ repository.</p>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--data<span class="w"> </span>/mnt/bigdata/tpch/sf100/<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--queries<span class="w"> </span>../../tpch/queries<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--iterations<span class="w"> </span><span class="m">5</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">3</span>
 </pre></div>
 </div>
 </section>
@@ -392,18 +401,38 @@ for many use cases.</p>
 <p>The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
 data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage
 you to run these benchmarks in your own environments.</p>
-<p><img alt="" src="../_static/images/tpch_allqueries.png" /></p>
-<p>Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.</p>
-<p><img alt="" src="../_static/images/tpch_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
-is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.</p>
-<p><img alt="" src="../_static/images/tpch_queries_speedup.png" /></p>
+<section id="tpc-h">
+<h3>TPC-H<a class="headerlink" href="#tpc-h" title="Link to this heading">¶</a></h3>
+<p>Comet currently provides a 35% speedup for TPC-H &#64; SF=100GB.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_allqueries.png" /></p>
+<p>Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png" /></p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png" /></p>
 <p>The raw results of these benchmarks in JSON format is available here:</p>
 <ul class="simple">
-<li><p><a class="reference download internal" download="" href="../_downloads/ba9d9493259685129e56656755e1fff2/spark-8-exec-5-runs.json"><span class="xref download myst">Spark</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../_downloads/59822cdd1431cae8016340dc4c00581e/comet-8-exec-5-runs.json"><span class="xref download myst">Comet</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../_downloads/49948650229b4e0ba8bfc57f2866d592/datafusion-python-8-cores.json"><span class="xref download myst">DataFusion</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../_downloads/cf9c5bb25d85b58a8819b238030b4f78/spark-tpch.json"><span class="xref download myst">Spark</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../_downloads/602feffd4a86681ffa9b850569d222ab/comet-tpch.json"><span class="xref download myst">Comet</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../_downloads/bd84be8370c8f3c4c875a08e0d26b2f3/datafusion-tpch.json"><span class="xref download myst">DataFusion</span></a></p></li>
 </ul>
+</section>
+<section id="tpc-ds">
+<h3>TPC-DS<a class="headerlink" href="#tpc-ds" title="Link to this heading">¶</a></h3>
+<p>Comet currently provides an 18% speedup for TPC-DS &#64; SF=100GB. Note that we used an optimized version of
+query 72 with a better join order for these benchmarks since the focus of Spark (and Comet) is not on join
+reordering algorithms but raw execution speed.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_allqueries.png" /></p>
+<p>Here is a breakdown showing relative performance of Spark and Comet for each query. DataFusion is
+not included here because it currently only supports around 90% of the TPC-DS queries.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_queries_compare.png" /></p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
+<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_queries_speedup.png" /></p>
+<p>The raw results of these benchmarks in JSON format is available here:</p>
+<ul class="simple">
+<li><p><a class="reference download internal" download="" href="../_downloads/aedc17fb9ca9535f252762eab413334a/spark-tpcds.json"><span class="xref download myst">Spark</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../_downloads/c603e5a41cb1359d73f1607e8d4d939e/comet-tpcds.json"><span class="xref download myst">Comet</span></a></p></li>
+</ul>
+</section>
 </section>
 </section>
 
@@ -449,7 +478,7 @@ is an ongoing task, and we welcome contributions from the community to help achi
     
     <div class="footer-item">
       <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.4.5.<br>
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.4.6.<br>
 </p>
     </div>
     
