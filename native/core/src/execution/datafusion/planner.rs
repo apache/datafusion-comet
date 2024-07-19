@@ -554,7 +554,8 @@ impl PhysicalPlanner {
                     // For now, we limit the use to raw column references
                     if when_then.1.as_any().is::<Column>() {
                         return Ok(Arc::new(CaseWhenExprOrNull::new(
-                            when_then.0.clone(),
+                            Arc::clone(&when_then.0),
+                            Arc::clone(&when_then.1),
                             when_then.1.clone(),
                         )));
                     }
