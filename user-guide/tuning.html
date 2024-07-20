@@ -267,6 +267,11 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#memory-tuning">
+   Memory Tuning
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#shuffle">
    Shuffle
   </a>
@@ -344,6 +349,19 @@ under the License.
 <section id="tuning-guide">
 <h1>Tuning Guide<a class="headerlink" href="#tuning-guide" title="Link to this heading">¶</a></h1>
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
+<section id="memory-tuning">
+<h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
+<p>Comet currently doesn’t share the memory allocation from Spark but owns its own memory allocation.
+That’s said, Comet requires additional memory to be allocated. Comet provides some memory related configurations to help you tune the memory usage.</p>
+<p>By default, the amount of memory is <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> * <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>.
+The default value for <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> is 0.2. You can increase the factor to require more
+memory for Comet to use, if you see OOM error. Generally, increasing memory overhead will improve the performance of your queries.
+For example, some operators like <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> and <code class="docutils literal notranslate"><span class="pre">HashAggregate</span></code> may require more memory to run.
+Once the memory is not enough, the operator will spill to disk, which will slow down the query.</p>
+<p>Besides, you can also set the memory explicitly by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> to the desired value.
+Comet will allocate at least <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code> memory.</p>
+<p>If both <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> are set, the former will be used.</p>
+</section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h2>
 <p>Comet provides Comet shuffle features that can be used to improve the performance of your queries.
