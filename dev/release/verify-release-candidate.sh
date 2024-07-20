@@ -107,7 +107,7 @@ setup_tempdir() {
 
 test_source_distribution() {
   set -e
-  pushd core
+  pushd native
     RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
   popd
   # test with the latest supported version of Spark
