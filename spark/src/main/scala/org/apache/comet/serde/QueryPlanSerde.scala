@@ -1615,8 +1615,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-          // abs implementation is not correct
-          // https://github.com/apache/datafusion-comet/issues/666
+        // abs implementation is not correct
+        // https://github.com/apache/datafusion-comet/issues/666
 //        case Abs(child, failOnErr) =>
 //          val childExpr = exprToProtoInternal(child, inputs)
 //          if (childExpr.isDefined) {
