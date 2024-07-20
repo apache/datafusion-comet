@@ -34,5 +34,4 @@ object ShimBatchReader {
       0,
       0
     )
-
 }

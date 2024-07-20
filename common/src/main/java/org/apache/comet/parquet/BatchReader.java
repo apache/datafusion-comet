@@ -638,6 +638,9 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
   }
 
+  // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is
+  // expecting a Buffer but the Spark version returns a Seq or vice versa, we get a
+  // method not found exception.
   @SuppressWarnings("unchecked")
   private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
     Method externalAccumsMethod;
