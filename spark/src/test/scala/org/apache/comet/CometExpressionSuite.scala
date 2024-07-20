@@ -851,7 +851,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // https://github.com/apache/datafusion-comet/issues/666
-  ignore ("abs Overflow ansi mode") {
+  ignore("abs Overflow ansi mode") {
 
     def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
