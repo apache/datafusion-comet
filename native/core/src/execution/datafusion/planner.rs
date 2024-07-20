@@ -56,7 +56,7 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits};
+use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -108,7 +108,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
+    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -505,18 +505,19 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            ExprStruct::Abs(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
-                let return_type = child.data_type(&input_schema)?;
-                let args = vec![child];
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
-                    eval_mode,
-                    return_type.to_string(),
-                )?));
-                let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
-                Ok(Arc::new(expr))
-            }
+            // https://github.com/apache/datafusion-comet/issues/666
+            // ExprStruct::Abs(expr) => {
+            //     let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+            //     let return_type = child.data_type(&input_schema)?;
+            //     let args = vec![child];
+            //     let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+            //     let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
+            //         eval_mode,
+            //         return_type.to_string(),
+            //     )?));
+            //     let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
+            //     Ok(Arc::new(expr))
+            // }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when
