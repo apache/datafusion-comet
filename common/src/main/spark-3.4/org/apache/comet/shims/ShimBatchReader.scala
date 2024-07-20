@@ -19,13 +19,9 @@
 
 package org.apache.comet.shims
 
-import scala.collection.mutable
-
-import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
-import org.apache.spark.util.AccumulatorV2
 
 object ShimBatchReader {
 
@@ -38,24 +34,4 @@ object ShimBatchReader {
       Array.empty[String],
       0,
       0)
-
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] = {
-    val externalAccumsMethod = classOf[TaskMetrics].getDeclaredMethod("externalAccums")
-    externalAccumsMethod.setAccessible(true)
-    val returnType = externalAccumsMethod.getReturnType.getName
-    returnType match {
-      case "scala.collection.mutable.Buffer" =>
-        externalAccumsMethod
-          .invoke(taskMetrics)
-          .asInstanceOf[mutable.Buffer[AccumulatorV2[_, _]]]
-          .lastOption
-      case "scala.collection.Seq" =>
-        externalAccumsMethod
-          .invoke(taskMetrics)
-          .asInstanceOf[Seq[AccumulatorV2[_, _]]]
-          .lastOption
-      case _ =>
-        None
-    }
-  }
 }
