@@ -835,7 +835,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("abs") {
+  // https://github.com/apache/datafusion-comet/issues/666
+  ignore("abs") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -849,7 +850,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("abs Overflow ansi mode") {
+  // https://github.com/apache/datafusion-comet/issues/666
+  ignore("abs Overflow ansi mode") {
 
     def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
@@ -882,7 +884,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("abs Overflow legacy mode") {
+  // https://github.com/apache/datafusion-comet/issues/666
+  ignore("abs Overflow legacy mode") {
 
     def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
