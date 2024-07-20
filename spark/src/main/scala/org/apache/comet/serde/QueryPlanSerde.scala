@@ -1615,27 +1615,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case abs @ Abs(child, failOnErr) =>
-          if (!failOnErr) {
-            // abs in legacy mode is not implemented correctly and will
-            // return incorrect results in some cases
-            // https://github.com/apache/datafusion-comet/issues/666
-            withInfo(abs, "Abs in legacy mode is not supported")
-            None
-          } else {
-            val childExpr = exprToProtoInternal(child, inputs)
-            if (childExpr.isDefined) {
-              val evalModeStr =
-                if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
-              val absBuilder = ExprOuterClass.Abs.newBuilder()
-              absBuilder.setChild(childExpr.get)
-              absBuilder.setEvalMode(evalModeStr)
-              Some(Expr.newBuilder().setAbs(absBuilder).build())
-            } else {
-              withInfo(expr, child)
-              None
-            }
-          }
+          // abs implementation is not correct
+          // https://github.com/apache/datafusion-comet/issues/666
+//        case Abs(child, failOnErr) =>
+//          val childExpr = exprToProtoInternal(child, inputs)
+//          if (childExpr.isDefined) {
+//            val evalModeStr =
+//              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+//            val absBuilder = ExprOuterClass.Abs.newBuilder()
+//            absBuilder.setChild(childExpr.get)
+//            absBuilder.setEvalMode(evalModeStr)
+//            Some(Expr.newBuilder().setAbs(absBuilder).build())
+//          } else {
+//            withInfo(expr, child)
+//            None
+//          }
 
         case Acos(child) =>
           val childExpr = exprToProtoInternal(child, inputs)

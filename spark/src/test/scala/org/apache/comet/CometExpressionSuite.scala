@@ -884,7 +884,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("abs Overflow legacy mode") {
+  // https://github.com/apache/datafusion-comet/issues/666
+  ignore("abs Overflow legacy mode") {
 
     def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
