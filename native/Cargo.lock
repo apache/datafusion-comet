@@ -920,7 +920,6 @@ dependencies = [
  "datafusion",
  "datafusion-common",
  "datafusion-expr",
- "datafusion-functions",
  "datafusion-physical-expr",
  "datafusion-physical-plan",
  "num",
