@@ -686,7 +686,9 @@ mod tests {
 
     #[test]
     fn test_str() {
-        let input = ["hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde"]
+        let input = [
+            "hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde",
+        ]
         .iter()
         .map(|s| Some(s.to_string()))
         .collect::<Vec<Option<String>>>();

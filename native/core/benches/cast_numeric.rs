@@ -63,7 +63,7 @@ fn create_int32_batch() -> RecordBatch {
         }
     }
     let array = b.finish();
-    
+
     RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
 }
 
