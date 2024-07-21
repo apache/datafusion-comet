@@ -1184,7 +1184,7 @@ mod test {
         let expected = hex::decode("8adb1834301dab37f1").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num];
-        copy_i32_to_i8(&source.as_bytes(), dest.as_mut_slice(), num);
+        copy_i32_to_i8(source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
@@ -1196,7 +1196,7 @@ mod test {
         let expected = hex::decode("8a00db001800340030001d00ab003700f100").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
-        copy_i32_to_u8(&source.as_bytes(), dest.as_mut_slice(), num);
+        copy_i32_to_u8(source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
@@ -1208,7 +1208,7 @@ mod test {
         let expected = hex::decode("8a0edb93182634f430021d2babe3378df147").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
-        copy_i32_to_i16(&source.as_bytes(), dest.as_mut_slice(), num);
+        copy_i32_to_i16(source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
@@ -1224,7 +1224,7 @@ mod test {
         .unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 4];
-        copy_i32_to_u16(&source.as_bytes(), dest.as_mut_slice(), num);
+        copy_i32_to_u16(source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 
@@ -1237,7 +1237,7 @@ mod test {
         let expected = hex::decode("ffffff7f00000000000000800000000001000080000000000200008000000000030000800000000004000080000000000500008000000000060000800000000007000080000000000800008000000000").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 8];
-        copy_i32_to_u32(&source.as_bytes(), dest.as_mut_slice(), num);
+        copy_i32_to_u32(source.as_bytes(), dest.as_mut_slice(), num);
         assert_eq!(expected.as_bytes(), dest.as_bytes());
     }
 }

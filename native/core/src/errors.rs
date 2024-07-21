@@ -778,7 +778,7 @@ mod tests {
         _class: JClass,
         input: JString,
     ) -> jstring {
-        try_unwrap_or_throw(&e, |mut env| {
+        try_unwrap_or_throw(e, |mut env| {
             let input: String = env
                 .get_string(&input)
                 .expect("Couldn't get java string!")

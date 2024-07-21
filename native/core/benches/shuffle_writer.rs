@@ -65,8 +65,8 @@ fn create_batch() -> RecordBatch {
         }
     }
     let array = b.finish();
-    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
-    batch
+    
+    RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
 }
 
 fn config() -> Criterion {
