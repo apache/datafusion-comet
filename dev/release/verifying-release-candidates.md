@@ -28,6 +28,12 @@ again is somewhat redundant.
 ./dev/release/verify-release-candidate.sh 0.1.0 1
 ```
 
+The following command can be used to build a release for testing.
+
+```shell
+make release-nogit
+```
+
 We hope that users will verify the release beyond running this script by testing the release candidate with their
 existing Spark jobs and report any functional issues or performance regressions.
 
