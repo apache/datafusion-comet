@@ -181,7 +181,10 @@ mod test {
         let hash2 = spark_compatible_xxhash64(data, seed);
         if hash1 != hash2 {
             panic!("input: {} with seed {seed} produced incorrect hash (comet={hash2}, twox-hash={hash1})",
-                   data.iter().map(|byte| format!("{:02x}", byte)).collect::<String>())
+                   data.iter().fold(String::new(), |mut output, byte| {
+                       output.push_str(&format!("{:02x}", byte));
+                       output
+                   }))
         }
     }
 }
