@@ -277,13 +277,18 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#using-a-published-release">
-   Using a Published Release
+  <a class="reference internal nav-link" href="#using-a-published-binary-release">
+   Using a Published Binary Release
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#building-from-source">
-   Building From Source
+  <a class="reference internal nav-link" href="#using-a-published-source-release">
+   Using a Published Source Release
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#building-from-the-github-repository">
+   Building from the GitHub repository
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -367,12 +372,18 @@ under the License.
 <li><p>GLIBC 2.17 (Centos 7) and up</p></li>
 </ul>
 </section>
-<section id="using-a-published-release">
-<h2>Using a Published Release<a class="headerlink" href="#using-a-published-release" title="Link to this heading">¶</a></h2>
-<p>There are no public releases available yet, so it is necessary to build from source as described in the next section.</p>
+<section id="using-a-published-binary-release">
+<h2>Using a Published Binary Release<a class="headerlink" href="#using-a-published-binary-release" title="Link to this heading">¶</a></h2>
+<p>There are no published binary releases yet.</p>
 </section>
-<section id="building-from-source">
-<h2>Building From Source<a class="headerlink" href="#building-from-source" title="Link to this heading">¶</a></h2>
+<section id="using-a-published-source-release">
+<h2>Using a Published Source Release<a class="headerlink" href="#using-a-published-source-release" title="Link to this heading">¶</a></h2>
+<p>Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/</p>
+<p>Building from a source release is mostly the same as building directly from the GitHub repository but requires the
+use of the command <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release-nogit</span></code> instead of <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code>.</p>
+</section>
+<section id="building-from-the-github-repository">
+<h2>Building from the GitHub repository<a class="headerlink" href="#building-from-the-github-repository" title="Link to this heading">¶</a></h2>
 <p>Clone the repository:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">git clone https://github.com/apache/datafusion-comet.git</span>
 </pre></div>
@@ -506,7 +517,7 @@ components which will then fail at runtime. For example:</p>
     
     <div class="footer-item">
       <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.4.6.<br>
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.4.7.<br>
 </p>
     </div>
     
