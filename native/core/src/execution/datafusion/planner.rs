@@ -2060,29 +2060,31 @@ mod tests {
         type_id: i32,
         lit: spark_expression::Literal,
     ) -> spark_operator::Operator {
-        let mut expr = spark_expression::Expr::default();
+        let left = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id,
+                    type_info: None,
+                }),
+            })),
+        };
+        let right = spark_expression::Expr {
+            expr_struct: Some(Literal(lit)),
+        };
 
-        let mut left = spark_expression::Expr::default();
-        left.expr_struct = Some(Bound(spark_expression::BoundReference {
-            index: 0,
-            datatype: Some(spark_expression::DataType {
-                type_id,
-                type_info: None,
-            }),
-        }));
-        let mut right = spark_expression::Expr::default();
-        right.expr_struct = Some(Literal(lit));
+        let expr = spark_expression::Expr {
+            expr_struct: Some(Eq(Box::new(spark_expression::Equal {
+                left: Some(Box::new(left)),
+                right: Some(Box::new(right)),
+            }))),
+        };
 
-        expr.expr_struct = Some(Eq(Box::new(spark_expression::Equal {
-            left: Some(Box::new(left)),
-            right: Some(Box::new(right)),
-        })));
-
-        let mut op = spark_operator::Operator::default();
-        op.children = vec![child_op];
-        op.op_struct = Some(OpStruct::Filter(spark_operator::Filter {
-            predicate: Some(expr),
-        }));
-        op
+        Operator {
+            children: vec![child_op],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(expr),
+            })),
+        }
     }
 }
