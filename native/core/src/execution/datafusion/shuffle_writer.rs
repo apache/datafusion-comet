@@ -1461,8 +1461,7 @@ mod test {
         let array = b.finish();
         let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
 
-        let mut batches = Vec::new();
-        batches.push(batch.clone());
+        let batches = vec![batch.clone()];
 
         let partitions = &[batches];
         let exec = ShuffleWriterExec::try_new(
