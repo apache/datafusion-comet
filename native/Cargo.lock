@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "arrow",
@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost 0.12.6",
  "prost-build",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -920,7 +920,6 @@ dependencies = [
  "datafusion",
  "datafusion-common",
  "datafusion-expr",
- "datafusion-functions",
  "datafusion-physical-expr",
  "datafusion-physical-plan",
  "num",

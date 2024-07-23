@@ -135,10 +135,7 @@ case class CometScanExec(
     (wrapped.outputPartitioning, wrapped.outputOrdering)
 
   @transient
-  private lazy val pushedDownFilters = {
-    val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
-    dataFilters.flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
-  }
+  private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
 
   override lazy val metadata: Map[String, String] =
     if (wrapped == null) Map.empty else wrapped.metadata

@@ -56,7 +56,7 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits};
+use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -108,7 +108,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Abs, Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
+    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -505,18 +505,19 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            ExprStruct::Abs(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
-                let return_type = child.data_type(&input_schema)?;
-                let args = vec![child];
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
-                    eval_mode,
-                    return_type.to_string(),
-                )?));
-                let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
-                Ok(Arc::new(expr))
-            }
+            // https://github.com/apache/datafusion-comet/issues/666
+            // ExprStruct::Abs(expr) => {
+            //     let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+            //     let return_type = child.data_type(&input_schema)?;
+            //     let args = vec![child];
+            //     let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+            //     let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
+            //         eval_mode,
+            //         return_type.to_string(),
+            //     )?));
+            //     let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
+            //     Ok(Arc::new(expr))
+            // }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when
@@ -2059,29 +2060,31 @@ mod tests {
         type_id: i32,
         lit: spark_expression::Literal,
     ) -> spark_operator::Operator {
-        let mut expr = spark_expression::Expr::default();
+        let left = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id,
+                    type_info: None,
+                }),
+            })),
+        };
+        let right = spark_expression::Expr {
+            expr_struct: Some(Literal(lit)),
+        };
 
-        let mut left = spark_expression::Expr::default();
-        left.expr_struct = Some(Bound(spark_expression::BoundReference {
-            index: 0,
-            datatype: Some(spark_expression::DataType {
-                type_id,
-                type_info: None,
-            }),
-        }));
-        let mut right = spark_expression::Expr::default();
-        right.expr_struct = Some(Literal(lit));
+        let expr = spark_expression::Expr {
+            expr_struct: Some(Eq(Box::new(spark_expression::Equal {
+                left: Some(Box::new(left)),
+                right: Some(Box::new(right)),
+            }))),
+        };
 
-        expr.expr_struct = Some(Eq(Box::new(spark_expression::Equal {
-            left: Some(Box::new(left)),
-            right: Some(Box::new(right)),
-        })));
-
-        let mut op = spark_operator::Operator::default();
-        op.children = vec![child_op];
-        op.op_struct = Some(OpStruct::Filter(spark_operator::Filter {
-            predicate: Some(expr),
-        }));
-        op
+        Operator {
+            children: vec![child_op],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(expr),
+            })),
+        }
     }
 }
