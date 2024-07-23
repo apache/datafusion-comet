@@ -86,13 +86,14 @@ public class CometDictionary implements AutoCloseable {
           // We only need to copy values for decimal 128 type as random access
           // to the dictionary is not efficient for decimal (it needs to copy
           // the value to a new byte array everytime).
-          binaries = new ByteArrayWrapper[numValues];
+          ByteArrayWrapper[] binaries = new ByteArrayWrapper[numValues];
           for (int i = 0; i < numValues; i++) {
             // Need copying here since we re-use byte array for decimal
             byte[] bytes = new byte[DECIMAL_BYTE_WIDTH];
             bytes = values.copyBinaryDecimal(i, bytes);
             binaries[i] = new ByteArrayWrapper(bytes);
           }
+          this.binaries = binaries;
         }
         return binaries[index].bytes;
       default:
