@@ -1,0 +1,464 @@
+================================================================================================
+Grouped Aggregate (single group key + single aggregate SUM)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                 254            279          21         41.3          24.2       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                          258            275          16         40.7          24.6       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                    175            201          24         59.9          16.7       1.5X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                  276            303          38         37.9          26.4       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                           254            260           5         41.3          24.2       1.1X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                     182            207          22         57.7          17.3       1.5X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                    2636           2689          76          4.0         251.4       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                             2535           2623         124          4.1         241.7       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                        980           1004          38         10.7          93.5       2.7X
+
+
+================================================================================================
+Grouped Aggregate (multiple group keys + single aggregate SUM)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 100), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                    652            660           6         16.1          62.2       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                             659            673          20         15.9          62.9       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                       352            370          19         29.8          33.6       1.9X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1024), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                    3330           3406         108          3.1         317.6       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                             3317           3373          79          3.2         316.4       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                       1997           2055          83          5.3         190.4       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1048576), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                       7657           7766         154          1.4         730.2       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                                7594           7612          26          1.4         724.2       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                          6353           6448         134          1.7         605.9       1.2X
+
+
+================================================================================================
+Grouped Aggregate (single group key + multiple aggregates SUM)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), multiple aggregates SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                    341            366          32         30.8          32.5       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                             343            357          23         30.6          32.7       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                       242            264          27         43.3          23.1       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), multiple aggregates SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                     334            368          33         31.4          31.9       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                              337            351          10         31.1          32.1       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                        244            251           8         42.9          23.3       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), multiple aggregates SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                       3229           3258          42          3.2         307.9       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                                3272           3332          86          3.2         312.0       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                          1534           1535           1          6.8         146.3       2.1X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate SUM on decimal)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate SUM on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                           1395           1512         165          7.5         133.1       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                                    1629           1633           6          6.4         155.3       0.9X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                               301            311          19         34.9          28.7       4.6X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate SUM on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                            1261           1266           8          8.3         120.2       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                                     1660           1672          18          6.3         158.3       0.8X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                                306            329          42         34.2          29.2       4.1X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate SUM on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                               4734           4760          36          2.2         451.5       1.0X
+SQL Parquet - Comet (Scan) (SUM)                                                                        4947           4959          16          2.1         471.8       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                                  1540           1584          62          6.8         146.9       3.1X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate MIN)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                 249            265          13         42.1          23.7       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                          242            274          36         43.3          23.1       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                    166            193          29         63.3          15.8       1.5X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                  266            281          31         39.4          25.4       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                           250            274          37         41.9          23.9       1.1X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                     170            196          14         61.7          16.2       1.6X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                    2385           2386           2          4.4         227.4       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                             2453           2527         103          4.3         234.0       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                        912            924          12         11.5          86.9       2.6X
+
+
+================================================================================================
+Grouped Aggregate (multiple group keys + single aggregate MIN)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 100), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                    574            585          11         18.3          54.8       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                             574            585          13         18.3          54.7       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                       341            366          24         30.7          32.6       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1024), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                    3715           3752          53          2.8         354.2       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                             3430           3510         112          3.1         327.2       1.1X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                       1876           1969         132          5.6         178.9       2.0X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1048576), single aggregate MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                       7847           7850           5          1.3         748.3       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                                7434           7444          14          1.4         708.9       1.1X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                          6461           6613         215          1.6         616.2       1.2X
+
+
+================================================================================================
+Grouped Aggregate (single group key + multiple aggregates MIN)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), multiple aggregates MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                    332            354          17         31.6          31.6       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                             338            361          20         31.0          32.3       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                       239            258          13         43.9          22.8       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), multiple aggregates MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                     341            369          16         30.7          32.5       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                              348            364          11         30.1          33.2       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                        246            255          12         42.7          23.4       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), multiple aggregates MIN:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                       3389           3434          64          3.1         323.2       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                                3330           3347          25          3.1         317.5       1.0X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                          1601           1618          24          6.6         152.7       2.1X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate MIN on decimal)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate MIN on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                            443            454           9         23.7          42.2       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                                     834            838           8         12.6          79.5       0.5X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                               251            264          11         41.8          23.9       1.8X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate MIN on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                             446            459           8         23.5          42.5       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                                      982           1023          58         10.7          93.7       0.5X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                                258            288          57         40.6          24.6       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate MIN on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MIN)                                                                               2985           3023          54          3.5         284.6       1.0X
+SQL Parquet - Comet (Scan) (MIN)                                                                        3988           4057          97          2.6         380.4       0.7X
+SQL Parquet - Comet (Scan, Exec) (MIN)                                                                  1038           1043           8         10.1          99.0       2.9X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate MAX)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                 233            265          20         44.9          22.3       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                          247            257          10         42.5          23.5       0.9X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                    163            186          14         64.2          15.6       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                  273            279           6         38.4          26.0       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                           240            289          54         43.7          22.9       1.1X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                     184            192           7         57.0          17.5       1.5X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                    2638           2662          34          4.0         251.6       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                             2551           2585          48          4.1         243.3       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                        911            913           2         11.5          86.9       2.9X
+
+
+================================================================================================
+Grouped Aggregate (multiple group keys + single aggregate MAX)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 100), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                    580            593          13         18.1          55.3       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                             573            579           4         18.3          54.7       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                       345            350           6         30.4          32.9       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1024), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                    3307           3324          23          3.2         315.4       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                             3438           3473          49          3.0         327.9       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                       1938           1990          74          5.4         184.8       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1048576), single aggregate MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                       7606           7610           6          1.4         725.4       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                                7513           7595         115          1.4         716.5       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                          6463           6493          43          1.6         616.4       1.2X
+
+
+================================================================================================
+Grouped Aggregate (single group key + multiple aggregates MAX)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), multiple aggregates MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                    341            354           9         30.7          32.5       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                             331            349          15         31.7          31.5       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                       233            242           8         44.9          22.3       1.5X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), multiple aggregates MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                     340            350           8         30.8          32.4       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                              339            368          28         31.0          32.3       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                        241            259          17         43.5          23.0       1.4X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), multiple aggregates MAX:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                       3302           3378         107          3.2         314.9       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                                3306           3373          95          3.2         315.3       1.0X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                          1575           1590          20          6.7         150.2       2.1X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate MAX on decimal)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate MAX on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                            429            462          41         24.4          40.9       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                                     920            929          16         11.4          87.7       0.5X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                               255            270          16         41.1          24.4       1.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate MAX on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                             455            501          78         23.1          43.4       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                                      919            928          16         11.4          87.6       0.5X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                                260            266           8         40.3          24.8       1.8X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate MAX on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (MAX)                                                                               2996           3019          32          3.5         285.7       1.0X
+SQL Parquet - Comet (Scan) (MAX)                                                                        3896           3916          29          2.7         371.5       0.8X
+SQL Parquet - Comet (Scan, Exec) (MAX)                                                                  1046           1052           9         10.0          99.7       2.9X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                 228            255          12         46.0          21.7       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                          229            245          19         45.8          21.8       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                    194            217          22         54.0          18.5       1.2X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                  258            268          12         40.7          24.6       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                           231            238           7         45.4          22.0       1.1X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                     278            286           7         37.7          26.5       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    2308           2331          32          4.5         220.1       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                             2245           2277          45          4.7         214.1       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                       3705           3766          86          2.8         353.4       0.6X
+
+
+================================================================================================
+Grouped Aggregate (multiple group keys + single aggregate COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 100), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    553            557           4         19.0          52.7       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                             557            559           3         18.8          53.1       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                       865            868           3         12.1          82.5       0.6X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1024), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    3071           3092          29          3.4         292.9       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                             3158           3205          66          3.3         301.2       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                       4612           4639          37          2.3         439.8       0.7X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: multiple group keys (cardinality 1048576), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                       7089           7098          12          1.5         676.1       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                                7048           7083          51          1.5         672.1       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                          9084           9128          62          1.2         866.3       0.8X
+
+
+================================================================================================
+Grouped Aggregate (single group key + multiple aggregates COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    298            313           9         35.1          28.5       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                             346            363          30         30.3          33.0       0.9X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                       304            330          19         34.5          29.0       1.0X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                     306            338          46         34.3          29.2       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                              335            356          19         31.3          31.9       0.9X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                        498            512          27         21.1          47.5       0.6X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                       3385           3410          36          3.1         322.8       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                                3130           3171          58          3.4         298.5       1.1X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                          7635           7850         304          1.4         728.2       0.4X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate COUNT on decimal)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                            315            345          22         33.2          30.1       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                                     681            734          73         15.4          64.9       0.5X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                               351            380          27         29.9          33.4       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                             300            314          19         34.9          28.6       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                                      656            704          74         16.0          62.6       0.5X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                                380            395          10         27.6          36.3       0.8X
+
+OpenJDK 64-Bit Server VM 11.0.20+8-LTS on Mac OS X 13.5
+Apple M1 Max
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                               2604           2622          25          4.0         248.3       1.0X
+SQL Parquet - Comet (Scan) (COUNT)                                                                        3452           3639         265          3.0         329.2       0.8X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                                  3867           3905          55          2.7         368.7       0.7X
+
+
