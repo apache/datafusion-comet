@@ -106,7 +106,7 @@ public class CometDictionary implements AutoCloseable {
     switch (vector.getMinorType()) {
       case DECIMAL:
         if (values.useDecimal128
-            || ((DecimalVector) vector).getPrecision() > Decimal.MAX_INT_DIGITS()) {
+            || ((DecimalVector) vector).getPrecision() > Decimal.MAX_LONG_DIGITS()) {
           // We only need to copy values for decimal 128 type as random access
           // to the dictionary is not efficient for decimal (it needs to copy
           // the value to a new byte array everytime).
