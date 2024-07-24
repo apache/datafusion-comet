@@ -23,6 +23,7 @@ use datafusion_common::cast::as_binary_array;
 use datafusion_common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion_expr::{ColumnarValue, ScalarFunctionImplementation};
 use std::sync::Arc;
+use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
 
 /// Spark compatible murmur3 hash in vectorized execution fashion
 pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -112,7 +113,27 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     }
 }
 
-pub fn wrap_digest_result_as_hex_string(
+// Note: Spark actually has just a single sha2 function, which takes the bit len as arg
+// but for Comet we split the calls in QueryPlanSerde
+pub fn spark_sha224(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    wrap_digest_result_as_hex_string(args, sha224().fun())
+}
+
+pub fn spark_sha256(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    wrap_digest_result_as_hex_string(args, sha256().fun())
+}
+
+pub fn spark_sha384(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    wrap_digest_result_as_hex_string(args, sha384().fun())
+}
+
+pub fn spark_sha512(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    wrap_digest_result_as_hex_string(args, sha512().fun())
+}
+
+// Spark requires hex string as the result of sha2 functions, we have to wrap the
+// result of digest functions as hex string
+fn wrap_digest_result_as_hex_string(
     args: &[ColumnarValue],
     digest: ScalarFunctionImplementation,
 ) -> Result<ColumnarValue, DataFusionError> {

@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow_schema::DataType;
-use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::wrap_digest_result_as_hex_string;
+use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::{spark_sha224, spark_sha256, spark_sha384, spark_sha512};
 use datafusion_comet_spark_expr::scalar_funcs::{
     spark_ceil, spark_chr, spark_decimal_div, spark_floor, spark_hex, spark_isnan,
     spark_make_decimal, spark_murmur3_hash, spark_round, spark_rpad, spark_unhex,
@@ -58,7 +58,6 @@ pub fn create_comet_physical_fun(
     data_type: DataType,
     registry: &dyn FunctionRegistry,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
-    let sha2_functions = ["sha224", "sha256", "sha384", "sha512"];
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
@@ -107,15 +106,21 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
         }
-        sha if sha2_functions.contains(&sha) => {
-            // Spark requires hex string as the result of sha2 functions, we have to wrap the
-            // result of digest functions as hex string
-            let func = registry.udf(sha)?;
-            let wrapped_func = Arc::new(move |args: &[ColumnarValue]| {
-                wrap_digest_result_as_hex_string(args, func.fun())
-            });
-            let spark_func_name = "spark".to_owned() + sha;
-            make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
+        "sha224" => {
+            let func = Arc::new(spark_sha224);
+            make_comet_scalar_udf!("sha224", func, without data_type)
+        }
+        "sha256" => {
+            let func = Arc::new(spark_sha256);
+            make_comet_scalar_udf!("sha256", func, without data_type)
+        }
+        "sha384" => {
+            let func = Arc::new(spark_sha384);
+            make_comet_scalar_udf!("sha384", func, without data_type)
+        }
+        "sha512" => {
+            let func = Arc::new(spark_sha512);
+            make_comet_scalar_udf!("sha512", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
