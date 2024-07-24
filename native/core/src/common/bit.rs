@@ -181,14 +181,10 @@ pub fn log2(mut x: u64) -> u32 {
 /// Returns the `num_bits` least-significant bits of `v`
 #[inline]
 pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
-    if unlikely(num_bits == 0) {
-        return 0;
-    }
     if unlikely(num_bits >= 64) {
         return v;
     }
-    let n = 64 - num_bits;
-    (v << n) >> n
+    v & ((1 << num_bits) - 1)
 }
 
 #[inline]
@@ -595,19 +591,7 @@ impl BitReader {
             return None;
         }
 
-        let mut v =
-            trailing_bits(self.buffered_values, self.bit_offset + num_bits) >> self.bit_offset;
-        self.bit_offset += num_bits;
-
-        if self.bit_offset >= 64 {
-            self.byte_offset += 8;
-            self.bit_offset -= 64;
-
-            self.reload_buffer_values();
-            v |= trailing_bits(self.buffered_values, self.bit_offset)
-                .wrapping_shl((num_bits - self.bit_offset) as u32);
-        }
-
+        let v = self.get_u64_value(num_bits);
         Some(T::from(v))
     }
 
@@ -623,20 +607,26 @@ impl BitReader {
     /// Undefined behavior will happen if any of the above assumptions is violated.
     #[inline]
     pub fn get_u32_value(&mut self, num_bits: usize) -> u32 {
-        let mut v =
-            trailing_bits(self.buffered_values, self.bit_offset + num_bits) >> self.bit_offset;
-        self.bit_offset += num_bits;
+        self.get_u64_value(num_bits) as u32
+    }
 
-        if self.bit_offset >= 64 {
-            self.byte_offset += 8;
-            self.bit_offset -= 64;
-
-            self.reload_buffer_values();
-            v |= trailing_bits(self.buffered_values, self.bit_offset)
-                .wrapping_shl((num_bits - self.bit_offset) as u32);
+    #[inline(always)]
+    fn get_u64_value(&mut self, num_bits: usize) -> u64 {
+        if unlikely(num_bits == 0) {
+            0
+        } else {
+            let v = self.buffered_values >> self.bit_offset;
+            let mask = u64::MAX >> (64 - num_bits);
+            self.bit_offset += num_bits;
+            if self.bit_offset < 64 {
+                v & mask
+            } else {
+                self.byte_offset += 8;
+                self.bit_offset -= 64;
+                self.reload_buffer_values();
+                ((self.buffered_values << (num_bits - self.bit_offset)) | v) & mask
+            }
         }
-
-        v as u32
     }
 
     /// Gets at most `num` bits from this reader, and append them to the `dst` byte slice, starting
