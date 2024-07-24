@@ -1030,6 +1030,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 val doubleNan = Literal(Double.NaN, DoubleType)
                 val floatNan = Literal(Float.NaN, FloatType)
 
+                // Ensure neither left nor right is -0.0 or 0.0 or NaN
+                // also return none if one side is nullable and the other is not
                 if ((left.nullable && !right.nullable) &&
                   (left != negZeroLeft && right != negZeroRight) &&
                   (left != leftZero && right != rightZero) &&
