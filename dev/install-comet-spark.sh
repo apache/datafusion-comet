@@ -78,8 +78,8 @@ git clone git@github.pie.apple.com:IPR/apache-spark.git --depth 1 --branch $SPAR
 cd apache-spark
 
 # Apply custom diff files, if they exist
-if [ -f "$BASEDIR/diff/$SPARK_BRANCH.diff" ]; then
-  git apply "$BASEDIR/diff/$SPARK_BRANCH.diff"
+if [ -f "$BASEDIR/diffs/$SPARK_BRANCH.diff" ]; then
+  git apply "$BASEDIR/diffs/$SPARK_BRANCH.diff"
 fi
 
 # Update the Comet version

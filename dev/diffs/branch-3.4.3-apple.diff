@@ -1,0 +1,15 @@
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
+index e67c10ddb88..cc38219f0e3 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
+@@ -472,8 +472,8 @@ private[sql] trait SQLTestUtilsBase
+     val schema = df.schema
+     val withoutFilters = df.queryExecution.executedPlan.transform {
+       case FilterExec(_, child) => child
+-      case CometFilterExec(_, _, _, child, _) => child
+-      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, child, _), _) => child
++      case CometFilterExec(_, _, _, _, child, _) => child
++      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, _, child, _), _) => child
+     }
+ 
+     spark.internalCreateDataFrame(withoutFilters.execute(), schema)
