@@ -1671,19 +1671,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, failOnErr) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          if (childExpr.isDefined) {
-            val evalModeStr =
-              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
-            val absBuilder = ExprOuterClass.Abs.newBuilder()
-            absBuilder.setChild(childExpr.get)
-            absBuilder.setEvalMode(evalModeStr)
-            Some(Expr.newBuilder().setAbs(absBuilder).build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+        // abs implementation is not correct
+        // https://github.com/apache/datafusion-comet/issues/666
+//        case Abs(child, failOnErr) =>
+//          val childExpr = exprToProtoInternal(child, inputs)
+//          if (childExpr.isDefined) {
+//            val evalModeStr =
+//              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+//            val absBuilder = ExprOuterClass.Abs.newBuilder()
+//            absBuilder.setChild(childExpr.get)
+//            absBuilder.setEvalMode(evalModeStr)
+//            Some(Expr.newBuilder().setAbs(absBuilder).build())
+//          } else {
+//            withInfo(expr, child)
+//            None
+//          }
 
         case Acos(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1822,10 +1824,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               optExprWithInfo(optExpr, expr, r.child)
           }
 
-        case Signum(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          val optExpr = scalarExprToProto("signum", childExpr)
-          optExprWithInfo(optExpr, expr, child)
+        // TODO enable once https://github.com/apache/datafusion/issues/11557 is fixed or
+        // when we have a Spark-compatible version implemented in Comet
+//        case Signum(child) =>
+//          val childExpr = exprToProtoInternal(child, inputs)
+//          val optExpr = scalarExprToProto("signum", childExpr)
+//          optExprWithInfo(optExpr, expr, child)
 
         case Sin(child) =>
           val childExpr = exprToProtoInternal(child, inputs)

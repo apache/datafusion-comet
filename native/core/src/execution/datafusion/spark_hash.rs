@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_str() {
-        let input = vec![
+        let input = [
             "hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde",
         ]
         .iter()
