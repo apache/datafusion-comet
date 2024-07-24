@@ -63,6 +63,15 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Unsupported window expression should fall back to Spark") {
+    checkAnswer(
+      spark.sql("select sum(a) over () from values 1.0, 2.0, 3.0 T(a)"),
+      Row(6.0) :: Row(6.0) :: Row(6.0) :: Nil)
+    checkAnswer(
+      spark.sql("select avg(a) over () from values 1.0, 2.0, 3.0 T(a)"),
+      Row(2.0) :: Row(2.0) :: Row(2.0) :: Nil)
+  }
+
   test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
     assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
