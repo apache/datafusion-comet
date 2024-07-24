@@ -89,10 +89,7 @@ pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) 
     // data is &[u8] so we do not need to check for proper alignment
     unsafe {
         let mut h1 = if len_aligned > 0 {
-            hash_bytes_by_int(
-                std::slice::from_raw_parts(data.get_unchecked(0), len_aligned),
-                seed,
-            )
+            hash_bytes_by_int(&data[0..len_aligned], seed)
         } else {
             seed as i32
         };

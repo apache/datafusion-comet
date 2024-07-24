@@ -44,11 +44,11 @@ Comet currently supports the following versions of Apache Spark:
 
 - 3.3.x
 - 3.4.x
+- 3.5.x
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing 
 use only and should not be used in production yet.
 
-- 3.5.x
 - 4.0.0-preview1
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by 

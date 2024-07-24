@@ -42,14 +42,13 @@ import org.apache.comet.shims.ShimCometTakeOrderedAndProjectExec
  */
 case class CometTakeOrderedAndProjectExec(
     override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
     limit: Int,
     sortOrder: Seq[SortOrder],
     projectList: Seq[NamedExpression],
     child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
-  override def output: Seq[Attribute] = projectList.map(_.toAttribute)
-
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
   private lazy val readMetrics =

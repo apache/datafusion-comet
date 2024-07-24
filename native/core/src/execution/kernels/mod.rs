@@ -21,4 +21,3 @@ mod hash;
 pub use hash::hash;
 
 pub(crate) mod strings;
-pub(crate) mod temporal;

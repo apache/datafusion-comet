@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import java.io.{File, FileNotFoundException}
+
 import scala.util.Try
 
 import org.apache.spark.SparkConf
@@ -70,15 +72,27 @@ trait CometTPCQueryBase extends Logging {
       tables: Seq[String],
       tableColumns: Map[String, StructType] = Map.empty): Map[String, Long] = {
     tables.map { tableName =>
+      // some tools will generate TPC-* Parquet files with a `.parquet` extension
+      // and others will not, so let's support both cases
+      val tableFilePathDefault = s"$dataLocation/$tableName"
+      val tableFilePathAlt = s"$dataLocation/$tableName.parquet"
+      val tableFilePath = if (new File(tableFilePathDefault).exists()) {
+        tableFilePathDefault
+      } else if (new File(tableFilePathAlt).exists()) {
+        tableFilePathAlt
+      } else {
+        throw new FileNotFoundException(
+          s"Table does not exist at $tableFilePathDefault or $tableFilePathAlt")
+      }
       if (createTempView) {
-        cometSpark.read.parquet(s"$dataLocation/$tableName").createOrReplaceTempView(tableName)
+        cometSpark.read.parquet(tableFilePath).createOrReplaceTempView(tableName)
       } else {
         cometSpark.sql(s"DROP TABLE IF EXISTS $tableName")
         if (tableColumns.isEmpty) {
-          cometSpark.catalog.createTable(tableName, s"$dataLocation/$tableName", "parquet")
+          cometSpark.catalog.createTable(tableName, tableFilePath, "parquet")
         } else {
           // SPARK-39584: Fix TPCDSQueryBenchmark Measuring Performance of Wrong Query Results
-          val options = Map("path" -> s"$dataLocation/$tableName")
+          val options = Map("path" -> tableFilePath)
           cometSpark.catalog.createTable(tableName, "parquet", tableColumns(tableName), options)
         }
         // Recover partitions but don't fail if a table is not partitioned.

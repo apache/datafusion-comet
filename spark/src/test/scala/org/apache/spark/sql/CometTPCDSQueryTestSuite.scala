@@ -35,6 +35,8 @@ import org.apache.spark.sql.test.TestSparkSession
  */
 class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQueryTestHelper {
 
+  val tpcdsExtendedQueries: Seq[String] = Seq("q72")
+
   private val tpcdsDataPath = sys.env.get("SPARK_TPCDS_DATA")
 
   private val regenGoldenFiles: Boolean = System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
@@ -218,6 +220,19 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
         classLoader = Thread.currentThread().getContextClassLoader)
       test(s"$name-v2.7") {
         val goldenFile = new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
+        joinConfs.foreach { conf =>
+          System.gc() // SPARK-37368
+          runQuery(queryString, goldenFile, conf)
+        }
+      }
+    }
+
+    tpcdsExtendedQueries.foreach { name =>
+      val queryString = resourceToString(
+        s"tpcds-extended/$name.sql",
+        classLoader = Thread.currentThread().getContextClassLoader)
+      test(s"extended $name") {
+        val goldenFile = new File(s"$baseResourcePath/extended", s"$name.sql.out")
         joinConfs.foreach { conf =>
           System.gc() // SPARK-37368
           runQuery(queryString, goldenFile, conf)
