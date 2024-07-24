@@ -895,8 +895,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "twox-hash",
- "unicode-segmentation",
  "zstd",
 ]
 
@@ -914,6 +912,7 @@ version = "0.2.0"
 dependencies = [
  "arrow",
  "arrow-array",
+ "arrow-data",
  "arrow-schema",
  "chrono",
  "chrono-tz 0.8.6",
@@ -923,8 +922,11 @@ dependencies = [
  "datafusion-physical-expr",
  "datafusion-physical-plan",
  "num",
+ "rand",
  "regex",
  "thiserror",
+ "twox-hash",
+ "unicode-segmentation",
 ]
 
 [[package]]

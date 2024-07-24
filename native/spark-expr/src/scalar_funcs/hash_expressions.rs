@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::expressions::scalar_funcs::hex::hex_strings;
-use crate::execution::datafusion::spark_hash::{create_murmur3_hashes, create_xxhash64_hashes};
+use crate::scalar_funcs::hex::hex_strings;
+use crate::spark_hash::{create_murmur3_hashes, create_xxhash64_hashes};
+
 use arrow_array::{ArrayRef, Int32Array, Int64Array, StringArray};
 use datafusion_common::cast::as_binary_array;
 use datafusion_common::{exec_err, internal_err, DataFusionError, ScalarValue};

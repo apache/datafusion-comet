@@ -62,8 +62,8 @@ use tokio::task;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
-    execution::datafusion::spark_hash::{create_murmur3_hashes, pmod},
 };
+use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
@@ -1413,6 +1413,14 @@ impl RecordBatchStream for EmptyStream {
     }
 }
 
+fn pmod(hash: u32, n: usize) -> usize {
+    let hash = hash as i32;
+    let n = n as i32;
+    let r = hash % n;
+    let result = if r < 0 { (r + n) % n } else { r };
+    result as usize
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1476,5 +1484,15 @@ mod test {
         let stream = exec.execute(0, task_ctx).unwrap();
         let rt = Runtime::new().unwrap();
         rt.block_on(collect(stream)).unwrap();
+    }
+
+    #[test]
+    fn test_pmod() {
+        let i: Vec<u32> = vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb];
+        let result = i.into_iter().map(|i| pmod(i, 200)).collect::<Vec<usize>>();
+
+        // expected partition from Spark with n=200
+        let expected = vec![69, 5, 193, 171, 115];
+        assert_eq!(result, expected);
     }
 }

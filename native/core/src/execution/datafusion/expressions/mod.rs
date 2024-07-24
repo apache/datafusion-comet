@@ -20,7 +20,6 @@
 pub mod bitwise_not;
 pub mod checkoverflow;
 mod normalize_nan;
-pub mod scalar_funcs;
 pub use normalize_nan::NormalizeNaNAndZero;
 
 use crate::errors::CometError;
@@ -39,7 +38,6 @@ pub mod sum_decimal;
 pub mod unbound;
 mod utils;
 pub mod variance;
-pub mod xxhash64;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
 

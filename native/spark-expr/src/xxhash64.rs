@@ -29,7 +29,7 @@ const PRIME_5: u64 = 2_870_177_450_012_600_261;
 /// but optimized for our use case by removing any intermediate buffering, which is
 /// not required because we are operating on data that is already in memory.
 #[inline]
-pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
+pub fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
     let data: &[u8] = data.as_ref();
     let length_bytes = data.len();
 

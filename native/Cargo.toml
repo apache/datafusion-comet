@@ -51,6 +51,7 @@ datafusion-comet-proto = { path = "proto", version = "0.2.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 num = "0.4"
+rand = "0.8"
 regex = "1.9.6"
 thiserror = "1"
 

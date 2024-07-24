@@ -76,7 +76,6 @@ use crate::{
                 correlation::Correlation,
                 covariance::Covariance,
                 negative,
-                scalar_funcs::create_comet_physical_fun,
                 stats::StatsType,
                 stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
@@ -108,7 +107,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
+    scalar_funcs::create_comet_physical_fun, Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr,
+    SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
