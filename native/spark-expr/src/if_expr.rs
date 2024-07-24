@@ -133,6 +133,7 @@ impl PartialEq<dyn Any> for IfExpr {
 #[cfg(test)]
 mod tests {
     use arrow::{array::StringArray, datatypes::*};
+    use arrow_array::Int32Array;
     use datafusion::logical_expr::Operator;
     use datafusion_common::cast::as_int32_array;
     use datafusion_physical_expr::expressions::{binary, col, lit};
