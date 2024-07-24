@@ -2535,8 +2535,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }.toArray
 
-        val windowExprProto = winExprs.map(windowExprToProto(_, output))
+        if (winExprs.length != windowExpression.length) {
+          withInfo(op, "Unsupported window expression(s)")
+          return None
+        }
 
+        val windowExprProto = winExprs.map(windowExprToProto(_, output))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
         val sortOrders = orderSpec.map(exprToProto(_, child.output))
