@@ -36,6 +36,7 @@ use datafusion::{
 
 use crate::xxhash64::spark_xxhash64;
 
+/// Spark-compatible `murmur3_hash` expression (just `hash` in Spark)
 #[inline]
 pub fn spark_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
     #[inline]
