@@ -20,9 +20,9 @@ use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::{
     spark_sha224, spark_sha256, spark_sha384, spark_sha512,
 };
 use datafusion_comet_spark_expr::scalar_funcs::{
-    spark_ceil, spark_chr, spark_decimal_div, spark_floor, spark_hex, spark_isnan,
-    spark_make_decimal, spark_murmur3_hash, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, spark_xxhash64,
+    spark_ceil, spark_decimal_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
+    spark_murmur3_hash, spark_round, spark_rpad, spark_unhex, spark_unscaled_value, spark_xxhash64,
+    SparkChrFunc,
 };
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_expr::registry::FunctionRegistry;
@@ -100,10 +100,7 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_xxhash64);
             make_comet_scalar_udf!("xxhash64", func, without data_type)
         }
-        "chr" => {
-            let func = Arc::new(spark_chr);
-            make_comet_scalar_udf!("chr", func, without data_type)
-        }
+        "chr" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkChrFunc::default()))),
         "isnan" => {
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)

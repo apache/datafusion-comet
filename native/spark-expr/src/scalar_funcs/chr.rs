@@ -28,15 +28,7 @@ use arrow::{
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
 use datafusion_common::{cast::as_int64_array, exec_err, DataFusionError, Result, ScalarValue};
 
-/// Returns the ASCII character having the binary equivalent to the input expression.
-/// E.g., chr(65) = 'A'.
-/// Compatible with Apache Spark's Chr function
-pub fn spark_chr(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    let chr_func = ChrFunc::default();
-    chr_func.invoke(args)
-}
-
-pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
+fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
     let integer_array = as_int64_array(&args[0])?;
 
     // first map is the iterator, second is for the `Option<_>`
@@ -63,17 +55,17 @@ pub fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
 }
 
 #[derive(Debug)]
-pub struct ChrFunc {
+pub struct SparkChrFunc {
     signature: Signature,
 }
 
-impl Default for ChrFunc {
+impl Default for SparkChrFunc {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ChrFunc {
+impl SparkChrFunc {
     pub fn new() -> Self {
         Self {
             signature: Signature::uniform(1, vec![Int64], Volatility::Immutable),
@@ -81,7 +73,7 @@ impl ChrFunc {
     }
 }
 
-impl ScalarUDFImpl for ChrFunc {
+impl ScalarUDFImpl for SparkChrFunc {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -99,11 +91,14 @@ impl ScalarUDFImpl for ChrFunc {
     }
 
     fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        handle_chr_fn(args)
+        spark_chr(args)
     }
 }
 
-fn handle_chr_fn(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+/// Returns the ASCII character having the binary equivalent to the input expression.
+/// E.g., chr(65) = 'A'.
+/// Compatible with Apache Spark's Chr function
+fn spark_chr(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     let array = args[0].clone();
     match array {
         ColumnarValue::Array(array) => {

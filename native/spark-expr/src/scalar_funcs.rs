@@ -44,7 +44,7 @@ mod hex;
 pub use hex::spark_hex;
 
 mod chr;
-pub use chr::spark_chr;
+pub use chr::SparkChrFunc;
 
 pub mod hash_expressions;
 // exposed for benchmark only
