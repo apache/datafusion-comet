@@ -113,7 +113,7 @@ builds:
 
   - <<: *comet-java
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -138,7 +138,7 @@ builds:
   - &comet-tpcds
     group: test-comet-tpcds-queries
     branchName: main-apple
-    version: 3.4_2.12
+    version: 3.4_2.13
     disabled: false
     machine:
       <<: *rio3-machine
@@ -146,7 +146,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4,scala-2.13"
     build: &comet-tpcds-build
       template: freestyle:v4:prb
       steps:
@@ -161,7 +161,7 @@ builds:
   - &comet-tpch
     group: test-comet-tpch-queries
     branchName: main-apple
-    version: 3.4_2.12
+    version: 3.4_2.13
     disabled: false
     machine:
       <<: *rio3-machine
@@ -169,7 +169,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4,scala-2.13"
     build: &comet-tpch-build
       template: freestyle:v4:prb
       steps:
@@ -269,7 +269,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-catalyst
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -343,7 +343,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-core-1
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
@@ -415,7 +415,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-core-2
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -449,7 +449,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-core-3
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -517,7 +517,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-hive-1
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -585,7 +585,7 @@ builds:
   - <<: *comet-spark
     group: test-spark-sql-hive-2
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -685,7 +685,7 @@ builds:
 
   - <<: *comet-iceberg
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     machine:
       <<: *rio3-machine
       env:
@@ -848,30 +848,6 @@ builds:
         - cat $RIO_CONTEXT_FILE
     finally:
       pipelineChain:
-        - pipeline: build-main-apple-publish-3.2_2.12
-          buildArguments:
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-main-apple-publish-3.3_2.12
-          buildArguments:
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-main-apple-publish-3.3_2.13
-          buildArguments:
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: build-main-apple-publish-3.4_2.12
-          buildArguments:
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
         - pipeline: build-main-apple-publish-3.4_2.13
           buildArguments:
             - name: "ARTIFACT_X86_64"
@@ -976,7 +952,7 @@ builds:
   - group: build
     branchName: main-apple
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1078,7 +1054,7 @@ builds:
   - group: build-artifacts
     branchName: main-apple
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1193,7 +1169,7 @@ builds:
   - group: image
     branchName: main-apple
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1290,7 +1266,7 @@ builds:
   - group: nightly
     branchName: main-apple
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       timer: '45 4 * * *'
       gitPush: false
@@ -1370,12 +1346,6 @@ builds:
         enabled: true
         expression: "0.1.0.4-apple"
       pipelineChain:
-        - pipeline: build-main-apple-release-publish-3.4_2.12
-          buildArguments:
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
         - pipeline: build-main-apple-release-publish-3.4_2.13
           buildArguments:
             - name: "ARTIFACT_X86_64"
@@ -1473,7 +1443,7 @@ builds:
   - group: build
     branchName: main-apple-release
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1568,7 +1538,7 @@ builds:
   - group: build-artifacts
     branchName: main-apple-release
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1684,7 +1654,7 @@ builds:
   - group: image
     branchName: main-apple-release
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
@@ -1785,38 +1755,6 @@ builds:
         - cat $RIO_CONTEXT_FILE
     finally:
       pipelineChain:
-        - pipeline: pr-build-main-apple-publish-3.2_2.12
-          buildArguments:
-            - name: "PR_NUMBER"
-              value: "${BUILD_PARAM_PR_NUMBER}"
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: pr-build-main-apple-publish-3.3_2.12
-          buildArguments:
-            - name: "PR_NUMBER"
-              value: "${BUILD_PARAM_PR_NUMBER}"
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: pr-build-main-apple-publish-3.3_2.13
-          buildArguments:
-            - name: "PR_NUMBER"
-              value: "${BUILD_PARAM_PR_NUMBER}"
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
-        - pipeline: pr-build-main-apple-publish-3.4_2.12
-          buildArguments:
-            - name: "PR_NUMBER"
-              value: "${BUILD_PARAM_PR_NUMBER}"
-            - name: "ARTIFACT_X86_64"
-              value: "${ARTIFACT_X86_64}"
-            - name: "ARTIFACT_AARCH64"
-              value: "${ARTIFACT_AARCH64}"
         - pipeline: pr-build-main-apple-publish-3.4_2.13
           buildArguments:
             - name: "PR_NUMBER"
@@ -1937,7 +1875,7 @@ builds:
   - group: pr-build
     branchName: main-apple
     version: 3.4_2.12
-    disabled: false
+    disabled: true
     trigger:
       gitPush: false
     machine:
