@@ -54,6 +54,7 @@ fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
     Ok(Arc::new(result) as ArrayRef)
 }
 
+/// Spark-compatible `chr` expression
 #[derive(Debug)]
 pub struct SparkChrFunc {
     signature: Signature,

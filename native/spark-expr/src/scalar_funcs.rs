@@ -177,6 +177,7 @@ pub fn spark_floor(
     }
 }
 
+/// Spark-compatible `UnscaledValue` expression (internal to Spark optimizer)
 pub fn spark_unscaled_value(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     match &args[0] {
         ColumnarValue::Scalar(v) => match v {
@@ -196,6 +197,7 @@ pub fn spark_unscaled_value(args: &[ColumnarValue]) -> DataFusionResult<Columnar
     }
 }
 
+/// Spark-compatible `MakeDecimal` expression (internal to Spark optimizer)
 pub fn spark_make_decimal(
     args: &[ColumnarValue],
     data_type: &DataType,
@@ -483,6 +485,7 @@ pub fn spark_decimal_div(
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
 
+/// Spark-compatible `isnan` expression
 pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
         match is_nan.nulls() {

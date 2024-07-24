@@ -113,20 +113,22 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     }
 }
 
-// Note: Spark actually has just a single sha2 function, which takes the bit len as arg
-// but for Comet we split the calls in QueryPlanSerde
+/// `sha224` function that simulates Spark's `sha2` expression with bit width 224
 pub fn spark_sha224(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     wrap_digest_result_as_hex_string(args, sha224().fun())
 }
 
+/// `sha256` function that simulates Spark's `sha2` expression with bit width 0 or 256
 pub fn spark_sha256(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     wrap_digest_result_as_hex_string(args, sha256().fun())
 }
 
+/// `sha384` function that simulates Spark's `sha2` expression with bit width 384
 pub fn spark_sha384(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     wrap_digest_result_as_hex_string(args, sha384().fun())
 }
 
+/// `sha512` function that simulates Spark's `sha2` expression with bit width 512
 pub fn spark_sha512(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     wrap_digest_result_as_hex_string(args, sha512().fun())
 }

@@ -62,6 +62,7 @@ fn hex_bytes<T: AsRef<[u8]>>(bytes: T) -> Result<String, std::fmt::Error> {
     Ok(hex_string)
 }
 
+/// Spark-compatible `hex` function
 pub fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     if args.len() != 1 {
         return Err(DataFusionError::Internal(
