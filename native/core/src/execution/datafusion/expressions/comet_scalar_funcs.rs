@@ -16,7 +16,9 @@
 // under the License.
 
 use arrow_schema::DataType;
-use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::{spark_sha224, spark_sha256, spark_sha384, spark_sha512};
+use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::{
+    spark_sha224, spark_sha256, spark_sha384, spark_sha512,
+};
 use datafusion_comet_spark_expr::scalar_funcs::{
     spark_ceil, spark_chr, spark_decimal_div, spark_floor, spark_hex, spark_isnan,
     spark_make_decimal, spark_murmur3_hash, spark_round, spark_rpad, spark_unhex,

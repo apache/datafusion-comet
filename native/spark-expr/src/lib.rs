@@ -25,7 +25,7 @@ pub mod spark_hash;
 mod temporal;
 pub mod timezone;
 pub mod utils;
-pub mod xxhash64;
+mod xxhash64;
 
 pub use cast::Cast;
 pub use error::{SparkError, SparkResult};
