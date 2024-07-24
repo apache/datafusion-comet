@@ -112,7 +112,7 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     }
 }
 
-pub(super) fn wrap_digest_result_as_hex_string(
+pub fn wrap_digest_result_as_hex_string(
     args: &[ColumnarValue],
     digest: ScalarFunctionImplementation,
 ) -> Result<ColumnarValue, DataFusionError> {

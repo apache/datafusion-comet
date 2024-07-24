@@ -109,7 +109,7 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
     }
 }
 
-pub(super) fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+pub fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     if args.len() > 2 {
         return exec_err!("unhex takes at most 2 arguments, but got: {}", args.len());
     }

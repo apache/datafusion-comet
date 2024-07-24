@@ -26,6 +26,7 @@ use crate::errors::CometError;
 pub mod avg;
 pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
+pub mod comet_scalar_funcs;
 pub mod correlation;
 pub mod covariance;
 pub mod create_named_struct;
