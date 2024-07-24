@@ -53,23 +53,24 @@ import org.apache.comet.CometConf
 object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
 
   val queries: Seq[String] = Seq(
-    "add_many_decimals",
-    "add_many_integers",
-    "agg_high_cardinality",
-    "agg_low_cardinality",
-    "agg_sum_decimals_no_grouping",
-    "agg_sum_integers_no_grouping",
+//    "add_many_decimals",
+//    "add_many_integers",
+//    "agg_high_cardinality",
+//    "agg_low_cardinality",
+//    "agg_sum_decimals_no_grouping",
+//    "agg_sum_integers_no_grouping",
     "case_when_column_or_null",
-    "case_when_scalar",
-    "filter_highly_selective",
-    "filter_less_selective",
-    "if_column_or_null",
-    "join_anti",
-    "join_condition",
-    "join_exploding_output",
-    "join_inner",
-    "join_left_outer",
-    "join_semi")
+    "case_when_scalar"
+//    "filter_highly_selective",
+//    "filter_less_selective",
+//    "if_column_or_null",
+//    "join_anti",
+//    "join_condition",
+//    "join_exploding_output",
+//    "join_inner",
+//    "join_left_outer",
+//    "join_semi"
+  )
 
   override def runQueries(
       queryLocation: String,
@@ -78,7 +79,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmarkName: String,
       nameSuffix: String = ""): Unit = {
     queries.foreach { name =>
-      val source = Source.fromFile(s"spark/src/test/resources/tpcds-micro-benchmarks/$name.sql")
+      val source = Source.fromFile(s"src/test/resources/tpcds-micro-benchmarks/$name.sql")
       val queryString = source
         .getLines()
         .filterNot(_.startsWith("--"))
@@ -98,7 +99,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
         case _ =>
       }
       val numRows = queryRelations.map(tableSizes.getOrElse(_, 0L)).sum
-      val benchmark = new Benchmark(benchmarkName, numRows, 2, output = output)
+      val benchmark = new Benchmark(benchmarkName, numRows, 10, output = output)
       benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
