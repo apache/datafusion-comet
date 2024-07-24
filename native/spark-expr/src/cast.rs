@@ -504,7 +504,10 @@ impl Cast {
     }
 }
 
-pub fn spark_cast_array(
+/// Spark-compatible cast implementation. Defers to DataFusion's cast where that is known
+/// to be compatible, and returns an error when a not supported and not DF-compatible cast
+/// is requested.
+pub fn spark_cast(
     arg: ColumnarValue,
     data_type: &DataType,
     eval_mode: EvalMode,
@@ -559,7 +562,7 @@ fn cast_array(
                 DataType::Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
                 _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
             };
-            return Ok(spark_cast(casted_result, &from_type, to_type));
+            return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
         _ => array,
     };
@@ -634,7 +637,7 @@ fn cast_array(
             )))
         }
     };
-    Ok(spark_cast(cast_result?, from_type, to_type))
+    Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
 }
 
 /// Determines if DataFusion supports the given cast in a way that is
@@ -1309,7 +1312,7 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast_array(arg, &self.data_type, self.eval_mode, self.timezone.clone())
+        spark_cast(arg, &self.data_type, self.eval_mode, self.timezone.clone())
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -1665,7 +1668,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 /// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
 /// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
 /// expressions/cast.rs, so it can be still Dictionary.
-fn spark_cast(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
+fn spark_cast_postprocess(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
     match (from_type, to_type) {
         (DataType::Timestamp(_, _), DataType::Int64) => {
             // See Spark's `Cast` expression
