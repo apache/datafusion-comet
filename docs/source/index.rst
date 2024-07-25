@@ -16,7 +16,6 @@
 .. under the License.
 
 .. image:: _static/images/DataFusionComet-Logo-Light.png
-
   :alt: DataFusion Comet Logo
 
 =======================
