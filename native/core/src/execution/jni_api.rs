@@ -89,6 +89,8 @@ struct ExecutionContext {
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
     pub debug_native: bool,
+    /// zstd compression level
+    pub compression_level: i32,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -132,6 +134,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             .and_then(|x| x.parse::<bool>().ok())
             .unwrap_or(false);
 
+        let compression_level = configs
+            .get("compression_level")
+            .and_then(|x| x.parse::<i32>().ok())
+            .unwrap_or(1);
+
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -169,6 +176,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             metrics,
             session_ctx: Arc::new(session),
             debug_native,
+            compression_level,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -317,8 +325,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
-            let planner = PhysicalPlanner::new(exec_context.session_ctx.clone())
-                .with_exec_id(exec_context_id);
+            let planner = PhysicalPlanner::new(
+                exec_context.session_ctx.clone(),
+                exec_context.compression_level,
+            )
+            .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
@@ -455,6 +466,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
+    compression_level: jlong,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -493,6 +505,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_enabled,
             checksum_algo,
             current_checksum,
+            compression_level as i32,
         )?;
 
         let checksum = if let Some(checksum) = checksum {

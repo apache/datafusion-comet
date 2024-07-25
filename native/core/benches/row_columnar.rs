@@ -77,6 +77,7 @@ fn benchmark(c: &mut Criterion) {
                 false,
                 0,
                 None,
+                1,
             )
             .unwrap();
         });

@@ -175,6 +175,12 @@ object CometConf extends ShimCometConf {
     .stringConf
     .createWithDefault("zstd")
 
+  val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compressionLevel")
+      .doc("Zstd compression level used in shuffle.")
+      .intConf
+      .createWithDefault(1)
+
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] = conf(
     "spark.comet.columnar.shuffle.async.enabled")
     .doc(
