@@ -155,8 +155,8 @@ builds:
         - cd tools && make OS=LINUX
         - cd ../..
         - make release
-        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
-        - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds ./mvnw -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
   - &comet-tpch
     group: test-comet-tpch-queries
@@ -174,8 +174,8 @@ builds:
       template: freestyle:v4:prb
       steps:
         - make release
-        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
-        - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet ./mvnw -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
   - &comet-spark-32
     group: test-spark-sql-catalyst
