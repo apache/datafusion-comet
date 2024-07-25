@@ -1116,9 +1116,10 @@ object CometSparkSessionExtensions extends Logging {
 
   private[comet] def isTypeSupported(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType | _: StructType =>
+        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
     case t: DataType if t.typeName == "timestamp_ntz" => true
+    case s: StructType => isSchemaSupported(s)
     case dt =>
       logInfo(s"Comet extension is disabled because data type $dt is not supported")
       false
