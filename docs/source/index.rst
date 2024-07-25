@@ -15,8 +15,8 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-.. image:: _static/images/2x_bgwhite_original.png
-  :alt: DataFusion Logo
+.. image:: _static/images/DataFusionComet-Logo-Light.png
+  :alt: DataFusion Comet Logo
 
 =======================
 Apache DataFusion Comet
