@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
@@ -31,7 +30,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType, StructType}
+import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
 
@@ -1762,14 +1761,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key -> "true",
       CometConf.COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
+      withTempPath { dir =>
         var df = spark
           .range(5)
           .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
             .alias("nested"))
 
-        df.write.mode("overwrite").parquet(dir.toString())
+        df.write.parquet(dir.toString())
 
         df = spark.read.parquet(dir.toString())
         checkSparkAnswerAndOperator(df.select("nested.id"))
