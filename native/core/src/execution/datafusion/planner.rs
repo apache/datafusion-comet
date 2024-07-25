@@ -94,7 +94,10 @@ use crate::{
     },
 };
 
-use super::expressions::{structs::{CreateNamedStruct, GetStructField}, EvalMode};
+use super::expressions::{
+    structs::{CreateNamedStruct, GetStructField},
+    EvalMode,
+};
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
