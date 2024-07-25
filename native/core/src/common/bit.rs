@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{cmp, cmp::min, mem::size_of};
+use std::{cmp::min, mem::size_of};
 
 use arrow::buffer::Buffer;
 
@@ -131,6 +131,18 @@ pub fn read_num_bytes_u32(size: usize, src: &[u8]) -> u32 {
     trailing_bits(v as u64, size * 8) as u32
 }
 
+#[inline]
+pub fn read_u64(src: &[u8]) -> u64 {
+    let in_ptr = src.as_ptr() as *const u64;
+    unsafe { in_ptr.read_unaligned() }
+}
+
+#[inline]
+pub fn read_u32(src: &[u8]) -> u32 {
+    let in_ptr = src.as_ptr() as *const u32;
+    unsafe { in_ptr.read_unaligned() }
+}
+
 /// Similar to the `read_num_bytes` but read nums from bytes in big-endian order
 /// This is used to read bytes from Java's OutputStream which writes bytes in big-endian
 macro_rules! read_num_be_bytes {
@@ -181,7 +193,7 @@ pub fn log2(mut x: u64) -> u32 {
 /// Returns the `num_bits` least-significant bits of `v`
 #[inline]
 pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
-    if unlikely(num_bits >= 64) {
+    if num_bits >= 64 {
         return v;
     }
     v & ((1 << num_bits) - 1)
@@ -549,8 +561,11 @@ pub struct BitReader {
 /// either byte aligned or not.
 impl BitReader {
     pub fn new(buf: Buffer, len: usize) -> Self {
-        let num_bytes = cmp::min(8, len);
-        let buffered_values = read_num_bytes_u64(num_bytes, buf.as_slice());
+        let buffered_values = if 8 > len {
+            read_num_bytes_u64(len, buf.as_slice())
+        } else {
+            read_u64(buf.as_slice())
+        };
         BitReader {
             buffer: buf,
             buffered_values,
@@ -568,8 +583,11 @@ impl BitReader {
     pub fn reset(&mut self, buf: Buffer) {
         self.buffer = buf;
         self.total_bytes = self.buffer.len();
-        let num_bytes = cmp::min(8, self.total_bytes);
-        self.buffered_values = read_num_bytes_u64(num_bytes, self.buffer.as_slice());
+        self.buffered_values = if 8 > self.total_bytes {
+            read_num_bytes_u64(self.total_bytes, self.buffer.as_slice())
+        } else {
+            read_u64(self.buffer.as_slice())
+        };
         self.byte_offset = 0;
         self.bit_offset = 0;
     }
@@ -962,9 +980,12 @@ impl BitReader {
     }
 
     fn reload_buffer_values(&mut self) {
-        let bytes_to_read = cmp::min(self.total_bytes - self.byte_offset, 8);
-        self.buffered_values =
-            read_num_bytes_u64(bytes_to_read, &self.buffer.as_slice()[self.byte_offset..]);
+        let bytes_to_read = self.total_bytes - self.byte_offset;
+        self.buffered_values = if 8 > bytes_to_read {
+            read_num_bytes_u64(bytes_to_read, &self.buffer.as_slice()[self.byte_offset..])
+        } else {
+            read_u64(&self.buffer.as_slice()[self.byte_offset..])
+        };
     }
 }
 
