@@ -41,9 +41,9 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> false,
+          StructField("f2", StringType))) -> true,
       MapType(keyType = LongType, valueType = DateType) -> false,
-      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> false,
+      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> true,
       MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
       case (dt, expected) =>
         assert(CometSparkSessionExtensions.isTypeSupported(dt) == expected)
