@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.JavaConverters._
+
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -60,8 +62,17 @@ case class CometRowToColumnarExec(child: SparkPlan)
     val timeZoneId = conf.sessionLocalTimeZone
     val schema = child.schema
 
-    child
-      .execute()
+    val rdd: RDD[InternalRow] = if (child.supportsColumnar) {
+      child
+        .executeColumnar()
+        .mapPartitionsInternal { iter =>
+          iter.flatMap(_.rowIterator().asScala)
+        }
+    } else {
+      child.execute()
+    }
+
+    rdd
       .mapPartitionsInternal { iter =>
         val context = TaskContext.get()
         CometArrowConverters.toArrowBatchIterator(

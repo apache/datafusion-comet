@@ -62,7 +62,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   def supportedDataType(dt: DataType): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
-        _: DateType | _: BooleanType | _: NullType =>
+        _: DateType | _: BooleanType | _: NullType | _: StructType =>
       true
     case dt if isTimestampNTZType(dt) => true
     case dt =>
@@ -2299,6 +2299,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           } else {
             withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
             None
+          }
+
+        case GetStructField(child, ordinal, _) =>
+          exprToProto(child, inputs, binding).map { childExpr =>
+            val getStructFieldBuilder = ExprOuterClass.GetStructField
+              .newBuilder()
+              .setChild(childExpr)
+              .setOrdinal(ordinal)
+
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setGetStructField(getStructFieldBuilder)
+              .build()
           }
 
         case _ =>

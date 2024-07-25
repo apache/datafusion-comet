@@ -94,7 +94,7 @@ use crate::{
     },
 };
 
-use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
+use super::expressions::{structs::{CreateNamedStruct, GetStructField}, EvalMode};
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -605,6 +605,10 @@ impl PhysicalPlanner {
                     .collect::<Result<Vec<_>, _>>()?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+            }
+            ExprStruct::GetStructField(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                Ok(Arc::new(GetStructField::new(child, expr.ordinal as u32)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

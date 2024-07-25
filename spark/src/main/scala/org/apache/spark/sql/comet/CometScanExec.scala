@@ -478,4 +478,15 @@ object CometScanExec {
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
   }
+
+  def isSchemaSupported(schema: StructType): Boolean =
+    schema.map(_.dataType).forall(isTypeSupported)
+
+  def isTypeSupported(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
+      true
+    case t: DataType if t.typeName == "timestamp_ntz" => true
+    case _ => false
+  }
 }

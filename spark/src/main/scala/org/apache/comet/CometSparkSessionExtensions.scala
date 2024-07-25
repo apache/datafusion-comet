@@ -166,7 +166,9 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _,
-                _) if isSchemaSupported(requiredSchema) && isSchemaSupported(partitionSchema) =>
+                _)
+              if CometScanExec.isSchemaSupported(requiredSchema)
+                && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
 
@@ -182,10 +184,10 @@ class CometSparkSessionExtensions
                 _,
                 _) =>
             val info1 = createMessage(
-              !isSchemaSupported(requiredSchema),
+              !CometScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
             val info2 = createMessage(
-              !isSchemaSupported(partitionSchema),
+              !CometScanExec.isSchemaSupported(partitionSchema),
               s"Partition schema $partitionSchema is not supported")
             withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
             scanExec
@@ -1112,7 +1114,7 @@ object CometSparkSessionExtensions extends Logging {
 
   private[comet] def isTypeSupported(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
+        BinaryType | StringType | _: DecimalType | DateType | TimestampType | _: StructType =>
       true
     case t: DataType if t.typeName == "timestamp_ntz" => true
     case dt =>
@@ -1128,7 +1130,7 @@ object CometSparkSessionExtensions extends Logging {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar.
     // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && !op.supportsColumnar && isSchemaSupported(op.schema) &&
+    op.isInstanceOf[LeafExecNode] && isSchemaSupported(op.schema) &&
     COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")

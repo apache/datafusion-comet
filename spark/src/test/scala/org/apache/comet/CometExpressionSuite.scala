@@ -21,16 +21,17 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
+import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
 
@@ -1752,7 +1753,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
+          spark.sql("SELECT named_struct('a', _1, 'b', _2) FROM tbl").explain()
         }
+      }
+    }
+  }
+
+  test("get_struct_field") {
+    withSQLConf(
+      CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key -> "true",
+      CometConf.COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        var df = spark
+          .range(5)
+          .select(when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+            .alias("nested"))
+
+        df.write.mode("overwrite").parquet(dir.toString())
+
+        df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested.id"))
       }
     }
   }

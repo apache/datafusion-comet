@@ -29,7 +29,7 @@ pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
 pub mod correlation;
 pub mod covariance;
-pub mod create_named_struct;
+pub mod structs;
 pub mod negative;
 pub mod stats;
 pub mod stddev;
