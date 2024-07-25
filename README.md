@@ -19,6 +19,16 @@ under the License.
 
 # Apache DataFusion Comet
 
+[![Apache licensed][license-badge]][license-url]
+[![Discord chat][discord-badge]][discord-url]
+
+[license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
+[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
+[discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
+[discord-url]: https://discord.com/invite/Qw5gKqHxUM
+
+<img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
+
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
 [Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
