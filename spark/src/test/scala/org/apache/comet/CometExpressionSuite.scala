@@ -1753,7 +1753,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
-          spark.sql("SELECT named_struct('a', _1, 'b', _2) FROM tbl").explain()
         }
       }
     }
