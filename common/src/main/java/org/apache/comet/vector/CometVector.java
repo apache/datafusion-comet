@@ -45,6 +45,10 @@ public abstract class CometVector extends ColumnVector {
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
   protected final boolean useDecimal128;
 
+  private static final jdk.internal.misc.Unsafe unsafe = jdk.internal.misc.Unsafe.getUnsafe();
+  private static final long decimalValOffset =
+      unsafe.objectFieldOffset(BigDecimal.class, "decimalVal");
+
   protected CometVector(DataType type, boolean useDecimal128) {
     super(type);
     this.useDecimal128 = useDecimal128;
@@ -80,21 +84,22 @@ public abstract class CometVector extends ColumnVector {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
       BigDecimal javaDecimal = new BigDecimal(bigInteger, scale);
-      try {
-        return Decimal.apply(javaDecimal, precision, scale);
-      } catch (ArithmeticException e) {
-        throw new ArithmeticException(
-            "Cannot convert "
-                + javaDecimal
-                + " (bytes: "
-                + bytes
-                + ", integer: "
-                + bigInteger
-                + ") to decimal with precision: "
-                + precision
-                + " and scale: "
-                + scale);
-      }
+      return createDecimal(javaDecimal, precision, scale);
+      // try {
+      //   return Decimal.apply(javaDecimal, precision, scale);
+      // } catch (ArithmeticException e) {
+      //   throw new ArithmeticException(
+      //       "Cannot convert "
+      //           + javaDecimal
+      //           + " (bytes: "
+      //           + bytes
+      //           + ", integer: "
+      //           + bigInteger
+      //           + ") to decimal with precision: "
+      //           + precision
+      //           + " and scale: "
+      //           + scale);
+      // }
     }
   }
 
@@ -102,6 +107,14 @@ public abstract class CometVector extends ColumnVector {
   private Decimal createDecimal(long unscaled, int precision, int scale) {
     Decimal dec = new Decimal();
     dec.org$apache$spark$sql$types$Decimal$$longVal_$eq(unscaled);
+    dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
+    dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
+    return dec;
+  }
+
+  private Decimal createDecimal(BigDecimal value, int precision, int scale) {
+    Decimal dec = new Decimal();
+    unsafe.putReference(dec, decimalValOffset, new scala.math.BigDecimal(value));
     dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
     dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
     return dec;
