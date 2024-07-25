@@ -73,9 +73,9 @@ public abstract class CometVector extends ColumnVector {
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
-      return Decimal.createUnsafe(getInt(i), precision, scale);
+      return createDecimal(getInt(i), precision, scale);
     } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-      return Decimal.createUnsafe(getLong(i), precision, scale);
+      return createDecimal(getLong(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -96,6 +96,17 @@ public abstract class CometVector extends ColumnVector {
                 + scale);
       }
     }
+  }
+
+  /**
+   * This method skips the negative scale check, otherwise the same as Decimal.createUnsafe.
+   */
+  private Decimal createDecimal(long unscaled, int precision, int scale) {
+    Decimal dec = new Decimal();
+    dec.org$apache$spark$sql$types$Decimal$$longVal_$eq(unscaled);
+    dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
+    dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
+    return dec;
   }
 
   /**
