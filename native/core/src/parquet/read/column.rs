@@ -211,6 +211,8 @@ impl ColumnReader {
                                         promotion_info.scale as i8
                                     )
                                 )
+                            } else if promotion_info.precision < DECIMAL_MAX_INT_DIGITS {
+                                typed_reader!(Int32ColumnReader, Int32)
                             } else {
                                 typed_reader!(
                                     Int32ToDecimal64ColumnReader,
