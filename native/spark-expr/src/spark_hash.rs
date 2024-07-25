@@ -34,11 +34,11 @@ use datafusion::{
     error::{DataFusionError, Result},
 };
 
-use crate::xxhash64::spark_xxhash64;
+use crate::xxhash64::spark_compatible_xxhash64;
 
-/// Spark-compatible `murmur3_hash` expression (just `hash` in Spark)
+/// Spark-compatible murmur3 hash function
 #[inline]
-pub fn spark_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
+pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
     #[inline]
     fn mix_k1(mut k1: i32) -> i32 {
         k1 = k1.mul_wrapping(0xcc9e2d51u32 as i32);
@@ -466,7 +466,7 @@ pub fn create_murmur3_hashes<'a>(
     create_hashes_internal!(
         arrays,
         hashes_buffer,
-        spark_murmur3_hash,
+        spark_compatible_murmur3_hash,
         create_hashes_dictionary
     );
     Ok(hashes_buffer)
@@ -484,7 +484,7 @@ pub fn create_xxhash64_hashes<'a>(
     create_hashes_internal!(
         arrays,
         hashes_buffer,
-        spark_xxhash64,
+        spark_compatible_xxhash64,
         create_xxhash64_hashes_dictionary
     );
     Ok(hashes_buffer)

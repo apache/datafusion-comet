@@ -29,7 +29,7 @@ const PRIME_5: u64 = 2_870_177_450_012_600_261;
 /// but optimized for our use case by removing any intermediate buffering, which is
 /// not required because we are operating on data that is already in memory.
 #[inline]
-pub(crate) fn spark_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
+pub(crate) fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
     let data: &[u8] = data.as_ref();
     let length_bytes = data.len();
 
@@ -156,7 +156,7 @@ fn mix_one(mut hash: u64, mut value: u64) -> u64 {
 
 #[cfg(test)]
 mod test {
-    use super::spark_xxhash64;
+    use super::spark_compatible_xxhash64;
     use rand::Rng;
     use std::hash::Hasher;
     use twox_hash::XxHash64;
@@ -178,7 +178,7 @@ mod test {
         let mut hasher = XxHash64::with_seed(seed);
         hasher.write(data.as_ref());
         let hash1 = hasher.finish();
-        let hash2 = spark_xxhash64(data, seed);
+        let hash2 = spark_compatible_xxhash64(data, seed);
         if hash1 != hash2 {
             panic!("input: {} with seed {seed} produced incorrect hash (comet={hash2}, twox-hash={hash1})",
                    data.iter().fold(String::new(), |mut output, byte| {

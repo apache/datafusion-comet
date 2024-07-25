@@ -17,7 +17,7 @@
 
 use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
-use datafusion_comet_spark_expr::spark_hash::spark_murmur3_hash;
+use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 
@@ -58,8 +58,8 @@ impl SparkBloomFilter {
     pub fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
-        let h1 = spark_murmur3_hash(item.to_le_bytes(), 0);
-        let h2 = spark_murmur3_hash(item.to_le_bytes(), h1);
+        let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
+        let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
         let mut bit_changed = false;
         for i in 1..=self.num_hash_functions {
@@ -73,8 +73,8 @@ impl SparkBloomFilter {
     }
 
     pub fn might_contain_long(&self, item: i64) -> bool {
-        let h1 = spark_murmur3_hash(item.to_le_bytes(), 0);
-        let h2 = spark_murmur3_hash(item.to_le_bytes(), h1);
+        let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
+        let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
         for i in 1..=self.num_hash_functions {
             let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
