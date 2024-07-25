@@ -25,7 +25,7 @@ under the License.
 [license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
 [license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
 [discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
-[discord-url]: https://discord.com/invite/Qw5gKqHxUM
+[discord-url]: https://discord.gg/3EAr4ZX6JK
 
 <img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
 
