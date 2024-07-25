@@ -95,8 +95,10 @@ class CometSparkSessionExtensions
           // data source V2
           case scanExec: BatchScanExec
               if scanExec.scan.isInstanceOf[ParquetScan] &&
-                isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
-                isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
+                CometBatchScanExec.isSchemaSupported(
+                  scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
+                CometBatchScanExec.isSchemaSupported(
+                  scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
                 // Comet does not support pushedAggregate
                 scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isEmpty =>
             val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
@@ -110,11 +112,11 @@ class CometSparkSessionExtensions
           case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
             val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
             val info1 = createMessage(
-              !isSchemaSupported(requiredSchema),
+              !CometBatchScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
             val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
             val info2 = createMessage(
-              !isSchemaSupported(readPartitionSchema),
+              !CometBatchScanExec.isSchemaSupported(readPartitionSchema),
               s"Partition schema $readPartitionSchema is not supported")
             // Comet does not support pushedAggregate
             val info3 = createMessage(
@@ -129,7 +131,7 @@ class CometSparkSessionExtensions
               // Iceberg scan, supported cases
               case s: SupportsComet
                   if s.isCometEnabled &&
-                    isSchemaSupported(scanExec.scan.readSchema()) =>
+                    CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()) =>
                 logInfo(s"Comet extension enabled for ${scanExec.scan.getClass.getSimpleName}")
                 // When reading from Iceberg, we automatically enable type promotion
                 SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
@@ -144,7 +146,7 @@ class CometSparkSessionExtensions
                   "Comet extension is not enabled for " +
                     s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
                 val info2 = createMessage(
-                  !isSchemaSupported(scanExec.scan.readSchema()),
+                  !CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()),
                   "Comet extension is not enabled for " +
                     s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
                 withInfos(scanExec, Seq(info1, info2).flatten.toSet)
