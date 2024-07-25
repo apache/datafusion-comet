@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ReusedExchangeExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -129,6 +129,11 @@ case class CometBroadcastExchangeExec(
           case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
               if s.plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
+          case ReusedExchangeExec(_, plan) if plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
+          case AQEShuffleReadExec(ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _), _)
+              if plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
           case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
             throw new CometRuntimeException(
               "Child of CometBroadcastExchangeExec should be CometExec, " +
