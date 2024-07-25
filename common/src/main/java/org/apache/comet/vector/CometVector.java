@@ -98,9 +98,7 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  /**
-   * This method skips the negative scale check, otherwise the same as Decimal.createUnsafe.
-   */
+  /** This method skips the negative scale check, otherwise the same as Decimal.createUnsafe. */
   private Decimal createDecimal(long unscaled, int precision, int scale) {
     Decimal dec = new Decimal();
     dec.org$apache$spark$sql$types$Decimal$$longVal_$eq(unscaled);
