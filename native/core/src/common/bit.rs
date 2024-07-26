@@ -147,12 +147,7 @@ pub fn memcpy(source: &[u8], target: &mut [u8]) {
     debug_assert!(target.len() >= source.len(), "Copying from source to target is not possible. Source has {} bytes but target has {} bytes", source.len(), target.len());
     // Originally `target[..source.len()].copy_from_slice(source)`
     // We use the unsafe copy method to avoid some expensive bounds checking/
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            source.as_ptr(),
-            target.as_mut_ptr(),
-            source.len())
-    }
+    unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), target.as_mut_ptr(), source.len()) }
 }
 
 #[inline]
