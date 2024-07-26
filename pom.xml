@@ -87,7 +87,6 @@ under the License.
       --add-opens=java.base/sun.security.action=ALL-UNNAMED
       --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
       -Djdk.reflect.useDirectMethodHandle=false
-      --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
@@ -733,7 +732,6 @@ under the License.
               <javacArg>-target</javacArg>
               <javacArg>${maven.compiler.target}</javacArg>
               <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
-              <javacArg>--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED</javacArg>
             </javacArgs>
           </configuration>
         </plugin>
