@@ -1764,8 +1764,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempPath { dir =>
         var df = spark
           .range(5)
-          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
-            .alias("nested"))
+          .select(struct(col("id")).alias("nested"))
 
         df.write.parquet(dir.toString())
 

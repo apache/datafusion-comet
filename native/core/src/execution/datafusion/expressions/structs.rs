@@ -129,18 +129,21 @@ impl PartialEq<dyn Any> for CreateNamedStruct {
 #[derive(Debug, Hash)]
 pub struct GetStructField {
     child: Arc<dyn PhysicalExpr>,
-    ordinal: u32,
+    ordinal: usize,
 }
 
 impl GetStructField {
-    pub fn new(child: Arc<dyn PhysicalExpr>, ordinal: u32) -> Self {
+    pub fn new(child: Arc<dyn PhysicalExpr>, ordinal: usize) -> Self {
         Self { child, ordinal }
     }
 
     fn child_field(&self, input_schema: &Schema) -> DataFusionResult<Arc<Field>> {
         match self.child.data_type(input_schema)? {
-            DataType::Struct(fields) => Ok(fields[self.ordinal as usize].clone()),
-            _ => todo!(),
+            DataType::Struct(fields) => Ok(fields[self.ordinal].clone()),
+            data_type => Err(DataFusionError::Plan(format!(
+                "Expect struct field, got {:?}",
+                data_type
+            ))),
         }
     }
 }
@@ -169,13 +172,16 @@ impl PhysicalExpr for GetStructField {
                     .expect("A struct is expected");
 
                 Ok(ColumnarValue::Array(
-                    struct_array.column(self.ordinal as usize).clone(),
+                    struct_array.column(self.ordinal).clone(),
                 ))
             }
             ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                struct_array.column(self.ordinal as usize).clone(),
+                struct_array.column(self.ordinal).clone(),
             )),
-            _ => todo!(),
+            value => Err(DataFusionError::Execution(format!(
+                "Expected a struct array, got {:?}",
+                value
+            ))),
         }
     }
 

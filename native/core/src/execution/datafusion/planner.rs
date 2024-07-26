@@ -611,7 +611,7 @@ impl PhysicalPlanner {
             }
             ExprStruct::GetStructField(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
-                Ok(Arc::new(GetStructField::new(child, expr.ordinal as u32)))
+                Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
