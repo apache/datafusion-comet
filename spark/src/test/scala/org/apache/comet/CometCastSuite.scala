@@ -560,8 +560,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
-  ignore("cast StringType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/325
+  test("cast StringType to DecimalType(10,2)") {
     val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
