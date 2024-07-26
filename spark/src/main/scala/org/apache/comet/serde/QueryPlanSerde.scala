@@ -227,15 +227,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       (None, exprToProto(windowExpr.windowFunction, output))
     }
 
+    if (aggExpr.isEmpty && builtinFunc.isEmpty) {
+      return None
+    }
+
     val f = windowExpr.windowSpec.frameSpecification
 
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
           case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame =>
-            withInfo(windowExpr, "Range frame is not supported")
-            return None
+          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
         }
 
         val lBoundProto = lBound match {
@@ -250,12 +252,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
+            val offset = e.eval() match {
+              case i: Integer => i.toLong
+              case l: Long => l
+              case _ =>
+                throw new IllegalArgumentException(
+                  "Unsupported data type for window function row/range offset")
+            }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
               .setPreceding(
                 OperatorOuterClass.Preceding
                   .newBuilder()
-                  .setOffset(e.eval().asInstanceOf[Int])
+                  .setOffset(offset)
                   .build())
               .build()
         }
@@ -272,12 +281,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
+            val offset = e.eval() match {
+              case i: Integer => i.toLong
+              case l: Long => l
+              case _ =>
+                throw new IllegalArgumentException(
+                  "Unsupported data type for window function row/range offset")
+            }
+
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
               .setFollowing(
                 OperatorOuterClass.Following
                   .newBuilder()
-                  .setOffset(e.eval().asInstanceOf[Int])
+                  .setOffset(offset)
                   .build())
               .build()
         }
