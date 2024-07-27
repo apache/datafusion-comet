@@ -283,9 +283,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
-              case _ =>
-                throw new IllegalArgumentException(
-                  "Unsupported data type for window function row/range offset")
+              case _ => return None
             }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
@@ -312,9 +310,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
-              case _ =>
-                throw new IllegalArgumentException(
-                  "Unsupported data type for window function row/range offset")
+              case _ => return None
             }
 
             OperatorOuterClass.UpperWindowFrameBound
