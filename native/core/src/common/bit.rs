@@ -193,7 +193,10 @@ pub fn log2(mut x: u64) -> u32 {
 /// Returns the `num_bits` least-significant bits of `v`
 #[inline]
 pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
-    if num_bits >= 64 {
+    if unlikely(num_bits == 0) {
+        return 0;
+    }
+    if unlikely(num_bits >= 64) {
         return v;
     }
     v & ((1 << num_bits) - 1)
