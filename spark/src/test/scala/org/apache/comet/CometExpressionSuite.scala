@@ -20,9 +20,11 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
+import java.util.regex.Pattern
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+import scala.util.{Random, Try}
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -614,6 +616,63 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val queryCustomEscape = sql("select id from names where name like '%$_%' escape '$'")
       checkAnswer(queryCustomEscape, Row(2) :: Row(3) :: Nil)
 
+    }
+  }
+
+  test("rlike") {
+    val table = "rlike_names"
+    val gen = new DataGenerator(new Random(42))
+    Seq(false, true).foreach { withDictionary =>
+      val data = Seq("James Smith", "Michael Rose", "Rames Rose", "Rames rose") ++
+        gen.generateStrings(100, "rames Rose", 12)
+      withParquetFile(data.zipWithIndex, withDictionary) { file =>
+        withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+          spark.read.parquet(file).createOrReplaceTempView(table)
+          val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("rlike fallback for non scalar pattern") {
+    val table = "rlike_fallback"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        val query2 = sql(s"select id from $table where name rlike name")
+        val (_, cometPlan) = checkSparkAnswer(query2)
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(explain.contains("Only scalar regexp patterns are supported"))
+      }
+    }
+  }
+
+  // this test demonstrates that Comet is not currently compatible
+  // with Spark for regular expressions
+  ignore("rlike fuzz test") {
+    val table = "rlike_fuzz"
+    val gen = new DataGenerator(new Random(42))
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+
+      val dataChars = "[]$^-=*09azAZ$\r\n\t abc123"
+      gen.generateStrings(1000, dataChars, 6).zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}')")
+      }
+
+      val patternChars = "[]$^-=*09azAZ$\r\n\t "
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        val validPatterns = gen
+          .generateStrings(1000, patternChars, 6)
+          .filter(pattern => Try(Pattern.compile(pattern)).isSuccess)
+        assert(validPatterns.nonEmpty)
+        validPatterns.foreach { pattern =>
+          val query = sql(s"select id, name, name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query)
+        }
+      }
     }
   }
 

@@ -410,6 +410,13 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.regexp.allowIncompatible")
+      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
+        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
+        "See compatibility guide for more information.")
+      .booleanConf
+      .createWithDefault(false)
 }
 
 object ConfigHelpers {

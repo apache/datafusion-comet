@@ -1235,25 +1235,46 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        // TODO waiting for arrow-rs update
-//      case RLike(left, right) =>
-//        val leftExpr = exprToProtoInternal(left, inputs)
-//        val rightExpr = exprToProtoInternal(right, inputs)
-//
-//        if (leftExpr.isDefined && rightExpr.isDefined) {
-//          val builder = ExprOuterClass.RLike.newBuilder()
-//          builder.setLeft(leftExpr.get)
-//          builder.setRight(rightExpr.get)
-//
-//          Some(
-//            ExprOuterClass.Expr
-//              .newBuilder()
-//              .setRlike(builder)
-//              .build())
-//        } else {
-//          None
-//        }
+        case RLike(left, right) =>
+          // for now, we assume that all regular expressions are incompatible with Spark but
+          // later we can add logic to determine if a pattern will produce the same results
+          // in Rust, or even transpile the pattern to work around differences between the JVM
+          // and Rust regular expression engines
+          if (CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
 
+            // we currently only support scalar regex patterns
+            right match {
+              case Literal(_, DataTypes.StringType) =>
+              // supported
+              case _ =>
+                withInfo(expr, "Only scalar regexp patterns are supported")
+                return None
+            }
+
+            val leftExpr = exprToProtoInternal(left, inputs)
+            val rightExpr = exprToProtoInternal(right, inputs)
+
+            if (leftExpr.isDefined && rightExpr.isDefined) {
+              val builder = ExprOuterClass.RLike.newBuilder()
+              builder.setLeft(leftExpr.get)
+              builder.setRight(rightExpr.get)
+
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setRlike(builder)
+                  .build())
+            } else {
+              withInfo(expr, left, right)
+              None
+            }
+          } else {
+            withInfo(
+              expr,
+              "Regular expressions are disabled. " +
+                s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true to enable them.")
+            None
+          }
         case StartsWith(left, right) =>
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(right, inputs)

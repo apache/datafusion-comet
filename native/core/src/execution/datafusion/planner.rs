@@ -59,6 +59,7 @@ use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
+use datafusion_physical_expr_common::expressions::Literal;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -108,7 +109,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
+    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -446,6 +447,16 @@ impl PhysicalPlanner {
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
                 Ok(Arc::new(Like::new(left, right)))
+            }
+            ExprStruct::Rlike(expr) => {
+                let left = self.create_expr(expr.left.as_ref().unwrap(), input_schema.clone())?;
+                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+                match right.as_any().downcast_ref::<Literal>().unwrap().value() {
+                    ScalarValue::Utf8(Some(pattern)) => {
+                        Ok(Arc::new(RLike::try_new(left, &pattern)?))
+                    }
+                    _ => todo!(),
+                }
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
