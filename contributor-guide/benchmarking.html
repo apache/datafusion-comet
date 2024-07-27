@@ -286,11 +286,6 @@ under the License.
      TPC-H
     </a>
    </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#tpc-ds">
-     TPC-DS
-    </a>
-   </li>
   </ul>
  </li>
 </ul>
@@ -414,23 +409,6 @@ you to run these benchmarks in your own environments.</p>
 <li><p><a class="reference download internal" download="" href="../_downloads/cf9c5bb25d85b58a8819b238030b4f78/spark-tpch.json"><span class="xref download myst">Spark</span></a></p></li>
 <li><p><a class="reference download internal" download="" href="../_downloads/602feffd4a86681ffa9b850569d222ab/comet-tpch.json"><span class="xref download myst">Comet</span></a></p></li>
 <li><p><a class="reference download internal" download="" href="../_downloads/bd84be8370c8f3c4c875a08e0d26b2f3/datafusion-tpch.json"><span class="xref download myst">DataFusion</span></a></p></li>
-</ul>
-</section>
-<section id="tpc-ds">
-<h3>TPC-DS<a class="headerlink" href="#tpc-ds" title="Link to this heading">¶</a></h3>
-<p>Comet currently provides an 23% speedup for TPC-DS &#64; SF=100GB. Note that we used an optimized version of
-query 72 with a better join order for these benchmarks since the focus of Spark (and Comet) is not on join
-reordering algorithms but raw execution speed.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_allqueries.png" /></p>
-<p>Here is a breakdown showing relative performance of Spark and Comet for each query. DataFusion is
-not included here because it currently only supports around 90% of the TPC-DS queries.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpcds_queries_speedup.png" /></p>
-<p>The raw results of these benchmarks in JSON format is available here:</p>
-<ul class="simple">
-<li><p><a class="reference download internal" download="" href="../_downloads/aedc17fb9ca9535f252762eab413334a/spark-tpcds.json"><span class="xref download myst">Spark</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../_downloads/c603e5a41cb1359d73f1607e8d4d939e/comet-tpcds.json"><span class="xref download myst">Comet</span></a></p></li>
 </ul>
 </section>
 </section>
