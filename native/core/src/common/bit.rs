@@ -199,7 +199,8 @@ pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
     if unlikely(num_bits >= 64) {
         return v;
     }
-    v & ((1 << num_bits) - 1)
+    let n = 64 - num_bits;
+    (v << n) >> n
 }
 
 #[inline]
