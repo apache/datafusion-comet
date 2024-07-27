@@ -174,12 +174,12 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // read_u64
     group.bench_function("read_u64", |b| {
-        b.iter(|| read_u64(black_box(&mut [0u8; 8])));
+        b.iter(|| read_u64(black_box(&[0u8; 8])));
     });
 
     // read_u32
     group.bench_function("read_u32", |b| {
-        b.iter(|| read_u32(black_box(&mut [0u8; 4])));
+        b.iter(|| read_u32(black_box(&[0u8; 4])));
     });
 
     // get_u32_value
