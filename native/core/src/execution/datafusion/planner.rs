@@ -1696,7 +1696,7 @@ impl PhysicalPlanner {
                     WindowFrameBound::Preceding(ScalarValue::UInt64(None))
                 }
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = offset.offset.unsigned_abs() as u64;
+                    let offset_value = offset.offset.unsigned_abs();
                     WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value)))
                 }
                 LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
