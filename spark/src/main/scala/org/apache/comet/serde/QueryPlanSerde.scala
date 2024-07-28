@@ -44,7 +44,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -1236,43 +1236,37 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case RLike(left, right) =>
-          // for now, we assume that all regular expressions are incompatible with Spark but
-          // later we can add logic to determine if a pattern will produce the same results
-          // in Rust, or even transpile the pattern to work around differences between the JVM
-          // and Rust regular expression engines
-          if (CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
-
-            // we currently only support scalar regex patterns
-            right match {
-              case Literal(_, DataTypes.StringType) =>
-              // supported
-              case _ =>
-                withInfo(expr, "Only scalar regexp patterns are supported")
+          // we currently only support scalar regex patterns
+          right match {
+            case Literal(pattern, DataTypes.StringType) =>
+              if (!RegExp.isSupportedPattern(pattern.toString) &&
+                !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+                withInfo(
+                  expr,
+                  s"Regexp pattern $pattern is not compatible with Spark. " +
+                    s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true to allow it anyway.")
                 return None
-            }
+              }
+            case _ =>
+              withInfo(expr, "Only scalar regexp patterns are supported")
+              return None
+          }
 
-            val leftExpr = exprToProtoInternal(left, inputs)
-            val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
-            if (leftExpr.isDefined && rightExpr.isDefined) {
-              val builder = ExprOuterClass.RLike.newBuilder()
-              builder.setLeft(leftExpr.get)
-              builder.setRight(rightExpr.get)
+          if (leftExpr.isDefined && rightExpr.isDefined) {
+            val builder = ExprOuterClass.RLike.newBuilder()
+            builder.setLeft(leftExpr.get)
+            builder.setRight(rightExpr.get)
 
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setRlike(builder)
-                  .build())
-            } else {
-              withInfo(expr, left, right)
-              None
-            }
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setRlike(builder)
+                .build())
           } else {
-            withInfo(
-              expr,
-              "Regular expressions are disabled. " +
-                s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true to enable them.")
+            withInfo(expr, left, right)
             None
           }
         case StartsWith(left, right) =>

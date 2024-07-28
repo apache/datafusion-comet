@@ -20,11 +20,10 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
-import java.util.regex.Pattern
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-import scala.util.{Random, Try}
+import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -619,7 +618,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("rlike") {
+  test("rlike simple case") {
     val table = "rlike_names"
     val gen = new DataGenerator(new Random(42))
     Seq(false, true).foreach { withDictionary =>
@@ -649,54 +648,68 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("rlike fuzz test") {
+  test("rlike") {
     val table = "rlike_fuzz"
     val gen = new DataGenerator(new Random(42))
     withTable(table) {
+      // generate some data
+      // newline characters are intentionally omitted for now
+      val dataChars = "\t abc123"
       sql(s"create table $table(id int, name varchar(20)) using parquet")
-
-      val dataChars = "[]$^-=*09azAZ$\t abc123"
-      gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
-        sql(s"insert into $table values(${x._2}, '${x._1}')")
-      }
-
-      val patternChars = "[]$^-=*09azAZ$\t "
-      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
-        val validPatterns = gen
-          .generateStrings(100, patternChars, 6)
-          .filter(pattern => Try(Pattern.compile(pattern)).isSuccess)
-        assert(validPatterns.nonEmpty)
-        validPatterns.foreach { pattern =>
-          val query = sql(s"select id, name, name rlike '$pattern' from $table")
-          checkSparkAnswerAndOperator(query)
-        }
-      }
-    }
-  }
-
-  // this test demonstrates that Comet is not currently compatible
-  // with Spark for regular expressions, especially when the data
-  // contains newline characters
-  ignore("rlike fuzz test failing cases") {
-    val table = "rlike_fuzz"
-    val gen = new DataGenerator(new Random(42))
-    withTable(table) {
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-
-      val dataChars = "[]$^-=*09azAZ$\r\n\t abc123"
       gen.generateStrings(1000, dataChars, 6).zipWithIndex.foreach { x =>
         sql(s"insert into $table values(${x._2}, '${x._1}')")
       }
 
-      val patternChars = "[]$^-=*09azAZ$\r\n\t "
-      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
-        val validPatterns = gen
-          .generateStrings(1000, patternChars, 6)
-          .filter(pattern => Try(Pattern.compile(pattern)).isSuccess)
-        assert(validPatterns.nonEmpty)
-        validPatterns.foreach { pattern =>
-          val query = sql(s"select id, name, name rlike '$pattern' from $table")
-          checkSparkAnswerAndOperator(query)
+      // test some common cases - this is far from comprehensive
+      // see https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
+      // for all valid patterns in Java's regexp engine
+      //
+      // patterns not currently covered:
+      // - octal values
+      // - hex values
+      // - specific character matches
+      // - specific whitespace/newline matches
+      // - complex character classes (union, intersection, subtraction)
+      // - POSIX character classes
+      // - java.lang.Character classes
+      // - Classes for Unicode scripts, blocks, categories and binary properties
+      // - reluctant quantifiers
+      // - possessive quantifiers
+      // - logical operators
+      // - back-references
+      // - quotations
+      // - special constructs (name capturing and non-capturing)
+      val startPatterns = Seq("", "^", "\\A")
+      val endPatterns = Seq("", "$", "\\Z", "\\z")
+      val patternParts = Seq(
+        "[0-9]",
+        "[a-z]",
+        "[^a-z]",
+        "\\d",
+        "\\D",
+        "\\w",
+        "\\W",
+        "\\b",
+        "\\B",
+        "\\h",
+        "\\H",
+        "\\s",
+        "\\S",
+        "\\v",
+        "\\V")
+      val qualifiers = Seq("", "+", "*", "?", "{1,}")
+
+      for (start <- startPatterns) {
+        for (end <- endPatterns) {
+          for (part <- patternParts) {
+            for (qualifier <- qualifiers) {
+              val pattern = start + part + qualifier + end
+              withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+                val query = sql(s"select id, name, name rlike '$pattern' from $table")
+                checkSparkAnswerAndOperator(query)
+              }
+            }
+          }
         }
       }
     }
