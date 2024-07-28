@@ -19,10 +19,10 @@
 mod common;
 
 use arrow_array::ArrayRef;
-use comet::execution::datafusion::expressions::scalar_funcs::{spark_murmur3_hash, spark_xxhash64};
 use comet::execution::kernels::hash;
 use common::*;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion_comet_spark_expr::scalar_funcs::{spark_murmur3_hash, spark_xxhash64};
 use datafusion_common::ScalarValue;
 use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
