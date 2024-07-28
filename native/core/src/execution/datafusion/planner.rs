@@ -455,7 +455,9 @@ impl PhysicalPlanner {
                     ScalarValue::Utf8(Some(pattern)) => {
                         Ok(Arc::new(RLike::try_new(left, &pattern)?))
                     }
-                    _ => todo!(),
+                    _ => Err(ExecutionError::GeneralError(
+                        "RLike only supports scalar patterns".to_string(),
+                    )),
                 }
             }
             ExprStruct::CheckOverflow(expr) => {
