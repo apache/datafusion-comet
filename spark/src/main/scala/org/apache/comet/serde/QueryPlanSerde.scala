@@ -1244,7 +1244,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 withInfo(
                   expr,
                   s"Regexp pattern $pattern is not compatible with Spark. " +
-                    s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true to allow it anyway.")
+                    s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+                    "to allow it anyway.")
                 return None
               }
             case _ =>
