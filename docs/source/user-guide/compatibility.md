@@ -32,6 +32,12 @@ be used in production.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
 
+## Regular Expressions
+
+Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's 
+regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
+this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:
