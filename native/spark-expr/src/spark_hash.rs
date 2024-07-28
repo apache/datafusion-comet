@@ -34,10 +34,11 @@ use datafusion::{
     error::{DataFusionError, Result},
 };
 
-use crate::execution::datafusion::expressions::xxhash64::spark_compatible_xxhash64;
+use crate::xxhash64::spark_compatible_xxhash64;
 
+/// Spark-compatible murmur3 hash function
 #[inline]
-pub(crate) fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
+pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
     #[inline]
     fn mix_k1(mut k1: i32) -> i32 {
         k1 = k1.mul_wrapping(0xcc9e2d51u32 as i32);
@@ -458,7 +459,7 @@ macro_rules! create_hashes_internal {
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
-pub(crate) fn create_murmur3_hashes<'a>(
+pub fn create_murmur3_hashes<'a>(
     arrays: &[ArrayRef],
     hashes_buffer: &'a mut [u32],
 ) -> Result<&'a mut [u32]> {
@@ -489,22 +490,12 @@ pub fn create_xxhash64_hashes<'a>(
     Ok(hashes_buffer)
 }
 
-pub(crate) fn pmod(hash: u32, n: usize) -> usize {
-    let hash = hash as i32;
-    let n = n as i32;
-    let r = hash % n;
-    let result = if r < 0 { (r + n) % n } else { r };
-    result as usize
-}
-
 #[cfg(test)]
 mod tests {
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
-    use crate::execution::datafusion::spark_hash::{
-        create_murmur3_hashes, create_xxhash64_hashes, pmod,
-    };
+    use super::{create_murmur3_hashes, create_xxhash64_hashes};
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
     macro_rules! test_hashes_internal {
@@ -713,15 +704,5 @@ mod tests {
                 0xf241303e4a90f299,
             ],
         )
-    }
-
-    #[test]
-    fn test_pmod() {
-        let i: Vec<u32> = vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb];
-        let result = i.into_iter().map(|i| pmod(i, 200)).collect::<Vec<usize>>();
-
-        // expected partition from Spark with n=200
-        let expected = vec![69, 5, 193, 171, 115];
-        assert_eq!(result, expected);
     }
 }

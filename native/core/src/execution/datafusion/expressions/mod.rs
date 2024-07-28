@@ -20,13 +20,13 @@
 pub mod bitwise_not;
 pub mod checkoverflow;
 mod normalize_nan;
-pub mod scalar_funcs;
 pub use normalize_nan::NormalizeNaNAndZero;
 
 use crate::errors::CometError;
 pub mod avg;
 pub mod avg_decimal;
 pub mod bloom_filter_might_contain;
+pub mod comet_scalar_funcs;
 pub mod correlation;
 pub mod covariance;
 pub mod create_named_struct;
@@ -39,7 +39,6 @@ pub mod sum_decimal;
 pub mod unbound;
 mod utils;
 pub mod variance;
-pub mod xxhash64;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
 
