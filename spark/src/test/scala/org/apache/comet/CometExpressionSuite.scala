@@ -649,9 +649,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike fuzz test") {
+    val table = "rlike_fuzz"
+    val gen = new DataGenerator(new Random(42))
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+
+      val dataChars = "[]$^-=*09azAZ$\t abc123"
+      gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}')")
+      }
+
+      val patternChars = "[]$^-=*09azAZ$\t "
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        val validPatterns = gen
+          .generateStrings(100, patternChars, 6)
+          .filter(pattern => Try(Pattern.compile(pattern)).isSuccess)
+        assert(validPatterns.nonEmpty)
+        validPatterns.foreach { pattern =>
+          val query = sql(s"select id, name, name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
   // this test demonstrates that Comet is not currently compatible
-  // with Spark for regular expressions
-  ignore("rlike fuzz test") {
+  // with Spark for regular expressions, especially when the data
+  // contains newline characters
+  ignore("rlike fuzz test failing cases") {
     val table = "rlike_fuzz"
     val gen = new DataGenerator(new Random(42))
     withTable(table) {
