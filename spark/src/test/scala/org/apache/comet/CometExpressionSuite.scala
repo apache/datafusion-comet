@@ -34,7 +34,6 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
-import org.apache.comet.expressions.RegExp
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
