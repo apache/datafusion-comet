@@ -683,24 +683,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  protected def checkRegexpAnswer(df: => DataFrame): Unit = {
-    var expected: Array[Row] = Array.empty
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = df.collect()
-    }
-    val actual = df.collect()
-    assert(actual.length == expected.length)
-    actual.zip(expected).foreach { case (a, b) =>
-      val l = RegExp.escape(a.mkString(","))
-      val r = RegExp.escape(b.mkString(","))
-      // scalastyle:off println
-      println(l + " === " + r)
-      // scalastyle:on println
-      assert(l === r)
-    }
-
-  }
-
   test("rlike") {
     val table = "rlike_fuzz"
     val gen = new DataGenerator(new Random(42))
