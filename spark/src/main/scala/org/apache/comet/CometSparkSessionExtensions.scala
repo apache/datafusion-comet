@@ -1131,7 +1131,9 @@ object CometSparkSessionExtensions extends Logging {
 
   private def shouldApplyRowToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
-    // operators can have a chance to be converted to columnar.
+    // operators can have a chance to be converted to columnar. Leaf operators that output
+    // columnar batches, such as Spark's vectorized readers, will also be converted to native
+    // comet batches.
     // TODO: consider converting other intermediate operators to columnar.
     op.isInstanceOf[LeafExecNode] && isSchemaSupported(op.schema) &&
     COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
