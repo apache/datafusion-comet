@@ -1032,6 +1032,15 @@ mod tests {
     }
 
     #[test]
+    fn test_read_u64() {
+        let buffer: Vec<u8> = vec![0, 1, 2, 3];
+        assert_eq!(
+            read_u64(&buffer),
+            read_num_bytes!(u64, 4, &buffer),
+        );
+    }
+
+    #[test]
     fn test_read_num_bytes_u32() {
         let buffer: Vec<u8> = vec![0, 1, 2, 3];
         for size in 0..buffer.len() {
@@ -1040,6 +1049,15 @@ mod tests {
                 read_num_bytes!(u32, size, &buffer),
             );
         }
+    }
+
+    #[test]
+    fn test_read_u32() {
+        let buffer: Vec<u8> = vec![0, 1];
+        assert_eq!(
+            read_u32(&buffer),
+            read_num_bytes!(u32, 2, &buffer),
+        );
     }
 
     #[test]
