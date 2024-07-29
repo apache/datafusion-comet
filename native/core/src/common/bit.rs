@@ -1033,8 +1033,8 @@ mod tests {
 
     #[test]
     fn test_read_u64() {
-        let buffer: Vec<u8> = vec![0, 1, 2, 3];
-        assert_eq!(read_u64(&buffer), read_num_bytes!(u64, 4, &buffer),);
+        let buffer: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        assert_eq!(read_u64(&buffer), read_num_bytes!(u64, 8, &buffer),);
     }
 
     #[test]
@@ -1050,8 +1050,8 @@ mod tests {
 
     #[test]
     fn test_read_u32() {
-        let buffer: Vec<u8> = vec![0, 1];
-        assert_eq!(read_u32(&buffer), read_num_bytes!(u32, 2, &buffer),);
+        let buffer: Vec<u8> = vec![0, 1, 2, 3];
+        assert_eq!(read_u32(&buffer), read_num_bytes!(u32, 4, &buffer),);
     }
 
     #[test]
