@@ -18,11 +18,13 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use std::{collections::HashMap, sync::Arc};
+use std::str::FromStr;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::logical_expr::BuiltInWindowFunction;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -55,8 +57,7 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+use datafusion_expr::{aggregate_function, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -1483,7 +1484,7 @@ impl PhysicalPlanner {
             ));
         }
 
-        let window_func = match find_df_window_func(&window_func_name) {
+        let window_func = match Self::find_df_window_func(&window_func_name) {
             Some(f) => f,
             _ => {
                 return Err(ExecutionError::GeneralError(format!(
@@ -1596,6 +1597,27 @@ impl PhysicalPlanner {
             other => Err(ExecutionError::GeneralError(format!(
                 "{other:?} not supported for window function"
             ))),
+        }
+    }
+
+    /// Find DataFusion's built-in window function by name.
+    fn find_df_window_func(name: &str) -> Option<WindowFunctionDefinition> {
+        let name = name.to_lowercase();
+        if let Ok(built_in_function) =
+            BuiltInWindowFunction::from_str(name.as_str())
+        {
+            Some(WindowFunctionDefinition::BuiltInWindowFunction(
+                built_in_function,
+            ))
+         } else if let Ok(aggregate) =
+             aggregate_function::AggregateFunction::from_str(name.as_str())
+        {
+             Some(WindowFunctionDefinition::AggregateFunction(aggregate))
+        } else {
+            match name.as_str() {
+                "count" => Some(WindowFunctionDefinition::AggregateUDF(count_udaf())),
+                _ => None,
+            }
         }
     }
 
