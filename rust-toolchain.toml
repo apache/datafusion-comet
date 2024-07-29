@@ -15,30 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[package]
-name = "datafusion-comet-proto"
-version = { workspace = true }
-homepage = "https://datafusion.apache.org/comet"
-repository = "https://github.com/apache/datafusion-comet"
-authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
-description = "Apache DataFusion Comet: High performance accelerator for Apache Spark"
-readme = "README.md"
-license = "Apache-2.0"
-edition = "2021"
-
-[dependencies]
-prost = "0.12.1"
-
-[build-dependencies]
-prost-build = "0.9.0"
-
-[features]
-default = []
-
-[lib]
-name = "datafusion_comet_proto"
-path = "src/lib.rs"
-
-
-
-
+[toolchain]
+channel = "1.79"
+components = ["rustfmt", "clippy", "rust-analyzer"]

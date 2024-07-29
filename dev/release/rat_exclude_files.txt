@@ -8,6 +8,8 @@ core/testdata/stacktrace.txt
 dev/release/requirements.txt
 docs/spark_builtin_expr_coverage.txt
 docs/source/contributor-guide/benchmark-results/**/*.json
+docs/logos/*.png
+docs/logos/*.svg
 rust-toolchain
 spark/src/test/resources/tpcds-query-results/*.out
 spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/explain.txt

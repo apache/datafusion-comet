@@ -51,6 +51,10 @@ git push apache branch-0.1
 
 Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
 
+### Update Version in main
+
+Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPSHOT`.
+
 ### Generate the Change Log
 
 Generate a change log to cover changes between the previous release and the release branch HEAD by running
@@ -87,10 +91,6 @@ git reset --hard apache/branch-0.1
 git tag 0.1.0-rc1
 git push apache 0.1.0-rc1
 ```
-
-### Update Version in main
-
-Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPHOT`.
 
 ## Publishing the Release Candidate
 

@@ -25,7 +25,7 @@ under the License.
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.comet</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.2.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -959,6 +959,9 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <exclude>docs/logos/*.png</exclude>
+            <exclude>docs/logos/*.svg</exclude>
+            <exclude>docs/source/_static/images/**</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/core/src/execution/generated/**</exclude>
