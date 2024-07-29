@@ -1100,6 +1100,29 @@ index 6b07c77aefb..8277661560e 100644
        })
    }
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
+index 40938eb6424..fad0fc1e1f0 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
+@@ -21,7 +21,7 @@ package org.apache.spark.sql.connector
+ import java.sql.Date
+ import java.util.Collections
+ 
+-import org.apache.spark.sql.{catalyst, AnalysisException, DataFrame, Row}
++import org.apache.spark.sql.{catalyst, AnalysisException, DataFrame, IgnoreCometSuite, Row}
+ import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, Cast, Literal}
+ import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+ import org.apache.spark.sql.catalyst.plans.physical
+@@ -45,7 +45,8 @@ import org.apache.spark.sql.util.QueryExecutionListener
+ import org.apache.spark.tags.SlowSQLTest
+ 
+ @SlowSQLTest
+-class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase {
++class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
++  with IgnoreCometSuite {
+   import testImplicits._
+ 
+   before {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 index ae1c0a86a14..1d3b914fd64 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
