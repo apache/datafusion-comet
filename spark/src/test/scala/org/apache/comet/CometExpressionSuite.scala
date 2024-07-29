@@ -34,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.expressions.RegExp
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -646,6 +647,58 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(explain.contains("Only scalar regexp patterns are supported"))
       }
     }
+  }
+
+  test("rlike whitespace") {
+    val table = "rlike_whitespace"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      val values =
+        Seq("James Smith", "\rJames\rSmith\r", "\nJames\nSmith\n", "\r\nJames\r\nSmith\r\n")
+      values.zipWithIndex.foreach { x =>
+        sql(s"insert into $table values (${x._2}, '${x._1}')")
+      }
+      val patterns = Seq(
+        "James",
+        "J[a-z]mes",
+        "^James",
+        "\\AJames",
+        "Smith",
+        "James$",
+        "James\\Z",
+        "James\\z",
+        "^Smith",
+        "\\ASmith",
+        // $ produces different results - we could potentially transpile this to a different
+        // expression or just fall back to Spark for this case
+        // "Smith$",
+        "Smith\\Z",
+        "Smith\\z")
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        patterns.foreach { pattern =>
+          val query2 = sql(s"select name, '$pattern', name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query2)
+        }
+      }
+    }
+  }
+
+  protected def checkRegexpAnswer(df: => DataFrame): Unit = {
+    var expected: Array[Row] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = df.collect()
+    }
+    val actual = df.collect()
+    assert(actual.length == expected.length)
+    actual.zip(expected).foreach { case (a, b) =>
+      val l = RegExp.escape(a.mkString(","))
+      val r = RegExp.escape(b.mkString(","))
+      // scalastyle:off println
+      println(l + " === " + r)
+      // scalastyle:on println
+      assert(l === r)
+    }
+
   }
 
   test("rlike") {

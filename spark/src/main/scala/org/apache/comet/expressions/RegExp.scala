@@ -29,4 +29,11 @@ object RegExp {
     false
   }
 
+  def escape(pattern: String): String = pattern.map {
+    case '\t' => "\\t"
+    case '\r' => "\\r"
+    case '\n' => "\\n"
+    case other => other
+  }.mkString
+
 }
