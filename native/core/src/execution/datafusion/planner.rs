@@ -93,10 +93,7 @@ use crate::{
     },
 };
 
-use super::expressions::{
-    structs::{CreateNamedStruct, GetStructField},
-    EvalMode,
-};
+use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -111,7 +108,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, SecondExpr, TimestampTruncExpr,
+    Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr,
+    SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.

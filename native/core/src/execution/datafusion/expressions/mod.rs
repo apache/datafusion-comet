@@ -33,7 +33,6 @@ pub mod negative;
 pub mod stats;
 pub mod stddev;
 pub mod strings;
-pub mod structs;
 pub mod subquery;
 pub mod sum_decimal;
 pub mod unbound;

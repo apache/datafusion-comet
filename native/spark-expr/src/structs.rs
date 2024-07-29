@@ -29,7 +29,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 
 #[derive(Debug, Hash)]
 pub struct CreateNamedStruct {
