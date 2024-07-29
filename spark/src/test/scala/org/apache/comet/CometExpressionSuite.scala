@@ -656,7 +656,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // newline characters are intentionally omitted for now
       val dataChars = "\t abc123"
       sql(s"create table $table(id int, name varchar(20)) using parquet")
-      gen.generateStrings(1000, dataChars, 6).zipWithIndex.foreach { x =>
+      gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
         sql(s"insert into $table values(${x._2}, '${x._1}')")
       }
 
@@ -699,17 +699,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "\\V")
       val qualifiers = Seq("", "+", "*", "?", "{1,}")
 
-      for (start <- startPatterns) {
-        for (end <- endPatterns) {
-          for (part <- patternParts) {
-            for (qualifier <- qualifiers) {
-              val pattern = start + part + qualifier + end
-              withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
-                val query = sql(s"select id, name, name rlike '$pattern' from $table")
-                checkSparkAnswerAndOperator(query)
-              }
-            }
-          }
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        // testing every possible combination takes too long, so we pick some
+        // random combinations
+        for (_ <- 0 until 100) {
+          val pattern = gen.pickRandom(startPatterns) +
+            gen.pickRandom(patternParts) +
+            gen.pickRandom(qualifiers) +
+            gen.pickRandom(endPatterns)
+          val query = sql(s"select id, name, name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
