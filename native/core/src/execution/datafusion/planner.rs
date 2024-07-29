@@ -1603,16 +1603,13 @@ impl PhysicalPlanner {
     /// Find DataFusion's built-in window function by name.
     fn find_df_window_func(name: &str) -> Option<WindowFunctionDefinition> {
         let name = name.to_lowercase();
-        if let Ok(built_in_function) =
-            BuiltInWindowFunction::from_str(name.as_str())
-        {
+        if let Ok(built_in_function) = BuiltInWindowFunction::from_str(name.as_str()) {
             Some(WindowFunctionDefinition::BuiltInWindowFunction(
                 built_in_function,
             ))
-         } else if let Ok(aggregate) =
-             aggregate_function::AggregateFunction::from_str(name.as_str())
+        } else if let Ok(aggregate) = aggregate_function::AggregateFunction::from_str(name.as_str())
         {
-             Some(WindowFunctionDefinition::AggregateFunction(aggregate))
+            Some(WindowFunctionDefinition::AggregateFunction(aggregate))
         } else {
             match name.as_str() {
                 "count" => Some(WindowFunctionDefinition::AggregateUDF(count_udaf())),
