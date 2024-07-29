@@ -1769,10 +1769,9 @@ class CometExecSuite extends CometTestBase {
           aggregateFunctions.foreach { function =>
             val queries = Seq(
               s"SELECT $function OVER() FROM t1",
-              // TODO: Range frame is not supported yet.
-              // s"SELECT $function OVER(order by _2) FROM t1",
-              // s"SELECT $function OVER(order by _2 desc) FROM t1",
-              // s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2 desc) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
               s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
