@@ -17,8 +17,8 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use std::{collections::HashMap, sync::Arc};
 use std::str::FromStr;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -57,7 +57,9 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::{aggregate_function, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
+use datafusion_expr::{
+    aggregate_function, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
