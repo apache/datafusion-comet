@@ -17,14 +17,12 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use std::str::FromStr;
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::logical_expr::BuiltInWindowFunction;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
