@@ -30,6 +30,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometJoinSuite extends CometTestBase {
+  import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -38,6 +39,17 @@ class CometJoinSuite extends CometTestBase {
         testFun
       }
     }
+  }
+
+  test("join - self join") {
+    val df1 = testData.select(testData("key")).as("df1")
+    val df2 = testData.select(testData("key")).as("df2")
+
+    checkAnswer(
+      df1.join(df2, $"df1.key" === $"df2.key"),
+      sql("SELECT a.key, b.key FROM testData a JOIN testData b ON a.key = b.key")
+        .collect()
+        .toSeq)
   }
 
   test("SortMergeJoin with unsupported key type should fall back to Spark") {
