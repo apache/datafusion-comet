@@ -60,7 +60,7 @@ use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
-use std::cmp::{max, min};
+use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
@@ -669,7 +669,7 @@ impl PhysicalPlanner {
                     >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Modulo
-                    && min(p1 - s1 as u8, p2 - s2 as u8) + max(s1, s2) as u8
+                    && max(p1 - s1 as u8, p2 - s2 as u8) + max(s1, s2) as u8
                         > DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
