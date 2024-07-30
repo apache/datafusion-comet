@@ -274,7 +274,7 @@ index 21a3ce1e122..316788b2989 100644
  SET spark.sql.ansi.enabled = false;
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index d023fb82185..3774fa99148 100644
+index d023fb82185..0f4f03bda6c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -296,6 +296,20 @@ index d023fb82185..3774fa99148 100644
    }
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
+@@ -1658,7 +1659,12 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+           _.nodeName.contains("TableCacheQueryStage"))
+         val aqeNode = findNodeInSparkPlanInfo(inMemoryScanNode.get,
+           _.nodeName.contains("AdaptiveSparkPlan"))
+-        aqeNode.get.children.head.nodeName == "AQEShuffleRead"
++        aqeNode.get.children.head.nodeName == "AQEShuffleRead" ||
++          (aqeNode.get.children.head.nodeName.contains("WholeStageCodegen") &&
++            aqeNode.get.children.head.children.head.nodeName == "ColumnarToRow" &&
++            aqeNode.get.children.head.children.head.children.head.nodeName == "InputAdapter" &&
++            aqeNode.get.children.head.children.head.children.head.children.head.nodeName ==
++              "AQEShuffleRead")
+       }
+ 
+       withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 index 620ee430cab..9d383a4bff9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
