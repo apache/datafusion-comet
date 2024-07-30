@@ -33,19 +33,19 @@ edition = "2021"
 rust-version = "1.75"
 
 [workspace.dependencies]
-arrow = { version = "52.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-array = { version = "52.1.0" }
-arrow-buffer = { version = "52.1.0" }
-arrow-data = { version = "52.1.0" }
-arrow-schema = { version = "52.1.0" }
-parquet = { version = "52.1.0", default-features = false, features = ["experimental"] }
-datafusion-common = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9" }
-datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", features = ["unicode_expressions", "crypto_expressions"] }
-datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", features = ["crypto_expressions"] }
-datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", default-features = false }
-datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", default-features = false }
-datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", default-features = false }
-datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "b6e55d7e9", default-features = false }
+arrow = { version = "52.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-array = { version = "52.2.0" }
+arrow-buffer = { version = "52.2.0" }
+arrow-data = { version = "52.2.0" }
+arrow-schema = { version = "52.2.0" }
+parquet = { version = "52.2.0", default-features = false, features = ["experimental"] }
+datafusion-common = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e" }
+datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", features = ["crypto_expressions"] }
+datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", default-features = false }
+datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", default-features = false }
+datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", default-features = false }
+datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "35c2e7e", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.2.0" }
 datafusion-comet-proto = { path = "proto", version = "0.2.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
