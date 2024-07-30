@@ -58,8 +58,9 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::{
-    aggregate_function, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
+use datafusion_expr::expr::find_df_window_func;
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -1486,7 +1487,7 @@ impl PhysicalPlanner {
             ));
         }
 
-        let window_func = match Self::find_df_window_func(&window_func_name) {
+        let window_func = match Self::find_df_window_function(&window_func_name) {
             Some(f) => f,
             _ => {
                 return Err(ExecutionError::GeneralError(format!(
@@ -1603,17 +1604,11 @@ impl PhysicalPlanner {
     }
 
     /// Find DataFusion's built-in window function by name.
-    fn find_df_window_func(name: &str) -> Option<WindowFunctionDefinition> {
-        let name = name.to_lowercase();
-        if let Ok(built_in_function) = BuiltInWindowFunction::from_str(name.as_str()) {
-            Some(WindowFunctionDefinition::BuiltInWindowFunction(
-                built_in_function,
-            ))
-        } else if let Ok(aggregate) = aggregate_function::AggregateFunction::from_str(name.as_str())
-        {
-            Some(WindowFunctionDefinition::AggregateFunction(aggregate))
+    fn find_df_window_function(name: &str) -> Option<WindowFunctionDefinition> {
+        if let Some(f) = find_df_window_func(name) {
+            Some(f)
         } else {
-            match name.as_str() {
+            match name {
                 "count" => Some(WindowFunctionDefinition::AggregateUDF(count_udaf())),
                 _ => None,
             }
