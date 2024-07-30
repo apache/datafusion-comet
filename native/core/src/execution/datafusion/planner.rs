@@ -697,7 +697,7 @@ impl PhysicalPlanner {
             (
                 DataFusionOperator::Divide,
                 Ok(DataType::Decimal128(p1, s1)),
-                Ok(DataType::Decimal128(p2, s2)),
+                Ok(DataType::Decimal128(_p2, s2)),
             ) if p1 - s1 as u8 + s2 as u8 + min(s1 + 4, DECIMAL128_MAX_SCALE) as u8
                 > DECIMAL128_MAX_PRECISION =>
             {
