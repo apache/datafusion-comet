@@ -652,12 +652,6 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, input_schema.clone())?;
         let right = self.create_expr(right, input_schema.clone())?;
-
-        #[inline(always)]
-        fn res_precision(p1: u8, s1: i8, p2: u8, s2: i8) -> u8 {
-            max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-        }
-
         match (
             &op,
             left.data_type(&input_schema),
@@ -671,10 +665,12 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && res_precision(p1, s1, p2, s2) >= DECIMAL128_MAX_PRECISION)
+                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
+                    >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Modulo
-                    && res_precision(p1, s1, p2, s2) > DECIMAL128_MAX_PRECISION) =>
+                    && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
+                        > DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
@@ -698,9 +694,9 @@ impl PhysicalPlanner {
             }
             (
                 DataFusionOperator::Divide,
-                Ok(DataType::Decimal128(p1, _s1)),
-                Ok(DataType::Decimal128(_p2, s2)),
-            ) if p1 + s2 as u8 + 4 > DECIMAL128_MAX_PRECISION => {
+                Ok(DataType::Decimal128(_p1, _s1)),
+                Ok(DataType::Decimal128(_p2, _s2)),
+            ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let fun_expr = create_comet_physical_fun(
                     "decimal_div",
