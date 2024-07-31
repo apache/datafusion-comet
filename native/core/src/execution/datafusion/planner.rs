@@ -1607,7 +1607,7 @@ impl PhysicalPlanner {
             let registry = &self.session_ctx.state();
             registry
                 .udaf(name)
-                .map(|udaf| WindowFunctionDefinition::AggregateUDF(udaf))
+                .map(WindowFunctionDefinition::AggregateUDF)
                 .ok()
         }
     }
