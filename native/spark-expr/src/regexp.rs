@@ -17,8 +17,10 @@
 
 use crate::utils::down_cast_any_ref;
 use crate::SparkError;
+use arrow::compute::take;
 use arrow_array::builder::BooleanBuilder;
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::types::Int32Type;
+use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
 use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
@@ -61,6 +63,24 @@ impl RLike {
             })?,
         })
     }
+
+    fn is_match(&self, inputs: &StringArray) -> BooleanArray {
+        let mut builder = BooleanBuilder::with_capacity(inputs.len());
+        if inputs.is_nullable() {
+            for i in 0..inputs.len() {
+                if inputs.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_value(self.pattern.is_match(inputs.value(i)));
+                }
+            }
+        } else {
+            for i in 0..inputs.len() {
+                builder.append_value(self.pattern.is_match(inputs.value(i)));
+            }
+        }
+        builder.finish()
+    }
 }
 
 impl Display for RLike {
@@ -97,26 +117,29 @@ impl PhysicalExpr for RLike {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         match self.child.evaluate(batch)? {
+            ColumnarValue::Array(array) if array.as_any().is::<DictionaryArray<Int32Type>>() => {
+                let dict_array = array
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<Int32Type>>()
+                    .expect("dict array");
+                let dict_values = dict_array
+                    .values()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("strings");
+                // evaluate the regexp pattern against the dictionary values
+                let new_values = self.is_match(dict_values);
+                // convert to conventional (not dictionary-encoded) array
+                let result = take(&new_values, dict_array.keys(), None)?;
+                Ok(ColumnarValue::Array(result))
+            }
             ColumnarValue::Array(array) => {
                 let inputs = array
                     .as_any()
                     .downcast_ref::<StringArray>()
                     .expect("string array");
-                let mut builder = BooleanBuilder::with_capacity(inputs.len());
-                if inputs.is_nullable() {
-                    for i in 0..inputs.len() {
-                        if inputs.is_null(i) {
-                            builder.append_null();
-                        } else {
-                            builder.append_value(self.pattern.is_match(inputs.value(i)));
-                        }
-                    }
-                } else {
-                    for i in 0..inputs.len() {
-                        builder.append_value(self.pattern.is_match(inputs.value(i)));
-                    }
-                }
-                Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+                let array = self.is_match(inputs);
+                Ok(ColumnarValue::Array(Arc::new(array)))
             }
             ColumnarValue::Scalar(_) => {
                 internal_err!("non scalar regexp patterns are not supported")

@@ -620,10 +620,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("rlike simple case") {
     val table = "rlike_names"
-    val gen = new DataGenerator(new Random(42))
     Seq(false, true).foreach { withDictionary =>
       val data = Seq("James Smith", "Michael Rose", "Rames Rose", "Rames rose") ++
-        gen.generateStrings(100, "rames Rose", 12)
+        // add repetitive data to trigger dictionary encoding
+        Range(0, 100).map(_ => "John Smith")
       withParquetFile(data.zipWithIndex, withDictionary) { file =>
         withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
           spark.read.parquet(file).createOrReplaceTempView(table)
