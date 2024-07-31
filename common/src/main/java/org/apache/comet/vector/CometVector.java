@@ -19,6 +19,7 @@
 
 package org.apache.comet.vector;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
@@ -43,6 +44,7 @@ import org.apache.spark.unsafe.types.UTF8String;
 public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
+  private byte[] DECIMAL_BYTES_ALL;
   protected final boolean useDecimal128;
 
   private static final long decimalValOffset;
@@ -143,20 +145,29 @@ public abstract class CometVector extends ColumnVector {
 
   /** Reads a 16-byte byte array which are encoded big-endian for decimal128. */
   public byte[] copyBinaryDecimal(int i, byte[] dest) {
-    long valueBufferAddress = getValueVector().getDataBuffer().memoryAddress();
-    Platform.copyMemory(
-        null,
-        valueBufferAddress + (long) i * DECIMAL_BYTE_WIDTH,
-        dest,
-        Platform.BYTE_ARRAY_OFFSET,
-        DECIMAL_BYTE_WIDTH);
+    if (DECIMAL_BYTES_ALL == null){
+      ValueVector vector = getValueVector();
+      DECIMAL_BYTES_ALL = new byte[vector.getBufferSize()];
+      copyBuffer(vector, DECIMAL_BYTES_ALL);
+    }
     // Decimal is stored little-endian in Arrow, so we need to reverse the bytes here
+    System.arraycopy(DECIMAL_BYTES_ALL, i*DECIMAL_BYTE_WIDTH, DECIMAL_BYTES, 0, DECIMAL_BYTE_WIDTH);
     for (int j = 0, k = DECIMAL_BYTE_WIDTH - 1; j < DECIMAL_BYTE_WIDTH / 2; j++, k--) {
       byte tmp = dest[j];
       dest[j] = dest[k];
       dest[k] = tmp;
     }
     return dest;
+  }
+
+  private void copyBuffer(ValueVector vector, byte[] dest) {
+    long valueBufferAddress = vector.getDataBuffer().memoryAddress();
+    Platform.copyMemory(
+            null,
+            valueBufferAddress,
+            dest,
+            Platform.BYTE_ARRAY_OFFSET,
+            vector.getBufferSize());
   }
 
   @Override
