@@ -709,7 +709,7 @@ impl PhysicalPlanner {
             ) if (div_mul_pow(s1, s2) > 0
                 && p1 + div_mul_pow(s1, s2) as u8 > DECIMAL128_MAX_PRECISION)
                 || (div_mul_pow(s1, s2) < 0
-                    && p2 + div_mul_pow(s1, s2) as u8 > DECIMAL128_MAX_PRECISION) =>
+                    && p2 + (-div_mul_pow(s1, s2)) as u8 > DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let fun_expr = create_comet_physical_fun(
