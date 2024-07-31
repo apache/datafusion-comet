@@ -153,11 +153,7 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public boolean isNullAt(int rowId) {
-    if (this.valueBufferAddress == -1) {
-      return true;
-    } else {
-      return super.isNullAt(rowId);
-    }
+    return this.valueBufferAddress == -1 || super.isNullAt(rowId);
   }
 
   @Override

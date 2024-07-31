@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, cmp::min, fmt::Debug, sync::Arc};
+use std::{cmp::min, sync::Arc};
 
 use arrow::{
     array::{
@@ -26,17 +26,11 @@ use arrow::{
 };
 use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Decimal128Array};
 use arrow_schema::{DataType, DECIMAL128_MAX_PRECISION};
-use datafusion::{
-    execution::FunctionRegistry,
-    functions::math::round::round,
-    logical_expr::{ScalarFunctionImplementation, ScalarUDFImpl, Signature, Volatility},
-    physical_plan::ColumnarValue,
-};
+use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{
     cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
     Result as DataFusionResult, ScalarValue,
 };
-use datafusion_expr::ScalarUDF;
 use num::{
     integer::{div_ceil, div_floor},
     BigInt, Signed, ToPrimitive,
@@ -44,112 +38,17 @@ use num::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod unhex;
-use unhex::spark_unhex;
+pub use unhex::spark_unhex;
 
 mod hex;
-use hex::spark_hex;
+pub use hex::spark_hex;
 
 mod chr;
-use chr::spark_chr;
+pub use chr::SparkChrFunc;
 
 pub mod hash_expressions;
 // exposed for benchmark only
-use hash_expressions::wrap_digest_result_as_hex_string;
 pub use hash_expressions::{spark_murmur3_hash, spark_xxhash64};
-
-macro_rules! make_comet_scalar_udf {
-    ($name:expr, $func:ident, $data_type:ident) => {{
-        let scalar_func = CometScalarFunction::new(
-            $name.to_string(),
-            Signature::variadic_any(Volatility::Immutable),
-            $data_type.clone(),
-            Arc::new(move |args| $func(args, &$data_type)),
-        );
-        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
-    }};
-    ($name:expr, $func:expr, without $data_type:ident) => {{
-        let scalar_func = CometScalarFunction::new(
-            $name.to_string(),
-            Signature::variadic_any(Volatility::Immutable),
-            $data_type,
-            $func,
-        );
-        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
-    }};
-}
-
-/// Create a physical scalar function.
-pub fn create_comet_physical_fun(
-    fun_name: &str,
-    data_type: DataType,
-    registry: &dyn FunctionRegistry,
-) -> Result<Arc<ScalarUDF>, DataFusionError> {
-    let sha2_functions = ["sha224", "sha256", "sha384", "sha512"];
-    match fun_name {
-        "ceil" => {
-            make_comet_scalar_udf!("ceil", spark_ceil, data_type)
-        }
-        "floor" => {
-            make_comet_scalar_udf!("floor", spark_floor, data_type)
-        }
-        "rpad" => {
-            let func = Arc::new(spark_rpad);
-            make_comet_scalar_udf!("rpad", func, without data_type)
-        }
-        "round" => {
-            make_comet_scalar_udf!("round", spark_round, data_type)
-        }
-        "unscaled_value" => {
-            let func = Arc::new(spark_unscaled_value);
-            make_comet_scalar_udf!("unscaled_value", func, without data_type)
-        }
-        "make_decimal" => {
-            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
-        }
-        "hex" => {
-            let func = Arc::new(spark_hex);
-            make_comet_scalar_udf!("hex", func, without data_type)
-        }
-        "unhex" => {
-            let func = Arc::new(spark_unhex);
-            make_comet_scalar_udf!("unhex", func, without data_type)
-        }
-        "decimal_div" => {
-            make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
-        }
-        "murmur3_hash" => {
-            let func = Arc::new(spark_murmur3_hash);
-            make_comet_scalar_udf!("murmur3_hash", func, without data_type)
-        }
-        "xxhash64" => {
-            let func = Arc::new(spark_xxhash64);
-            make_comet_scalar_udf!("xxhash64", func, without data_type)
-        }
-        "chr" => {
-            let func = Arc::new(spark_chr);
-            make_comet_scalar_udf!("chr", func, without data_type)
-        }
-        "isnan" => {
-            let func = Arc::new(spark_isnan);
-            make_comet_scalar_udf!("isnan", func, without data_type)
-        }
-        sha if sha2_functions.contains(&sha) => {
-            // Spark requires hex string as the result of sha2 functions, we have to wrap the
-            // result of digest functions as hex string
-            let func = registry.udf(sha)?;
-            let wrapped_func = Arc::new(move |args: &[ColumnarValue]| {
-                wrap_digest_result_as_hex_string(args, func.fun())
-            });
-            let spark_func_name = "spark".to_owned() + sha;
-            make_comet_scalar_udf!(spark_func_name, wrapped_func, without data_type)
-        }
-        _ => registry.udf(fun_name).map_err(|e| {
-            DataFusionError::Execution(format!(
-                "Function {fun_name} not found in the registry: {e}",
-            ))
-        }),
-    }
-}
 
 #[inline]
 fn get_precision_scale(data_type: &DataType) -> (u8, i8) {
@@ -174,61 +73,6 @@ macro_rules! downcast_compute_op {
             ))),
         }
     }};
-}
-
-struct CometScalarFunction {
-    name: String,
-    signature: Signature,
-    data_type: DataType,
-    func: ScalarFunctionImplementation,
-}
-
-impl Debug for CometScalarFunction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CometScalarFunction")
-            .field("name", &self.name)
-            .field("signature", &self.signature)
-            .field("data_type", &self.data_type)
-            .finish()
-    }
-}
-
-impl CometScalarFunction {
-    fn new(
-        name: String,
-        signature: Signature,
-        data_type: DataType,
-        func: ScalarFunctionImplementation,
-    ) -> Self {
-        Self {
-            name,
-            signature,
-            data_type,
-            func,
-        }
-    }
-}
-
-impl ScalarUDFImpl for CometScalarFunction {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
-
-    fn return_type(&self, _: &[DataType]) -> DataFusionResult<DataType> {
-        Ok(self.data_type.clone())
-    }
-
-    fn invoke(&self, args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-        (self.func)(args)
-    }
 }
 
 /// `ceil` function that simulates Spark `ceil` expression
@@ -333,6 +177,7 @@ pub fn spark_floor(
     }
 }
 
+/// Spark-compatible `UnscaledValue` expression (internal to Spark optimizer)
 pub fn spark_unscaled_value(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     match &args[0] {
         ColumnarValue::Scalar(v) => match v {
@@ -352,6 +197,7 @@ pub fn spark_unscaled_value(args: &[ColumnarValue]) -> DataFusionResult<Columnar
     }
 }
 
+/// Spark-compatible `MakeDecimal` expression (internal to Spark optimizer)
 pub fn spark_make_decimal(
     args: &[ColumnarValue],
     data_type: &DataType,
@@ -489,7 +335,7 @@ macro_rules! round_integer_scalar {
 }
 
 /// `round` function that simulates Spark `round` expression
-fn spark_round(
+pub fn spark_round(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
@@ -541,7 +387,7 @@ fn spark_round(
 }
 
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
-fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match args[0].data_type() {
@@ -594,7 +440,7 @@ fn spark_rpad_internal<T: OffsetSizeTrait>(
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
 // both s2 and s3 are 38 at max., s1 is 77 at max. DataFusion division cannot handle such scale >
 // Decimal256Type::MAX_SCALE. Therefore, we need to implement this decimal division using BigInt.
-fn spark_decimal_div(
+pub fn spark_decimal_div(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
@@ -653,7 +499,8 @@ fn spark_decimal_div(
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
 
-fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+/// Spark-compatible `isnan` expression
+pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
         match is_nan.nulls() {
             Some(nulls) => {

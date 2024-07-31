@@ -961,6 +961,7 @@ under the License.
             <exclude>docs/*.txt</exclude>
             <exclude>docs/logos/*.png</exclude>
             <exclude>docs/logos/*.svg</exclude>
+            <exclude>docs/source/_static/images/**</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/core/src/execution/generated/**</exclude>

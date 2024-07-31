@@ -236,7 +236,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
           case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
+          case RangeFrame =>
+            withInfo(windowExpr, "Range frame is not supported")
+            return None
         }
 
         val lBoundProto = lBound match {
