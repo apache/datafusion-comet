@@ -45,7 +45,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             black_box(spark_decimal_div(
                 black_box(&args),
-                &DataType::Decimal128(10, 4),
+                black_box(&DataType::Decimal128(10, 4)),
             ))
         })
     });
