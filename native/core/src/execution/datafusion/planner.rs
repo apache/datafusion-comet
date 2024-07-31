@@ -1483,7 +1483,7 @@ impl PhysicalPlanner {
             ));
         }
 
-        let window_func = match Self::find_df_window_function(&window_func_name) {
+        let window_func = match self.find_df_window_function(&window_func_name) {
             Some(f) => f,
             _ => {
                 return Err(ExecutionError::GeneralError(format!(
@@ -1600,14 +1600,12 @@ impl PhysicalPlanner {
     }
 
     /// Find DataFusion's built-in window function by name.
-    fn find_df_window_function(name: &str) -> Option<WindowFunctionDefinition> {
+    fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
         if let Some(f) = find_df_window_func(name) {
             Some(f)
         } else {
-            match name {
-                "count" => Some(WindowFunctionDefinition::AggregateUDF(count_udaf())),
-                _ => None,
-            }
+            let registry =  &self.session_ctx.state();
+            registry.udaf(name).map(|udaf| WindowFunctionDefinition::AggregateUDF(udaf)).ok()
         }
     }
 
