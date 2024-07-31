@@ -17,9 +17,7 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use arrow_schema::{
-    DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE,
-};
+use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
@@ -656,10 +654,6 @@ impl PhysicalPlanner {
         let right = self.create_expr(right, input_schema.clone())?;
 
         #[inline(always)]
-        fn div_mul_pow(s1: i8, s2: i8) -> i8 {
-            DECIMAL128_MAX_SCALE.min(s1 + 4) - s1 + s2
-        }
-        #[inline(always)]
         fn res_precision(p1: u8, s1: i8, p2: u8, s2: i8) -> u8 {
             max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
         }
@@ -704,13 +698,9 @@ impl PhysicalPlanner {
             }
             (
                 DataFusionOperator::Divide,
-                Ok(DataType::Decimal128(p1, s1)),
-                Ok(DataType::Decimal128(p2, s2)),
-            ) if (div_mul_pow(s1, s2) > 0
-                && p1 + div_mul_pow(s1, s2) as u8 > DECIMAL128_MAX_PRECISION)
-                || (div_mul_pow(s1, s2) < 0
-                    && p2 + (-div_mul_pow(s1, s2)) as u8 > DECIMAL128_MAX_PRECISION) =>
-            {
+                Ok(DataType::Decimal128(p1, _s1)),
+                Ok(DataType::Decimal128(_p2, s2)),
+            ) if p1 + s2 as u8 + 4 > DECIMAL128_MAX_PRECISION => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let fun_expr = create_comet_physical_fun(
                     "decimal_div",
