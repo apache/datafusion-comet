@@ -15,10 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::{
-    spark_hash::spark_compatible_murmur3_hash, util::spark_bit_array::SparkBitArray,
-};
+use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
+use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 

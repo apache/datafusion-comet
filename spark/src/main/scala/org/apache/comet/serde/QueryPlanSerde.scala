@@ -236,7 +236,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
           case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
+          case RangeFrame =>
+            withInfo(windowExpr, "Range frame is not supported")
+            return None
         }
 
         val lBoundProto = lBound match {
@@ -2593,8 +2595,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }.toArray
 
-        val windowExprProto = winExprs.map(windowExprToProto(_, output))
+        if (winExprs.length != windowExpression.length) {
+          withInfo(op, "Unsupported window expression(s)")
+          return None
+        }
 
+        val windowExprProto = winExprs.map(windowExprToProto(_, output))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
         val sortOrders = orderSpec.map(exprToProto(_, child.output))
