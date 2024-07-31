@@ -1604,8 +1604,11 @@ impl PhysicalPlanner {
         if let Some(f) = find_df_window_func(name) {
             Some(f)
         } else {
-            let registry =  &self.session_ctx.state();
-            registry.udaf(name).map(|udaf| WindowFunctionDefinition::AggregateUDF(udaf)).ok()
+            let registry = &self.session_ctx.state();
+            registry
+                .udaf(name)
+                .map(|udaf| WindowFunctionDefinition::AggregateUDF(udaf))
+                .ok()
         }
     }
 
