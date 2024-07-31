@@ -87,8 +87,10 @@ public abstract class CometVector extends ColumnVector {
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
-    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(useDecimal128 ? getLongDecimal(i) : getLong(i), precision, scale);
+    } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
+        return createDecimal(getLong(i), precision, scale);
+    } else if (useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
+      return createDecimal(getLongFromDecimalBytes(getBinaryDecimal(i)), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -113,6 +115,22 @@ public abstract class CometVector extends ColumnVector {
     dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
     dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
     return dec;
+  }
+
+  // bytes.length must be 16
+  public long getLongFromDecimalBytes(byte[] bytes) {
+    assert(bytes.length == 16);
+    // we assume only the last 8 bytes of the array are non-zero.
+    int value;
+    value = ((bytes[8]) & 0xFF);
+    value = (value << 8) + ((bytes[9]) & 0xFF);
+    value = (value << 8) + ((bytes[10]) & 0xFF);
+    value = (value << 8) + ((bytes[11]) & 0xFF);
+    value = (value << 8) + ((bytes[12]) & 0xFF);
+    value = (value << 8) + ((bytes[13]) & 0xFF);
+    value = (value << 8) + ((bytes[14]) & 0xFF);
+    value = (value << 8) + ((bytes[15]) & 0xFF);
+    return value;
   }
 
   /**
