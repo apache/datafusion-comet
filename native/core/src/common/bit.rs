@@ -564,7 +564,7 @@ pub struct BitReader {
 /// either byte aligned or not.
 impl BitReader {
     pub fn new(buf: Buffer, len: usize) -> Self {
-        let buffered_values = if 8 > len {
+        let buffered_values = if size_of::<u64>() > len {
             read_num_bytes_u64(len, buf.as_slice())
         } else {
             read_u64(buf.as_slice())
