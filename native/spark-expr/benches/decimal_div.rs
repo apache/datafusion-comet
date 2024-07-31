@@ -39,7 +39,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     let c2_type = DataType::Decimal128(10, 3);
     let c2 = cast(c2.as_ref(), &c2_type).unwrap();
 
-    // use same predicate for all benchmarks
     let args = [ColumnarValue::Array(c1), ColumnarValue::Array(c2)];
     c.bench_function("decimal_div", |b| {
         b.iter(|| {
