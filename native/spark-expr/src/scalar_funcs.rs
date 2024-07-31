@@ -488,9 +488,9 @@ pub fn spark_decimal_div(
         let l_mul = 10_i128.pow(l_exp);
         let r_mul = 10_i128.pow(r_exp);
         arrow::compute::kernels::arity::binary(left, right, |l, r| {
-            let l = l * &l_mul;
-            let r = r * &r_mul;
-            let div = if r == 0 { 0 } else { &l / &r };
+            let l = l * l_mul;
+            let r = r * r_mul;
+            let div = if r == 0 { 0 } else { l / r };
             let res = if div.is_negative() { div - 5 } else { div + 5 } / 10;
             res.to_i128().unwrap_or(i128::MAX)
         })?
