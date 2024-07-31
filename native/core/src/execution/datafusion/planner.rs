@@ -17,7 +17,9 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use std::{collections::HashMap, sync::Arc};
+
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
@@ -60,8 +62,6 @@ use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
-use std::cmp::max;
-use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     errors::ExpressionError,
@@ -410,7 +410,7 @@ impl PhysicalPlanner {
                 // Spark Substring's start is 1-based when start > 0
                 let start = expr.start - i32::from(expr.start > 0);
                 // substring negative len is treated as 0 in Spark
-                let len = max(expr.len, 0);
+                let len = std::cmp::max(expr.len, 0);
 
                 Ok(Arc::new(SubstringExpr::new(
                     child,
@@ -664,14 +664,7 @@ impl PhysicalPlanner {
                 | DataFusionOperator::Modulo,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
-            ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                    >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Modulo
-                    && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                        > DECIMAL128_MAX_PRECISION) =>
-            {
+            ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128

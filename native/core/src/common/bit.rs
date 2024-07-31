@@ -586,7 +586,7 @@ impl BitReader {
     pub fn reset(&mut self, buf: Buffer) {
         self.buffer = buf;
         self.total_bytes = self.buffer.len();
-        self.buffered_values = if 8 > self.total_bytes {
+        self.buffered_values = if size_of::<u64>() > self.total_bytes {
             read_num_bytes_u64(self.total_bytes, self.buffer.as_slice())
         } else {
             read_u64(self.buffer.as_slice())
