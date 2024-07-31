@@ -361,9 +361,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     update_metrics(&mut env, exec_context)?;
 
                     if exec_context.debug_native {
-                        if let Some(x) = &exec_context.root_op {
+                        if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
-                                DisplayableExecutionPlan::with_full_metrics(x.as_ref())
+                                DisplayableExecutionPlan::with_full_metrics(plan.as_ref())
                                     .indent(true);
                             info!("Comet native query plan with metrics:\n {formatted_plan_str:}");
                         }
