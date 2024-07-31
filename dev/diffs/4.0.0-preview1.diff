@@ -2825,6 +2825,32 @@ index e05cb4d3c35..dc65a4fe18e 100644
        })
    }
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/TransformWithStateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/TransformWithStateSuite.scala
+index 0057af44d3e..7741bd743ac 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/TransformWithStateSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/TransformWithStateSuite.scala
+@@ -22,7 +22,7 @@ import java.util.UUID
+ 
+ import org.apache.spark.SparkRuntimeException
+ import org.apache.spark.internal.Logging
+-import org.apache.spark.sql.{Dataset, Encoders}
++import org.apache.spark.sql.{Dataset, Encoders, IgnoreCometSuite}
+ import org.apache.spark.sql.catalyst.util.stringToFile
+ import org.apache.spark.sql.execution.streaming._
+ import org.apache.spark.sql.execution.streaming.state.{AlsoTestWithChangelogCheckpointingEnabled, RocksDBStateStoreProvider, StatefulProcessorCannotPerformOperationWithInvalidHandleState, StateStoreMultipleColumnFamiliesNotSupportedException}
+@@ -307,9 +307,11 @@ class RunningCountStatefulProcessorWithError extends RunningCountStatefulProcess
+ 
+ /**
+  * Class that adds tests for transformWithState stateful streaming operator
++ *
++ * Ignored if Comet is enabled due to SPARK-49070.
+  */
+ class TransformWithStateSuite extends StateStoreMetricsTest
+-  with AlsoTestWithChangelogCheckpointingEnabled {
++  with AlsoTestWithChangelogCheckpointingEnabled with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index af07aceaed1..ed0b5e6d9be 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
