@@ -28,8 +28,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut c1 = Decimal128Builder::new();
     let mut c2 = Decimal128Builder::new();
     for i in 0..1000 {
-        c1.append_value(99999999+i);
-        c2.append_value(88888888-i);
+        c1.append_value(99999999 + i);
+        c2.append_value(88888888 - i);
     }
     let c1 = Arc::new(c1.finish());
     let c2 = Arc::new(c2.finish());
