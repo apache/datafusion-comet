@@ -348,7 +348,7 @@ abstract class CometTestBase
 
   protected def withParquetDataFrame[T <: Product: ClassTag: TypeTag](
       data: Seq[T],
-      withDictionary: Boolean = true,
+      withDictionary: Boolean = false,
       schema: Option[StructType] = None)(f: DataFrame => Unit): Unit = {
     withParquetFile(data, withDictionary)(path => readParquetFile(path, schema)(f))
   }
@@ -356,7 +356,7 @@ abstract class CometTestBase
   protected def withParquetTable[T <: Product: ClassTag: TypeTag](
       data: Seq[T],
       tableName: String,
-      withDictionary: Boolean = true)(f: => Unit): Unit = {
+      withDictionary: Boolean = false)(f: => Unit): Unit = {
     withParquetDataFrame(data, withDictionary) { df =>
       df.createOrReplaceTempView(tableName)
       withTempView(tableName)(f)

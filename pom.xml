@@ -711,7 +711,6 @@ under the License.
             </execution>
           </executions>
           <configuration>
-            -->
             <scalaVersion>${scala.version}</scalaVersion>
             <checkMultipleScalaVersions>true</checkMultipleScalaVersions>
             <failOnMultipleScalaVersions>true</failOnMultipleScalaVersions>
