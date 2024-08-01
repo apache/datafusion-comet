@@ -54,6 +54,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
 
   val queries: Seq[String] = Seq(
     "scan_decimal",
+    "add_decimals",
     "add_many_decimals",
     "add_many_integers",
     "agg_high_cardinality",

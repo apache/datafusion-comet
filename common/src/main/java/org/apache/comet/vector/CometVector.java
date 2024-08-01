@@ -87,8 +87,8 @@ public abstract class CometVector extends ColumnVector {
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
-    } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(getLong(i), precision, scale);
+    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
+      return createDecimal(useDecimal128 ? getLongDecimal(i) : getLong(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -163,6 +163,10 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public long getLong(int rowId) {
+    throw new UnsupportedOperationException("Not yet supported");
+  }
+
+  public long getLongDecimal(int rowId) {
     throw new UnsupportedOperationException("Not yet supported");
   }
 

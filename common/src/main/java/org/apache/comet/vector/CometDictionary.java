@@ -68,6 +68,10 @@ public class CometDictionary implements AutoCloseable {
     return values.getLong(index);
   }
 
+  public long decodeToLongDecimal(int index) {
+    return values.getLongDecimal(index);
+  }
+
   public float decodeToFloat(int index) {
     return values.getFloat(index);
   }
