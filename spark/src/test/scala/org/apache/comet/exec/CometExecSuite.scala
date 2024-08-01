@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -60,6 +60,27 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
+    }
+  }
+
+  test("subquery execution under CometTakeOrderedAndProjectExec should not fail") {
+    assume(isSpark35Plus, "SPARK-45584 is fixed in Spark 3.5+")
+
+    withTable("t1") {
+      sql("""
+            |CREATE TABLE t1 USING PARQUET
+            |AS SELECT * FROM VALUES
+            |(1, "a"),
+            |(2, "a"),
+            |(3, "a") t(id, value)
+            |""".stripMargin)
+      val df = sql("""
+                     |WITH t2 AS (
+                     |  SELECT * FROM t1 ORDER BY id
+                     |)
+                     |SELECT *, (SELECT COUNT(*) FROM t2) FROM t2 LIMIT 10
+                     |""".stripMargin)
+      checkSparkAnswer(df)
     }
   }
 
