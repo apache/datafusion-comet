@@ -711,7 +711,6 @@ under the License.
             </execution>
           </executions>
           <configuration>
-            -->
             <scalaVersion>${scala.version}</scalaVersion>
             <checkMultipleScalaVersions>true</checkMultipleScalaVersions>
             <failOnMultipleScalaVersions>true</failOnMultipleScalaVersions>
@@ -788,7 +787,7 @@ under the License.
             <systemPropertyVariables>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
             </systemPropertyVariables>
-            <skipTests>${skip.surefire.tests}</skipTests>
+            <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
           </configuration>
         </plugin>
         <plugin>

@@ -80,7 +80,7 @@ argument, for example if you only want to execute the test cases that contains *
 in their name in `org.apache.comet.CometCastSuite` you can use
 
 ```sh
-./mvnw test -Dsuites="org.apache.comet.CometCastSuite valid" -Dskip.surefire.tests=true
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
 ```
 
 Other options for selecting specific suites are described in the [ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin)

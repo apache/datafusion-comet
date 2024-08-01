@@ -222,8 +222,8 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.columnar.shuffle.memorySize")
       .doc(
         "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
-          "Note that this config is only used when `spark.comet.columnar.shuffle.enabled` is " +
-          "true. Once allocated memory size reaches this config, the current batch will be " +
+          "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
+          "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
           "flushed to disk immediately. If this is not configured, Comet will use " +
           "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
           "shuffle memory size. If final calculated value is larger than Comet memory " +
@@ -259,7 +259,7 @@ object CometConf extends ShimCometConf {
       "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
       "this config, dictionary encoding will be used on shuffling string column. This config " +
       "is effective if it is higher than 1.0. By default, this config is 10.0. Note that this " +
-      "config is only used when 'spark.comet.columnar.shuffle.enabled' is true.")
+      "config is only used when `spark.comet.exec.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
