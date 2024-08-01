@@ -56,7 +56,7 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use itertools::Itertools;
@@ -1483,7 +1483,7 @@ impl PhysicalPlanner {
             ));
         }
 
-        let window_func = match find_df_window_func(&window_func_name) {
+        let window_func = match self.find_df_window_function(&window_func_name) {
             Some(f) => f,
             _ => {
                 return Err(ExecutionError::GeneralError(format!(
@@ -1596,6 +1596,19 @@ impl PhysicalPlanner {
             other => Err(ExecutionError::GeneralError(format!(
                 "{other:?} not supported for window function"
             ))),
+        }
+    }
+
+    /// Find DataFusion's built-in window function by name.
+    fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
+        if let Some(f) = find_df_window_func(name) {
+            Some(f)
+        } else {
+            let registry = &self.session_ctx.state();
+            registry
+                .udaf(name)
+                .map(WindowFunctionDefinition::AggregateUDF)
+                .ok()
         }
     }
 
