@@ -43,13 +43,13 @@ import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, Cartes
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{col, date_add, expr, lead, sum}
+import org.apache.spark.sql.functions.{col, count, date_add, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -61,6 +61,55 @@ class CometExecSuite extends CometTestBase {
         testFun
       }
     }
+  }
+
+  test("subquery execution under CometTakeOrderedAndProjectExec should not fail") {
+    assume(isSpark35Plus, "SPARK-45584 is fixed in Spark 3.5+")
+
+    withTable("t1") {
+      sql("""
+            |CREATE TABLE t1 USING PARQUET
+            |AS SELECT * FROM VALUES
+            |(1, "a"),
+            |(2, "a"),
+            |(3, "a") t(id, value)
+            |""".stripMargin)
+      val df = sql("""
+                     |WITH t2 AS (
+                     |  SELECT * FROM t1 ORDER BY id
+                     |)
+                     |SELECT *, (SELECT COUNT(*) FROM t2) FROM t2 LIMIT 10
+                     |""".stripMargin)
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("Window range frame should fall back to Spark") {
+    val df =
+      Seq((1L, "1"), (1L, "1"), (2147483650L, "1"), (3L, "2"), (2L, "1"), (2147483650L, "2"))
+        .toDF("key", "value")
+
+    checkAnswer(
+      df.select(
+        $"key",
+        count("key").over(
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(0, 2147483648L))),
+      Seq(Row(1, 3), Row(1, 3), Row(2, 2), Row(3, 2), Row(2147483650L, 1), Row(2147483650L, 1)))
+    checkAnswer(
+      df.select(
+        $"key",
+        count("key").over(
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(-2147483649L, 0))),
+      Seq(Row(1, 2), Row(1, 2), Row(2, 3), Row(2147483650L, 2), Row(2147483650L, 4), Row(3, 1)))
+  }
+
+  test("Unsupported window expression should fall back to Spark") {
+    checkAnswer(
+      spark.sql("select sum(a) over () from values 1.0, 2.0, 3.0 T(a)"),
+      Row(6.0) :: Row(6.0) :: Row(6.0) :: Nil)
+    checkAnswer(
+      spark.sql("select avg(a) over () from values 1.0, 2.0, 3.0 T(a)"),
+      Row(2.0) :: Row(2.0) :: Row(2.0) :: Nil)
   }
 
   test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
@@ -1438,14 +1487,15 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
           val aggregateFunctions =
-            List("MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
+            List("COUNT(_1)", "COUNT(*)", "MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
 
           aggregateFunctions.foreach { function =>
             val queries = Seq(
               s"SELECT $function OVER() FROM t1",
-              s"SELECT $function OVER(order by _2) FROM t1",
-              s"SELECT $function OVER(order by _2 desc) FROM t1",
-              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              // TODO: Range frame is not supported yet.
+              // s"SELECT $function OVER(order by _2) FROM t1",
+              // s"SELECT $function OVER(order by _2 desc) FROM t1",
+              // s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
               s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")

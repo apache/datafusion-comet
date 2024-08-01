@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
@@ -104,7 +105,17 @@ case class CometTakeOrderedAndProjectExec(
         val topKAndProjection = CometExecUtils
           .getProjectionNativePlan(projectList, output, sortOrder, child, limit)
           .get
-        CometExec.getCometIterator(Seq(iter), topKAndProjection)
+        val it = CometExec.getCometIterator(Seq(iter), topKAndProjection)
+        setSubqueries(it.id, this)
+
+        Option(TaskContext.get()).foreach { context =>
+          context.addTaskCompletionListener[Unit] { _ =>
+            it.close()
+            cleanSubqueries(it.id, this)
+          }
+        }
+
+        it
       }
     }
   }

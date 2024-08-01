@@ -208,10 +208,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr match {
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
-            // TODO add support for Count (this was removed when upgrading
-            // to DataFusion 40 because it is no longer a built-in window function)
-            // https://github.com/apache/datafusion-comet/issues/645
-            case _: Min | _: Max =>
+            case _: Min | _: Max | _: Count =>
               Some(agg)
             case _ =>
               withInfo(windowExpr, "Unsupported aggregate", expr)
@@ -236,7 +233,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
           case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
+          case RangeFrame =>
+            withInfo(windowExpr, "Range frame is not supported")
+            return None
         }
 
         val lBoundProto = lBound match {
@@ -1615,19 +1614,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Abs(child, failOnErr) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          if (childExpr.isDefined) {
-            val evalModeStr =
-              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
-            val absBuilder = ExprOuterClass.Abs.newBuilder()
-            absBuilder.setChild(childExpr.get)
-            absBuilder.setEvalMode(evalModeStr)
-            Some(Expr.newBuilder().setAbs(absBuilder).build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+        // abs implementation is not correct
+        // https://github.com/apache/datafusion-comet/issues/666
+//        case Abs(child, failOnErr) =>
+//          val childExpr = exprToProtoInternal(child, inputs)
+//          if (childExpr.isDefined) {
+//            val evalModeStr =
+//              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+//            val absBuilder = ExprOuterClass.Abs.newBuilder()
+//            absBuilder.setChild(childExpr.get)
+//            absBuilder.setEvalMode(evalModeStr)
+//            Some(Expr.newBuilder().setAbs(absBuilder).build())
+//          } else {
+//            withInfo(expr, child)
+//            None
+//          }
 
         case Acos(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1766,10 +1767,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               optExprWithInfo(optExpr, expr, r.child)
           }
 
-        case Signum(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          val optExpr = scalarExprToProto("signum", childExpr)
-          optExprWithInfo(optExpr, expr, child)
+        // TODO enable once https://github.com/apache/datafusion/issues/11557 is fixed or
+        // when we have a Spark-compatible version implemented in Comet
+//        case Signum(child) =>
+//          val childExpr = exprToProtoInternal(child, inputs)
+//          val optExpr = scalarExprToProto("signum", childExpr)
+//          optExprWithInfo(optExpr, expr, child)
 
         case Sin(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -2531,8 +2534,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }.toArray
 
-        val windowExprProto = winExprs.map(windowExprToProto(_, output))
+        if (winExprs.length != windowExpression.length) {
+          withInfo(op, "Unsupported window expression(s)")
+          return None
+        }
 
+        val windowExprProto = winExprs.map(windowExprToProto(_, output))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
         val sortOrders = orderSpec.map(exprToProto(_, child.output))

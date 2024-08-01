@@ -32,11 +32,18 @@ Make sure the following requirements are met and software installed on your mach
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
-## Using a Published Release
+## Using a Published Binary Release
 
-There are no public releases available yet, so it is necessary to build from source as described in the next section.
+There are no published binary releases yet.
 
-## Building From Source
+## Using a Published Source Release
+
+Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
+
+Building from a source release is mostly the same as building directly from the GitHub repository but requires the 
+use of the command `make release-nogit` instead of `make release`. 
+
+## Building from the GitHub repository
 
 Clone the repository:
 
@@ -143,5 +150,5 @@ Some cluster managers may require additional configuration, see <https://spark.a
 To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
 
 ```
---conf spark.comet.columnar.shuffle.enabled=true
+--conf spark.comet.exec.shuffle.mode=jvm
 ```
