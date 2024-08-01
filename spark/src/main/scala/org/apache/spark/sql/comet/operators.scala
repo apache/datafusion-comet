@@ -89,6 +89,26 @@ abstract class CometExec extends CometPlan {
         CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
     (total, rows)
   }
+
+  protected def setSubqueries(planId: Long, sparkPlan: SparkPlan): Unit = {
+    sparkPlan.children.foreach(setSubqueries(planId, _))
+
+    sparkPlan.expressions.foreach {
+      _.collect { case sub: ScalarSubquery =>
+        CometScalarSubquery.setSubquery(planId, sub)
+      }
+    }
+  }
+
+  protected def cleanSubqueries(planId: Long, sparkPlan: SparkPlan): Unit = {
+    sparkPlan.children.foreach(cleanSubqueries(planId, _))
+
+    sparkPlan.expressions.foreach {
+      _.collect { case sub: ScalarSubquery =>
+        CometScalarSubquery.removeSubquery(planId, sub)
+      }
+    }
+  }
 }
 
 object CometExec {
@@ -175,26 +195,6 @@ abstract class CometNativeExec extends CometExec {
     }
 
     runningSubqueries.clear()
-  }
-
-  private def setSubqueries(planId: Long, sparkPlan: SparkPlan): Unit = {
-    sparkPlan.children.foreach(setSubqueries(planId, _))
-
-    sparkPlan.expressions.foreach {
-      _.collect { case sub: ScalarSubquery =>
-        CometScalarSubquery.setSubquery(planId, sub)
-      }
-    }
-  }
-
-  private def cleanSubqueries(planId: Long, sparkPlan: SparkPlan): Unit = {
-    sparkPlan.children.foreach(cleanSubqueries(planId, _))
-
-    sparkPlan.expressions.foreach {
-      _.collect { case sub: ScalarSubquery =>
-        CometScalarSubquery.removeSubquery(planId, sub)
-      }
-    }
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
