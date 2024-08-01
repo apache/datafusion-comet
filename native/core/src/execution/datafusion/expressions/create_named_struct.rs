@@ -66,7 +66,7 @@ impl PhysicalExpr for CreateNamedStruct {
         let arrays = ColumnarValue::values_to_arrays(&values)?;
         // TODO it would be more efficient if we could preserve dictionaries within the
         // struct array but for now we unwrap them to avoid runtime errors
-        // TODO link to follow on issue to optimize this
+        // https://github.com/apache/datafusion-comet/issues/755
         let arrays = arrays
             .iter()
             .map(|array| {
