@@ -89,7 +89,7 @@ public abstract class CometVector extends ColumnVector {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
     } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-        return createDecimal(getLong(i), precision, scale);
+      return createDecimal(getLong(i), precision, scale);
     } else if (useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
       return createDecimal(getLongFromDecimalBytes(getBinaryDecimal(i)), precision, scale);
     } else {
