@@ -436,7 +436,7 @@ However if the tests is related to the native side. Please make sure to run <cod
 <p>It is possible to specify which ScalaTest suites you want to run from the CLI using the <code class="docutils literal notranslate"><span class="pre">suites</span></code>
 argument, for example if you only want to execute the test cases that contains <em>valid</em>
 in their name in <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometCastSuite</span></code> you can use</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span><span class="w"> </span>-Dskip.surefire.tests<span class="o">=</span><span class="nb">true</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
 </pre></div>
 </div>
 <p>Other options for selecting specific suites are described in the <a class="reference external" href="https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin">ScalaTest Maven Plugin documentation</a></p>
