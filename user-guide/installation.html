@@ -468,7 +468,7 @@ components which will then fail at runtime. For example:</p>
 </div>
 <p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
 <p>To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">columnar</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">mode</span><span class="o">=</span><span class="n">jvm</span>
 </pre></div>
 </div>
 </section>
