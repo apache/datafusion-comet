@@ -21,6 +21,7 @@ package org.apache.comet.vector;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 
 import org.apache.arrow.vector.FixedWidthVector;
 import org.apache.arrow.vector.ValueVector;
@@ -88,10 +89,12 @@ public abstract class CometVector extends ColumnVector {
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
-    } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(getLong(i), precision, scale);
-    } else if (useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(getLongFromDecimalBytes(getBinaryDecimal(i)), precision, scale);
+    } else if ( precision <= Decimal.MAX_LONG_DIGITS()) {
+      if(useDecimal128){
+        return createDecimal(getLongFromDecimalBytes(getBinaryDecimal(i)), precision, scale);
+      } else {
+        return createDecimal(getLong(i), precision, scale);
+      }
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -120,18 +123,11 @@ public abstract class CometVector extends ColumnVector {
 
   // bytes.length must be 16
   public long getLongFromDecimalBytes(byte[] bytes) {
-    assert (bytes.length == 16);
-    // we assume only the last 8 bytes of the array are non-zero.
-    int value;
-    value = ((bytes[8]) & 0xFF);
-    value = (value << 8) + ((bytes[9]) & 0xFF);
-    value = (value << 8) + ((bytes[10]) & 0xFF);
-    value = (value << 8) + ((bytes[11]) & 0xFF);
-    value = (value << 8) + ((bytes[12]) & 0xFF);
-    value = (value << 8) + ((bytes[13]) & 0xFF);
-    value = (value << 8) + ((bytes[14]) & 0xFF);
-    value = (value << 8) + ((bytes[15]) & 0xFF);
-    return value;
+    assert(bytes.length == 16);
+    // get Long value from the last eight bytes
+    // Use ByteBuffer's fast conversion to long
+    long val = ByteBuffer.wrap(bytes).getLong(8);
+    return val;
   }
 
   /**
@@ -139,19 +135,21 @@ public abstract class CometVector extends ColumnVector {
    * array.
    */
   byte[] getBinaryDecimal(int i) {
+    // TODO: consider implementing a zero-copy version
     return copyBinaryDecimal(i, DECIMAL_BYTES);
   }
 
   /** Reads a 16-byte byte array which are encoded big-endian for decimal128. */
   public byte[] copyBinaryDecimal(int i, byte[] dest) {
-    if (DECIMAL_BYTES_ALL == null) {
-      ValueVector vector = getValueVector();
-      DECIMAL_BYTES_ALL = new byte[vector.getBufferSize()];
+    ValueVector vector = getValueVector();
+    // If the index is zero and DECIMAL_BYTES_ALL already has data, we have a new
+    // batch of data in the vector's backing buffer. So read it again.
+    if (DECIMAL_BYTES_ALL == null || i == 0) {
+      DECIMAL_BYTES_ALL = new byte[vector.getValueCount() * DECIMAL_BYTE_WIDTH];
       copyBuffer(vector, DECIMAL_BYTES_ALL);
     }
     // Decimal is stored little-endian in Arrow, so we need to reverse the bytes here
-    System.arraycopy(
-        DECIMAL_BYTES_ALL, i * DECIMAL_BYTE_WIDTH, DECIMAL_BYTES, 0, DECIMAL_BYTE_WIDTH);
+    System.arraycopy(DECIMAL_BYTES_ALL, i * DECIMAL_BYTE_WIDTH, dest, 0, DECIMAL_BYTE_WIDTH);
     for (int j = 0, k = DECIMAL_BYTE_WIDTH - 1; j < DECIMAL_BYTE_WIDTH / 2; j++, k--) {
       byte tmp = dest[j];
       dest[j] = dest[k];
@@ -163,7 +161,11 @@ public abstract class CometVector extends ColumnVector {
   private void copyBuffer(ValueVector vector, byte[] dest) {
     long valueBufferAddress = vector.getDataBuffer().memoryAddress();
     Platform.copyMemory(
-        null, valueBufferAddress, dest, Platform.BYTE_ARRAY_OFFSET, vector.getBufferSize());
+        null,
+        valueBufferAddress,
+        dest,
+        Platform.BYTE_ARRAY_OFFSET,
+        (long) vector.getValueCount() * DECIMAL_BYTE_WIDTH);
   }
 
   @Override
