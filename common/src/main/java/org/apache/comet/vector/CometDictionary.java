@@ -30,7 +30,7 @@ public class CometDictionary implements AutoCloseable {
   private final int numValues;
 
   /** Decoded dictionary values. We only need to copy values for decimal type. */
-  private ByteArrayWrapper[] binaries;
+  private volatile ByteArrayWrapper[] binaries;
 
   public CometDictionary(CometPlainVector values) {
     this.values = values;
