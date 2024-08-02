@@ -17,6 +17,35 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+use crate::{
+    errors::ExpressionError,
+    execution::{
+        datafusion::{
+            expressions::{
+                avg::Avg,
+                avg_decimal::AvgDecimal,
+                bitwise_not::BitwiseNotExpr,
+                bloom_filter_might_contain::BloomFilterMightContain,
+                checkoverflow::CheckOverflow,
+                correlation::Correlation,
+                covariance::Covariance,
+                negative,
+                stats::StatsType,
+                stddev::Stddev,
+                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
+                subquery::Subquery,
+                sum_decimal::SumDecimal,
+                unbound::UnboundColumn,
+                variance::Variance,
+                NormalizeNaNAndZero,
+            },
+            operators::expand::CometExpandExec,
+            shuffle_writer::ShuffleWriterExec,
+        },
+        operators::{CopyExec, ExecutionError, ScanExec},
+        serde::to_arrow_datatype,
+    },
+};
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
@@ -62,36 +91,6 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-
-use crate::{
-    errors::ExpressionError,
-    execution::{
-        datafusion::{
-            expressions::{
-                avg::Avg,
-                avg_decimal::AvgDecimal,
-                bitwise_not::BitwiseNotExpr,
-                bloom_filter_might_contain::BloomFilterMightContain,
-                checkoverflow::CheckOverflow,
-                correlation::Correlation,
-                covariance::Covariance,
-                negative,
-                stats::StatsType,
-                stddev::Stddev,
-                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
-                subquery::Subquery,
-                sum_decimal::SumDecimal,
-                unbound::UnboundColumn,
-                variance::Variance,
-                NormalizeNaNAndZero,
-            },
-            operators::expand::CometExpandExec,
-            shuffle_writer::ShuffleWriterExec,
-        },
-        operators::{CopyExec, ExecutionError, ScanExec},
-        serde::to_arrow_datatype,
-    },
-};
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
@@ -1186,18 +1185,14 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
         let left = if can_reuse_input_batch(&left) {
-            println!("creating CopyExec for left");
             Arc::new(CopyExec::new(left))
         } else {
-            println!("not creating CopyExec for left");
             left
         };
 
         let right = if can_reuse_input_batch(&right) {
-            println!("creating CopyExec for right");
             Arc::new(CopyExec::new(right))
         } else {
-            println!("not creating CopyExec for right");
             right
         };
 
@@ -1708,10 +1703,14 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().is::<ScanExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<FilterExec>()
+    if let Some(p) = op.as_any().downcast_ref::<ProjectionExec>() {
+        can_reuse_input_batch(p.input())
+    } else {
+        // note that Scan can be wrapper around any sink such as broadcast exchange
+        op.as_any().is::<ScanExec>()
+            || op.as_any().is::<LocalLimitExec>()
+            || op.as_any().is::<FilterExec>()
+    }
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression

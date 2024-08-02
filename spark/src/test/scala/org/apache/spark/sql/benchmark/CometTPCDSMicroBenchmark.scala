@@ -114,7 +114,6 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_DEBUG_ENABLED.key -> "true", // TODO revert before merge
           CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
