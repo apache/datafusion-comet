@@ -211,12 +211,12 @@ macro_rules! make_int_variant_dict_impl {
 make_int_variant_dict_impl!(Int16ToDoubleType, i16, f64);
 make_int_variant_dict_impl!(Int32To64Type, i32, i64);
 make_int_variant_dict_impl!(Int32ToDecimal64Type, i32, i64);
-make_int_variant_dict_impl!(Int32DecimalType, i128, i128);
 make_int_variant_dict_impl!(Int32ToDoubleType, i32, f64);
 make_int_variant_dict_impl!(Int32TimestampMicrosType, i32, i64);
+make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
+make_int_variant_dict_impl!(Int32DecimalType, i128, i128);
 make_int_variant_dict_impl!(Int64DecimalType, i128, i128);
 make_int_variant_dict_impl!(UInt64Type, u128, u128);
-make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
 
 impl PlainDecoding for Int32DateType {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
@@ -808,7 +808,7 @@ macro_rules! make_plain_decimal_int_impl {
             impl PlainDictDecoding for $ty {
                 #[inline]
                 fn decode_dict_one(_: usize, val_idx: usize, src: &ParquetMutableVector, dst: &mut ParquetMutableVector, _: usize) {
-                    let num_bytes = std::mem::size_of::<d$dst_type>()
+                    let num_bytes = std::mem::size_of::<$dst_type>()
                     bit::memcpy(
                         &src.value_buffer[val_idx * num_bytes..(val_idx + 1) * num_bytes],
                         &mut dst.value_buffer[dst.num_values * num_bytes..],
