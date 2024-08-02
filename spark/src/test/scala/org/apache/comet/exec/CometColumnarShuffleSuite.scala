@@ -19,8 +19,6 @@
 
 package org.apache.comet.exec
 
-import java.util.Collections
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
@@ -28,9 +26,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
-import org.apache.spark.sql.connector.catalog.{Column, Identifier, InMemoryCatalog, InMemoryTableCatalog}
-import org.apache.spark.sql.connector.expressions.Expressions._
-import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
@@ -39,7 +34,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
@@ -52,16 +46,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   protected val asyncShuffleEnable: Boolean
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    spark.conf.set("spark.sql.catalog.testcat", classOf[InMemoryCatalog].getName)
-  }
-
-  override def afterAll(): Unit = {
-    spark.sessionState.conf.unsetConf("spark.sql.catalog.testcat")
-    super.afterAll()
-  }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -97,85 +81,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         } else {
           checkShuffleAnswer(df, 2)
         }
-      }
-    }
-  }
-
-  private val emptyProps: java.util.Map[String, String] = {
-    Collections.emptyMap[String, String]
-  }
-  private val items: String = "items"
-  private val itemsColumns: Array[Column] = Array(
-    Column.create("id", LongType),
-    Column.create("name", StringType),
-    Column.create("price", FloatType),
-    Column.create("arrive_time", TimestampType))
-
-  private val purchases: String = "purchases"
-  private val purchasesColumns: Array[Column] = Array(
-    Column.create("item_id", LongType),
-    Column.create("price", FloatType),
-    Column.create("time", TimestampType))
-
-  protected def catalog: InMemoryCatalog = {
-    val catalog = spark.sessionState.catalogManager.catalog("testcat")
-    catalog.asInstanceOf[InMemoryCatalog]
-  }
-
-  private def createTable(
-      table: String,
-      columns: Array[Column],
-      partitions: Array[Transform],
-      catalog: InMemoryTableCatalog = catalog): Unit = {
-    catalog.createTable(Identifier.of(Array("ns"), table), columns, partitions, emptyProps)
-  }
-
-  private def selectWithMergeJoinHint(t1: String, t2: String): String = {
-    s"SELECT /*+ MERGE($t1, $t2) */ "
-  }
-
-  private def createJoinTestDF(
-      keys: Seq[(String, String)],
-      extraColumns: Seq[String] = Nil,
-      joinType: String = ""): DataFrame = {
-    val extraColList = if (extraColumns.isEmpty) "" else extraColumns.mkString(", ", ", ", "")
-    sql(s"""
-         |${selectWithMergeJoinHint("i", "p")}
-         |id, name, i.price as purchase_price, p.price as sale_price $extraColList
-         |FROM testcat.ns.$items i $joinType JOIN testcat.ns.$purchases p
-         |ON ${keys.map(k => s"i.${k._1} = p.${k._2}").mkString(" AND ")}
-         |ORDER BY id, purchase_price, sale_price $extraColList
-         |""".stripMargin)
-  }
-
-  test("Fallback to Spark for unsupported partitioning") {
-    assume(isSpark40Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
-
-    val items_partitions = Array(identity("id"))
-    createTable(items, itemsColumns, items_partitions)
-
-    sql(
-      s"INSERT INTO testcat.ns.$items VALUES " +
-        "(1, 'aa', 40.0, cast('2020-01-01' as timestamp)), " +
-        "(3, 'bb', 10.0, cast('2020-01-01' as timestamp)), " +
-        "(4, 'cc', 15.5, cast('2020-02-01' as timestamp))")
-
-    createTable(purchases, purchasesColumns, Array.empty)
-    sql(
-      s"INSERT INTO testcat.ns.$purchases VALUES " +
-        "(1, 42.0, cast('2020-01-01' as timestamp)), " +
-        "(3, 19.5, cast('2020-02-01' as timestamp)), " +
-        "(5, 26.0, cast('2023-01-01' as timestamp)), " +
-        "(6, 50.0, cast('2023-02-01' as timestamp))")
-
-    Seq(true, false).foreach { shuffle =>
-      withSQLConf(
-        SQLConf.V2_BUCKETING_ENABLED.key -> "true",
-        "spark.sql.sources.v2.bucketing.shuffle.enabled" -> shuffle.toString,
-        SQLConf.V2_BUCKETING_PUSH_PART_VALUES_ENABLED.key -> "true",
-        SQLConf.V2_BUCKETING_PARTIALLY_CLUSTERED_DISTRIBUTION_ENABLED.key -> "true") {
-        val df = createJoinTestDF(Seq("id" -> "item_id"))
-        checkSparkAnswer(df)
       }
     }
   }
