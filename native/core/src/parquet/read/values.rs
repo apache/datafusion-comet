@@ -211,11 +211,11 @@ macro_rules! make_int_variant_dict_impl {
 make_int_variant_dict_impl!(Int16ToDoubleType, i16, f64);
 make_int_variant_dict_impl!(Int32To64Type, i32, i64);
 make_int_variant_dict_impl!(Int32ToDecimal64Type, i32, i64);
-make_int_variant_dict_impl!(Int32ToDecimal128Type, i32, i128);
+make_int_variant_dict_impl!(Int32ToDecimal128Type, i128, i128);
 make_int_variant_dict_impl!(Int32ToDoubleType, i32, f64);
 make_int_variant_dict_impl!(Int32TimestampMicrosType, i32, i64);
-make_int_variant_dict_impl!(Int64ToDecimal128Type, i64, i128);
-make_int_variant_dict_impl!(UInt64Type, u64, u128);
+make_int_variant_dict_impl!(Int64ToDecimal128Type, i128, i128);
+make_int_variant_dict_impl!(UInt64Type, u128, u128);
 make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
 make_int_variant_dict_impl!(FLBADecimalType, i128, i128);
 
@@ -483,9 +483,10 @@ make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
 make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
 
 macro_rules! make_int_decimal_variant_impl {
-    ($ty:ty, $copy_fn:ident, $type_width:expr, $dst_type:ty) => {
+    ($ty:ty, $copy_fn:ident, $dst_type:ty) => {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+                let byte_width = src.desc.type_length() as usize;
                 let dst_slice = dst.value_buffer.as_slice_mut();
                 let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>();
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
@@ -526,21 +527,22 @@ macro_rules! make_int_decimal_variant_impl {
                     }
                 }
 
-                src.offset += $type_width * num;
+                src.offset += byte_width * num;
             }
 
             fn skip(src: &mut PlainDecoderInner, num: usize) {
-                src.offset += $type_width * num;
+                let byte_width = src.desc.type_length() as usize;
+                src.offset += byte_width * num;
             }
         }
     };
 }
-make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 4, i64);
-make_int_decimal_variant_impl!(Int32ToDecimal128Type, copy_i32_to_i128, 4, i128);
-make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
-make_int_decimal_variant_impl!(Int64ToDecimal128Type, copy_i64_to_i128, 8, i128);
-make_int_decimal_variant_impl!(UInt64Type, copy_u64_to_u128, 8, u128);
-make_int_decimal_variant_impl!(FLBADecimalType, copy_i128_to_i128, 8, i128);
+make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, i64);
+make_int_decimal_variant_impl!(Int32ToDecimal128Type, copy_i32_to_i128, i128);
+make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, i64);
+make_int_decimal_variant_impl!(Int64ToDecimal128Type, copy_i64_to_i128, i128);
+make_int_decimal_variant_impl!(UInt64Type, copy_u64_to_u128, u128);
+make_int_decimal_variant_impl!(FLBADecimalType, copy_i128_to_i128, i128);
 
 #[macro_export]
 macro_rules! write_val_or_null {
