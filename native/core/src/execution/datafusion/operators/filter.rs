@@ -378,7 +378,7 @@ impl Stream for FilterExecStream {
                                 filtered_batch.schema(),
                                 filtered_batch
                                     .columns()
-                                    .into_iter()
+                                    .iter()
                                     .map(|array| copy_array(array))
                                     .collect(),
                             )?
