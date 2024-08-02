@@ -19,12 +19,14 @@
 
 package org.apache.comet.exec
 
+import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, RandomDataGenerator, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -68,15 +70,33 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("Unsupported types for SinglePartition should fallback to Spark") {
     checkSparkAnswer(spark.sql("""
-                  |SELECT
-                  |  AVG(null),
-                  |  COUNT(null),
-                  |  FIRST(null),
-                  |  LAST(null),
-                  |  MAX(null),
-                  |  MIN(null),
-                  |  SUM(null)
+        |SELECT
+        |  AVG(null),
+        |  COUNT(null),
+        |  FIRST(null),
+        |  LAST(null),
+        |  MAX(null),
+        |  MIN(null),
+        |  SUM(null)
         """.stripMargin))
+  }
+
+  test("Fallback to Spark for unsupported input besides ordering") {
+    val dataGenerator = RandomDataGenerator
+      .forType(
+        dataType = NullType,
+        nullable = true,
+        new Random(System.nanoTime()),
+        validJulianDatetime = false)
+      .get
+
+    val schema = new StructType()
+      .add("index", IntegerType, nullable = false)
+      .add("col", NullType, nullable = true)
+    val rdd =
+      spark.sparkContext.parallelize((1 to 20).map(i => Row(i, dataGenerator())))
+    val df = spark.createDataFrame(rdd, schema).orderBy("index").coalesce(1)
+    checkSparkAnswer(df)
   }
 
   test("Disable Comet shuffle with AQE coalesce partitions enabled") {
