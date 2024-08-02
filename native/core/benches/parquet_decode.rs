@@ -23,7 +23,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     let num = 1000;
     let source = vec![78_i8; num * 8];
     let mut group = c.benchmark_group("parquet_decode");
-    /*
     group.bench_function("decode_i32_to_i16", |b| {
         let mut dest: Vec<u8> = vec![b' '; num * 2];
         b.iter(|| {
@@ -36,7 +35,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             copy_i32_to_u16(source.to_byte_slice(), dest.as_mut_slice(), num);
         });
     });
-     */
     group.bench_function("decode_i64_to_i64", |b| {
         let mut dest: Vec<u8> = vec![b' '; num * 8];
         b.iter(|| {
