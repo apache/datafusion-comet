@@ -1186,14 +1186,18 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
         let left = if can_reuse_input_batch(&left) {
+            println!("creating CopyExec for left");
             Arc::new(CopyExec::new(left))
         } else {
+            println!("not creating CopyExec for left");
             left
         };
 
         let right = if can_reuse_input_batch(&right) {
+            println!("creating CopyExec for right");
             Arc::new(CopyExec::new(right))
         } else {
+            println!("not creating CopyExec for right");
             right
         };
 
