@@ -795,13 +795,13 @@ class CometSparkSessionExtensions
           val columnarShuffleEnabled = isCometJVMShuffleMode(conf)
           val msg2 = createMessage(
             isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
-              .supportPartitioning(s.child.output, s.outputPartitioning)
+              .supportPartitioning(s.child.output, outputPartitioning)
               ._1,
             "Native shuffle: " +
               s"${QueryPlanSerde.supportPartitioning(s.child.output, outputPartitioning)._2}")
           val msg3 = createMessage(
             isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
-              .supportPartitioningTypes(s.child.output, s.outputPartitioning)
+              .supportPartitioningTypes(s.child.output, outputPartitioning)
               ._1,
             "JVM shuffle: " +
               s"${QueryPlanSerde.supportPartitioningTypes(s.child.output, outputPartitioning)._2}")
