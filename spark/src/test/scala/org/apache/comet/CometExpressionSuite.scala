@@ -1887,4 +1887,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("struct and named_struct with dictionary") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i =>
+          (
+            i,
+            if (i % 2 == 0) { "even" }
+            else { "odd" })),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+        checkSparkAnswerAndOperator("SELECT struct(_1, _2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+      }
+    }
+  }
 }
