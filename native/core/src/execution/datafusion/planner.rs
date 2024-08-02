@@ -95,6 +95,7 @@ use crate::{
 
 use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use crate::execution::datafusion::operators::filter::CometFilterExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -755,7 +756,7 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                Ok((scans, Arc::new(FilterExec::try_new(predicate, child)?)))
+                Ok((scans, Arc::new(CometFilterExec::try_new(predicate, child)?)))
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
