@@ -150,5 +150,5 @@ Some cluster managers may require additional configuration, see <https://spark.a
 To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
 
 ```
---conf spark.comet.columnar.shuffle.enabled=true
+--conf spark.comet.exec.shuffle.mode=jvm
 ```

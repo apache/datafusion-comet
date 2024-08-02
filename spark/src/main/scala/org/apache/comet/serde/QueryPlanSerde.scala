@@ -209,10 +209,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr match {
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
-            // TODO add support for Count (this was removed when upgrading
-            // to DataFusion 40 because it is no longer a built-in window function)
-            // https://github.com/apache/datafusion-comet/issues/645
-            case _: Min | _: Max =>
+            case _: Min | _: Max | _: Count =>
               Some(agg)
             case _ =>
               withInfo(windowExpr, "Unsupported aggregate", expr)
