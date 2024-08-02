@@ -58,13 +58,13 @@ pub enum ColumnReader {
     Int32ToDecimal64ColumnReader(TypedColumnReader<Int32ToDecimal64Type>),
     Int32ToDoubleColumnReader(TypedColumnReader<Int32ToDoubleType>),
     UInt32ColumnReader(TypedColumnReader<UInt32Type>),
-    Int32ToDecimal128ColumnReader(TypedColumnReader<Int32ToDecimal128Type>),
+    Int32DecimalColumnReader(TypedColumnReader<Int32DecimalType>),
     Int32DateColumnReader(TypedColumnReader<Int32DateType>),
     Int32TimestampMicrosColumnReader(TypedColumnReader<Int32TimestampMicrosType>),
     Int64ColumnReader(TypedColumnReader<Int64Type>),
     Int64ToDecimal64ColumnReader(TypedColumnReader<Int64ToDecimal64Type>),
     UInt64DecimalColumnReader(TypedColumnReader<UInt64Type>),
-    Int64ToDecimal128ColumnReader(TypedColumnReader<Int64ToDecimal128Type>),
+    Int64DecimalColumnReader(TypedColumnReader<Int64DecimalType>),
     Int64TimestampMillisColumnReader(TypedColumnReader<Int64TimestampMillisType>),
     Int64TimestampMicrosColumnReader(TypedColumnReader<Int64TimestampMicrosType>),
     Int64TimestampNanosColumnReader(TypedColumnReader<Int64Type>),
@@ -145,7 +145,7 @@ impl ColumnReader {
                                         )
                                     } else {
                                         typed_reader!(
-                                            Int32ToDecimal128ColumnReader,
+                                            Int32DecimalColumnReader,
                                             ArrowDataType::Decimal128(
                                                 promotion_info.precision as u8,
                                                 promotion_info.scale as i8
@@ -178,7 +178,7 @@ impl ColumnReader {
                                         )
                                     } else {
                                         typed_reader!(
-                                            Int32ToDecimal128ColumnReader,
+                                            Int32DecimalColumnReader,
                                             ArrowDataType::Decimal128(
                                                 promotion_info.precision as u8,
                                                 promotion_info.scale as i8
@@ -205,7 +205,7 @@ impl ColumnReader {
                             if use_decimal_128 || promotion_info.precision > DECIMAL_MAX_LONG_DIGITS
                             {
                                 typed_reader!(
-                                    Int32ToDecimal128ColumnReader,
+                                    Int32DecimalColumnReader,
                                     ArrowDataType::Decimal128(
                                         promotion_info.precision as u8,
                                         promotion_info.scale as i8
@@ -254,7 +254,7 @@ impl ColumnReader {
                                 )
                             } else {
                                 typed_reader!(
-                                    Int32ToDecimal128ColumnReader,
+                                    Int32DecimalColumnReader,
                                     ArrowDataType::Decimal128(
                                         promotion_info.precision as u8,
                                         promotion_info.scale as i8
@@ -287,7 +287,7 @@ impl ColumnReader {
                             if use_decimal_128 || promotion_info.precision > DECIMAL_MAX_LONG_DIGITS
                             {
                                 typed_reader!(
-                                    Int64ToDecimal128ColumnReader,
+                                    Int64DecimalColumnReader,
                                     ArrowDataType::Decimal128(
                                         promotion_info.precision as u8,
                                         promotion_info.scale as i8
@@ -347,7 +347,7 @@ impl ColumnReader {
                                 typed_reader!(Int64ColumnReader, Int64)
                             } else {
                                 typed_reader!(
-                                    Int64ToDecimal128ColumnReader,
+                                    Int64DecimalColumnReader,
                                     ArrowDataType::Decimal128(
                                         promotion_info.precision as u8,
                                         promotion_info.scale as i8
@@ -452,12 +452,12 @@ macro_rules! make_func {
             Self::Int32ToDoubleColumnReader(ref typed) => typed.$func($($args), *),
             Self::UInt32ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32DateColumnReader(ref typed) => typed.$func($($args),*),
-            Self::Int32ToDecimal128ColumnReader(ref typed) => typed.$func($($args),*),
+            Self::Int32DecimalColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int32TimestampMicrosColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64ColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64ToDecimal64ColumnReader(ref typed) => typed.$func($($args), *),
             Self::UInt64DecimalColumnReader(ref typed) => typed.$func($($args),*),
-            Self::Int64ToDecimal128ColumnReader(ref typed) => typed.$func($($args),*),
+            Self::Int64DecimalColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64TimestampMillisColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64TimestampMicrosColumnReader(ref typed) => typed.$func($($args),*),
             Self::Int64TimestampNanosColumnReader(ref typed) => typed.$func($($args),*),
@@ -490,12 +490,12 @@ macro_rules! make_func_mut {
             Self::Int32ToDoubleColumnReader(ref mut typed) => typed.$func($($args), *),
             Self::UInt32ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32DateColumnReader(ref mut typed) => typed.$func($($args),*),
-            Self::Int32ToDecimal128ColumnReader(ref mut typed) => typed.$func($($args),*),
+            Self::Int32DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int32TimestampMicrosColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64ColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64ToDecimal64ColumnReader(ref mut typed) => typed.$func($($args), *),
             Self::UInt64DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
-            Self::Int64ToDecimal128ColumnReader(ref mut typed) => typed.$func($($args),*),
+            Self::Int64DecimalColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64TimestampMillisColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64TimestampMicrosColumnReader(ref mut typed) => typed.$func($($args),*),
             Self::Int64TimestampNanosColumnReader(ref mut typed) => typed.$func($($args),*),

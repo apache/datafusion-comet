@@ -211,10 +211,10 @@ macro_rules! make_int_variant_dict_impl {
 make_int_variant_dict_impl!(Int16ToDoubleType, i16, f64);
 make_int_variant_dict_impl!(Int32To64Type, i32, i64);
 make_int_variant_dict_impl!(Int32ToDecimal64Type, i32, i64);
-make_int_variant_dict_impl!(Int32ToDecimal128Type, i128, i128);
+make_int_variant_dict_impl!(Int32DecimalType, i128, i128);
 make_int_variant_dict_impl!(Int32ToDoubleType, i32, f64);
 make_int_variant_dict_impl!(Int32TimestampMicrosType, i32, i64);
-make_int_variant_dict_impl!(Int64ToDecimal128Type, i128, i128);
+make_int_variant_dict_impl!(Int64DecimalType, i128, i128);
 make_int_variant_dict_impl!(UInt64Type, u128, u128);
 make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
 
@@ -535,9 +535,9 @@ macro_rules! make_int_decimal_variant_impl {
     };
 }
 make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 4, i64);
-make_int_decimal_variant_impl!(Int32ToDecimal128Type, copy_i32_to_i128, 4, i128);
+make_int_decimal_variant_impl!(Int32DecimalType, copy_i32_to_i128, 4, i128);
 make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
-make_int_decimal_variant_impl!(Int64ToDecimal128Type, copy_i64_to_i128, 8, i128);
+make_int_decimal_variant_impl!(Int64DecimalType, copy_i64_to_i128, 8, i128);
 make_int_decimal_variant_impl!(UInt64Type, copy_u64_to_u128, 8, u128);
 
 #[macro_export]
@@ -623,7 +623,6 @@ generate_cast_to_signed!(copy_i32_to_f64, i32, f64);
 generate_cast_to_signed!(copy_i64_to_i64, i64, i64);
 generate_cast_to_signed!(copy_i64_to_i128, i64, i128);
 generate_cast_to_signed!(copy_u64_to_u128, u64, u128);
-generate_cast_to_signed!(copy_i128_to_i128, i128, i128);
 generate_cast_to_signed!(copy_f32_to_f64, f32, f64);
 
 // Shared implementation for variants of Binary type
@@ -761,7 +760,7 @@ macro_rules! make_plain_decimal_int_impl {
         $(
             impl PlainDecoding for $ty {
                 fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                    let num_bytes = std::mem::size_of::<d$dst_type>()
+                    let num_bytes = std::mem::size_of::<$dst_type>()
                     let byte_width = src.desc.type_length() as usize;
                     let num_bits = num_bytes.saturating_sub(byte_width) * 8;
 
