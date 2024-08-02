@@ -21,7 +21,8 @@ use rand::{thread_rng, Rng};
 
 use arrow::buffer::Buffer;
 use comet::common::bit::{
-    log2, read_num_bytes_u32, read_num_bytes_u64, set_bits, BitReader, BitWriter,
+    log2, read_num_bytes_u32, read_num_bytes_u64, read_u32, read_u64, set_bits, trailing_bits,
+    BitReader, BitWriter,
 };
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
@@ -158,6 +159,38 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
     }
+
+    // trailing_bits
+    for length in (0..=64).step_by(32) {
+        let x = length;
+        group.bench_with_input(
+            BenchmarkId::new("trailing_bits", format!("num_bits_{}", x)),
+            &x,
+            |b, &x| {
+                b.iter(|| trailing_bits(black_box(1234567890), black_box(x)));
+            },
+        );
+    }
+
+    // read_u64
+    group.bench_function("read_u64", |b| {
+        b.iter(|| read_u64(black_box(&[0u8; 8])));
+    });
+
+    // read_u32
+    group.bench_function("read_u32", |b| {
+        b.iter(|| read_u32(black_box(&[0u8; 4])));
+    });
+
+    // get_u32_value
+    group.bench_function("get_u32_value", |b| {
+        b.iter(|| {
+            let mut reader: BitReader = BitReader::new_all(buffer.slice(0));
+            for _ in 0..(buffer.len() * 8 / 31) {
+                black_box(reader.get_u32_value(black_box(31)));
+            }
+        })
+    });
 
     group.finish();
 }
