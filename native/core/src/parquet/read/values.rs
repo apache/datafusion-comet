@@ -760,7 +760,7 @@ macro_rules! make_plain_decimal_int_impl {
         $(
             impl PlainDecoding for $ty {
                 fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                    let num_bytes = std::mem::size_of::<$dst_type>()
+                    let num_bytes = std::mem::size_of::<$dst_type>();
                     let byte_width = src.desc.type_length() as usize;
                     let num_bits = num_bytes.saturating_sub(byte_width) * 8;
 
@@ -808,7 +808,7 @@ macro_rules! make_plain_decimal_int_impl {
             impl PlainDictDecoding for $ty {
                 #[inline]
                 fn decode_dict_one(_: usize, val_idx: usize, src: &ParquetMutableVector, dst: &mut ParquetMutableVector, _: usize) {
-                    let num_bytes = std::mem::size_of::<$dst_type>()
+                    let num_bytes = std::mem::size_of::<$dst_type>();
                     bit::memcpy(
                         &src.value_buffer[val_idx * num_bytes..(val_idx + 1) * num_bytes],
                         &mut dst.value_buffer[dst.num_values * num_bytes..],
