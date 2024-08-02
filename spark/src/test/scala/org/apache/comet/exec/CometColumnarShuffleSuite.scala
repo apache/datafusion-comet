@@ -29,7 +29,6 @@ import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.connector.catalog.{Column, Identifier, InMemoryCatalog, InMemoryTableCatalog}
-import org.apache.spark.sql.connector.distributions.Distributions
 import org.apache.spark.sql.connector.expressions.Expressions._
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
@@ -128,16 +127,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       columns: Array[Column],
       partitions: Array[Transform],
       catalog: InMemoryTableCatalog = catalog): Unit = {
-    catalog.createTable(
-      Identifier.of(Array("ns"), table),
-      columns,
-      partitions,
-      emptyProps,
-      Distributions.unspecified(),
-      Array.empty,
-      None,
-      None,
-      numRowsPerSplit = 1)
+    catalog.createTable(Identifier.of(Array("ns"), table), columns, partitions, emptyProps)
   }
 
   private def selectWithMergeJoinHint(t1: String, t2: String): String = {
