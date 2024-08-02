@@ -2931,8 +2931,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
         supported
-      case SinglePartition => true
-      case RoundRobinPartitioning(_) => true
+      case SinglePartition => inputs.forall(attr => supportedDataType(attr.dataType))
+      case RoundRobinPartitioning(_) => inputs.forall(attr => supportedDataType(attr.dataType))
       case RangePartitioning(orderings, _) =>
         val supported =
           orderings.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
@@ -2980,7 +2980,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
         supported
-      case SinglePartition => true
+      case SinglePartition => inputs.forall(attr => supportedDataType(attr.dataType))
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false
