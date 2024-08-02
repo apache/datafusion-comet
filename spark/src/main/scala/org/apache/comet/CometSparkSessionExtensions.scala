@@ -215,7 +215,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(
               conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output, s.outputPartitioning)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
           CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
@@ -772,7 +772,7 @@ class CometSparkSessionExtensions
         // convert it to CometColumnarShuffle,
         case s: ShuffleExchangeExec
             if isCometShuffleEnabled(conf) && isCometJVMShuffleMode(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output)._1 &&
+              QueryPlanSerde.supportPartitioningTypes(s.child.output, s.outputPartitioning)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
 
@@ -792,20 +792,22 @@ class CometSparkSessionExtensions
 
         case s: ShuffleExchangeExec =>
           val isShuffleEnabled = isCometShuffleEnabled(conf)
+          val outputPartitioning = s.outputPartitioning
           val reason = getCometShuffleNotEnabledReason(conf).getOrElse("no reason available")
           val msg1 = createMessage(!isShuffleEnabled, s"Comet shuffle is not enabled: $reason")
           val columnarShuffleEnabled = isCometJVMShuffleMode(conf)
           val msg2 = createMessage(
             isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
-              .supportPartitioning(s.child.output, s.outputPartitioning)
+              .supportPartitioning(s.child.output, outputPartitioning)
               ._1,
             "Native shuffle: " +
-              s"${QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._2}")
+              s"${QueryPlanSerde.supportPartitioning(s.child.output, outputPartitioning)._2}")
           val msg3 = createMessage(
             isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
-              .supportPartitioningTypes(s.child.output)
+              .supportPartitioningTypes(s.child.output, outputPartitioning)
               ._1,
-            s"JVM shuffle: ${QueryPlanSerde.supportPartitioningTypes(s.child.output)._2}")
+            "JVM shuffle: " +
+              s"${QueryPlanSerde.supportPartitioningTypes(s.child.output, outputPartitioning)._2}")
           withInfo(s, Seq(msg1, msg2, msg3).flatten.mkString(","))
           s
 
