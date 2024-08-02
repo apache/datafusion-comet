@@ -997,6 +997,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Upper and Lower") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+        val table = "names"
+        withTable(table) {
+          sql(s"create table $table(id int, name varchar(20)) using parquet")
+          sql(
+            s"insert into $table values(1, 'James Smith'), (2, 'Michael Rose')," +
+              " (3, 'Robert Williams'), (4, 'Rames Rose'), (5, 'James Smith')")
+          checkSparkAnswerAndOperator(s"SELECT name, upper(name), lower(name) FROM $table")
+        }
+      }
+    }
+  }
+
   test("Various String scalar functions") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1007,7 +1024,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"insert into $table values(1, 'James Smith'), (2, 'Michael Rose')," +
               " (3, 'Robert Williams'), (4, 'Rames Rose'), (5, 'James Smith')")
           checkSparkAnswerAndOperator(
-            s"SELECT ascii(name), bit_length(name), octet_length(name), upper(name), lower(name) FROM $table")
+            s"SELECT ascii(name), bit_length(name), octet_length(name) FROM $table")
         }
       }
     }
