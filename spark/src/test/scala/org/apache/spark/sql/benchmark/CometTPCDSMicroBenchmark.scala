@@ -70,7 +70,8 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "join_exploding_output",
     "join_inner",
     "join_left_outer",
-    "join_semi")
+    "join_semi",
+    "rlike")
 
   override def runQueries(
       queryLocation: String,
@@ -111,6 +112,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
