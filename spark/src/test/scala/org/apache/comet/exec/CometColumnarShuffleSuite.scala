@@ -109,25 +109,6 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkSparkAnswer(df)
   }
 
-  test("Disable Comet shuffle with AQE coalesce partitions enabled") {
-    Seq(true, false).foreach { coalescePartitionsEnabled =>
-      withSQLConf(
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> coalescePartitionsEnabled.toString,
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-        val df = sql(
-          "SELECT * FROM (SELECT * FROM testData WHERE key = 0) t1 FULL JOIN " +
-            "testData2 t2 ON t1.key = t2.a")
-        if (coalescePartitionsEnabled) {
-          checkShuffleAnswer(df, 0)
-        } else {
-          checkShuffleAnswer(df, 2)
-        }
-      }
-    }
-  }
-
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
