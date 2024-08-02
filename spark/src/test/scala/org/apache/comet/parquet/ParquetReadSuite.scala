@@ -82,6 +82,44 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("unsupported Spark types") {
+    Seq(
+      NullType -> false,
+      BooleanType -> true,
+      ByteType -> true,
+      ShortType -> true,
+      IntegerType -> true,
+      LongType -> true,
+      FloatType -> true,
+      DoubleType -> true,
+      BinaryType -> true,
+      StringType -> true,
+      ArrayType(TimestampType) -> false,
+      StructType(
+        Seq(
+          StructField("f1", DecimalType.SYSTEM_DEFAULT),
+          StructField("f2", StringType))) -> true,
+      MapType(keyType = LongType, valueType = DateType) -> false,
+      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> true,
+      MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
+      case (dt, expected) =>
+        assert(CometScanExec.isTypeSupported(dt) == expected)
+        assert(CometBatchScanExec.isTypeSupported(dt) == expected)
+    }
+  }
+
+  test("unsupported Spark schema") {
+    Seq(
+      Seq(StructField("f1", IntegerType), StructField("f2", BooleanType)) -> true,
+      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> false,
+      Seq(
+        StructField("f1", MapType(keyType = LongType, valueType = StringType)),
+        StructField("f2", ArrayType(DoubleType))) -> false).foreach { case (schema, expected) =>
+      assert(CometScanExec.isSchemaSupported(StructType(schema)) == expected)
+      assert(CometBatchScanExec.isSchemaSupported(StructType(schema)) == expected)
+    }
+  }
+
   test("simple count") {
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
       assert(sql("SELECT * FROM tbl WHERE _1 % 2 == 0").count() == 5)

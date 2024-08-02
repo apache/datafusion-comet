@@ -43,7 +43,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, MetricsSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -439,7 +439,7 @@ case class CometScanExec(
   }
 }
 
-object CometScanExec {
+object CometScanExec extends DataTypeSupport {
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
@@ -477,16 +477,5 @@ object CometScanExec {
       wrapped)
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
-  }
-
-  def isSchemaSupported(schema: StructType): Boolean =
-    schema.map(_.dataType).forall(isTypeSupported)
-
-  def isTypeSupported(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-      true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
-    case _ => false
   }
 }

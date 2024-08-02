@@ -30,7 +30,10 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.DataTypeSupport
 
 case class CometRowToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -92,4 +95,11 @@ case class CometRowToColumnarExec(child: SparkPlan)
   override protected def withNewChildInternal(newChild: SparkPlan): CometRowToColumnarExec =
     copy(child = newChild)
 
+}
+
+object CometRowToColumnarExec extends DataTypeSupport {
+  override def isAdditionallySupported(dt: DataType): Boolean = dt match {
+    case _: StructType => true
+    case _ => false
+  }
 }

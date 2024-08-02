@@ -30,12 +30,11 @@ import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
-import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.MetricsSupport
+import org.apache.comet.{DataTypeSupport, MetricsSupport}
 import org.apache.comet.shims.ShimCometBatchScanExec
 
 case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
@@ -154,16 +153,4 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def supportsColumnar: Boolean = true
 }
 
-object CometBatchScanExec {
-
-  def isSchemaSupported(schema: StructType): Boolean =
-    schema.map(_.dataType).forall(isTypeSupported)
-
-  def isTypeSupported(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-      true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
-    case _ => false
-  }
-}
+object CometBatchScanExec extends DataTypeSupport

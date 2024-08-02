@@ -42,7 +42,6 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -1111,20 +1110,6 @@ object CometSparkSessionExtensions extends Logging {
     COMET_EXEC_ALL_OPERATOR_ENABLED.get(conf)
   }
 
-  private[comet] def isSchemaSupported(schema: StructType): Boolean =
-    schema.map(_.dataType).forall(isTypeSupported)
-
-  private[comet] def isTypeSupported(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-      true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
-    case s: StructType => isSchemaSupported(s)
-    case dt =>
-      logInfo(s"Comet extension is disabled because data type $dt is not supported")
-      false
-  }
-
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
@@ -1135,7 +1120,7 @@ object CometSparkSessionExtensions extends Logging {
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
     // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && isSchemaSupported(op.schema) &&
+    op.isInstanceOf[LeafExecNode] && CometRowToColumnarExec.isSchemaSupported(op.schema) &&
     COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
