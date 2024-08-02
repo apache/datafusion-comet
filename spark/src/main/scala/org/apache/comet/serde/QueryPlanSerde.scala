@@ -2926,7 +2926,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedDataType(e.dataType))
+            expressions.forall(e => supportedDataType(e.dataType)) &&
+            inputs.forall(attr => supportedDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
@@ -2936,7 +2937,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case RangePartitioning(orderings, _) =>
         val supported =
           orderings.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            orderings.forall(e => supportedDataType(e.dataType))
+            orderings.forall(e => supportedDataType(e.dataType)) &&
+            inputs.forall(attr => supportedDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $orderings"
         }
@@ -2975,7 +2977,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedDataType(e.dataType))
+            expressions.forall(e => supportedDataType(e.dataType)) &&
+            inputs.forall(attr => supportedDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
