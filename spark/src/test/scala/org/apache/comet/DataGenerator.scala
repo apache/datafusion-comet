@@ -36,6 +36,11 @@ object DataGenerator {
 class DataGenerator(r: Random) {
   import DataGenerator._
 
+  /** Pick a random item from a sequence */
+  def pickRandom[T](items: Seq[T]): T = {
+    items(r.nextInt(items.length))
+  }
+
   /** Generate a random string using the specified characters */
   def generateString(chars: String, maxLen: Int): String = {
     val len = r.nextInt(maxLen)

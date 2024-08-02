@@ -1,0 +1,24 @@
+================================================================================================
+Grouped Aggregate (single group key + single aggregate SUM)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.24+8-post-Ubuntu-1ubuntu322.04 on Linux 6.5.0-41-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate SUM:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (SUM)                                                                    2663           2744         115          3.9         254.0       1.0X
+SQL Parquet - Comet (Scan, Exec) (SUM)                                                       1067           1084          24          9.8         101.8       2.5X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.24+8-post-Ubuntu-1ubuntu322.04 on Linux 6.5.0-41-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    2532           2552          28          4.1         241.5       1.0X
+SQL Parquet - Comet (Scan, Exec) (COUNT)                                                       4590           4592           4          2.3         437.7       0.6X
+
+

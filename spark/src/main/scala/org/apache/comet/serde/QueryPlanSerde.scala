@@ -44,7 +44,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -1232,25 +1232,41 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        // TODO waiting for arrow-rs update
-//      case RLike(left, right) =>
-//        val leftExpr = exprToProtoInternal(left, inputs)
-//        val rightExpr = exprToProtoInternal(right, inputs)
-//
-//        if (leftExpr.isDefined && rightExpr.isDefined) {
-//          val builder = ExprOuterClass.RLike.newBuilder()
-//          builder.setLeft(leftExpr.get)
-//          builder.setRight(rightExpr.get)
-//
-//          Some(
-//            ExprOuterClass.Expr
-//              .newBuilder()
-//              .setRlike(builder)
-//              .build())
-//        } else {
-//          None
-//        }
+        case RLike(left, right) =>
+          // we currently only support scalar regex patterns
+          right match {
+            case Literal(pattern, DataTypes.StringType) =>
+              if (!RegExp.isSupportedPattern(pattern.toString) &&
+                !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+                withInfo(
+                  expr,
+                  s"Regexp pattern $pattern is not compatible with Spark. " +
+                    s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+                    "to allow it anyway.")
+                return None
+              }
+            case _ =>
+              withInfo(expr, "Only scalar regexp patterns are supported")
+              return None
+          }
 
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
+
+          if (leftExpr.isDefined && rightExpr.isDefined) {
+            val builder = ExprOuterClass.RLike.newBuilder()
+            builder.setLeft(leftExpr.get)
+            builder.setRight(rightExpr.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setRlike(builder)
+                .build())
+          } else {
+            withInfo(expr, left, right)
+            None
+          }
         case StartsWith(left, right) =>
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(right, inputs)
