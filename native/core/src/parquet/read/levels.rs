@@ -22,7 +22,7 @@ use parquet::schema::types::ColumnDescPtr;
 
 use super::values::Decoder;
 use crate::{
-    common::bit::{self, read_num_bytes_u32, BitReader},
+    common::bit::{self, read_u32, BitReader},
     parquet::ParquetMutableVector,
     unlikely,
 };
@@ -89,7 +89,7 @@ impl LevelDecoder {
             0
         } else if self.need_length {
             let u32_size = mem::size_of::<u32>();
-            let data_size = read_num_bytes_u32(u32_size, page_data.as_slice()) as usize;
+            let data_size = read_u32(page_data.as_slice()) as usize;
             self.bit_reader = Some(BitReader::new(page_data.slice(u32_size), data_size));
             u32_size + data_size
         } else {
