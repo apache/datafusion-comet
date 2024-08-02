@@ -365,6 +365,11 @@ impl Stream for FilterExecStream {
                         let timer = self.baseline_metrics.elapsed_compute().timer();
                         let filtered_batch = batch_filter(&batch, &self.predicate)?;
 
+                        // skip entirely filtered batches
+                        if filtered_batch.num_rows() == 0 {
+                            continue;
+                        }
+
                         // BEGIN HACK: this is the only modification to the DataFusion version
                         // we ensure that we never return the original arrays
                         let filtered_batch = if filtered_batch.num_rows() == batch.num_rows() {
@@ -381,10 +386,6 @@ impl Stream for FilterExecStream {
                         };
                         // END HACK
 
-                        // skip entirely filtered batches
-                        if filtered_batch.num_rows() == 0 {
-                            continue;
-                        }
                         timer.done();
                         poll = Poll::Ready(Some(Ok(filtered_batch)));
                         break;
