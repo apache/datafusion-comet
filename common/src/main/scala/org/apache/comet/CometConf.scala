@@ -401,6 +401,15 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
+  val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.caseConversion.enabled")
+      .internal()
+      .doc(
+        "Java uses local-specific rules when converting strings to upper or lower case and Rust " +
+          "does not, so we disable upper and lower by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
