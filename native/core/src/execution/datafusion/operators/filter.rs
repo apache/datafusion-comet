@@ -367,6 +367,7 @@ impl Stream for FilterExecStream {
 
                         // skip entirely filtered batches
                         if filtered_batch.num_rows() == 0 {
+                            timer.done();
                             continue;
                         }
 
