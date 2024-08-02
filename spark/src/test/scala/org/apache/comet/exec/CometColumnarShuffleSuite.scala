@@ -66,6 +66,19 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   setupTestData()
 
+  test("Unsupported types for SinglePartition should fallback to Spark") {
+    checkSparkAnswer(spark.sql("""
+                  |SELECT
+                  |  AVG(null),
+                  |  COUNT(null),
+                  |  FIRST(null),
+                  |  LAST(null),
+                  |  MAX(null),
+                  |  MIN(null),
+                  |  SUM(null)
+        """.stripMargin))
+  }
+
   test("Disable Comet shuffle with AQE coalesce partitions enabled") {
     Seq(true, false).foreach { coalescePartitionsEnabled =>
       withSQLConf(
