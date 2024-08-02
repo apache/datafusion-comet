@@ -98,9 +98,9 @@ abstract class ParquetReadSuite extends CometTestBase {
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> true,
+          StructField("f2", StringType))) -> false,
       MapType(keyType = LongType, valueType = DateType) -> false,
-      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> true,
+      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> false,
       MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
       case (dt, expected) =>
         assert(CometScanExec.isTypeSupported(dt) == expected)
