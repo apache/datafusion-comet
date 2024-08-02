@@ -217,7 +217,6 @@ make_int_variant_dict_impl!(Int32TimestampMicrosType, i32, i64);
 make_int_variant_dict_impl!(Int64ToDecimal128Type, i128, i128);
 make_int_variant_dict_impl!(UInt64Type, u128, u128);
 make_int_variant_dict_impl!(FloatToDoubleType, f32, f64);
-make_int_variant_dict_impl!(FLBADecimalType, i128, i128);
 
 impl PlainDecoding for Int32DateType {
     fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
@@ -483,10 +482,9 @@ make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
 make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
 
 macro_rules! make_int_decimal_variant_impl {
-    ($ty:ty, $copy_fn:ident, $dst_type:ty) => {
+    ($ty:ty, $copy_fn:ident, $type_width:expr, $dst_type:ty) => {
         impl PlainDecoding for $ty {
             fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
-                let byte_width = src.desc.type_length() as usize;
                 let dst_slice = dst.value_buffer.as_slice_mut();
                 let dst_offset = dst.num_values * std::mem::size_of::<$dst_type>();
                 $copy_fn(&src.data[src.offset..], &mut dst_slice[dst_offset..], num);
@@ -527,22 +525,20 @@ macro_rules! make_int_decimal_variant_impl {
                     }
                 }
 
-                src.offset += byte_width * num;
+                src.offset += $type_width * num;
             }
 
             fn skip(src: &mut PlainDecoderInner, num: usize) {
-                let byte_width = src.desc.type_length() as usize;
-                src.offset += byte_width * num;
+                src.offset += $type_width * num;
             }
         }
     };
 }
-make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, i64);
-make_int_decimal_variant_impl!(Int32ToDecimal128Type, copy_i32_to_i128, i128);
-make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, i64);
-make_int_decimal_variant_impl!(Int64ToDecimal128Type, copy_i64_to_i128, i128);
-make_int_decimal_variant_impl!(UInt64Type, copy_u64_to_u128, u128);
-make_int_decimal_variant_impl!(FLBADecimalType, copy_i128_to_i128, i128);
+make_int_decimal_variant_impl!(Int32ToDecimal64Type, copy_i32_to_i64, 4, i64);
+make_int_decimal_variant_impl!(Int32ToDecimal128Type, copy_i32_to_i128, 4, i128);
+make_int_decimal_variant_impl!(Int64ToDecimal64Type, copy_i64_to_i64, 8, i64);
+make_int_decimal_variant_impl!(Int64ToDecimal128Type, copy_i64_to_i128, 8, i128);
+make_int_decimal_variant_impl!(UInt64Type, copy_u64_to_u128, 8, u128);
 
 #[macro_export]
 macro_rules! write_val_or_null {
@@ -761,15 +757,16 @@ macro_rules! make_plain_dict_binary_impl {
 make_plain_dict_binary_impl! { ByteArrayType, StringType }
 
 macro_rules! make_plain_decimal_int_impl {
-    ($($ty: ident; $num_bytes: expr), *) => {
+    ($($ty: ident; $dst_type:ty), *) => {
         $(
             impl PlainDecoding for $ty {
                 fn decode(src: &mut PlainDecoderInner, dst: &mut ParquetMutableVector, num: usize) {
+                    let num_bytes = std::mem::size_of::<d$dst_type>()
                     let byte_width = src.desc.type_length() as usize;
-                    let num_bits = 64.min(8 * byte_width);
+                    let num_bits = num_bytes.saturating_sub(byte_width) * 8;
 
                     let src_data = &src.data[src.offset..];
-                    let dst_data = &mut dst.value_buffer[dst.num_values * $num_bytes..];
+                    let dst_data = &mut dst.value_buffer[dst.num_values * num_bytes..];
 
                     let mut src_offset = 0;
 
@@ -779,22 +776,22 @@ macro_rules! make_plain_decimal_int_impl {
                         ArrowDataType::Decimal128(p, s) if s >= 0 => (p as u32, s as u32),
                         _ => (src_precision, src_scale),
                     };
-                    let upper = 10_i64.pow(dst_precision);
-                    let mul_div = 10_i64.pow(dst_scale.abs_diff(src_scale));
+                    let upper = (10 as $dst_type).pow(dst_precision);
+                    let mul_div = (10 as $dst_type).pow(dst_scale.abs_diff(src_scale));
 
                     for i in 0..num {
-                        let mut unscaled: i64 = 0;
+                        let mut unscaled: $dst_type = 0;
                         for _ in 0..byte_width {
-                            unscaled = unscaled << 8 | src_data[src_offset] as i64;
+                            unscaled = unscaled << 8 | src_data[src_offset] as $dst_type;
                             src_offset += 1;
                         }
-                        unscaled = (unscaled << (64 - num_bits)) >> (64 - num_bits);
+                        unscaled = (unscaled << num_bits) >> num_bits;
                         if dst_scale > src_scale {
                             unscaled *= mul_div;
                         } else if dst_scale < src_scale {
                             unscaled /= mul_div;
                         }
-                        bit::memcpy_value(&unscaled, $num_bytes, &mut dst_data[i * $num_bytes..]);
+                        bit::memcpy_value(&unscaled, num_bytes, &mut dst_data[i * num_bytes..]);
                         if src_precision > dst_precision {
                             write_null!(unscaled, upper, dst, i);
                         }
@@ -812,9 +809,10 @@ macro_rules! make_plain_decimal_int_impl {
             impl PlainDictDecoding for $ty {
                 #[inline]
                 fn decode_dict_one(_: usize, val_idx: usize, src: &ParquetMutableVector, dst: &mut ParquetMutableVector, _: usize) {
+                    let num_bytes = std::mem::size_of::<d$dst_type>()
                     bit::memcpy(
-                        &src.value_buffer[val_idx * $num_bytes..(val_idx + 1) * $num_bytes],
-                        &mut dst.value_buffer[dst.num_values * $num_bytes..],
+                        &src.value_buffer[val_idx * num_bytes..(val_idx + 1) * num_bytes],
+                        &mut dst.value_buffer[dst.num_values * num_bytes..],
                     );
                 }
             }
@@ -822,7 +820,7 @@ macro_rules! make_plain_decimal_int_impl {
     };
 }
 
-make_plain_decimal_int_impl!(FLBADecimal32Type; 4, FLBADecimal64Type; 8);
+make_plain_decimal_int_impl!(FLBADecimal32Type; i32, FLBADecimal64Type; i64, FLBADecimalType; i128);
 
 // Int96 contains 12 bytes
 const INT96_SRC_BYTE_WIDTH: usize = 12;
