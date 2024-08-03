@@ -78,6 +78,7 @@ message Expr {
     UnboundReference unbound = 51;
     BloomFilterMightContain bloom_filter_might_contain = 52;
     CreateNamedStruct create_named_struct = 53;
+    GetStructField get_struct_field = 54;
   }
 }
 
@@ -490,6 +491,11 @@ message BloomFilterMightContain {
 message CreateNamedStruct {
   repeated Expr values = 1;
   DataType datatype = 2;
+}
+
+message GetStructField {
+  Expr child = 1;
+  int32 ordinal = 2;
 }
 
 enum SortDirection {

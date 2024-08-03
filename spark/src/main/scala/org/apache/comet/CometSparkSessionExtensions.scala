@@ -42,11 +42,10 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSchemaSupported, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -95,8 +94,10 @@ class CometSparkSessionExtensions
           // data source V2
           case scanExec: BatchScanExec
               if scanExec.scan.isInstanceOf[ParquetScan] &&
-                isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
-                isSchemaSupported(scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
+                CometBatchScanExec.isSchemaSupported(
+                  scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
+                CometBatchScanExec.isSchemaSupported(
+                  scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
                 // Comet does not support pushedAggregate
                 scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isEmpty =>
             val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
@@ -110,11 +111,11 @@ class CometSparkSessionExtensions
           case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
             val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
             val info1 = createMessage(
-              !isSchemaSupported(requiredSchema),
+              !CometBatchScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
             val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
             val info2 = createMessage(
-              !isSchemaSupported(readPartitionSchema),
+              !CometBatchScanExec.isSchemaSupported(readPartitionSchema),
               s"Partition schema $readPartitionSchema is not supported")
             // Comet does not support pushedAggregate
             val info3 = createMessage(
@@ -129,7 +130,7 @@ class CometSparkSessionExtensions
               // Iceberg scan, supported cases
               case s: SupportsComet
                   if s.isCometEnabled &&
-                    isSchemaSupported(scanExec.scan.readSchema()) =>
+                    CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()) =>
                 logInfo(s"Comet extension enabled for ${scanExec.scan.getClass.getSimpleName}")
                 // When reading from Iceberg, we automatically enable type promotion
                 SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
@@ -144,7 +145,7 @@ class CometSparkSessionExtensions
                   "Comet extension is not enabled for " +
                     s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
                 val info2 = createMessage(
-                  !isSchemaSupported(scanExec.scan.readSchema()),
+                  !CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()),
                   "Comet extension is not enabled for " +
                     s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
                 withInfos(scanExec, Seq(info1, info2).flatten.toSet)
@@ -166,7 +167,9 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _,
-                _) if isSchemaSupported(requiredSchema) && isSchemaSupported(partitionSchema) =>
+                _)
+              if CometScanExec.isSchemaSupported(requiredSchema)
+                && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
 
@@ -182,10 +185,10 @@ class CometSparkSessionExtensions
                 _,
                 _) =>
             val info1 = createMessage(
-              !isSchemaSupported(requiredSchema),
+              !CometScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
             val info2 = createMessage(
-              !isSchemaSupported(partitionSchema),
+              !CometScanExec.isSchemaSupported(partitionSchema),
               s"Partition schema $partitionSchema is not supported")
             withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
             scanExec
@@ -1109,28 +1112,17 @@ object CometSparkSessionExtensions extends Logging {
     COMET_EXEC_ALL_OPERATOR_ENABLED.get(conf)
   }
 
-  private[comet] def isSchemaSupported(schema: StructType): Boolean =
-    schema.map(_.dataType).forall(isTypeSupported)
-
-  private[comet] def isTypeSupported(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-      true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
-    case dt =>
-      logInfo(s"Comet extension is disabled because data type $dt is not supported")
-      false
-  }
-
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
   private def shouldApplyRowToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
-    // operators can have a chance to be converted to columnar.
+    // operators can have a chance to be converted to columnar. Leaf operators that output
+    // columnar batches, such as Spark's vectorized readers, will also be converted to native
+    // comet batches.
     // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && !op.supportsColumnar && isSchemaSupported(op.schema) &&
+    op.isInstanceOf[LeafExecNode] && CometRowToColumnarExec.isSchemaSupported(op.schema) &&
     COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")

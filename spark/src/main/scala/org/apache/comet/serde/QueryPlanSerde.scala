@@ -59,12 +59,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
 
-  def supportedDataType(dt: DataType): Boolean = dt match {
+  def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
       true
     case dt if isTimestampNTZType(dt) => true
+    case s: StructType if allowStruct => s.fields.map(_.dataType).forall(supportedDataType(_))
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2199,7 +2200,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
           }
 
-        case s @ execution.ScalarSubquery(_, _) =>
+        case s @ execution.ScalarSubquery(_, _) if supportedDataType(s.dataType) =>
           val dataType = serializeDataType(s.dataType)
           if (dataType.isEmpty) {
             withInfo(s, s"Scalar subquery returns unsupported datatype ${s.dataType}")
@@ -2314,6 +2315,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           } else {
             withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
             None
+          }
+
+        case GetStructField(child, ordinal, _) =>
+          exprToProto(child, inputs, binding).map { childExpr =>
+            val getStructFieldBuilder = ExprOuterClass.GetStructField
+              .newBuilder()
+              .setChild(childExpr)
+              .setOrdinal(ordinal)
+
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setGetStructField(getStructFieldBuilder)
+              .build()
           }
 
         case _ =>
@@ -2819,7 +2833,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType)) =>
+      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
 
