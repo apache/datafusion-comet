@@ -537,10 +537,10 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     })
 }
 
-#[no_mangle]
 /// Used by QueryPlanSerde to determine if a regular expression is supported natively
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_isRegexpPatternSupported(
     e: JNIEnv,
     _class: JClass,
