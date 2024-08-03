@@ -65,8 +65,8 @@ fn is_compat(ast: &Hir) -> bool {
         // repetition quantifier such as `+`, `*`, `?`, `{1,3}`
         HirKind::Repetition(r) => is_compat(r.sub.as_ref()),
         // series of expressions such as `[A-Z][a-z]`
-        HirKind::Concat(items) => items.iter().all(|ast| is_compat(ast)),
-        other => false,
+        HirKind::Concat(items) => items.iter().all(is_compat),
+        _ => false,
     }
 }
 
