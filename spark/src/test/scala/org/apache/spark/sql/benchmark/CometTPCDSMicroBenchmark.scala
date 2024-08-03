@@ -62,6 +62,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "agg_sum_integers_no_grouping",
     "case_when_column_or_null",
     "case_when_scalar",
+    "char_type",
     "filter_highly_selective",
     "filter_less_selective",
     "if_column_or_null",

@@ -36,7 +36,6 @@ use num::{
 };
 use std::fmt::Write;
 use std::{cmp::min, sync::Arc};
-use unicode_segmentation::UnicodeSegmentation;
 
 mod unhex;
 pub use unhex::spark_unhex;
@@ -412,7 +411,6 @@ fn spark_rpad_internal<T: OffsetSizeTrait>(
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
     let length = 0.max(length) as usize;
-    let empty_str = "";
     let space_string = " ".repeat(length);
 
     let mut builder =
@@ -421,21 +419,16 @@ fn spark_rpad_internal<T: OffsetSizeTrait>(
     for string in string_array.iter() {
         match string {
             Some(string) => {
-                if length == 0 {
-                    builder.append_value(empty_str);
-                } else if length == 1 && string.len() > 0 {
-                    // Special case: when length == 1, no need to calculate expensive graphemes
+                // It looks Spark's UTF8String is closer to chars rather than graphemes
+                // https://stackoverflow.com/a/46290728
+                let char_len = string.chars().count();
+                if length <= char_len {
                     builder.append_value(string);
                 } else {
-                    let graphemes_len = string.graphemes(true).count();
-                    if length <= graphemes_len {
-                        builder.append_value(string);
-                    } else {
-                        // write_str updates only the value buffer, not null nor offset buffer
-                        // This is convenient for concatenating str(s)
-                        builder.write_str(string)?;
-                        builder.append_value(&space_string[graphemes_len..]);
-                    }
+                    // write_str updates only the value buffer, not null nor offset buffer
+                    // This is convenient for concatenating str(s)
+                    builder.write_str(string)?;
+                    builder.append_value(&space_string[char_len..]);
                 }
             }
             _ => builder.append_null(),
