@@ -61,6 +61,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use datafusion_comet_spark_expr::is_regexp_supported;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -533,5 +534,24 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+#[no_mangle]
+/// Used by QueryPlanSerde to determine if a regular expression is supported natively
+pub unsafe extern "system" fn Java_org_apache_comet_Native_isRegexpPatternSupported(
+    e: JNIEnv,
+    _class: JClass,
+    pattern: jstring,
+) -> jboolean {
+    try_unwrap_or_throw(&e, |mut env| {
+        let pattern: String = env.get_string(&JString::from_raw(pattern)).unwrap().into();
+        match is_regexp_supported(&pattern) {
+            Ok(supported) => Ok(supported as jboolean),
+            Err(e) => {
+                // if we hit an error parsing the regexp then just report it as unsupported
+                Ok(false as jboolean)
+            }
+        }
     })
 }

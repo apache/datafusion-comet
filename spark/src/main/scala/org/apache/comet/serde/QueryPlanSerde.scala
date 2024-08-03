@@ -42,9 +42,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, Native}
 import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -55,6 +55,9 @@ import org.apache.comet.shims.ShimQueryPlanSerde
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
+
+  private val native = new Native()
+
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -1237,7 +1240,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // we currently only support scalar regex patterns
           right match {
             case Literal(pattern, DataTypes.StringType) =>
-              if (!RegExp.isSupportedPattern(pattern.toString) &&
+              if (!native.isRegexpPatternSupported(pattern.toString) &&
                 !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
                 withInfo(
                   expr,

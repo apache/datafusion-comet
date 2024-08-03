@@ -625,11 +625,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // add repetitive data to trigger dictionary encoding
         Range(0, 100).map(_ => "John Smith")
       withParquetFile(data.zipWithIndex, withDictionary) { file =>
-        withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
-          spark.read.parquet(file).createOrReplaceTempView(table)
-          val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
-          checkSparkAnswerAndOperator(query)
-        }
+        spark.read.parquet(file).createOrReplaceTempView(table)
+        val query = sql(s"select _2 as id, _1 rlike '[M-R]+[a-z]+' from $table")
+        checkSparkAnswerAndOperator(query)
       }
     }
   }

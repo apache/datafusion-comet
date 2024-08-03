@@ -121,4 +121,15 @@ class Native extends NativeBase {
    *   the size of the array.
    */
   @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
+
+  /**
+   * Determine if a regular expression pattern is supported natively and guaranteed to produce the
+   * same result as Spark.
+   *
+   * @param pattern
+   *   The regular expression pattern
+   * @return
+   *   true if supported
+   */
+  @native def isRegexpPatternSupported(pattern: String): Boolean
 }

@@ -22,10 +22,12 @@ use arrow_array::builder::BooleanBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
-use datafusion_common::{internal_err, Result};
+use datafusion_common::{internal_err, DataFusionError, Result};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
 use regex::Regex;
+use regex_syntax::hir::{Class, Hir, HirKind};
+use regex_syntax::Parser;
 use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
@@ -45,6 +47,27 @@ pub struct RLike {
     // Only scalar patterns are supported
     pattern_str: String,
     pattern: Regex,
+}
+
+/// Determine if a regex pattern is guaranteed to produce the same values as
+/// Java's regular expression engine
+pub fn is_regexp_supported(pattern: &str) -> Result<bool> {
+    let ast = Parser::new()
+        .parse(pattern)
+        .map_err(|e| DataFusionError::Execution(format!("Error parsing regex pattern: {}", e)))?;
+    Ok(is_compat(&ast))
+}
+
+fn is_compat(ast: &Hir) -> bool {
+    match ast.kind() {
+        // character class such as `[a-z]` or `[^aeiou]`
+        HirKind::Class(Class::Unicode(c)) => c.is_ascii(),
+        // repetition quantifier such as `+`, `*`, `?`, `{1,3}`
+        HirKind::Repetition(r) => is_compat(r.sub.as_ref()),
+        // series of expressions such as `[A-Z][a-z]`
+        HirKind::Concat(items) => items.iter().all(|ast| is_compat(ast)),
+        other => false,
+    }
 }
 
 impl Hash for RLike {
@@ -166,5 +189,27 @@ impl PhysicalExpr for RLike {
         use std::hash::Hash;
         let mut s = state;
         self.hash(&mut s);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::regexp::is_regexp_supported;
+    use datafusion_common::Result;
+
+    #[test]
+    fn parse_supported_regex() -> Result<()> {
+        assert!(is_regexp_supported("[a-z]")?);
+        assert!(is_regexp_supported("[a-z]+")?);
+        assert!(is_regexp_supported("[a-z]*")?);
+        assert!(is_regexp_supported("[a-z]?")?);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_unsupported_regex() -> Result<()> {
+        assert!(!is_regexp_supported("abc$")?);
+        assert!(!is_regexp_supported("^abc")?);
+        Ok(())
     }
 }

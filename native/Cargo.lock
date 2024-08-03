@@ -940,6 +940,7 @@ dependencies = [
  "num",
  "rand",
  "regex",
+ "regex-syntax",
  "thiserror",
  "twox-hash",
  "unicode-segmentation",
