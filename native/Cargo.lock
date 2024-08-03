@@ -882,6 +882,7 @@ dependencies = [
  "datafusion-comet-spark-expr",
  "datafusion-common",
  "datafusion-expr",
+ "datafusion-functions-nested",
  "datafusion-physical-expr",
  "datafusion-physical-expr-common",
  "flate2",
@@ -1052,6 +1053,27 @@ dependencies = [
  "log",
  "paste",
  "sqlparser",
+]
+
+[[package]]
+name = "datafusion-functions-nested"
+version = "40.0.0"
+source = "git+https://github.com/apache/datafusion.git?rev=35c2e7e#35c2e7e7eb04e80877bbbc1fa4a5b06f31a4e4bc"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-ord",
+ "arrow-schema",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "itertools 0.12.1",
+ "log",
+ "paste",
+ "rand",
 ]
 
 [[package]]
@@ -2321,7 +2343,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.72",

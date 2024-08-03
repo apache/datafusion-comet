@@ -1922,4 +1922,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("create_array") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        val df = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
+        checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"))))
+      }
+    }
+  }
 }

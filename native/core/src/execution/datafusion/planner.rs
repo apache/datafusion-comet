@@ -55,6 +55,7 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
+use datafusion_functions_nested::make_array::make_array_udf;
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
 use datafusion_physical_expr_common::expressions::Literal;
@@ -623,6 +624,21 @@ impl PhysicalPlanner {
             ExprStruct::GetStructField(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
                 Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
+            }
+            ExprStruct::CreateArray(expr) => {
+                let values = expr
+                    .values
+                    .iter()
+                    .map(|expr| self.create_expr(expr, input_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "make_array",
+                    make_array_udf(),
+                    values,
+                    data_type,
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
