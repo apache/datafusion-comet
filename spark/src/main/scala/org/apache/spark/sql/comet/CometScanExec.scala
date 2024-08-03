@@ -43,7 +43,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, MetricsSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -439,7 +439,7 @@ case class CometScanExec(
   }
 }
 
-object CometScanExec {
+object CometScanExec extends DataTypeSupport {
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {

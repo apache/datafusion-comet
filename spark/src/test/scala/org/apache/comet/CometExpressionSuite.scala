@@ -28,7 +28,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
@@ -1902,6 +1902,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withDictionary = dictionaryEnabled) {
         checkSparkAnswerAndOperator("SELECT struct(_1, _2) FROM tbl")
         checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+      }
+    }
+  }
+
+  test("get_struct_field") {
+    withSQLConf(
+      CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key -> "true",
+      CometConf.COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
+      withTempPath { dir =>
+        var df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested"))
+
+        df.write.parquet(dir.toString())
+
+        df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested.id"))
       }
     }
   }

@@ -29,7 +29,6 @@ pub mod bloom_filter_might_contain;
 pub mod comet_scalar_funcs;
 pub mod correlation;
 pub mod covariance;
-pub mod create_named_struct;
 pub mod negative;
 pub mod stats;
 pub mod stddev;

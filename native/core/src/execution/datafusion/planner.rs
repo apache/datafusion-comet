@@ -94,7 +94,7 @@ use crate::{
     },
 };
 
-use super::expressions::{create_named_struct::CreateNamedStruct, EvalMode};
+use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -109,7 +109,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, DateTruncExpr, HourExpr, IfExpr, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr,
+    Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
+    SecondExpr, TimestampTruncExpr,
 };
 
 // For clippy error on type_complexity.
@@ -618,6 +619,10 @@ impl PhysicalPlanner {
                     .collect::<Result<Vec<_>, _>>()?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+            }
+            ExprStruct::GetStructField(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
+                Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
