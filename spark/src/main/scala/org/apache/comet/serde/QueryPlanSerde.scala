@@ -1898,12 +1898,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val optExpr = scalarExprToProto("length", childExpr)
           optExprWithInfo(optExpr, expr, castExpr)
 
-        case Lower(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
-          val optExpr = scalarExprToProto("lower", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
-
         case Md5(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
           val optExpr = scalarExprToProto("md5", childExpr)
@@ -1970,10 +1964,34 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           trim(expr, srcStr, trimStr, inputs, "btrim")
 
         case Upper(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
-          val optExpr = scalarExprToProto("upper", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
+          if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+            val castExpr = Cast(child, StringType)
+            val childExpr = exprToProtoInternal(castExpr, inputs)
+            val optExpr = scalarExprToProto("upper", childExpr)
+            optExprWithInfo(optExpr, expr, castExpr)
+          } else {
+            withInfo(
+              expr,
+              "Comet is not compatible with Spark for case conversion in " +
+                s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
+                "to enable it anyway.")
+            None
+          }
+
+        case Lower(child) =>
+          if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+            val castExpr = Cast(child, StringType)
+            val childExpr = exprToProtoInternal(castExpr, inputs)
+            val optExpr = scalarExprToProto("lower", childExpr)
+            optExprWithInfo(optExpr, expr, castExpr)
+          } else {
+            withInfo(
+              expr,
+              "Comet is not compatible with Spark for case conversion in " +
+                s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
+                "to enable it anyway.")
+            None
+          }
 
         case BitwiseAnd(left, right) =>
           val leftExpr = exprToProtoInternal(left, inputs)

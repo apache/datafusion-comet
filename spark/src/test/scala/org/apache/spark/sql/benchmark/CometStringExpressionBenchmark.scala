@@ -207,7 +207,8 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
+            CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
             spark.sql("select upper(c1) from parquetV1Table").noop()
           }
         }
