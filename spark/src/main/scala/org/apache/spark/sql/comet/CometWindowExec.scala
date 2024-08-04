@@ -19,20 +19,15 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters.asJavaIterableConverter
-
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, NamedExpression, SortOrder, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.CometWindowExec.getNativePlan
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec.{METRIC_NATIVE_TIME_DESCRIPTION, METRIC_NATIVE_TIME_NAME}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
-import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.serde.OperatorOuterClass
+import com.google.common.base.Objects
+
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, windowExprToProto}
 
 /**
  * Comet physical plan node for Spark `WindowsExec`.
@@ -42,14 +37,15 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, wi
  * executions separated by a Comet shuffle exchange.
  */
 case class CometWindowExec(
+    override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     windowExpression: Seq[NamedExpression],
     partitionSpec: Seq[Expression],
     orderSpec: Seq[SortOrder],
-    child: SparkPlan)
-    extends CometExec
-    with UnaryExecNode {
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
 
   override def nodeName: String = "CometWindowExec"
 
@@ -65,18 +61,6 @@ case class CometWindowExec(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
 
-  override def supportsColumnar: Boolean = true
-
-  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val childRDD = child.executeColumnar()
-
-    childRDD.mapPartitionsInternal { iter =>
-      CometExec.getCometIterator(
-        Seq(iter),
-        getNativePlan(output, windowExpression, partitionSpec, orderSpec, child).get)
-    }
-  }
-
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
   override def outputPartitioning: Partitioning = child.outputPartitioning
@@ -84,52 +68,20 @@ case class CometWindowExec(
   protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-}
+  override def stringArgs: Iterator[Any] =
+    Iterator(output, windowExpression, partitionSpec, orderSpec, child)
 
-object CometWindowExec {
-  def getNativePlan(
-      outputAttributes: Seq[Attribute],
-      windowExpression: Seq[NamedExpression],
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      child: SparkPlan): Option[Operator] = {
-
-    val orderSpecs = orderSpec.map(exprToProto(_, child.output))
-    val partitionSpecs = partitionSpec.map(exprToProto(_, child.output))
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-    val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
-
-    val scanTypes = outputAttributes.flatten { attr =>
-      serializeDataType(attr.dataType)
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometWindowExec =>
+        this.windowExpression == other.windowExpression && this.child == other.child &&
+        this.partitionSpec == other.partitionSpec && this.orderSpec == other.orderSpec &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
     }
-
-    val windowExprs = windowExpression.map(w =>
-      windowExprToProto(
-        w.asInstanceOf[Alias].child.asInstanceOf[WindowExpression],
-        outputAttributes))
-
-    val windowBuilder = OperatorOuterClass.Window
-      .newBuilder()
-
-    if (windowExprs.forall(_.isDefined)) {
-      windowBuilder
-        .addAllWindowExpr(windowExprs.map(_.get).asJava)
-
-      if (orderSpecs.forall(_.isDefined)) {
-        windowBuilder.addAllOrderByList(orderSpecs.map(_.get).asJava)
-      }
-
-      if (partitionSpecs.forall(_.isDefined)) {
-        windowBuilder.addAllPartitionByList(partitionSpecs.map(_.get).asJava)
-      }
-
-      scanBuilder.addAllFields(scanTypes.asJava)
-
-      val opBuilder = OperatorOuterClass.Operator
-        .newBuilder()
-        .addChildren(scanOpBuilder.setScan(scanBuilder))
-
-      Some(opBuilder.setWindow(windowBuilder).build())
-    } else None
   }
+
+  override def hashCode(): Int =
+    Objects.hashCode(windowExpression, partitionSpec, orderSpec, child)
 }
