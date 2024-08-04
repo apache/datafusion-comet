@@ -255,7 +255,7 @@ Arguments: [item_sk#26, d_date#27, web_sales#28, store_sales#29], [item_sk#26 AS
 
 (48) CometWindowExec
 Input [4]: [item_sk#26, d_date#27, web_sales#28, store_sales#29]
-Arguments: Window [max(web_sales#28) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#30, max(store_sales#29) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#31], [item_sk#26], [d_date#27 ASC NULLS FIRST], [item_sk#26, d_date#27, web_sales#28, store_sales#29, web_cumulative#30, store_cumulative#31], [max(web_sales#28) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#30, max(store_sales#29) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#31], [item_sk#26], [d_date#27 ASC NULLS FIRST]
+Arguments: [item_sk#26, d_date#27, web_sales#28, store_sales#29, web_cumulative#30, store_cumulative#31], [max(web_sales#28) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#30, max(store_sales#29) windowspecdefinition(item_sk#26, d_date#27 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#31], [item_sk#26], [d_date#27 ASC NULLS FIRST]
 
 (49) CometFilter
 Input [6]: [item_sk#26, d_date#27, web_sales#28, store_sales#29, web_cumulative#30, store_cumulative#31]
