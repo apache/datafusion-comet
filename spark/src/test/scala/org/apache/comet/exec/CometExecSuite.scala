@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, Cartes
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{col, count, date_add, expr, lead, sum}
+import org.apache.spark.sql.functions.{col, date_add, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
@@ -1492,10 +1492,9 @@ class CometExecSuite extends CometTestBase {
           aggregateFunctions.foreach { function =>
             val queries = Seq(
               s"SELECT $function OVER() FROM t1",
-              // TODO: Range frame is not supported yet.
-              // s"SELECT $function OVER(order by _2) FROM t1",
-              // s"SELECT $function OVER(order by _2 desc) FROM t1",
-              // s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2 desc) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
               s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
