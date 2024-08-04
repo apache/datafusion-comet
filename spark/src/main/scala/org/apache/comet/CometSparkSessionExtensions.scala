@@ -624,15 +624,15 @@ class CometSparkSessionExtensions
           val newOp = transform1(w)
           newOp match {
             case Some(nativeOp) =>
-              val cometOp =
-                CometWindowExec(
-                  w,
-                  w.output,
-                  w.windowExpression,
-                  w.partitionSpec,
-                  w.orderSpec,
-                  w.child)
-              CometSinkPlaceHolder(nativeOp, w, cometOp)
+              CometWindowExec(
+                nativeOp,
+                w,
+                w.output,
+                w.windowExpression,
+                w.partitionSpec,
+                w.orderSpec,
+                w.child,
+                SerializedPlan(None))
             case None =>
               w
           }
