@@ -27,6 +27,7 @@ use futures::{Stream, StreamExt};
 use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 
@@ -42,6 +43,7 @@ pub struct CopyExec {
     input: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
     cache: PlanProperties,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl CopyExec {
@@ -70,6 +72,7 @@ impl CopyExec {
             input,
             schema,
             cache,
+            metrics: ExecutionPlanMetricsSet::default(),
         }
     }
 }
@@ -107,6 +110,7 @@ impl ExecutionPlan for CopyExec {
             input: new_input,
             schema: self.schema.clone(),
             cache: self.cache.clone(),
+            metrics: self.metrics.clone(),
         }))
     }
 
@@ -116,7 +120,12 @@ impl ExecutionPlan for CopyExec {
         context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let child_stream = self.input.execute(partition, context)?;
-        Ok(Box::pin(CopyStream::new(self.schema(), child_stream)))
+        Ok(Box::pin(CopyStream::new(
+            self,
+            self.schema(),
+            child_stream,
+            partition,
+        )))
     }
 
     fn statistics(&self) -> DataFusionResult<Statistics> {
@@ -130,24 +139,36 @@ impl ExecutionPlan for CopyExec {
     fn name(&self) -> &str {
         "CopyExec"
     }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
 }
 
 struct CopyStream {
     schema: SchemaRef,
     child_stream: SendableRecordBatchStream,
+    baseline_metrics: BaselineMetrics,
 }
 
 impl CopyStream {
-    fn new(schema: SchemaRef, child_stream: SendableRecordBatchStream) -> Self {
+    fn new(
+        exec: &CopyExec,
+        schema: SchemaRef,
+        child_stream: SendableRecordBatchStream,
+        partition: usize,
+    ) -> Self {
         Self {
             schema,
             child_stream,
+            baseline_metrics: BaselineMetrics::new(&exec.metrics, partition),
         }
     }
 
     // TODO: replace copy_or_cast_array with copy_array if upstream sort kernel fixes
     // dictionary array sorting issue.
     fn copy(&self, batch: RecordBatch) -> DataFusionResult<RecordBatch> {
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let vectors = batch
             .columns()
             .iter()
@@ -155,8 +176,11 @@ impl CopyStream {
             .collect::<Result<Vec<ArrayRef>, _>>()?;
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-        RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
-            .map_err(|e| arrow_datafusion_err!(e))
+        let maybe_batch = RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
+            .map_err(|e| arrow_datafusion_err!(e));
+        timer.stop();
+        self.baseline_metrics.record_output(batch.num_rows());
+        maybe_batch
     }
 }
 
