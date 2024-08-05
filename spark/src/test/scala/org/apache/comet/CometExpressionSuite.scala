@@ -27,6 +27,8 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -630,6 +632,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
           checkSparkAnswerAndOperator(query)
         }
+      }
+    }
+  }
+
+  test("withInfo") {
+    val table = "with_info"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      val query = sql(s"select cast(id as string) from $table")
+      val (_, cometPlan) = checkSparkAnswer(query)
+      val project = cometPlan
+        .asInstanceOf[WholeStageCodegenExec]
+        .child
+        .asInstanceOf[ColumnarToRowExec]
+        .child
+        .asInstanceOf[InputAdapter]
+        .child
+        .asInstanceOf[CometProjectExec]
+      val id = project.expressions.head
+      CometSparkSessionExtensions.withInfo(id, "reason 1")
+      CometSparkSessionExtensions.withInfo(project, "reason 2")
+      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
+      CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 4")
+      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
+      CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 6")
+      val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
+      for (i <- 1 until 7) {
+        assert(explain.contains(s"reason $i"))
       }
     }
   }
@@ -1697,6 +1730,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1709,6 +1743,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Project is not native because the following children are not native (BroadcastHashJoin)",
               "BroadcastHashJoin is not enabled because the following children are not native" +
                 " (BroadcastExchange, Project)")))
