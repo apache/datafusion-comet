@@ -28,6 +28,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -35,7 +36,6 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -643,10 +643,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values(1,'James Smith')")
       val query = sql(s"select cast(id as string) from $table")
       val (_, cometPlan) = checkSparkAnswer(query)
-      val project = cometPlan.asInstanceOf[WholeStageCodegenExec]
-        .child.asInstanceOf[ColumnarToRowExec]
-        .child.asInstanceOf[InputAdapter]
-        .child.asInstanceOf[CometProjectExec]
+      val project = cometPlan
+        .asInstanceOf[WholeStageCodegenExec]
+        .child
+        .asInstanceOf[ColumnarToRowExec]
+        .child
+        .asInstanceOf[InputAdapter]
+        .child
+        .asInstanceOf[CometProjectExec]
       val id = project.expressions.head
       CometSparkSessionExtensions.withInfo(id, "reason 1")
       CometSparkSessionExtensions.withInfo(project, "reason 2")
