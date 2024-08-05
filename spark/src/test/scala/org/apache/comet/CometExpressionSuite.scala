@@ -20,20 +20,19 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
-
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -630,6 +629,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
           checkSparkAnswerAndOperator(query)
         }
+      }
+    }
+  }
+
+  test("withInfo") {
+    val table = "with_info"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      val query = sql(s"select cast(id as string) from $table")
+      val (_, cometPlan) = checkSparkAnswer(query)
+      val project = cometPlan.asInstanceOf[WholeStageCodegenExec]
+        .child.asInstanceOf[ColumnarToRowExec]
+        .child.asInstanceOf[InputAdapter]
+        .child.asInstanceOf[CometProjectExec]
+      val id = project.expressions.head
+      CometSparkSessionExtensions.withInfo(id, "reason 1")
+      CometSparkSessionExtensions.withInfo(project, "reason 2")
+      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
+      CometSparkSessionExtensions.withInfo(project, "reason 4")
+      CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
+      CometSparkSessionExtensions.withInfo(project, id)
+      val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
+      for (i <- 1 until 6) {
+        assert(explain.contains(s"reason $i"))
       }
     }
   }
