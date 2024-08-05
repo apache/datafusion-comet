@@ -234,6 +234,7 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public void close() {
+    DECIMAL_BYTES_ALL = null;
     getValueVector().close();
   }
 
