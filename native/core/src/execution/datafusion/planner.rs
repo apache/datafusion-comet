@@ -1269,7 +1269,8 @@ impl PhysicalPlanner {
                     "min",
                     false,
                     false,
-                ).map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                )
+                .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Max(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
@@ -1285,7 +1286,8 @@ impl PhysicalPlanner {
                     "max",
                     false,
                     false,
-                ).map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                )
+                .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Sum(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
