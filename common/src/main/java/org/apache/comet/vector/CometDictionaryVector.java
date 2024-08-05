@@ -98,6 +98,11 @@ public class CometDictionaryVector extends CometDecodedVector {
   }
 
   @Override
+  public long getLongDecimal(int i) {
+    return values.decodeToLongDecimal(indices.getInt(i));
+  }
+
+  @Override
   public float getFloat(int i) {
     return values.decodeToFloat(indices.getInt(i));
   }
