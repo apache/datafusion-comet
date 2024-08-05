@@ -20,6 +20,8 @@
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
+use datafusion::functions_aggregate::min_max::max_udaf;
+use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -33,7 +35,7 @@ use datafusion::{
         execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
-            Literal as DataFusionLiteral, Max, Min, NotExpr,
+            Literal as DataFusionLiteral, NotExpr,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -1254,14 +1256,36 @@ impl PhysicalPlanner {
                 .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Min(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Min::new(child, "min", datatype)))
+                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                create_aggregate_expr(
+                    &min_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    schema.as_ref(),
+                    "min",
+                    false,
+                    false,
+                ).map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Max(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), schema)?;
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Max::new(child, "max", datatype)))
+                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                create_aggregate_expr(
+                    &max_udaf(),
+                    &[child],
+                    &[],
+                    &[],
+                    &[],
+                    schema.as_ref(),
+                    "max",
+                    false,
+                    false,
+                ).map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Sum(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
