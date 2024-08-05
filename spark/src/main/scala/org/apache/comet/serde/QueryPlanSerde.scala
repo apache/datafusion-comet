@@ -2936,7 +2936,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           _: DateType | _: BooleanType =>
         true
       case StructType(fields) =>
-        fields.forall(f => supportedDataType(f.dataType))
+        fields.forall(f => supportedDataType(f.dataType)) &&
+        // Java Arrow stream reader cannot work on duplicate field name
+        fields.map(f => f.name).distinct.length == fields.length
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
       case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
       case ArrayType(elementType, _) =>
