@@ -1726,6 +1726,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1738,6 +1739,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Project is not native because the following children are not native (BroadcastHashJoin)",
               "BroadcastHashJoin is not enabled because the following children are not native" +
                 " (BroadcastExchange, Project)")))
