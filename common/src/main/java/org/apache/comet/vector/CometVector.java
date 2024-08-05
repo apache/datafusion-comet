@@ -89,8 +89,8 @@ public abstract class CometVector extends ColumnVector {
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
-    } else if ( precision <= Decimal.MAX_LONG_DIGITS()) {
-      if(useDecimal128){
+    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
+      if (useDecimal128) {
         return createDecimal(getLongFromDecimalBytes(getBinaryDecimal(i)), precision, scale);
       } else {
         return createDecimal(getLong(i), precision, scale);
@@ -123,7 +123,7 @@ public abstract class CometVector extends ColumnVector {
 
   // bytes.length must be 16
   public long getLongFromDecimalBytes(byte[] bytes) {
-    assert(bytes.length == 16);
+    assert (bytes.length == 16);
     // get Long value from the last eight bytes
     // Use ByteBuffer's fast conversion to long
     long val = ByteBuffer.wrap(bytes).getLong(8);
