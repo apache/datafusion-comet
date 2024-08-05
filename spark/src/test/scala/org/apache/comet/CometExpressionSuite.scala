@@ -648,12 +648,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometSparkSessionExtensions.withInfo(id, "reason 1")
       CometSparkSessionExtensions.withInfo(project, "reason 2")
       CometSparkSessionExtensions.withInfo(project, "reason 3", id)
-      CometSparkSessionExtensions.withInfo(project, "reason 4")
       CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 4")
       CometSparkSessionExtensions.withInfo(project, "reason 5", id)
       CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
-      for (i <- 1 until 6) {
+      for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))
       }
     }
