@@ -38,6 +38,7 @@ use crate::{
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::{
     execution::TaskContext,
     physical_expr::*,
@@ -62,6 +63,7 @@ pub struct ScanExec {
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
     cache: PlanProperties,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl ScanExec {
@@ -91,6 +93,7 @@ impl ScanExec {
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
+            metrics: ExecutionPlanMetricsSet::default(),
         })
     }
 
@@ -261,10 +264,14 @@ impl ExecutionPlan for ScanExec {
 
     fn execute(
         &self,
-        _: usize,
+        partition: usize,
         _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        Ok(Box::pin(ScanStream::new(self.clone(), self.schema())))
+        Ok(Box::pin(ScanStream::new(
+            self.clone(),
+            self.schema(),
+            partition,
+        )))
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -273,6 +280,10 @@ impl ExecutionPlan for ScanExec {
 
     fn name(&self) -> &str {
         "ScanExec"
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
@@ -300,11 +311,18 @@ struct ScanStream {
     scan: ScanExec,
     /// Schema representing the data
     schema: SchemaRef,
+    /// Metrics
+    baseline_metrics: BaselineMetrics,
 }
 
 impl ScanStream {
-    pub fn new(scan: ScanExec, schema: SchemaRef) -> Self {
-        Self { scan, schema }
+    pub fn new(scan: ScanExec, schema: SchemaRef, partition: usize) -> Self {
+        let baseline_metrics = BaselineMetrics::new(&scan.metrics, partition);
+        Self {
+            scan,
+            schema,
+            baseline_metrics,
+        }
     }
 
     fn build_record_batch(
@@ -338,9 +356,11 @@ impl Stream for ScanStream {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
-        let input_batch = &*scan_batch;
+        timer.stop();
 
+        let input_batch = &*scan_batch;
         let input_batch = if let Some(batch) = input_batch {
             batch
         } else {
@@ -350,7 +370,11 @@ impl Stream for ScanStream {
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
-                Poll::Ready(Some(self.build_record_batch(columns, *num_rows)))
+                self.baseline_metrics.record_output(*num_rows);
+                let mut timer = self.baseline_metrics.elapsed_compute().timer();
+                let maybe_batch = self.build_record_batch(columns, *num_rows);
+                timer.stop();
+                Poll::Ready(Some(maybe_batch))
             }
         };
 
