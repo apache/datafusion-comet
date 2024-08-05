@@ -91,6 +91,11 @@ public class CometPlainVector extends CometDecodedVector {
   }
 
   @Override
+  public long getLongDecimal(int rowId) {
+    return Platform.getLong(null, valueBufferAddress + rowId * 16L);
+  }
+
+  @Override
   public float getFloat(int rowId) {
     return Platform.getFloat(null, valueBufferAddress + rowId * 4L);
   }
@@ -153,11 +158,7 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public boolean isNullAt(int rowId) {
-    if (this.valueBufferAddress == -1) {
-      return true;
-    } else {
-      return super.isNullAt(rowId);
-    }
+    return this.valueBufferAddress == -1 || super.isNullAt(rowId);
   }
 
   @Override

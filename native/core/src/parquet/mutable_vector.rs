@@ -154,7 +154,7 @@ impl ParquetMutableVector {
         // We need to update offset buffer for binary.
         if Self::is_binary_type(&self.arrow_type) {
             let mut offset = self.num_values * 4;
-            let prev_offset_value = bit::read_num_bytes_u32(4, &self.value_buffer[offset..]);
+            let prev_offset_value = bit::read_u32(&self.value_buffer[offset..]);
             offset += 4;
             (0..n).for_each(|_| {
                 bit::memcpy_value(&prev_offset_value, 4, &mut self.value_buffer[offset..]);

@@ -34,7 +34,7 @@ import org.apache.spark.sql.vectorized._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.MetricsSupport
+import org.apache.comet.{DataTypeSupport, MetricsSupport}
 import org.apache.comet.shims.ShimCometBatchScanExec
 
 case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
@@ -152,3 +152,5 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
 
   override def supportsColumnar: Boolean = true
 }
+
+object CometBatchScanExec extends DataTypeSupport

@@ -19,6 +19,16 @@ under the License.
 
 # Apache DataFusion Comet
 
+[![Apache licensed][license-badge]][license-url]
+[![Discord chat][discord-badge]][discord-url]
+
+[license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
+[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
+[discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
+[discord-url]: https://discord.gg/3EAr4ZX6JK
+
+<img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
+
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
 [Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
@@ -43,16 +53,16 @@ speedup compared to Spark.
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
 for a broader set of queries.
 
-![](docs/source/_static/images/tpch_allqueries.png)
+![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
 
-![](docs/source/_static/images/tpch_queries_compare.png)
+![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
 is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
 
-![](docs/source/_static/images/tpch_queries_speedup.png)
+![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png)
 
 These benchmarks can be reproduced in any environment using the documentation in the 
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 

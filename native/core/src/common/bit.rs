@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{cmp, cmp::min, mem::size_of};
+use std::{cmp::min, mem::size_of};
 
 use arrow::buffer::Buffer;
 
@@ -131,6 +131,18 @@ pub fn read_num_bytes_u32(size: usize, src: &[u8]) -> u32 {
     trailing_bits(v as u64, size * 8) as u32
 }
 
+#[inline]
+pub fn read_u64(src: &[u8]) -> u64 {
+    let in_ptr = src.as_ptr() as *const u64;
+    unsafe { in_ptr.read_unaligned() }
+}
+
+#[inline]
+pub fn read_u32(src: &[u8]) -> u32 {
+    let in_ptr = src.as_ptr() as *const u32;
+    unsafe { in_ptr.read_unaligned() }
+}
+
 /// Similar to the `read_num_bytes` but read nums from bytes in big-endian order
 /// This is used to read bytes from Java's OutputStream which writes bytes in big-endian
 macro_rules! read_num_be_bytes {
@@ -145,7 +157,9 @@ macro_rules! read_num_be_bytes {
 #[inline]
 pub fn memcpy(source: &[u8], target: &mut [u8]) {
     debug_assert!(target.len() >= source.len(), "Copying from source to target is not possible. Source has {} bytes but target has {} bytes", source.len(), target.len());
-    target[..source.len()].copy_from_slice(source)
+    // Originally `target[..source.len()].copy_from_slice(source)`
+    // We use the unsafe copy method to avoid some expensive bounds checking/
+    unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), target.as_mut_ptr(), source.len()) }
 }
 
 #[inline]
@@ -187,8 +201,7 @@ pub fn trailing_bits(v: u64, num_bits: usize) -> u64 {
     if unlikely(num_bits >= 64) {
         return v;
     }
-    let n = 64 - num_bits;
-    (v << n) >> n
+    v & ((1 << num_bits) - 1)
 }
 
 #[inline]
@@ -553,8 +566,11 @@ pub struct BitReader {
 /// either byte aligned or not.
 impl BitReader {
     pub fn new(buf: Buffer, len: usize) -> Self {
-        let num_bytes = cmp::min(8, len);
-        let buffered_values = read_num_bytes_u64(num_bytes, buf.as_slice());
+        let buffered_values = if size_of::<u64>() > len {
+            read_num_bytes_u64(len, buf.as_slice())
+        } else {
+            read_u64(buf.as_slice())
+        };
         BitReader {
             buffer: buf,
             buffered_values,
@@ -572,8 +588,11 @@ impl BitReader {
     pub fn reset(&mut self, buf: Buffer) {
         self.buffer = buf;
         self.total_bytes = self.buffer.len();
-        let num_bytes = cmp::min(8, self.total_bytes);
-        self.buffered_values = read_num_bytes_u64(num_bytes, self.buffer.as_slice());
+        self.buffered_values = if size_of::<u64>() > self.total_bytes {
+            read_num_bytes_u64(self.total_bytes, self.buffer.as_slice())
+        } else {
+            read_u64(self.buffer.as_slice())
+        };
         self.byte_offset = 0;
         self.bit_offset = 0;
     }
@@ -595,19 +614,7 @@ impl BitReader {
             return None;
         }
 
-        let mut v =
-            trailing_bits(self.buffered_values, self.bit_offset + num_bits) >> self.bit_offset;
-        self.bit_offset += num_bits;
-
-        if self.bit_offset >= 64 {
-            self.byte_offset += 8;
-            self.bit_offset -= 64;
-
-            self.reload_buffer_values();
-            v |= trailing_bits(self.buffered_values, self.bit_offset)
-                .wrapping_shl((num_bits - self.bit_offset) as u32);
-        }
-
+        let v = self.get_u64_value(num_bits);
         Some(T::from(v))
     }
 
@@ -623,20 +630,26 @@ impl BitReader {
     /// Undefined behavior will happen if any of the above assumptions is violated.
     #[inline]
     pub fn get_u32_value(&mut self, num_bits: usize) -> u32 {
-        let mut v =
-            trailing_bits(self.buffered_values, self.bit_offset + num_bits) >> self.bit_offset;
-        self.bit_offset += num_bits;
+        self.get_u64_value(num_bits) as u32
+    }
 
-        if self.bit_offset >= 64 {
-            self.byte_offset += 8;
-            self.bit_offset -= 64;
-
-            self.reload_buffer_values();
-            v |= trailing_bits(self.buffered_values, self.bit_offset)
-                .wrapping_shl((num_bits - self.bit_offset) as u32);
+    #[inline(always)]
+    fn get_u64_value(&mut self, num_bits: usize) -> u64 {
+        if unlikely(num_bits == 0) {
+            0
+        } else {
+            let v = self.buffered_values >> self.bit_offset;
+            let mask = u64::MAX >> (64 - num_bits);
+            self.bit_offset += num_bits;
+            if self.bit_offset < 64 {
+                v & mask
+            } else {
+                self.byte_offset += 8;
+                self.bit_offset -= 64;
+                self.reload_buffer_values();
+                ((self.buffered_values << (num_bits - self.bit_offset)) | v) & mask
+            }
         }
-
-        v as u32
     }
 
     /// Gets at most `num` bits from this reader, and append them to the `dst` byte slice, starting
@@ -972,9 +985,12 @@ impl BitReader {
     }
 
     fn reload_buffer_values(&mut self) {
-        let bytes_to_read = cmp::min(self.total_bytes - self.byte_offset, 8);
-        self.buffered_values =
-            read_num_bytes_u64(bytes_to_read, &self.buffer.as_slice()[self.byte_offset..]);
+        let bytes_to_read = self.total_bytes - self.byte_offset;
+        self.buffered_values = if 8 > bytes_to_read {
+            read_num_bytes_u64(bytes_to_read, &self.buffer.as_slice()[self.byte_offset..])
+        } else {
+            read_u64(&self.buffer.as_slice()[self.byte_offset..])
+        };
     }
 }
 
@@ -1018,6 +1034,12 @@ mod tests {
     }
 
     #[test]
+    fn test_read_u64() {
+        let buffer: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        assert_eq!(read_u64(&buffer), read_num_bytes!(u64, 8, &buffer),);
+    }
+
+    #[test]
     fn test_read_num_bytes_u32() {
         let buffer: Vec<u8> = vec![0, 1, 2, 3];
         for size in 0..buffer.len() {
@@ -1026,6 +1048,12 @@ mod tests {
                 read_num_bytes!(u32, size, &buffer),
             );
         }
+    }
+
+    #[test]
+    fn test_read_u32() {
+        let buffer: Vec<u8> = vec![0, 1, 2, 3];
+        assert_eq!(read_u32(&buffer), read_num_bytes!(u32, 4, &buffer),);
     }
 
     #[test]

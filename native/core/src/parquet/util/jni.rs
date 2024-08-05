@@ -93,27 +93,36 @@ pub fn convert_encoding(ordinal: jint) -> Encoding {
     }
 }
 
+#[derive(Debug)]
 pub struct TypePromotionInfo {
     pub(crate) physical_type: PhysicalType,
     pub(crate) precision: i32,
     pub(crate) scale: i32,
+    pub(crate) bit_width: i32,
 }
 
 impl TypePromotionInfo {
-    pub fn new_from_jni(physical_type_id: jint, precision: jint, scale: jint) -> Self {
+    pub fn new_from_jni(
+        physical_type_id: jint,
+        precision: jint,
+        scale: jint,
+        bit_width: jint,
+    ) -> Self {
         let physical_type = convert_physical_type(physical_type_id);
         Self {
             physical_type,
             precision,
             scale,
+            bit_width,
         }
     }
 
-    pub fn new(physical_type: PhysicalType, precision: i32, scale: i32) -> Self {
+    pub fn new(physical_type: PhysicalType, precision: i32, scale: i32, bit_width: i32) -> Self {
         Self {
             physical_type,
             precision,
             scale,
+            bit_width,
         }
     }
 }

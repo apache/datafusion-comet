@@ -663,9 +663,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to TimestampType - subset of supported values") {
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
       val values = Seq(
         "2020",
         "2020-01",
@@ -675,7 +673,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "2020-01-01T12:34:56",
         "2020-01-01T12:34:56.123456",
         "T2",
-        "-9?")
+        "-9?",
+        "0100",
+        "0100-01",
+        "0100-01-01",
+        "0100-01-01T12",
+        "0100-01-01T12:34",
+        "0100-01-01T12:34:56",
+        "0100-01-01T12:34:56.123456",
+        "10000",
+        "10000-01",
+        "10000-01-01",
+        "10000-01-01T12",
+        "10000-01-01T12:34",
+        "10000-01-01T12:34:56",
+        "10000-01-01T12:34:56.123456")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
 
@@ -988,8 +1000,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkException), Some(cometException)) =>
             // both systems threw an exception so we make sure they are the same
             val sparkMessage =
-              if (sparkException.getCause != null) sparkException.getCause.getMessage else null
-            val cometMessage = cometException.getCause.getMessage
+              if (sparkException.getCause != null) sparkException.getCause.getMessage
+              else sparkException.getMessage
+            val cometMessage =
+              if (cometException.getCause != null) cometException.getCause.getMessage
+              else cometException.getMessage
             if (CometSparkSessionExtensions.isSpark40Plus) {
               // for Spark 4 we expect to sparkException carries the message
               assert(

@@ -108,6 +108,11 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
+  public long getLongDecimal(int rowId) {
+    return delegate.getLongDecimal(rowId);
+  }
+
+  @Override
   public float getFloat(int rowId) {
     return delegate.getFloat(rowId);
   }

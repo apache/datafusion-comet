@@ -43,7 +43,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, MetricsSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -135,10 +135,7 @@ case class CometScanExec(
     (wrapped.outputPartitioning, wrapped.outputOrdering)
 
   @transient
-  private lazy val pushedDownFilters = {
-    val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
-    dataFilters.flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
-  }
+  private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
 
   override lazy val metadata: Map[String, String] =
     if (wrapped == null) Map.empty else wrapped.metadata
@@ -442,7 +439,7 @@ case class CometScanExec(
   }
 }
 
-object CometScanExec {
+object CometScanExec extends DataTypeSupport {
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {

@@ -39,7 +39,7 @@ use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, js
 
 use crate::execution::operators::ExecutionError;
 use datafusion_comet_spark_expr::SparkError;
-use jni::objects::{GlobalRef, JThrowable};
+use jni::objects::{GlobalRef, JThrowable, JValue};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
@@ -383,6 +383,33 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         throwable,
                     },
             } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            CometError::DataFusion {
+                msg: _,
+                source: DataFusionError::External(e),
+            } if matches!(e.downcast_ref(), Some(SparkError::CastOverFlow { .. })) => {
+                match e.downcast_ref() {
+                    Some(SparkError::CastOverFlow {
+                        value,
+                        from_type,
+                        to_type,
+                    }) => {
+                        let throwable: JThrowable = env
+                            .new_object(
+                                "org/apache/spark/sql/comet/CastOverflowException",
+                                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                                &[
+                                    JValue::Object(&env.new_string(value).unwrap()),
+                                    JValue::Object(&env.new_string(from_type).unwrap()),
+                                    JValue::Object(&env.new_string(to_type).unwrap()),
+                                ],
+                            )
+                            .unwrap()
+                            .into();
+                        env.throw(throwable)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             _ => {
                 let exception = error.to_exception();
                 match backtrace {
@@ -751,7 +778,7 @@ mod tests {
         _class: JClass,
         input: JString,
     ) -> jstring {
-        try_unwrap_or_throw(&e, |mut env| {
+        try_unwrap_or_throw(e, |mut env| {
             let input: String = env
                 .get_string(&input)
                 .expect("Couldn't get java string!")

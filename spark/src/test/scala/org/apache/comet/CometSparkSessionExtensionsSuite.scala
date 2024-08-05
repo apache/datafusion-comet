@@ -22,45 +22,8 @@ package org.apache.comet
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
 
 class CometSparkSessionExtensionsSuite extends CometTestBase {
-  test("unsupported Spark types") {
-    Seq(
-      NullType -> false,
-      BooleanType -> true,
-      ByteType -> true,
-      ShortType -> true,
-      IntegerType -> true,
-      LongType -> true,
-      FloatType -> true,
-      DoubleType -> true,
-      BinaryType -> true,
-      StringType -> true,
-      ArrayType(TimestampType) -> false,
-      StructType(
-        Seq(
-          StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> false,
-      MapType(keyType = LongType, valueType = DateType) -> false,
-      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> false,
-      MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
-      case (dt, expected) =>
-        assert(CometSparkSessionExtensions.isTypeSupported(dt) == expected)
-    }
-  }
-
-  test("unsupported Spark schema") {
-    Seq(
-      Seq(StructField("f1", IntegerType), StructField("f2", BooleanType)) -> true,
-      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> false,
-      Seq(
-        StructField("f1", MapType(keyType = LongType, valueType = StringType)),
-        StructField("f2", ArrayType(DoubleType))) -> false).foreach { case (schema, expected) =>
-      assert(CometSparkSessionExtensions.isSchemaSupported(StructType(schema)) == expected)
-    }
-  }
-
   test("isCometEnabled") {
     val conf = new SQLConf
 

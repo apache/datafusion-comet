@@ -15,14 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    hash::{Hash, Hasher},
-    num::Wrapping,
-    sync::Arc,
-};
-
 use arrow::{
     array::{
         cast::AsArray,
@@ -42,6 +34,14 @@ use arrow::{
 };
 use arrow_array::DictionaryArray;
 use arrow_schema::{DataType, Schema};
+use std::str::FromStr;
+use std::{
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    hash::{Hash, Hasher},
+    num::Wrapping,
+    sync::Arc,
+};
 
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
@@ -56,6 +56,7 @@ use num::{
 };
 use regex::Regex;
 
+use crate::timezone;
 use crate::utils::{array_with_timezone, down_cast_any_ref};
 
 use crate::{EvalMode, SparkError, SparkResult};
@@ -70,6 +71,67 @@ static CAST_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_tz_format(TIMESTAMP_FORMAT)
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
+
+struct TimeStampInfo {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    microsecond: u32,
+}
+
+impl Default for TimeStampInfo {
+    fn default() -> Self {
+        TimeStampInfo {
+            year: 1,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+        }
+    }
+}
+
+impl TimeStampInfo {
+    pub fn with_year(&mut self, year: i32) -> &mut Self {
+        self.year = year;
+        self
+    }
+
+    pub fn with_month(&mut self, month: u32) -> &mut Self {
+        self.month = month;
+        self
+    }
+
+    pub fn with_day(&mut self, day: u32) -> &mut Self {
+        self.day = day;
+        self
+    }
+
+    pub fn with_hour(&mut self, hour: u32) -> &mut Self {
+        self.hour = hour;
+        self
+    }
+
+    pub fn with_minute(&mut self, minute: u32) -> &mut Self {
+        self.minute = minute;
+        self
+    }
+
+    pub fn with_second(&mut self, second: u32) -> &mut Self {
+        self.second = second;
+        self
+    }
+
+    pub fn with_microsecond(&mut self, microsecond: u32) -> &mut Self {
+        self.microsecond = microsecond;
+        self
+    }
+}
 
 #[derive(Debug, Hash)]
 pub struct Cast {
@@ -100,13 +162,15 @@ macro_rules! cast_utf8_to_int {
     }};
 }
 macro_rules! cast_utf8_to_timestamp {
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone("UTC");
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
-            } else if let Ok(Some(cast_value)) = $cast_method($array.value(i).trim(), $eval_mode) {
+            } else if let Ok(Some(cast_value)) =
+                $cast_method($array.value(i).trim(), $eval_mode, $tz)
+            {
                 cast_array.append_value(cast_value);
             } else {
                 cast_array.append_null()
@@ -502,158 +566,166 @@ impl Cast {
             eval_mode,
         }
     }
+}
 
-    fn cast_array(&self, array: ArrayRef) -> DataFusionResult<ArrayRef> {
-        let to_type = &self.data_type;
-        let array = array_with_timezone(array, self.timezone.clone(), Some(to_type))?;
-        let from_type = array.data_type().clone();
-        let array = match &from_type {
-            DataType::Dictionary(key_type, value_type)
-                if key_type.as_ref() == &DataType::Int32
-                    && (value_type.as_ref() == &DataType::Utf8
-                        || value_type.as_ref() == &DataType::LargeUtf8) =>
-            {
-                let dict_array = array
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<Int32Type>>()
-                    .expect("Expected a dictionary array");
-
-                let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                    dict_array.keys().clone(),
-                    self.cast_array(dict_array.values().clone())?,
-                );
-
-                let casted_result = match to_type {
-                    DataType::Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                    _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
-                };
-                return Ok(spark_cast(casted_result, &from_type, to_type));
-            }
-            _ => array,
-        };
-        let from_type = array.data_type();
-
-        let cast_result = match (from_type, to_type) {
-            (DataType::Utf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i32>(&array, self.eval_mode)
-            }
-            (DataType::LargeUtf8, DataType::Boolean) => {
-                Self::spark_cast_utf8_to_boolean::<i64>(&array, self.eval_mode)
-            }
-            (DataType::Utf8, DataType::Timestamp(_, _)) => {
-                Self::cast_string_to_timestamp(&array, to_type, self.eval_mode)
-            }
-            (DataType::Utf8, DataType::Date32) => {
-                Self::cast_string_to_date(&array, to_type, self.eval_mode)
-            }
-            (DataType::Int64, DataType::Int32)
-            | (DataType::Int64, DataType::Int16)
-            | (DataType::Int64, DataType::Int8)
-            | (DataType::Int32, DataType::Int16)
-            | (DataType::Int32, DataType::Int8)
-            | (DataType::Int16, DataType::Int8)
-                if self.eval_mode != EvalMode::Try =>
-            {
-                Self::spark_cast_int_to_int(&array, self.eval_mode, from_type, to_type)
-            }
-            (
-                DataType::Utf8,
-                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_int::<i32>(to_type, &array, self.eval_mode),
-            (
-                DataType::LargeUtf8,
-                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ) => Self::cast_string_to_int::<i64>(to_type, &array, self.eval_mode),
-            (DataType::Float64, DataType::Utf8) => {
-                Self::spark_cast_float64_to_utf8::<i32>(&array, self.eval_mode)
-            }
-            (DataType::Float64, DataType::LargeUtf8) => {
-                Self::spark_cast_float64_to_utf8::<i64>(&array, self.eval_mode)
-            }
-            (DataType::Float32, DataType::Utf8) => {
-                Self::spark_cast_float32_to_utf8::<i32>(&array, self.eval_mode)
-            }
-            (DataType::Float32, DataType::LargeUtf8) => {
-                Self::spark_cast_float32_to_utf8::<i64>(&array, self.eval_mode)
-            }
-            (DataType::Float32, DataType::Decimal128(precision, scale)) => {
-                Self::cast_float32_to_decimal128(&array, *precision, *scale, self.eval_mode)
-            }
-            (DataType::Float64, DataType::Decimal128(precision, scale)) => {
-                Self::cast_float64_to_decimal128(&array, *precision, *scale, self.eval_mode)
-            }
-            (DataType::Float32, DataType::Int8)
-            | (DataType::Float32, DataType::Int16)
-            | (DataType::Float32, DataType::Int32)
-            | (DataType::Float32, DataType::Int64)
-            | (DataType::Float64, DataType::Int8)
-            | (DataType::Float64, DataType::Int16)
-            | (DataType::Float64, DataType::Int32)
-            | (DataType::Float64, DataType::Int64)
-            | (DataType::Decimal128(_, _), DataType::Int8)
-            | (DataType::Decimal128(_, _), DataType::Int16)
-            | (DataType::Decimal128(_, _), DataType::Int32)
-            | (DataType::Decimal128(_, _), DataType::Int64)
-                if self.eval_mode != EvalMode::Try =>
-            {
-                Self::spark_cast_nonintegral_numeric_to_integral(
-                    &array,
-                    self.eval_mode,
-                    from_type,
-                    to_type,
-                )
-            }
-            _ if Self::is_datafusion_spark_compatible(from_type, to_type) => {
-                // use DataFusion cast only when we know that it is compatible with Spark
-                Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
-            }
-            _ => {
-                // we should never reach this code because the Scala code should be checking
-                // for supported cast operations and falling back to Spark for anything that
-                // is not yet supported
-                Err(SparkError::Internal(format!(
-                    "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
-                )))
-            }
-        };
-        Ok(spark_cast(cast_result?, from_type, to_type))
-    }
-
-    /// Determines if DataFusion supports the given cast in a way that is
-    /// compatible with Spark
-    fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
-        if from_type == to_type {
-            return true;
+/// Spark-compatible cast implementation. Defers to DataFusion's cast where that is known
+/// to be compatible, and returns an error when a not supported and not DF-compatible cast
+/// is requested.
+pub fn spark_cast(
+    arg: ColumnarValue,
+    data_type: &DataType,
+    eval_mode: EvalMode,
+    timezone: String,
+) -> DataFusionResult<ColumnarValue> {
+    match arg {
+        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
+            array,
+            data_type,
+            eval_mode,
+            timezone.to_owned(),
+        )?)),
+        ColumnarValue::Scalar(scalar) => {
+            // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
+            // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
+            // here.
+            let array = scalar.to_array()?;
+            let scalar = ScalarValue::try_from_array(
+                &cast_array(array, data_type, eval_mode, timezone.to_owned())?,
+                0,
+            )?;
+            Ok(ColumnarValue::Scalar(scalar))
         }
-        match from_type {
-            DataType::Boolean => matches!(
-                to_type,
-                DataType::Int8
-                    | DataType::Int16
-                    | DataType::Int32
-                    | DataType::Int64
-                    | DataType::Float32
-                    | DataType::Float64
-                    | DataType::Utf8
-            ),
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                // note that the cast from Int32/Int64 -> Decimal128 here is actually
-                // not compatible with Spark (no overflow checks) but we have tests that
-                // rely on this cast working so we have to leave it here for now
-                matches!(
-                    to_type,
-                    DataType::Boolean
-                        | DataType::Int8
-                        | DataType::Int16
-                        | DataType::Int32
-                        | DataType::Int64
-                        | DataType::Float32
-                        | DataType::Float64
-                        | DataType::Decimal128(_, _)
-                        | DataType::Utf8
-                )
-            }
-            DataType::Float32 | DataType::Float64 => matches!(
+    }
+}
+
+fn cast_array(
+    array: ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+    timezone: String,
+) -> DataFusionResult<ArrayRef> {
+    let array = array_with_timezone(array, timezone.clone(), Some(to_type))?;
+    let from_type = array.data_type().clone();
+    let array = match &from_type {
+        DataType::Dictionary(key_type, value_type)
+            if key_type.as_ref() == &DataType::Int32
+                && (value_type.as_ref() == &DataType::Utf8
+                    || value_type.as_ref() == &DataType::LargeUtf8) =>
+        {
+            let dict_array = array
+                .as_any()
+                .downcast_ref::<DictionaryArray<Int32Type>>()
+                .expect("Expected a dictionary array");
+
+            let casted_dictionary = DictionaryArray::<Int32Type>::new(
+                dict_array.keys().clone(),
+                cast_array(dict_array.values().clone(), to_type, eval_mode, timezone)?,
+            );
+
+            let casted_result = match to_type {
+                DataType::Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
+                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
+            };
+            return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
+        }
+        _ => array,
+    };
+    let from_type = array.data_type();
+
+    let cast_result = match (from_type, to_type) {
+        (DataType::Utf8, DataType::Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
+        (DataType::LargeUtf8, DataType::Boolean) => {
+            spark_cast_utf8_to_boolean::<i64>(&array, eval_mode)
+        }
+        (DataType::Utf8, DataType::Timestamp(_, _)) => {
+            cast_string_to_timestamp(&array, to_type, eval_mode, &timezone)
+        }
+        (DataType::Utf8, DataType::Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (DataType::Int64, DataType::Int32)
+        | (DataType::Int64, DataType::Int16)
+        | (DataType::Int64, DataType::Int8)
+        | (DataType::Int32, DataType::Int16)
+        | (DataType::Int32, DataType::Int8)
+        | (DataType::Int16, DataType::Int8)
+            if eval_mode != EvalMode::Try =>
+        {
+            spark_cast_int_to_int(&array, eval_mode, from_type, to_type)
+        }
+        (DataType::Utf8, DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64) => {
+            cast_string_to_int::<i32>(to_type, &array, eval_mode)
+        }
+        (
+            DataType::LargeUtf8,
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+        ) => cast_string_to_int::<i64>(to_type, &array, eval_mode),
+        (DataType::Float64, DataType::Utf8) => spark_cast_float64_to_utf8::<i32>(&array, eval_mode),
+        (DataType::Float64, DataType::LargeUtf8) => {
+            spark_cast_float64_to_utf8::<i64>(&array, eval_mode)
+        }
+        (DataType::Float32, DataType::Utf8) => spark_cast_float32_to_utf8::<i32>(&array, eval_mode),
+        (DataType::Float32, DataType::LargeUtf8) => {
+            spark_cast_float32_to_utf8::<i64>(&array, eval_mode)
+        }
+        (DataType::Float32, DataType::Decimal128(precision, scale)) => {
+            cast_float32_to_decimal128(&array, *precision, *scale, eval_mode)
+        }
+        (DataType::Float64, DataType::Decimal128(precision, scale)) => {
+            cast_float64_to_decimal128(&array, *precision, *scale, eval_mode)
+        }
+        (DataType::Float32, DataType::Int8)
+        | (DataType::Float32, DataType::Int16)
+        | (DataType::Float32, DataType::Int32)
+        | (DataType::Float32, DataType::Int64)
+        | (DataType::Float64, DataType::Int8)
+        | (DataType::Float64, DataType::Int16)
+        | (DataType::Float64, DataType::Int32)
+        | (DataType::Float64, DataType::Int64)
+        | (DataType::Decimal128(_, _), DataType::Int8)
+        | (DataType::Decimal128(_, _), DataType::Int16)
+        | (DataType::Decimal128(_, _), DataType::Int32)
+        | (DataType::Decimal128(_, _), DataType::Int64)
+            if eval_mode != EvalMode::Try =>
+        {
+            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
+        }
+        _ if is_datafusion_spark_compatible(from_type, to_type) => {
+            // use DataFusion cast only when we know that it is compatible with Spark
+            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        }
+        _ => {
+            // we should never reach this code because the Scala code should be checking
+            // for supported cast operations and falling back to Spark for anything that
+            // is not yet supported
+            Err(SparkError::Internal(format!(
+                "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
+            )))
+        }
+    };
+    Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+/// Determines if DataFusion supports the given cast in a way that is
+/// compatible with Spark
+fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
+    if from_type == to_type {
+        return true;
+    }
+    match from_type {
+        DataType::Boolean => matches!(
+            to_type,
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Utf8
+        ),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+            // note that the cast from Int32/Int64 -> Decimal128 here is actually
+            // not compatible with Spark (no overflow checks) but we have tests that
+            // rely on this cast working so we have to leave it here for now
+            matches!(
                 to_type,
                 DataType::Boolean
                     | DataType::Int8
@@ -662,182 +734,184 @@ impl Cast {
                     | DataType::Int64
                     | DataType::Float32
                     | DataType::Float64
-            ),
-            DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => matches!(
-                to_type,
-                DataType::Int8
-                    | DataType::Int16
-                    | DataType::Int32
-                    | DataType::Int64
-                    | DataType::Float32
-                    | DataType::Float64
                     | DataType::Decimal128(_, _)
-                    | DataType::Decimal256(_, _)
-            ),
-            DataType::Utf8 => matches!(to_type, DataType::Binary),
-            DataType::Date32 => matches!(to_type, DataType::Utf8),
-            DataType::Timestamp(_, _) => {
-                matches!(
-                    to_type,
-                    DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _)
-                )
-            }
-            DataType::Binary => {
-                // note that this is not completely Spark compatible because
-                // DataFusion only supports binary data containing valid UTF-8 strings
-                matches!(to_type, DataType::Utf8)
-            }
-            _ => false,
+                    | DataType::Utf8
+            )
         }
+        DataType::Float32 | DataType::Float64 => matches!(
+            to_type,
+            DataType::Boolean
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+        ),
+        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => matches!(
+            to_type,
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _)
+        ),
+        DataType::Utf8 => matches!(to_type, DataType::Binary),
+        DataType::Date32 => matches!(to_type, DataType::Utf8),
+        DataType::Timestamp(_, _) => {
+            matches!(
+                to_type,
+                DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _)
+            )
+        }
+        DataType::Binary => {
+            // note that this is not completely Spark compatible because
+            // DataFusion only supports binary data containing valid UTF-8 strings
+            matches!(to_type, DataType::Utf8)
+        }
+        _ => false,
+    }
+}
+
+fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
+    to_type: &DataType,
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    let string_array = array
+        .as_any()
+        .downcast_ref::<GenericStringArray<OffsetSize>>()
+        .expect("cast_string_to_int expected a string array");
+
+    let cast_array: ArrayRef = match to_type {
+        DataType::Int8 => cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?,
+        DataType::Int16 => {
+            cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
+        }
+        DataType::Int32 => {
+            cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
+        }
+        DataType::Int64 => {
+            cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
+        }
+        dt => unreachable!(
+            "{}",
+            format!("invalid integer type {dt} in cast from string")
+        ),
+    };
+    Ok(cast_array)
+}
+
+fn cast_string_to_date(
+    array: &ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    let string_array = array
+        .as_any()
+        .downcast_ref::<GenericStringArray<i32>>()
+        .expect("Expected a string array");
+
+    if to_type != &DataType::Date32 {
+        unreachable!("Invalid data type {:?} in cast from string", to_type);
     }
 
-    fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
-        to_type: &DataType,
-        array: &ArrayRef,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef> {
-        let string_array = array
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .expect("cast_string_to_int expected a string array");
+    let len = string_array.len();
+    let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
 
-        let cast_array: ArrayRef = match to_type {
-            DataType::Int8 => {
-                cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?
+    for i in 0..len {
+        let value = if string_array.is_null(i) {
+            None
+        } else {
+            match date_parser(string_array.value(i), eval_mode) {
+                Ok(Some(cast_value)) => Some(cast_value),
+                Ok(None) => None,
+                Err(e) => return Err(e),
             }
-            DataType::Int16 => {
-                cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
-            }
-            DataType::Int32 => {
-                cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
-            }
-            DataType::Int64 => {
-                cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
-            }
-            dt => unreachable!(
-                "{}",
-                format!("invalid integer type {dt} in cast from string")
-            ),
         };
-        Ok(cast_array)
+
+        match value {
+            Some(cast_value) => cast_array.append_value(cast_value),
+            None => cast_array.append_null(),
+        }
     }
 
-    fn cast_string_to_date(
-        array: &ArrayRef,
-        to_type: &DataType,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef> {
-        let string_array = array
-            .as_any()
-            .downcast_ref::<GenericStringArray<i32>>()
-            .expect("Expected a string array");
+    Ok(Arc::new(cast_array.finish()) as ArrayRef)
+}
 
-        if to_type != &DataType::Date32 {
-            unreachable!("Invalid data type {:?} in cast from string", to_type);
+fn cast_string_to_timestamp(
+    array: &ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+    timezone_str: &str,
+) -> SparkResult<ArrayRef> {
+    let string_array = array
+        .as_any()
+        .downcast_ref::<GenericStringArray<i32>>()
+        .expect("Expected a string array");
+
+    let tz = &timezone::Tz::from_str(timezone_str).unwrap();
+
+    let cast_array: ArrayRef = match to_type {
+        DataType::Timestamp(_, _) => {
+            cast_utf8_to_timestamp!(
+                string_array,
+                eval_mode,
+                TimestampMicrosecondType,
+                timestamp_parser,
+                tz
+            )
         }
+        _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
+    };
+    Ok(cast_array)
+}
 
-        let len = string_array.len();
-        let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
+fn cast_float64_to_decimal128(
+    array: &dyn Array,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    cast_floating_point_to_decimal128::<Float64Type>(array, precision, scale, eval_mode)
+}
 
-        for i in 0..len {
-            let value = if string_array.is_null(i) {
-                None
-            } else {
-                match date_parser(string_array.value(i), eval_mode) {
-                    Ok(Some(cast_value)) => Some(cast_value),
-                    Ok(None) => None,
-                    Err(e) => return Err(e),
-                }
-            };
+fn cast_float32_to_decimal128(
+    array: &dyn Array,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    cast_floating_point_to_decimal128::<Float32Type>(array, precision, scale, eval_mode)
+}
+
+fn cast_floating_point_to_decimal128<T: ArrowPrimitiveType>(
+    array: &dyn Array,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef>
+where
+    <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
+{
+    let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
+    let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
+
+    let mul = 10_f64.powi(scale as i32);
+
+    for i in 0..input.len() {
+        if input.is_null(i) {
+            cast_array.append_null();
+        } else {
+            let input_value = input.value(i).as_();
+            let value = (input_value * mul).round().to_i128();
 
             match value {
-                Some(cast_value) => cast_array.append_value(cast_value),
-                None => cast_array.append_null(),
-            }
-        }
-
-        Ok(Arc::new(cast_array.finish()) as ArrayRef)
-    }
-
-    fn cast_string_to_timestamp(
-        array: &ArrayRef,
-        to_type: &DataType,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef> {
-        let string_array = array
-            .as_any()
-            .downcast_ref::<GenericStringArray<i32>>()
-            .expect("Expected a string array");
-
-        let cast_array: ArrayRef = match to_type {
-            DataType::Timestamp(_, _) => {
-                cast_utf8_to_timestamp!(
-                    string_array,
-                    eval_mode,
-                    TimestampMicrosecondType,
-                    timestamp_parser
-                )
-            }
-            _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
-        };
-        Ok(cast_array)
-    }
-
-    fn cast_float64_to_decimal128(
-        array: &dyn Array,
-        precision: u8,
-        scale: i8,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef> {
-        Self::cast_floating_point_to_decimal128::<Float64Type>(array, precision, scale, eval_mode)
-    }
-
-    fn cast_float32_to_decimal128(
-        array: &dyn Array,
-        precision: u8,
-        scale: i8,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef> {
-        Self::cast_floating_point_to_decimal128::<Float32Type>(array, precision, scale, eval_mode)
-    }
-
-    fn cast_floating_point_to_decimal128<T: ArrowPrimitiveType>(
-        array: &dyn Array,
-        precision: u8,
-        scale: i8,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef>
-    where
-        <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
-    {
-        let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
-        let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
-
-        let mul = 10_f64.powi(scale as i32);
-
-        for i in 0..input.len() {
-            if input.is_null(i) {
-                cast_array.append_null();
-            } else {
-                let input_value = input.value(i).as_();
-                let value = (input_value * mul).round().to_i128();
-
-                match value {
-                    Some(v) => {
-                        if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
-                            if eval_mode == EvalMode::Ansi {
-                                return Err(SparkError::NumericValueOutOfRange {
-                                    value: input_value.to_string(),
-                                    precision,
-                                    scale,
-                                });
-                            } else {
-                                cast_array.append_null();
-                            }
-                        }
-                        cast_array.append_value(v);
-                    }
-                    None => {
+                Some(v) => {
+                    if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
                         if eval_mode == EvalMode::Ansi {
                             return Err(SparkError::NumericValueOutOfRange {
                                 value: input_value.to_string(),
@@ -848,240 +922,252 @@ impl Cast {
                             cast_array.append_null();
                         }
                     }
+                    cast_array.append_value(v);
+                }
+                None => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(SparkError::NumericValueOutOfRange {
+                            value: input_value.to_string(),
+                            precision,
+                            scale,
+                        });
+                    } else {
+                        cast_array.append_null();
+                    }
                 }
             }
         }
-
-        let res = Arc::new(
-            cast_array
-                .with_precision_and_scale(precision, scale)?
-                .finish(),
-        ) as ArrayRef;
-        Ok(res)
     }
 
-    fn spark_cast_float64_to_utf8<OffsetSize>(
-        from: &dyn Array,
-        _eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef>
-    where
-        OffsetSize: OffsetSizeTrait,
-    {
-        cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize)
+    let res = Arc::new(
+        cast_array
+            .with_precision_and_scale(precision, scale)?
+            .finish(),
+    ) as ArrayRef;
+    Ok(res)
+}
+
+fn spark_cast_float64_to_utf8<OffsetSize>(
+    from: &dyn Array,
+    _eval_mode: EvalMode,
+) -> SparkResult<ArrayRef>
+where
+    OffsetSize: OffsetSizeTrait,
+{
+    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize)
+}
+
+fn spark_cast_float32_to_utf8<OffsetSize>(
+    from: &dyn Array,
+    _eval_mode: EvalMode,
+) -> SparkResult<ArrayRef>
+where
+    OffsetSize: OffsetSizeTrait,
+{
+    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
+}
+
+fn spark_cast_int_to_int(
+    array: &dyn Array,
+    eval_mode: EvalMode,
+    from_type: &DataType,
+    to_type: &DataType,
+) -> SparkResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
+            array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
+        ),
+        (DataType::Int64, DataType::Int16) => cast_int_to_int_macro!(
+            array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"
+        ),
+        (DataType::Int64, DataType::Int8) => cast_int_to_int_macro!(
+            array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"
+        ),
+        (DataType::Int32, DataType::Int16) => cast_int_to_int_macro!(
+            array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"
+        ),
+        (DataType::Int32, DataType::Int8) => cast_int_to_int_macro!(
+            array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"
+        ),
+        (DataType::Int16, DataType::Int8) => cast_int_to_int_macro!(
+            array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"
+        ),
+        _ => unreachable!(
+            "{}",
+            format!("invalid integer type {to_type} in cast from {from_type}")
+        ),
     }
+}
 
-    fn spark_cast_float32_to_utf8<OffsetSize>(
-        from: &dyn Array,
-        _eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef>
-    where
-        OffsetSize: OffsetSizeTrait,
-    {
-        cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
-    }
+fn spark_cast_utf8_to_boolean<OffsetSize>(
+    from: &dyn Array,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef>
+where
+    OffsetSize: OffsetSizeTrait,
+{
+    let array = from
+        .as_any()
+        .downcast_ref::<GenericStringArray<OffsetSize>>()
+        .unwrap();
 
-    fn spark_cast_int_to_int(
-        array: &dyn Array,
-        eval_mode: EvalMode,
-        from_type: &DataType,
-        to_type: &DataType,
-    ) -> SparkResult<ArrayRef> {
-        match (from_type, to_type) {
-            (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
-                array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
-            ),
-            (DataType::Int64, DataType::Int16) => cast_int_to_int_macro!(
-                array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"
-            ),
-            (DataType::Int64, DataType::Int8) => cast_int_to_int_macro!(
-                array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"
-            ),
-            (DataType::Int32, DataType::Int16) => cast_int_to_int_macro!(
-                array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"
-            ),
-            (DataType::Int32, DataType::Int8) => cast_int_to_int_macro!(
-                array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"
-            ),
-            (DataType::Int16, DataType::Int8) => cast_int_to_int_macro!(
-                array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"
-            ),
-            _ => unreachable!(
-                "{}",
-                format!("invalid integer type {to_type} in cast from {from_type}")
-            ),
-        }
-    }
-
-    fn spark_cast_utf8_to_boolean<OffsetSize>(
-        from: &dyn Array,
-        eval_mode: EvalMode,
-    ) -> SparkResult<ArrayRef>
-    where
-        OffsetSize: OffsetSizeTrait,
-    {
-        let array = from
-            .as_any()
-            .downcast_ref::<GenericStringArray<OffsetSize>>()
-            .unwrap();
-
-        let output_array = array
-            .iter()
-            .map(|value| match value {
-                Some(value) => match value.to_ascii_lowercase().trim() {
-                    "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
-                    "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
-                    _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
-                        value: value.to_string(),
-                        from_type: "STRING".to_string(),
-                        to_type: "BOOLEAN".to_string(),
-                    }),
-                    _ => Ok(None),
-                },
+    let output_array = array
+        .iter()
+        .map(|value| match value {
+            Some(value) => match value.to_ascii_lowercase().trim() {
+                "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
+                "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
+                _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
+                    value: value.to_string(),
+                    from_type: "STRING".to_string(),
+                    to_type: "BOOLEAN".to_string(),
+                }),
                 _ => Ok(None),
-            })
-            .collect::<Result<BooleanArray, _>>()?;
+            },
+            _ => Ok(None),
+        })
+        .collect::<Result<BooleanArray, _>>()?;
 
-        Ok(Arc::new(output_array))
-    }
+    Ok(Arc::new(output_array))
+}
 
-    fn spark_cast_nonintegral_numeric_to_integral(
-        array: &dyn Array,
-        eval_mode: EvalMode,
-        from_type: &DataType,
-        to_type: &DataType,
-    ) -> SparkResult<ArrayRef> {
-        match (from_type, to_type) {
-            (DataType::Float32, DataType::Int8) => cast_float_to_int16_down!(
-                array,
-                eval_mode,
-                Float32Array,
-                Int8Array,
-                f32,
-                i8,
-                "FLOAT",
-                "TINYINT",
-                "{:e}"
-            ),
-            (DataType::Float32, DataType::Int16) => cast_float_to_int16_down!(
-                array,
-                eval_mode,
-                Float32Array,
-                Int16Array,
-                f32,
-                i16,
-                "FLOAT",
-                "SMALLINT",
-                "{:e}"
-            ),
-            (DataType::Float32, DataType::Int32) => cast_float_to_int32_up!(
-                array,
-                eval_mode,
-                Float32Array,
-                Int32Array,
-                f32,
-                i32,
-                "FLOAT",
-                "INT",
-                i32::MAX,
-                "{:e}"
-            ),
-            (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
-                array,
-                eval_mode,
-                Float32Array,
-                Int64Array,
-                f32,
-                i64,
-                "FLOAT",
-                "BIGINT",
-                i64::MAX,
-                "{:e}"
-            ),
-            (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
-                array,
-                eval_mode,
-                Float64Array,
-                Int8Array,
-                f64,
-                i8,
-                "DOUBLE",
-                "TINYINT",
-                "{:e}D"
-            ),
-            (DataType::Float64, DataType::Int16) => cast_float_to_int16_down!(
-                array,
-                eval_mode,
-                Float64Array,
-                Int16Array,
-                f64,
-                i16,
-                "DOUBLE",
-                "SMALLINT",
-                "{:e}D"
-            ),
-            (DataType::Float64, DataType::Int32) => cast_float_to_int32_up!(
-                array,
-                eval_mode,
-                Float64Array,
-                Int32Array,
-                f64,
-                i32,
-                "DOUBLE",
-                "INT",
-                i32::MAX,
-                "{:e}D"
-            ),
-            (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
-                array,
-                eval_mode,
-                Float64Array,
-                Int64Array,
-                f64,
-                i64,
-                "DOUBLE",
-                "BIGINT",
-                i64::MAX,
-                "{:e}D"
-            ),
-            (DataType::Decimal128(precision, scale), DataType::Int8) => {
-                cast_decimal_to_int16_down!(
-                    array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
-                )
-            }
-            (DataType::Decimal128(precision, scale), DataType::Int16) => {
-                cast_decimal_to_int16_down!(
-                    array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
-                )
-            }
-            (DataType::Decimal128(precision, scale), DataType::Int32) => {
-                cast_decimal_to_int32_up!(
-                    array,
-                    eval_mode,
-                    Int32Array,
-                    i32,
-                    "INT",
-                    i32::MAX,
-                    *precision,
-                    *scale
-                )
-            }
-            (DataType::Decimal128(precision, scale), DataType::Int64) => {
-                cast_decimal_to_int32_up!(
-                    array,
-                    eval_mode,
-                    Int64Array,
-                    i64,
-                    "BIGINT",
-                    i64::MAX,
-                    *precision,
-                    *scale
-                )
-            }
-            _ => unreachable!(
-                "{}",
-                format!("invalid cast from non-integral numeric type: {from_type} to integral numeric type: {to_type}")
-            ),
+fn spark_cast_nonintegral_numeric_to_integral(
+    array: &dyn Array,
+    eval_mode: EvalMode,
+    from_type: &DataType,
+    to_type: &DataType,
+) -> SparkResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::Float32, DataType::Int8) => cast_float_to_int16_down!(
+            array,
+            eval_mode,
+            Float32Array,
+            Int8Array,
+            f32,
+            i8,
+            "FLOAT",
+            "TINYINT",
+            "{:e}"
+        ),
+        (DataType::Float32, DataType::Int16) => cast_float_to_int16_down!(
+            array,
+            eval_mode,
+            Float32Array,
+            Int16Array,
+            f32,
+            i16,
+            "FLOAT",
+            "SMALLINT",
+            "{:e}"
+        ),
+        (DataType::Float32, DataType::Int32) => cast_float_to_int32_up!(
+            array,
+            eval_mode,
+            Float32Array,
+            Int32Array,
+            f32,
+            i32,
+            "FLOAT",
+            "INT",
+            i32::MAX,
+            "{:e}"
+        ),
+        (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
+            array,
+            eval_mode,
+            Float32Array,
+            Int64Array,
+            f32,
+            i64,
+            "FLOAT",
+            "BIGINT",
+            i64::MAX,
+            "{:e}"
+        ),
+        (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
+            array,
+            eval_mode,
+            Float64Array,
+            Int8Array,
+            f64,
+            i8,
+            "DOUBLE",
+            "TINYINT",
+            "{:e}D"
+        ),
+        (DataType::Float64, DataType::Int16) => cast_float_to_int16_down!(
+            array,
+            eval_mode,
+            Float64Array,
+            Int16Array,
+            f64,
+            i16,
+            "DOUBLE",
+            "SMALLINT",
+            "{:e}D"
+        ),
+        (DataType::Float64, DataType::Int32) => cast_float_to_int32_up!(
+            array,
+            eval_mode,
+            Float64Array,
+            Int32Array,
+            f64,
+            i32,
+            "DOUBLE",
+            "INT",
+            i32::MAX,
+            "{:e}D"
+        ),
+        (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
+            array,
+            eval_mode,
+            Float64Array,
+            Int64Array,
+            f64,
+            i64,
+            "DOUBLE",
+            "BIGINT",
+            i64::MAX,
+            "{:e}D"
+        ),
+        (DataType::Decimal128(precision, scale), DataType::Int8) => {
+            cast_decimal_to_int16_down!(
+                array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
+            )
         }
+        (DataType::Decimal128(precision, scale), DataType::Int16) => {
+            cast_decimal_to_int16_down!(
+                array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
+            )
+        }
+        (DataType::Decimal128(precision, scale), DataType::Int32) => {
+            cast_decimal_to_int32_up!(
+                array,
+                eval_mode,
+                Int32Array,
+                i32,
+                "INT",
+                i32::MAX,
+                *precision,
+                *scale
+            )
+        }
+        (DataType::Decimal128(precision, scale), DataType::Int64) => {
+            cast_decimal_to_int32_up!(
+                array,
+                eval_mode,
+                Int64Array,
+                i64,
+                "BIGINT",
+                i64::MAX,
+                *precision,
+                *scale
+            )
+        }
+        _ => unreachable!(
+            "{}",
+            format!("invalid cast from non-integral numeric type: {from_type} to integral numeric type: {to_type}")
+        ),
     }
 }
 
@@ -1294,17 +1380,7 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        match arg {
-            ColumnarValue::Array(array) => Ok(ColumnarValue::Array(self.cast_array(array)?)),
-            ColumnarValue::Scalar(scalar) => {
-                // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
-                // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
-                // here.
-                let array = scalar.to_array()?;
-                let scalar = ScalarValue::try_from_array(&self.cast_array(array)?, 0)?;
-                Ok(ColumnarValue::Scalar(scalar))
-            }
-        }
+        spark_cast(arg, &self.data_type, self.eval_mode, self.timezone.clone())
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -1336,7 +1412,11 @@ impl PhysicalExpr for Cast {
     }
 }
 
-fn timestamp_parser(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
+fn timestamp_parser<T: TimeZone>(
+    value: &str,
+    eval_mode: EvalMode,
+    tz: &T,
+) -> SparkResult<Option<i64>> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -1344,31 +1424,31 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>
     // Define regex patterns and corresponding parsing functions
     let patterns = &[
         (
-            Regex::new(r"^\d{4}$").unwrap(),
-            parse_str_to_year_timestamp as fn(&str) -> SparkResult<Option<i64>>,
+            Regex::new(r"^\d{4,5}$").unwrap(),
+            parse_str_to_year_timestamp as fn(&str, &T) -> SparkResult<Option<i64>>,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}$").unwrap(),
             parse_str_to_month_timestamp,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}-\d{2}$").unwrap(),
             parse_str_to_day_timestamp,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{1,2}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{1,2}$").unwrap(),
             parse_str_to_hour_timestamp,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(),
             parse_str_to_minute_timestamp,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(),
             parse_str_to_second_timestamp,
         ),
         (
-            Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
+            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
             parse_str_to_microsecond_timestamp,
         ),
         (
@@ -1382,7 +1462,7 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>
     // Iterate through patterns and try matching
     for (pattern, parse_func) in patterns {
         if pattern.is_match(value) {
-            timestamp = parse_func(value)?;
+            timestamp = parse_func(value, tz)?;
             break;
         }
     }
@@ -1407,38 +1487,24 @@ fn timestamp_parser(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>
     }
 }
 
-fn parse_ymd_timestamp(year: i32, month: u32, day: u32) -> SparkResult<Option<i64>> {
-    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0);
-
-    // Check if datetime is not None
-    let utc_datetime = match datetime.single() {
-        Some(dt) => dt.with_timezone(&chrono::Utc),
-        None => {
-            return Err(SparkError::Internal(
-                "Failed to parse timestamp".to_string(),
-            ));
-        }
-    };
-
-    Ok(Some(utc_datetime.timestamp_micros()))
-}
-
-fn parse_hms_timestamp(
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    microsecond: u32,
+fn parse_timestamp_to_micros<T: TimeZone>(
+    timestamp_info: &TimeStampInfo,
+    tz: &T,
 ) -> SparkResult<Option<i64>> {
-    let datetime = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
+    let datetime = tz.with_ymd_and_hms(
+        timestamp_info.year,
+        timestamp_info.month,
+        timestamp_info.day,
+        timestamp_info.hour,
+        timestamp_info.minute,
+        timestamp_info.second,
+    );
 
     // Check if datetime is not None
-    let utc_datetime = match datetime.single() {
+    let tz_datetime = match datetime.single() {
         Some(dt) => dt
-            .with_timezone(&chrono::Utc)
-            .with_nanosecond(microsecond * 1000),
+            .with_timezone(tz)
+            .with_nanosecond(timestamp_info.microsecond * 1000),
         None => {
             return Err(SparkError::Internal(
                 "Failed to parse timestamp".to_string(),
@@ -1446,7 +1512,7 @@ fn parse_hms_timestamp(
         }
     };
 
-    let result = match utc_datetime {
+    let result = match tz_datetime {
         Some(dt) => dt.timestamp_micros(),
         None => {
             return Err(SparkError::Internal(
@@ -1458,7 +1524,11 @@ fn parse_hms_timestamp(
     Ok(Some(result))
 }
 
-fn get_timestamp_values(value: &str, timestamp_type: &str) -> SparkResult<Option<i64>> {
+fn get_timestamp_values<T: TimeZone>(
+    value: &str,
+    timestamp_type: &str,
+    tz: &T,
+) -> SparkResult<Option<i64>> {
     let values: Vec<_> = value
         .split(|c| c == 'T' || c == '-' || c == ':' || c == '.')
         .collect();
@@ -1470,64 +1540,99 @@ fn get_timestamp_values(value: &str, timestamp_type: &str) -> SparkResult<Option
     let second = values.get(5).map_or(0, |s| s.parse::<u32>().unwrap_or(0));
     let microsecond = values.get(6).map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
 
-    match timestamp_type {
-        "year" => parse_ymd_timestamp(year, 1, 1),
-        "month" => parse_ymd_timestamp(year, month, 1),
-        "day" => parse_ymd_timestamp(year, month, day),
-        "hour" => parse_hms_timestamp(year, month, day, hour, 0, 0, 0),
-        "minute" => parse_hms_timestamp(year, month, day, hour, minute, 0, 0),
-        "second" => parse_hms_timestamp(year, month, day, hour, minute, second, 0),
-        "microsecond" => parse_hms_timestamp(year, month, day, hour, minute, second, microsecond),
-        _ => Err(SparkError::CastInvalidValue {
-            value: value.to_string(),
-            from_type: "STRING".to_string(),
-            to_type: "TIMESTAMP".to_string(),
-        }),
-    }
+    let mut timestamp_info = TimeStampInfo::default();
+
+    let timestamp_info = match timestamp_type {
+        "year" => timestamp_info.with_year(year),
+        "month" => timestamp_info.with_year(year).with_month(month),
+        "day" => timestamp_info
+            .with_year(year)
+            .with_month(month)
+            .with_day(day),
+        "hour" => timestamp_info
+            .with_year(year)
+            .with_month(month)
+            .with_day(day)
+            .with_hour(hour),
+        "minute" => timestamp_info
+            .with_year(year)
+            .with_month(month)
+            .with_day(day)
+            .with_hour(hour)
+            .with_minute(minute),
+        "second" => timestamp_info
+            .with_year(year)
+            .with_month(month)
+            .with_day(day)
+            .with_hour(hour)
+            .with_minute(minute)
+            .with_second(second),
+        "microsecond" => timestamp_info
+            .with_year(year)
+            .with_month(month)
+            .with_day(day)
+            .with_hour(hour)
+            .with_minute(minute)
+            .with_second(second)
+            .with_microsecond(microsecond),
+        _ => {
+            return Err(SparkError::CastInvalidValue {
+                value: value.to_string(),
+                from_type: "STRING".to_string(),
+                to_type: "TIMESTAMP".to_string(),
+            })
+        }
+    };
+
+    parse_timestamp_to_micros(timestamp_info, tz)
 }
 
-fn parse_str_to_year_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "year")
+fn parse_str_to_year_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "year", tz)
 }
 
-fn parse_str_to_month_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "month")
+fn parse_str_to_month_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "month", tz)
 }
 
-fn parse_str_to_day_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "day")
+fn parse_str_to_day_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "day", tz)
 }
 
-fn parse_str_to_hour_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "hour")
+fn parse_str_to_hour_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "hour", tz)
 }
 
-fn parse_str_to_minute_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "minute")
+fn parse_str_to_minute_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "minute", tz)
 }
 
-fn parse_str_to_second_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "second")
+fn parse_str_to_second_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "second", tz)
 }
 
-fn parse_str_to_microsecond_timestamp(value: &str) -> SparkResult<Option<i64>> {
-    get_timestamp_values(value, "microsecond")
+fn parse_str_to_microsecond_timestamp<T: TimeZone>(
+    value: &str,
+    tz: &T,
+) -> SparkResult<Option<i64>> {
+    get_timestamp_values(value, "microsecond", tz)
 }
 
-fn parse_str_to_time_only_timestamp(value: &str) -> SparkResult<Option<i64>> {
+fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
     let values: Vec<&str> = value.split('T').collect();
     let time_values: Vec<u32> = values[1]
         .split(':')
         .map(|v| v.parse::<u32>().unwrap_or(0))
         .collect();
 
-    let datetime = chrono::Utc::now();
+    let datetime = tz.from_utc_datetime(&chrono::Utc::now().naive_utc());
     let timestamp = datetime
+        .with_timezone(tz)
         .with_hour(time_values.first().copied().unwrap_or_default())
         .and_then(|dt| dt.with_minute(*time_values.get(1).unwrap_or(&0)))
         .and_then(|dt| dt.with_second(*time_values.get(2).unwrap_or(&0)))
         .and_then(|dt| dt.with_nanosecond(*time_values.get(3).unwrap_or(&0) * 1_000))
-        .map(|dt| dt.to_utc().timestamp_micros())
+        .map(|dt| dt.timestamp_micros())
         .unwrap_or_default();
 
     Ok(Some(timestamp))
@@ -1660,7 +1765,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 /// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
 /// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
 /// expressions/cast.rs, so it can be still Dictionary.
-fn spark_cast(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
+fn spark_cast_postprocess(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
     match (from_type, to_type) {
         (DataType::Timestamp(_, _), DataType::Int64) => {
             // See Spark's `Cast` expression
@@ -1738,42 +1843,98 @@ mod tests {
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow_array::StringArray;
     use arrow_schema::TimeUnit;
-
-    use datafusion_physical_expr::expressions::Column;
+    use std::str::FromStr;
 
     use super::*;
 
     #[test]
     #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
+        let tz = &timezone::Tz::from_str("UTC").unwrap();
         // write for all formats
         assert_eq!(
-            timestamp_parser("2020", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020", EvalMode::Legacy, tz).unwrap(),
             Some(1577836800000000) // this is in milliseconds
         );
         assert_eq!(
-            timestamp_parser("2020-01", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01", EvalMode::Legacy, tz).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01", EvalMode::Legacy, tz).unwrap(),
             Some(1577836800000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12", EvalMode::Legacy, tz).unwrap(),
             Some(1577880000000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34", EvalMode::Legacy, tz).unwrap(),
             Some(1577882040000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34:56", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34:56", EvalMode::Legacy, tz).unwrap(),
             Some(1577882096000000)
         );
         assert_eq!(
-            timestamp_parser("2020-01-01T12:34:56.123456", EvalMode::Legacy).unwrap(),
+            timestamp_parser("2020-01-01T12:34:56.123456", EvalMode::Legacy, tz).unwrap(),
             Some(1577882096123456)
+        );
+        assert_eq!(
+            timestamp_parser("0100", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011459200000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011459200000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01-01", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011459200000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01-01T12", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011416000000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01-01T12:34", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011413960000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01-01T12:34:56", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011413904000000)
+        );
+        assert_eq!(
+            timestamp_parser("0100-01-01T12:34:56.123456", EvalMode::Legacy, tz).unwrap(),
+            Some(-59011413903876544)
+        );
+        assert_eq!(
+            timestamp_parser("10000", EvalMode::Legacy, tz).unwrap(),
+            Some(253402300800000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01", EvalMode::Legacy, tz).unwrap(),
+            Some(253402300800000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01-01", EvalMode::Legacy, tz).unwrap(),
+            Some(253402300800000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01-01T12", EvalMode::Legacy, tz).unwrap(),
+            Some(253402344000000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01-01T12:34", EvalMode::Legacy, tz).unwrap(),
+            Some(253402346040000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01-01T12:34:56", EvalMode::Legacy, tz).unwrap(),
+            Some(253402346096000000)
+        );
+        assert_eq!(
+            timestamp_parser("10000-01-01T12:34:56.123456", EvalMode::Legacy, tz).unwrap(),
+            Some(253402346096123456)
         );
         // assert_eq!(
         //     timestamp_parser("T2",  EvalMode::Legacy).unwrap(),
@@ -1787,7 +1948,10 @@ mod tests {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020-01-01T12:34:56.123456"),
             Some("T2"),
+            Some("0100-01-01T12:34:56.123456"),
+            Some("10000-01-01T12:34:56.123456"),
         ]));
+        let tz = &timezone::Tz::from_str("UTC").unwrap();
 
         let string_array = array
             .as_any()
@@ -1799,14 +1963,15 @@ mod tests {
             &string_array,
             eval_mode,
             TimestampMicrosecondType,
-            timestamp_parser
+            timestamp_parser,
+            tz
         );
 
         assert_eq!(
             result.data_type(),
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 4);
     }
 
     #[test]
@@ -1819,18 +1984,14 @@ mod tests {
         ]));
         let dict_array = Arc::new(DictionaryArray::new(keys, values));
 
-        // prepare cast expression
         let timezone = "UTC".to_string();
-        let expr = Arc::new(Column::new("a", 0)); // this is not used by the test
-        let cast = Cast::new(
-            expr,
-            DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.clone().into())),
+        // test casting string dictionary array to timestamp array
+        let result = cast_array(
+            dict_array,
+            &DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.clone().into())),
             EvalMode::Legacy,
             timezone.clone(),
-        );
-
-        // test casting string dictionary array to timestamp array
-        let result = cast.cast_array(dict_array)?;
+        )?;
         assert_eq!(
             *result.data_type(),
             DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.into()))
@@ -1854,7 +2015,7 @@ mod tests {
             "2020-01-01T",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(18262));
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), Some(18262));
             }
         }
 
@@ -1875,14 +2036,14 @@ mod tests {
             "--262143-12-31 ",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
-            assert!(date_parser(*date, EvalMode::Ansi).is_err());
+            assert!(date_parser(date, EvalMode::Ansi).is_err());
         }
 
         for date in &["-3638-5"] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), Some(-2048160));
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), Some(-2048160));
             }
         }
 
@@ -1898,7 +2059,7 @@ mod tests {
             "-0973250",
         ] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(*date, *eval_mode).unwrap(), None);
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
         }
     }
@@ -1912,8 +2073,7 @@ mod tests {
             Some("2020-01-01T"),
         ]));
 
-        let result =
-            Cast::cast_string_to_date(&array, &DataType::Date32, EvalMode::Legacy).unwrap();
+        let result = cast_string_to_date(&array, &DataType::Date32, EvalMode::Legacy).unwrap();
 
         let date32_array = result
             .as_any()
@@ -1939,7 +2099,7 @@ mod tests {
 
         for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
             let result =
-                Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
+                cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
                     .unwrap();
 
             let date32_array = result
@@ -1971,7 +2131,7 @@ mod tests {
 
         for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
             let result =
-                Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
+                cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
                     .unwrap();
 
             let date32_array = result
@@ -1995,7 +2155,7 @@ mod tests {
         }
 
         let result =
-            Cast::cast_string_to_date(&array_with_invalid_date, &DataType::Date32, EvalMode::Ansi);
+            cast_string_to_date(&array_with_invalid_date, &DataType::Date32, EvalMode::Ansi);
         match result {
             Err(e) => assert!(
                 e.to_string().contains(
@@ -2035,26 +2195,24 @@ mod tests {
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast = Cast::new(
-            Arc::new(Column::new("a", 0)),
-            DataType::Date32,
+        let result = cast_array(
+            Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
+            &DataType::Date32,
             EvalMode::Legacy,
             "UTC".to_owned(),
         );
-        let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
         assert!(result.is_err())
     }
 
     #[test]
     fn test_cast_invalid_timezone() {
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast = Cast::new(
-            Arc::new(Column::new("a", 0)),
-            DataType::Date32,
+        let result = cast_array(
+            Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
+            &DataType::Date32,
             EvalMode::Legacy,
             "Not a valid timezone".to_owned(),
         );
-        let result = cast.cast_array(Arc::new(timestamps.with_timezone("Europe/Copenhagen")));
         assert!(result.is_err())
     }
 }

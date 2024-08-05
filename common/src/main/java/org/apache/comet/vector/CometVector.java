@@ -45,6 +45,19 @@ public abstract class CometVector extends ColumnVector {
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
   protected final boolean useDecimal128;
 
+  private static final long decimalValOffset;
+
+  static {
+    try {
+      java.lang.reflect.Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+      unsafeField.setAccessible(true);
+      final sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
+      decimalValOffset = unsafe.objectFieldOffset(Decimal.class.getDeclaredField("decimalVal"));
+    } catch (Throwable e) {
+      throw new RuntimeException(e);
+    }
+  }
+
   protected CometVector(DataType type, boolean useDecimal128) {
     super(type);
     this.useDecimal128 = useDecimal128;
@@ -73,29 +86,33 @@ public abstract class CometVector extends ColumnVector {
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
-      return Decimal.createUnsafe(getInt(i), precision, scale);
-    } else if (!useDecimal128 && precision <= Decimal.MAX_LONG_DIGITS()) {
-      return Decimal.createUnsafe(getLong(i), precision, scale);
+      return createDecimal(getInt(i), precision, scale);
+    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
+      return createDecimal(useDecimal128 ? getLongDecimal(i) : getLong(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
       BigDecimal javaDecimal = new BigDecimal(bigInteger, scale);
-      try {
-        return Decimal.apply(javaDecimal, precision, scale);
-      } catch (ArithmeticException e) {
-        throw new ArithmeticException(
-            "Cannot convert "
-                + javaDecimal
-                + " (bytes: "
-                + bytes
-                + ", integer: "
-                + bigInteger
-                + ") to decimal with precision: "
-                + precision
-                + " and scale: "
-                + scale);
-      }
+      return createDecimal(javaDecimal, precision, scale);
     }
+  }
+
+  /** This method skips the negative scale check, otherwise the same as Decimal.createUnsafe(). */
+  private Decimal createDecimal(long unscaled, int precision, int scale) {
+    Decimal dec = new Decimal();
+    dec.org$apache$spark$sql$types$Decimal$$longVal_$eq(unscaled);
+    dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
+    dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
+    return dec;
+  }
+
+  /** This method skips a few checks, otherwise the same as Decimal.apply(). */
+  private Decimal createDecimal(BigDecimal value, int precision, int scale) {
+    Decimal dec = new Decimal();
+    Platform.putObjectVolatile(dec, decimalValOffset, new scala.math.BigDecimal(value));
+    dec.org$apache$spark$sql$types$Decimal$$_precision_$eq(precision);
+    dec.org$apache$spark$sql$types$Decimal$$_scale_$eq(scale);
+    return dec;
   }
 
   /**
@@ -146,6 +163,10 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public long getLong(int rowId) {
+    throw new UnsupportedOperationException("Not yet supported");
+  }
+
+  public long getLongDecimal(int rowId) {
     throw new UnsupportedOperationException("Not yet supported");
   }
 

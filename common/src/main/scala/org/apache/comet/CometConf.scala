@@ -222,8 +222,8 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.columnar.shuffle.memorySize")
       .doc(
         "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
-          "Note that this config is only used when `spark.comet.columnar.shuffle.enabled` is " +
-          "true. Once allocated memory size reaches this config, the current batch will be " +
+          "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
+          "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
           "flushed to disk immediately. If this is not configured, Comet will use " +
           "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
           "shuffle memory size. If final calculated value is larger than Comet memory " +
@@ -259,7 +259,7 @@ object CometConf extends ShimCometConf {
       "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
       "this config, dictionary encoding will be used on shuffling string column. This config " +
       "is effective if it is higher than 1.0. By default, this config is 10.0. Note that this " +
-      "config is only used when 'spark.comet.columnar.shuffle.enabled' is true.")
+      "config is only used when `spark.comet.exec.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
@@ -401,6 +401,14 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
+  val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.caseConversion.enabled")
+      .doc(
+        "Java uses locale-specific rules when converting strings to upper or lower case and " +
+          "Rust does not, so we disable upper and lower by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
@@ -415,6 +423,14 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, a CoalesceBatchesExec will be inserted into the " +
           "plan after some operators that can produce smaller batches.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.regexp.allowIncompatible")
+      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
+        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
+        "See compatibility guide for more information.")
       .booleanConf
       .createWithDefault(false)
 }

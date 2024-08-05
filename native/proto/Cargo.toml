@@ -17,7 +17,7 @@
 
 [package]
 name = "datafusion-comet-proto"
-version = "0.1.0"
+version = { workspace = true }
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
