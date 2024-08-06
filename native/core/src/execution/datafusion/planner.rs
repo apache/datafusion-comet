@@ -55,7 +55,6 @@ use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
-use datafusion::prelude::SessionConfig;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -139,14 +138,7 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of parital aggregates.
-        let cfg = SessionConfig::new().set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            ScalarValue::Float64(Some(1.1)),
-        );
-        let session_ctx = Arc::new(SessionContext::new_with_config(cfg));
+        let session_ctx = Arc::new(SessionContext::new());
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
