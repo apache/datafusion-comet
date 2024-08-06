@@ -17,55 +17,8 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
-use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
-use datafusion::functions_aggregate::count::count_udaf;
-use datafusion::functions_aggregate::min_max::max_udaf;
-use datafusion::functions_aggregate::min_max::min_udaf;
-use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_plan::windows::BoundedWindowAggExec;
-use datafusion::physical_plan::InputOrderMode;
-use datafusion::{
-    arrow::{compute::SortOptions, datatypes::SchemaRef},
-    common::DataFusionError,
-    execution::FunctionRegistry,
-    functions_aggregate::first_last::{FirstValue, LastValue},
-    logical_expr::Operator as DataFusionOperator,
-    physical_expr::{
-        execution_props::ExecutionProps,
-        expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
-            Literal as DataFusionLiteral, NotExpr,
-        },
-        AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
-    },
-    physical_optimizer::join_selection::swap_hash_join,
-    physical_plan::{
-        aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
-        filter::FilterExec,
-        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
-        limit::LocalLimitExec,
-        projection::ProjectionExec,
-        sorts::sort::SortExec,
-        ExecutionPlan, Partitioning,
-    },
-    prelude::SessionContext,
-};
-use datafusion_common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
-use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
-use datafusion_physical_expr::window::WindowExpr;
-use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
-use datafusion_physical_expr_common::expressions::Literal;
-use itertools::Itertools;
-use jni::objects::GlobalRef;
-use num::{BigInt, ToPrimitive};
-use std::cmp::max;
-use std::{collections::HashMap, sync::Arc};
-
+use super::expressions::EvalMode;
+use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -95,9 +48,37 @@ use crate::{
         serde::to_arrow_datatype,
     },
 };
-
-use super::expressions::EvalMode;
-use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::physical_plan::InputOrderMode;
+use datafusion::{
+    arrow::{compute::SortOptions, datatypes::SchemaRef},
+    common::DataFusionError,
+    execution::FunctionRegistry,
+    functions_aggregate::first_last::{FirstValue, LastValue},
+    logical_expr::Operator as DataFusionOperator,
+    physical_expr::{
+        execution_props::ExecutionProps,
+        expressions::{
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
+            Literal as DataFusionLiteral, Max, Min, NotExpr,
+        },
+        AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
+    },
+    physical_optimizer::join_selection::swap_hash_join,
+    physical_plan::{
+        aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        filter::FilterExec,
+        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
+        limit::LocalLimitExec,
+        projection::ProjectionExec,
+        sorts::sort::SortExec,
+        ExecutionPlan, Partitioning,
+    },
+    prelude::SessionContext,
+};
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -114,6 +95,20 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
+use datafusion_common::{
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
+    JoinType as DFJoinType, ScalarValue,
+};
+use datafusion_expr::expr::find_df_window_func;
+use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
+use datafusion_physical_expr::window::WindowExpr;
+use datafusion_physical_expr_common::aggregate::create_aggregate_expr;
+use datafusion_physical_expr_common::expressions::Literal;
+use itertools::Itertools;
+use jni::objects::GlobalRef;
+use num::{BigInt, ToPrimitive};
+use std::cmp::max;
+use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -1236,15 +1231,38 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn AggregateExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
+                assert!(!expr.children.is_empty());
+                // Using `count_udaf` from Comet is exceptionally slow for some reason, so
+                // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
+                // https://github.com/apache/datafusion-comet/issues/744
+
                 let children = expr
                     .children
                     .iter()
                     .map(|child| self.create_expr(child, schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
 
+                // create `IS NOT NULL expr` and join them with `AND` if there are multiple
+                let not_null_expr: Arc<dyn PhysicalExpr> = children.iter().skip(1).fold(
+                    Arc::new(IsNotNullExpr::new(children[0].clone())) as Arc<dyn PhysicalExpr>,
+                    |acc, child| {
+                        Arc::new(BinaryExpr::new(
+                            acc,
+                            DataFusionOperator::And,
+                            Arc::new(IsNotNullExpr::new(child.clone())),
+                        ))
+                    },
+                );
+
+                let child = Arc::new(IfExpr::new(
+                    not_null_expr,
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
+                ));
+
                 create_aggregate_expr(
-                    &count_udaf(),
-                    &children,
+                    &sum_udaf(),
+                    &[child],
                     &[],
                     &[],
                     &[],

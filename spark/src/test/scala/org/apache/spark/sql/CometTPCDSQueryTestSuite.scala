@@ -208,8 +208,13 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
       test(name) {
         val goldenFile = new File(s"$baseResourcePath/v1_4", s"$name.sql.out")
         joinConfs.foreach { conf =>
-          System.gc() // Workaround for GitHub Actions memory limitation, see also SPARK-37368
-          runQuery(queryString, goldenFile, conf)
+          val sortMergeJoin = sortMergeJoinConf == conf
+          // Skip q72 for sort-merge join because it uses too many resources
+          // that can cause OOM in GitHub Actions
+          if (!(sortMergeJoin && name == "q72")) {
+            System.gc() // Workaround for GitHub Actions memory limitation, see also SPARK-37368
+            runQuery(queryString, goldenFile, conf)
+          }
         }
       }
     }
@@ -221,8 +226,13 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
       test(s"$name-v2.7") {
         val goldenFile = new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
         joinConfs.foreach { conf =>
-          System.gc() // SPARK-37368
-          runQuery(queryString, goldenFile, conf)
+          val sortMergeJoin = sortMergeJoinConf == conf
+          // Skip q72 for sort-merge join because it uses too many resources
+          // that can cause OOM in GitHub Actions
+          if (!(sortMergeJoin && name == "q72")) {
+            System.gc() // SPARK-37368
+            runQuery(queryString, goldenFile, conf)
+          }
         }
       }
     }
