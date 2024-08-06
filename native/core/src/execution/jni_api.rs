@@ -227,6 +227,9 @@ fn prepare_datafusion_session_context(
         // use of partial aggregates.
         .set(
             "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
+            // this is the threshold of number of groups / number of rows and the
+            // maximum value is 1.0, so we set the threshold a little higher just
+            // to be safe
             ScalarValue::Float64(Some(1.1)),
         );
 
