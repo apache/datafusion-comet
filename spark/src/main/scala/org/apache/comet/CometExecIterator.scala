@@ -125,7 +125,6 @@ class CometExecIterator(
     nextBatch = getNextBatch()
 
     if (nextBatch.isEmpty) {
-      close()
       false
     } else {
       true
