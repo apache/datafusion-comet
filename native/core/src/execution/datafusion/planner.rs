@@ -17,8 +17,38 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+use crate::{
+    errors::ExpressionError,
+    execution::{
+        datafusion::{
+            expressions::{
+                avg::Avg,
+                avg_decimal::AvgDecimal,
+                bitwise_not::BitwiseNotExpr,
+                bloom_filter_might_contain::BloomFilterMightContain,
+                checkoverflow::CheckOverflow,
+                correlation::Correlation,
+                covariance::Covariance,
+                negative,
+                stats::StatsType,
+                stddev::Stddev,
+                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
+                subquery::Subquery,
+                sum_decimal::SumDecimal,
+                unbound::UnboundColumn,
+                variance::Variance,
+                NormalizeNaNAndZero,
+            },
+            operators::expand::CometExpandExec,
+            shuffle_writer::ShuffleWriterExec,
+        },
+        operators::{CopyExec, ExecutionError, ScanExec},
+        serde::to_arrow_datatype,
+    },
+};
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -62,36 +92,6 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion::functions_aggregate::count::count_udaf;
-use crate::{
-    errors::ExpressionError,
-    execution::{
-        datafusion::{
-            expressions::{
-                avg::Avg,
-                avg_decimal::AvgDecimal,
-                bitwise_not::BitwiseNotExpr,
-                bloom_filter_might_contain::BloomFilterMightContain,
-                checkoverflow::CheckOverflow,
-                correlation::Correlation,
-                covariance::Covariance,
-                negative,
-                stats::StatsType,
-                stddev::Stddev,
-                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
-                subquery::Subquery,
-                sum_decimal::SumDecimal,
-                unbound::UnboundColumn,
-                variance::Variance,
-                NormalizeNaNAndZero,
-            },
-            operators::expand::CometExpandExec,
-            shuffle_writer::ShuffleWriterExec,
-        },
-        operators::{CopyExec, ExecutionError, ScanExec},
-        serde::to_arrow_datatype,
-    },
-};
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
@@ -1260,9 +1260,14 @@ impl PhysicalPlanner {
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                 } else {
                     // use count_udaf, which has poor performance
+                    let children = expr
+                        .children
+                        .iter()
+                        .map(|child| self.create_expr(child, schema.clone()))
+                        .collect::<Result<Vec<_>, _>>()?;
                     create_aggregate_expr(
                         &count_udaf(),
-                        &expr.children,
+                        &children,
                         &[],
                         &[],
                         &[],
