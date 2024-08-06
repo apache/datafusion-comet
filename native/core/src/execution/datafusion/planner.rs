@@ -50,6 +50,8 @@ use crate::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::min_max::max_udaf;
+use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -63,7 +65,7 @@ use datafusion::{
         execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
-            Literal as DataFusionLiteral, Max, Min, NotExpr,
+            Literal as DataFusionLiteral, NotExpr,
         },
         AggregateExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
