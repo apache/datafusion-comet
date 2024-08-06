@@ -62,7 +62,7 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-
+use datafusion::functions_aggregate::count::count_udaf;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -1261,7 +1261,7 @@ impl PhysicalPlanner {
                 } else {
                     // use count_udaf, which has poor performance
                     create_aggregate_expr(
-                        &sum_udaf(),
+                        &count_udaf(),
                         &expr.children,
                         &[],
                         &[],
