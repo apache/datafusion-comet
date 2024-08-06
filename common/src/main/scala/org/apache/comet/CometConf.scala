@@ -377,11 +377,10 @@ object CometConf extends ShimCometConf {
   val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc(
-        "Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
-          "Comet will convert operators in " +
-          "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
-          "processing.")
+      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+        "Comet will convert operators in " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "processing.")
       .booleanConf
       .createWithDefault(false)
 
