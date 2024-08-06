@@ -1235,7 +1235,12 @@ impl PhysicalPlanner {
             AggExprStruct::Count(expr) => {
                 assert_eq!(1, expr.children.len());
 
+                // Using `count_udaf` from Comet is exceptionally slow for some reason, so
+                // as a workaround we translate it to `SUM(IF(expr IS NULL, 0, 1))`
+                // https://github.com/apache/datafusion-comet/issues/744
                 let the_expr = &expr.children[0];
+
+                //TODO this only handles COUNT(col) and not COUNT(1) so far
                 let child = Arc::new(IfExpr::new(
                     Arc::new(IsNullExpr::new(self.create_expr(the_expr, schema.clone())?)),
                     Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
