@@ -19,7 +19,6 @@
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
-use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -1234,15 +1233,18 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn AggregateExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
-                let children = expr
-                    .children
-                    .iter()
-                    .map(|child| self.create_expr(child, schema.clone()))
-                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(1, expr.children.len());
+
+                let the_expr = &expr.children[0];
+                let child = Arc::new(IfExpr::new(
+                    Arc::new(IsNullExpr::new(self.create_expr(the_expr, schema.clone())?)),
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
+                ));
 
                 create_aggregate_expr(
-                    &count_udaf(),
-                    &children,
+                    &sum_udaf(),
+                    &[child],
                     &[],
                     &[],
                     &[],
