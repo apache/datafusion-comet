@@ -111,6 +111,7 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion::prelude::SessionConfig;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -138,7 +139,9 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
+        let cfg = SessionConfig::new()
+            .set("datafusion.execution.skip_partial_aggregation_probe_ratio_threshold", ScalarValue::Float64(Some(1.1)));
+        let session_ctx = Arc::new(SessionContext::new_with_config(cfg));
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -1269,7 +1272,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "count",
+                    Some("count".to_string()),
                     false,
                     false,
                 )
@@ -1286,7 +1289,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "min",
+                    Some("min".to_string()),
                     false,
                     false,
                 )
@@ -1303,7 +1306,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "max",
+                    Some("max".to_string()),
                     false,
                     false,
                 )
@@ -1328,7 +1331,7 @@ impl PhysicalPlanner {
                             &[],
                             &[],
                             schema.as_ref(),
-                            "sum",
+                            Some("sum".to_string()),
                             false,
                             false,
                         )
@@ -1366,7 +1369,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "first",
+                    Some("first".to_string()),
                     false,
                     false,
                 )
@@ -1382,7 +1385,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "last",
+                    Some("last".to_string()),
                     false,
                     false,
                 )
@@ -1397,7 +1400,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_and",
+                    Some("bit_and".to_string()),
                     false,
                     false,
                 )
@@ -1412,7 +1415,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_or",
+                    Some("bit_or".to_string()),
                     false,
                     false,
                 )
@@ -1427,7 +1430,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_xor",
+                    Some("bit_xor".to_string()),
                     false,
                     false,
                 )
