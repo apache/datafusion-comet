@@ -185,6 +185,7 @@ public class ColumnReader extends AbstractColumnReader {
         && currentVector.numValues() >= currentNumValues) {
       currentVector.setNumNulls(currentNumNulls);
       currentVector.setNumValues(currentNumValues);
+      currentVector.reset();
       return currentVector;
     }
 

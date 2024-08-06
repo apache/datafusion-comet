@@ -232,9 +232,12 @@ public abstract class CometVector extends ColumnVector {
     throw new UnsupportedOperationException("Not yet supported");
   }
 
+  public void reset() {
+    DECIMAL_BYTES_ALL = null;
+  }
+
   @Override
   public void close() {
-    DECIMAL_BYTES_ALL = null;
     getValueVector().close();
   }
 
