@@ -28,7 +28,6 @@ import org.apache.comet.CometConf
 class CometTPCDSQuerySuite
     extends {
       val tpcdsAllQueries: Seq[String] = Seq(
-        "q72",
         "q1",
         "q2",
         "q3",
@@ -109,6 +108,7 @@ class CometTPCDSQuerySuite
         "q69",
         "q70",
         "q71",
+        "q72",
         "q73",
         "q74",
         "q75",
@@ -138,7 +138,6 @@ class CometTPCDSQuerySuite
         "q99")
 
       val tpcdsAllQueriesV2_7_0: Seq[String] = Seq(
-        "q72",
         "q5a",
         "q6",
         "q10a",
@@ -163,6 +162,7 @@ class CometTPCDSQuerySuite
         "q64",
         "q67a",
         "q70a",
+        "q72",
         "q74",
         "q75",
         "q77a",
