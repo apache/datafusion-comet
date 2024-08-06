@@ -1231,7 +1231,7 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn AggregateExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
-                assert!(expr.children.len() > 0);
+                assert!(!expr.children.is_empty());
                 // Using `count_udaf` from Comet is exceptionally slow for some reason, so
                 // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
                 // https://github.com/apache/datafusion-comet/issues/744
