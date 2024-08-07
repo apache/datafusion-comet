@@ -99,6 +99,26 @@ shaping the future of Comet. Check out our
 
 Apache DataFusion Comet is licensed under the Apache License 2.0. See the [LICENSE.txt](LICENSE.txt) file for details.
 
+## How to Release
+
+Here are the steps to cut a new Comet release.
+
+1. After everything is committed to the `main-apple` branch. Checkout
+   `main-apple-release` branch and rebase it on top of `main-apple`:
+   ```
+   git rebase main-apple
+   ```
+   And then push the `main-apple-release` branch to remote. This will trigger the
+   release job.
+
+2. Make sure the [release job](https://rio.apple.com/projects/aci-ipr-apache-arrow-datafusion-comet)
+   finishes successfully.
+
+3. Go back to the `main-apple` branch and bump the SNAPSHOT version in the `pom.xml` file and `rio.yaml` file, and
+   push the `main-apple` branch to remote.
+
+4. Create release notes in [Releases](https://github.pie.apple.com/IPR/apache-arrow-datafusion-comet/releases).
+
 ## Acknowledgments
 
 We would like to express our gratitude to the Apache DataFusion community for their support and contributions to
