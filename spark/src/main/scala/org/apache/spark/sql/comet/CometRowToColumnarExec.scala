@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.JavaConverters._
+
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -28,7 +30,10 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.DataTypeSupport
 
 case class CometRowToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -60,8 +65,17 @@ case class CometRowToColumnarExec(child: SparkPlan)
     val timeZoneId = conf.sessionLocalTimeZone
     val schema = child.schema
 
-    child
-      .execute()
+    val rdd: RDD[InternalRow] = if (child.supportsColumnar) {
+      child
+        .executeColumnar()
+        .mapPartitionsInternal { iter =>
+          iter.flatMap(_.rowIterator().asScala)
+        }
+    } else {
+      child.execute()
+    }
+
+    rdd
       .mapPartitionsInternal { iter =>
         val context = TaskContext.get()
         CometArrowConverters.toArrowBatchIterator(
@@ -81,4 +95,11 @@ case class CometRowToColumnarExec(child: SparkPlan)
   override protected def withNewChildInternal(newChild: SparkPlan): CometRowToColumnarExec =
     copy(child = newChild)
 
+}
+
+object CometRowToColumnarExec extends DataTypeSupport {
+  override def isAdditionallySupported(dt: DataType): Boolean = dt match {
+    case _: StructType => true
+    case _ => false
+  }
 }

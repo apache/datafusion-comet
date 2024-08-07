@@ -401,6 +401,14 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
 
+  val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.caseConversion.enabled")
+      .doc(
+        "Java uses locale-specific rules when converting strings to upper or lower case and " +
+          "Rust does not, so we disable upper and lower by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
@@ -410,6 +418,13 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.regexp.allowIncompatible")
+      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
+        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
+        "See compatibility guide for more information.")
+      .booleanConf
+      .createWithDefault(false)
 }
 
 object ConfigHelpers {

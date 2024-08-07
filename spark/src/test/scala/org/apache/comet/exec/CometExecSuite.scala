@@ -63,6 +63,29 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Native window operator should be CometUnaryExec") {
+    withTempView("testData") {
+      sql("""
+          |CREATE OR REPLACE TEMPORARY VIEW testData AS SELECT * FROM VALUES
+          |(null, 1L, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), "a"),
+          |(1, 1L, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), "a"),
+          |(1, 2L, 2.5D, date("2017-08-02"), timestamp_seconds(1502000000), "a"),
+          |(2, 2147483650L, 100.001D, date("2020-12-31"), timestamp_seconds(1609372800), "a"),
+          |(1, null, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), "b"),
+          |(2, 3L, 3.3D, date("2017-08-03"), timestamp_seconds(1503000000), "b"),
+          |(3, 2147483650L, 100.001D, date("2020-12-31"), timestamp_seconds(1609372800), "b"),
+          |(null, null, null, null, null, null),
+          |(3, 1L, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), null)
+          |AS testData(val, val_long, val_double, val_date, val_timestamp, cate)
+          |""".stripMargin)
+      val df = sql("""
+          |SELECT val, cate, count(val) OVER(PARTITION BY cate ORDER BY val ROWS CURRENT ROW)
+          |FROM testData ORDER BY cate, val
+          |""".stripMargin)
+      checkSparkAnswer(df)
+    }
+  }
+
   test("subquery execution under CometTakeOrderedAndProjectExec should not fail") {
     assume(isSpark35Plus, "SPARK-45584 is fixed in Spark 3.5+")
 

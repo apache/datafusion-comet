@@ -108,9 +108,7 @@ class CometTPCDSQuerySuite
         "q69",
         "q70",
         "q71",
-        // TODO: unknown failure (seems memory usage over Github action runner) in CI with q72 in
-        // https://github.com/apache/datafusion-comet/pull/613.
-        // "q72",
+        "q72",
         "q73",
         "q74",
         "q75",
@@ -164,9 +162,7 @@ class CometTPCDSQuerySuite
         "q64",
         "q67a",
         "q70a",
-        // TODO: unknown failure (seems memory usage over Github action runner) in CI with q72-v2.7
-        // in https://github.com/apache/datafusion-comet/pull/613.
-        // "q72",
+        "q72",
         "q74",
         "q75",
         "q77a",

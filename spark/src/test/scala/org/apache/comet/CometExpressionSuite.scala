@@ -23,11 +23,14 @@ import java.time.{Duration, Period}
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
@@ -617,6 +620,167 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike simple case") {
+    val table = "rlike_names"
+    Seq(false, true).foreach { withDictionary =>
+      val data = Seq("James Smith", "Michael Rose", "Rames Rose", "Rames rose") ++
+        // add repetitive data to trigger dictionary encoding
+        Range(0, 100).map(_ => "John Smith")
+      withParquetFile(data.zipWithIndex, withDictionary) { file =>
+        withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+          spark.read.parquet(file).createOrReplaceTempView(table)
+          val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("withInfo") {
+    val table = "with_info"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      val query = sql(s"select cast(id as string) from $table")
+      val (_, cometPlan) = checkSparkAnswer(query)
+      val project = cometPlan
+        .asInstanceOf[WholeStageCodegenExec]
+        .child
+        .asInstanceOf[ColumnarToRowExec]
+        .child
+        .asInstanceOf[InputAdapter]
+        .child
+        .asInstanceOf[CometProjectExec]
+      val id = project.expressions.head
+      CometSparkSessionExtensions.withInfo(id, "reason 1")
+      CometSparkSessionExtensions.withInfo(project, "reason 2")
+      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
+      CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 4")
+      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
+      CometSparkSessionExtensions.withInfo(project, id)
+      CometSparkSessionExtensions.withInfo(project, "reason 6")
+      val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
+      for (i <- 1 until 7) {
+        assert(explain.contains(s"reason $i"))
+      }
+    }
+  }
+
+  test("rlike fallback for non scalar pattern") {
+    val table = "rlike_fallback"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      sql(s"insert into $table values(1,'James Smith')")
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        val query2 = sql(s"select id from $table where name rlike name")
+        val (_, cometPlan) = checkSparkAnswer(query2)
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(explain.contains("Only scalar regexp patterns are supported"))
+      }
+    }
+  }
+
+  test("rlike whitespace") {
+    val table = "rlike_whitespace"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      val values =
+        Seq("James Smith", "\rJames\rSmith\r", "\nJames\nSmith\n", "\r\nJames\r\nSmith\r\n")
+      values.zipWithIndex.foreach { x =>
+        sql(s"insert into $table values (${x._2}, '${x._1}')")
+      }
+      val patterns = Seq(
+        "James",
+        "J[a-z]mes",
+        "^James",
+        "\\AJames",
+        "Smith",
+        "James$",
+        "James\\Z",
+        "James\\z",
+        "^Smith",
+        "\\ASmith",
+        // $ produces different results - we could potentially transpile this to a different
+        // expression or just fall back to Spark for this case
+        // "Smith$",
+        "Smith\\Z",
+        "Smith\\z")
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        patterns.foreach { pattern =>
+          val query2 = sql(s"select name, '$pattern', name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query2)
+        }
+      }
+    }
+  }
+
+  test("rlike") {
+    val table = "rlike_fuzz"
+    val gen = new DataGenerator(new Random(42))
+    withTable(table) {
+      // generate some data
+      // newline characters are intentionally omitted for now
+      val dataChars = "\t abc123"
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}')")
+      }
+
+      // test some common cases - this is far from comprehensive
+      // see https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
+      // for all valid patterns in Java's regexp engine
+      //
+      // patterns not currently covered:
+      // - octal values
+      // - hex values
+      // - specific character matches
+      // - specific whitespace/newline matches
+      // - complex character classes (union, intersection, subtraction)
+      // - POSIX character classes
+      // - java.lang.Character classes
+      // - Classes for Unicode scripts, blocks, categories and binary properties
+      // - reluctant quantifiers
+      // - possessive quantifiers
+      // - logical operators
+      // - back-references
+      // - quotations
+      // - special constructs (name capturing and non-capturing)
+      val startPatterns = Seq("", "^", "\\A")
+      val endPatterns = Seq("", "$", "\\Z", "\\z")
+      val patternParts = Seq(
+        "[0-9]",
+        "[a-z]",
+        "[^a-z]",
+        "\\d",
+        "\\D",
+        "\\w",
+        "\\W",
+        "\\b",
+        "\\B",
+        "\\h",
+        "\\H",
+        "\\s",
+        "\\S",
+        "\\v",
+        "\\V")
+      val qualifiers = Seq("", "+", "*", "?", "{1,}")
+
+      withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+        // testing every possible combination takes too long, so we pick some
+        // random combinations
+        for (_ <- 0 until 100) {
+          val pattern = gen.pickRandom(startPatterns) +
+            gen.pickRandom(patternParts) +
+            gen.pickRandom(qualifiers) +
+            gen.pickRandom(endPatterns)
+          val query = sql(s"select id, name, name rlike '$pattern' from $table")
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
   test("contains") {
     val table = "names"
     withTable(table) {
@@ -997,6 +1161,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Upper and Lower") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+        val table = "names"
+        withTable(table) {
+          sql(s"create table $table(id int, name varchar(20)) using parquet")
+          sql(
+            s"insert into $table values(1, 'James Smith'), (2, 'Michael Rose')," +
+              " (3, 'Robert Williams'), (4, 'Rames Rose'), (5, 'James Smith')")
+          checkSparkAnswerAndOperator(s"SELECT name, upper(name), lower(name) FROM $table")
+        }
+      }
+    }
+  }
+
   test("Various String scalar functions") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1007,7 +1188,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"insert into $table values(1, 'James Smith'), (2, 'Michael Rose')," +
               " (3, 'Robert Williams'), (4, 'Rames Rose'), (5, 'James Smith')")
           checkSparkAnswerAndOperator(
-            s"SELECT ascii(name), bit_length(name), octet_length(name), upper(name), lower(name) FROM $table")
+            s"SELECT ascii(name), bit_length(name), octet_length(name) FROM $table")
         }
       }
     }
@@ -1087,7 +1268,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("trim") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col varchar(20)) using parquet")
@@ -1547,6 +1730,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"SELECT sum(c0), sum(c2) from $table group by c1",
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "AQEShuffleRead is not supported")),
           (
@@ -1559,6 +1743,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
+              "HashAggregate is not native because the following children are not native (Exchange)",
               "Project is not native because the following children are not native (BroadcastHashJoin)",
               "BroadcastHashJoin is not enabled because the following children are not native" +
                 " (BroadcastExchange, Project)")))
@@ -1765,6 +1950,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
+      }
+    }
+  }
+
+  test("struct and named_struct with dictionary") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i =>
+          (
+            i,
+            if (i % 2 == 0) { "even" }
+            else { "odd" })),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+        checkSparkAnswerAndOperator("SELECT struct(_1, _2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+      }
+    }
+  }
+
+  test("get_struct_field") {
+    withSQLConf(
+      CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key -> "true",
+      CometConf.COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
+      withTempPath { dir =>
+        var df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested"))
+
+        df.write.parquet(dir.toString())
+
+        df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested.id"))
       }
     }
   }
