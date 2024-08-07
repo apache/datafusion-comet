@@ -144,7 +144,7 @@ pub struct PhysicalPlanner {
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let state = SessionStateBuilder::new()
-            .with_physical_optimizer_rule(Arc::new(AddCopyExecs {}))
+            .with_physical_optimizer_rules(vec![Arc::new(AddCopyExecs {})])
             .build();
         let session_ctx = Arc::new(SessionContext::new_with_state(state));
         let execution_props = ExecutionProps::new();
@@ -865,11 +865,9 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let copy_exec = Arc::new(CopyExec::new(child));
-
                 Ok((
                     scans,
-                    Arc::new(SortExec::new(exprs?, copy_exec).with_fetch(fetch)),
+                    Arc::new(SortExec::new(exprs?, child).with_fetch(fetch)),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -954,11 +952,6 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().is::<ScanExec>() {
-                    Arc::new(CopyExec::new(child))
-                } else {
-                    child
-                };
 
                 Ok((
                     scans,
@@ -1216,21 +1209,6 @@ impl PhysicalPlanner {
             ))
         } else {
             None
-        };
-
-        // DataFusion Join operators keep the input batch internally. We need
-        // to copy the input batch to avoid the data corruption from reusing the input
-        // batch.
-        let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left))
-        } else {
-            left
-        };
-
-        let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right))
-        } else {
-            right
         };
 
         Ok((
@@ -1783,16 +1761,6 @@ impl From<ExpressionError> for DataFusionError {
     }
 }
 
-/// Returns true if given operator can return input array as output array without
-/// modification. This is used to determine if we need to copy the input batch to avoid
-/// data corruption from reusing the input batch.
-fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().is::<ScanExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<FilterExec>()
-}
-
 /// Collects the indices of the columns in the input schema that are used in the expression
 /// and returns them as a pair of vectors, one for the left side and one for the right side.
 fn expr_to_columns(
@@ -1939,7 +1907,12 @@ impl PhysicalOptimizerRule for AddCopyExecs {
         _config: &ConfigOptions,
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
         plan.transform_up(|plan| {
-            if can_reuse_input_batch(&plan) {
+            if caches_batches(&plan)
+                && plan
+                    .children()
+                    .iter()
+                    .any(|child| can_reuse_input_batch(child))
+            {
                 Ok(Transformed::yes(Arc::new(CopyExec::new(plan))))
             } else {
                 Ok(Transformed::no(plan))
@@ -1955,6 +1928,24 @@ impl PhysicalOptimizerRule for AddCopyExecs {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+/// Returns true if given operator can cache batches
+fn caches_batches(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    plan.as_any().is::<CometExpandExec>()
+        || plan.as_any().is::<SortExec>()
+        || plan.as_any().is::<HashJoinExec>()
+        || plan.as_any().is::<SortMergeJoinExec>()
+}
+
+/// Returns true if given operator can return input array as output array without
+/// modification. This is used to determine if we need to copy the input batch to avoid
+/// data corruption from reusing the input batch.
+fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
+    op.as_any().is::<ScanExec>()
+        || op.as_any().is::<LocalLimitExec>()
+        || op.as_any().is::<ProjectionExec>()
+        || op.as_any().is::<FilterExec>()
 }
 
 #[cfg(test)]
