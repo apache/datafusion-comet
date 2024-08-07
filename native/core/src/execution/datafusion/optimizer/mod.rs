@@ -15,11 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native execution through DataFusion
-
-pub mod expressions;
-mod operators;
-pub mod optimizer;
-pub mod planner;
-pub mod shuffle_writer;
-mod util;
+pub mod add_copy_execs;

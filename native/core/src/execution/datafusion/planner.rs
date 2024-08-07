@@ -19,6 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use crate::execution::datafusion::optimizer::add_copy_execs::AddCopyExecs;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -44,18 +45,16 @@ use crate::{
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
         },
-        operators::{CopyExec, ExecutionError, ScanExec},
+        operators::{ExecutionError, ScanExec},
         serde::to_arrow_datatype,
     },
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
-use datafusion::execution::context::SessionState;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::physical_planner::DefaultPhysicalPlanner;
@@ -101,7 +100,6 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
-use datafusion_common::config::ConfigOptions;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -1074,12 +1072,11 @@ impl PhysicalPlanner {
     pub fn optimize_plan(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        session_state: &SessionState,
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
         // optimize the physical plan
         let datafusion_planner = DefaultPhysicalPlanner::default();
         datafusion_planner
-            .optimize_physical_plan(plan, &session_state, |_, _| {})
+            .optimize_physical_plan(plan, &self.session_ctx.state(), |_, _| {})
             .map_err(|e| e.into())
     }
 
@@ -1895,57 +1892,6 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
         spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
     }
-}
-
-/// Physical optimize rule to wrap operators in a CopyExec if the operators re-use input batches
-struct AddCopyExecs {}
-
-impl PhysicalOptimizerRule for AddCopyExecs {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
-        plan.transform_up(|plan| {
-            if caches_batches(&plan)
-                && plan
-                    .children()
-                    .iter()
-                    .any(|child| can_reuse_input_batch(child))
-            {
-                Ok(Transformed::yes(Arc::new(CopyExec::new(plan))))
-            } else {
-                Ok(Transformed::no(plan))
-            }
-        })
-        .data()
-    }
-
-    fn name(&self) -> &str {
-        "add_copy_execs"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
-
-/// Returns true if given operator can cache batches
-fn caches_batches(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    plan.as_any().is::<CometExpandExec>()
-        || plan.as_any().is::<SortExec>()
-        || plan.as_any().is::<HashJoinExec>()
-        || plan.as_any().is::<SortMergeJoinExec>()
-}
-
-/// Returns true if given operator can return input array as output array without
-/// modification. This is used to determine if we need to copy the input batch to avoid
-/// data corruption from reusing the input batch.
-fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().is::<ScanExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<FilterExec>()
 }
 
 #[cfg(test)]

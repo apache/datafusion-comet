@@ -18,11 +18,20 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
+use crate::{
+    errors::{try_unwrap_or_throw, CometError, CometResult},
+    execution::{
+        datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
+        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
+    },
+    jvm_bridge::{jni_new_global_ref, JVMClasses},
+};
 use arrow::{
     datatypes::DataType as ArrowDataType,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::RecordBatch;
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -31,7 +40,10 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_common::ScalarValue;
 use futures::poll;
+use futures::stream::StreamExt;
 use jni::{
     errors::Result as JNIResult,
     objects::{
@@ -41,25 +53,14 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
-use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use crate::{
-    errors::{try_unwrap_or_throw, CometError, CometResult},
-    execution::{
-        datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
-        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
-    },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
-};
-use datafusion_comet_proto::spark_operator::Operator;
-use datafusion_common::ScalarValue;
-use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use std::{collections::HashMap, sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 
+use crate::execution::datafusion::optimizer::add_copy_execs::AddCopyExecs;
 use crate::execution::operators::ScanExec;
 use log::info;
 
@@ -238,10 +239,14 @@ fn prepare_datafusion_session_context(
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
-    Ok(SessionContext::new_with_config_rt(
-        session_config,
-        Arc::new(runtime),
-    ))
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(Arc::new(runtime))
+        .with_default_features()
+        .with_physical_optimizer_rules(vec![Arc::new(AddCopyExecs::default())])
+        .build();
+
+    Ok(SessionContext::new_with_state(state))
 }
 
 /// Prepares arrow arrays for output.
@@ -336,7 +341,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             )?;
 
             // optimize the physical plan
-            let root_op = planner.optimize_plan(root_op, &exec_context.session_ctx.state())?;
+            let root_op = planner.optimize_plan(root_op)?;
 
             exec_context.root_op = Some(root_op.clone());
             exec_context.scans = scans;
