@@ -45,7 +45,6 @@ impl PhysicalOptimizerRule for AddCopyExecs {
         _config: &ConfigOptions,
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
         plan.transform_up(|plan| {
-            println!("transform_up: {plan:?}");
             if can_reuse_input_batch(&plan) {
                 Ok(Transformed::yes(Arc::new(CopyExec::new(plan))))
             } else {
