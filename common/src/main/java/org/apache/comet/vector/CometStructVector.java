@@ -24,14 +24,17 @@ import java.util.List;
 
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 
 /** A Comet column vector for struct type. */
 public class CometStructVector extends CometDecodedVector {
   final List<ColumnVector> children;
+  final DictionaryProvider dictionaryProvider;
 
-  public CometStructVector(ValueVector vector, boolean useDecimal128) {
+  public CometStructVector(
+      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
     super(vector, vector.getField(), useDecimal128);
 
     StructVector structVector = ((StructVector) vector);
@@ -41,9 +44,10 @@ public class CometStructVector extends CometDecodedVector {
 
     for (int i = 0; i < size; ++i) {
       ValueVector value = structVector.getVectorById(i);
-      children.add(getVector(value, useDecimal128));
+      children.add(getVector(value, useDecimal128, dictionaryProvider));
     }
     this.children = children;
+    this.dictionaryProvider = dictionaryProvider;
   }
 
   @Override
@@ -56,6 +60,6 @@ public class CometStructVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometStructVector(tp.getTo(), useDecimal128);
+    return new CometStructVector(tp.getTo(), useDecimal128, dictionaryProvider);
   }
 }
