@@ -53,6 +53,7 @@ use crate::{
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_common::ScalarValue;
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
@@ -219,7 +220,18 @@ fn prepare_datafusion_session_context(
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let mut session_config = SessionConfig::new().with_batch_size(batch_size);
+    let mut session_config = SessionConfig::new()
+        .with_batch_size(batch_size)
+        // DataFusion partial aggregates can emit duplicate rows so we disable the
+        // skip partial aggregation feature because this is not compatible with Spark's
+        // use of partial aggregates.
+        .set(
+            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
+            // this is the threshold of number of groups / number of rows and the
+            // maximum value is 1.0, so we set the threshold a little higher just
+            // to be safe
+            ScalarValue::Float64(Some(1.1)),
+        );
 
     for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
         session_config = session_config.set_str(key, value);
