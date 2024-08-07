@@ -64,12 +64,31 @@ class NativeUtil {
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
+          // scalastyle:off println
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            println(s"before export buf $i: ${buf.getReferenceManager.getRefCount}")
+          }
           Data.exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
             arrowSchema)
+          // scalastyle:off println
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            println(s"after export buf $i: ${buf.getReferenceManager.getRefCount}")
+          }
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            buf.close()
+          }
+          // scalastyle:off println
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            println(s"after export + release buf $i: ${buf.getReferenceManager.getRefCount}")
+          }
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
