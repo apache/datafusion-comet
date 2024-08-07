@@ -107,12 +107,12 @@ fi
 set +x
 
 # Update the lock filefile
-cd core
+cd native
 cargo update
 
 popd
 
-if [ ! -z "$(git status -s core/Cargo.lock)" ]; then
+if [ ! -z "$(git status -s native/Cargo.lock)" ]; then
   echo
   echo "Consider creating a pull request for the Cargo updates"
 fi
