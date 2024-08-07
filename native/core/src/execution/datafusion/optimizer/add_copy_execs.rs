@@ -30,13 +30,8 @@ use crate::execution::datafusion::operators::expand::CometExpandExec;
 use crate::execution::operators::{CopyExec, ScanExec};
 
 /// Physical optimize rule to wrap operators in a CopyExec if the operators re-use input batches
+#[derive(Default)]
 pub struct AddCopyExecs {}
-
-impl Default for AddCopyExecs {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 impl PhysicalOptimizerRule for AddCopyExecs {
     fn optimize(
