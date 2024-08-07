@@ -1726,6 +1726,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("readSidePadding") {
+    // https://stackoverflow.com/a/46290728
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col1 CHAR(2)) using parquet")
+      sql(s"insert into $table values('é')") // unicode 'e\\u{301}'
+      sql(s"insert into $table values('é')") // unicode '\\u{e9}'
+
+      checkSparkAnswerAndOperator(s"SELECT * FROM $table")
+    }
+  }
+
   test("isnan") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
@@ -1754,18 +1766,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
       }
-    }
-  }
-
-  test("readSidePadding") {
-    // https://stackoverflow.com/a/46290728
-    val table = "test"
-    withTable(table) {
-      sql(s"create table $table(col1 CHAR(2)) using parquet")
-      sql(s"insert into $table values('é')") // unicode 'e\\u{301}'
-      sql(s"insert into $table values('é')") // unicode '\\u{e9}'
-
-      checkSparkAnswerAndOperator(s"SELECT * FROM $table")
     }
   }
 }
