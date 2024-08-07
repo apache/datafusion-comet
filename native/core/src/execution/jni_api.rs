@@ -17,11 +17,13 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::{
     datatypes::DataType as ArrowDataType,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::RecordBatch;
+use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -41,8 +43,6 @@ use jni::{
     JNIEnv,
 };
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -334,6 +334,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
+            )?;
+
+            // optimize the physical plan
+            let datafusion_planner = DefaultPhysicalPlanner::default();
+            let root_op = datafusion_planner.optimize_physical_plan(
+                root_op,
+                &exec_context.session_ctx.state(),
+                |_, _| {},
             )?;
 
             exec_context.root_op = Some(root_op.clone());
