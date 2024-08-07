@@ -1269,7 +1269,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "count",
+                    Some("count".to_string()),
                     false,
                     false,
                 )
@@ -1286,7 +1286,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "min",
+                    Some("min".to_string()),
                     false,
                     false,
                 )
@@ -1303,7 +1303,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     schema.as_ref(),
-                    "max",
+                    Some("max".to_string()),
                     false,
                     false,
                 )
@@ -1328,7 +1328,7 @@ impl PhysicalPlanner {
                             &[],
                             &[],
                             schema.as_ref(),
-                            "sum",
+                            Some("sum".to_string()),
                             false,
                             false,
                         )
@@ -1366,7 +1366,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "first",
+                    Some("first".to_string()),
                     false,
                     false,
                 )
@@ -1382,7 +1382,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "last",
+                    Some("last".to_string()),
                     false,
                     false,
                 )
@@ -1397,7 +1397,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_and",
+                    Some("bit_and".to_string()),
                     false,
                     false,
                 )
@@ -1412,7 +1412,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_or",
+                    Some("bit_or".to_string()),
                     false,
                     false,
                 )
@@ -1427,7 +1427,7 @@ impl PhysicalPlanner {
                     &[],
                     &[],
                     &schema,
-                    "bit_xor",
+                    Some("bit_xor".to_string()),
                     false,
                     false,
                 )
