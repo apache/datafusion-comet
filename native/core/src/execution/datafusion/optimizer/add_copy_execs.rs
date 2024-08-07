@@ -59,7 +59,8 @@ impl PhysicalOptimizerRule for AddCopyExecs {
     }
 
     fn schema_check(&self) -> bool {
-        true
+        // CopyExec currently unpacks dictionaries, therefore changes the schema
+        false
     }
 }
 
