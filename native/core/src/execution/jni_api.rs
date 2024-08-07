@@ -23,7 +23,6 @@ use arrow::{
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::RecordBatch;
-use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -337,12 +336,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             )?;
 
             // optimize the physical plan
-            let datafusion_planner = DefaultPhysicalPlanner::default();
-            let root_op = datafusion_planner.optimize_physical_plan(
-                root_op,
-                &exec_context.session_ctx.state(),
-                |_, _| {},
-            )?;
+            let root_op = planner.optimize_plan(root_op, &exec_context.session_ctx.state())?;
 
             exec_context.root_op = Some(root_op.clone());
             exec_context.scans = scans;

@@ -49,12 +49,16 @@ use crate::{
     },
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use datafusion::execution::context::SessionState;
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
+use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -97,6 +101,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
+use datafusion_common::config::ConfigOptions;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -138,7 +143,10 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
+        let state = SessionStateBuilder::new()
+            .with_physical_optimizer_rule(Arc::new(AddCopyExecs {}))
+            .build();
+        let session_ctx = Arc::new(SessionContext::new_with_state(state));
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -1070,6 +1078,18 @@ impl PhysicalPlanner {
         }
     }
 
+    pub fn optimize_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        session_state: &SessionState,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        // optimize the physical plan
+        let datafusion_planner = DefaultPhysicalPlanner::default();
+        datafusion_planner
+            .optimize_physical_plan(plan, &session_state, |_, _| {})
+            .map_err(|e| e.into())
+    }
+
     fn parse_join_parameters(
         &self,
         inputs: &mut Vec<Arc<GlobalRef>>,
@@ -1906,6 +1926,34 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
         spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
+    }
+}
+
+/// Physical optimize rule to wrap operators in a CopyExec if the operators re-use input batches
+struct AddCopyExecs {}
+
+impl PhysicalOptimizerRule for AddCopyExecs {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+        plan.transform_up(|plan| {
+            if can_reuse_input_batch(&plan) {
+                Ok(Transformed::yes(Arc::new(CopyExec::new(plan))))
+            } else {
+                Ok(Transformed::no(plan))
+            }
+        })
+        .data()
+    }
+
+    fn name(&self) -> &str {
+        "add_copy_execs"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
     }
 }
 
