@@ -2167,15 +2167,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case a @ Coalesce(_) =>
           val exprChildren = a.children.map(exprToProtoInternal(_, inputs))
-          val childExpr = scalarExprToProto("coalesce", exprChildren: _*)
-          // TODO: Remove this once we have new DataFusion release which includes
-          // the fix: https://github.com/apache/arrow-datafusion/pull/9459
-          if (childExpr.isDefined) {
-            castToProto(None, a.dataType, childExpr, CometEvalMode.LEGACY)
-          } else {
-            withInfo(expr, a.children: _*)
-            None
-          }
+          scalarExprToProto("coalesce", exprChildren: _*)
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
         // char types. Use rpad to achieve the behavior.
