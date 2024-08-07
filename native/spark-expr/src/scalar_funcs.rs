@@ -387,25 +387,25 @@ pub fn spark_round(
 }
 
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
-pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match array.data_type() {
-                DataType::Utf8 => spark_rpad_internal::<i32>(array, *length),
-                DataType::LargeUtf8 => spark_rpad_internal::<i64>(array, *length),
+                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length),
+                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(array, *length),
                 // TODO: handle Dictionary types
                 other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function rpad",
+                    "Unsupported data type {other:?} for function read_side_padding",
                 ))),
             }
         }
         other => Err(DataFusionError::Internal(format!(
-            "Unsupported arguments {other:?} for function rpad",
+            "Unsupported arguments {other:?} for function read_side_padding",
         ))),
     }
 }
 
-fn spark_rpad_internal<T: OffsetSizeTrait>(
+fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     array: &ArrayRef,
     length: i32,
 ) -> Result<ColumnarValue, DataFusionError> {
