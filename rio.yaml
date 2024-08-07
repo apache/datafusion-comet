@@ -1005,7 +1005,7 @@ builds:
       gitPush: false
     machine: &build-artifacts-machine
       env:
-        ARTIFACT: $(dev/rio-context-file-artifacts.sh | grep '^comet-spark-spark.*-apple.jar$')
+        ARTIFACT: $(dev/rio-context-file-artifacts.sh | grep 'comet-spark-spark' | grep '[^a-zZ-Z].jar$')
     build: &build-artifacts-build
       template: freestyle:v4:build
       steps:
