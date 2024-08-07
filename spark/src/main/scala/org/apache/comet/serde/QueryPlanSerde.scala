@@ -2318,12 +2318,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case struct @ CreateNamedStruct(_) =>
           val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
-          val dataType = serializeDataType(struct.dataType)
 
-          if (valExprs.forall(_.isDefined) && dataType.isDefined) {
+          if (valExprs.forall(_.isDefined)) {
             val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
             structBuilder.addAllValues(valExprs.map(_.get).asJava)
-            structBuilder.setDatatype(dataType.get)
+            structBuilder.addAllNames(struct.names.map(_.toString).asJava)
 
             Some(
               ExprOuterClass.Expr
