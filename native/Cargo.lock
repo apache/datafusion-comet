@@ -942,7 +942,6 @@ dependencies = [
  "regex",
  "thiserror",
  "twox-hash",
- "unicode-segmentation",
 ]
 
 [[package]]

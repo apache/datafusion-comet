@@ -21,8 +21,8 @@ use datafusion_comet_spark_expr::scalar_funcs::hash_expressions::{
 };
 use datafusion_comet_spark_expr::scalar_funcs::{
     spark_ceil, spark_decimal_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_murmur3_hash, spark_round, spark_rpad, spark_unhex, spark_unscaled_value, spark_xxhash64,
-    SparkChrFunc,
+    spark_murmur3_hash, spark_read_side_padding, spark_round, spark_unhex, spark_unscaled_value,
+    spark_xxhash64, SparkChrFunc,
 };
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_expr::registry::FunctionRegistry;
@@ -67,9 +67,9 @@ pub fn create_comet_physical_fun(
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
         }
-        "rpad" => {
-            let func = Arc::new(spark_rpad);
-            make_comet_scalar_udf!("rpad", func, without data_type)
+        "read_side_padding" => {
+            let func = Arc::new(spark_read_side_padding);
+            make_comet_scalar_udf!("read_side_padding", func, without data_type)
         }
         "round" => {
             make_comet_scalar_udf!("round", spark_round, data_type)

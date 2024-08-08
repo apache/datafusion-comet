@@ -1911,6 +1911,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("readSidePadding") {
+    // https://stackoverflow.com/a/46290728
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col1 CHAR(2)) using parquet")
+      sql(s"insert into $table values('é')") // unicode 'e\\u{301}'
+      sql(s"insert into $table values('é')") // unicode '\\u{e9}'
+      sql(s"insert into $table values('')")
+      sql(s"insert into $table values('ab')")
+
+      checkSparkAnswerAndOperator(s"SELECT * FROM $table")
+    }
+  }
+
   test("isnan") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
