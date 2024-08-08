@@ -1136,7 +1136,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case Literal(value, dataType) if supportedDataType(dataType) =>
+        case Literal(value, dataType)
+            if supportedDataType(dataType, allowStruct = value == null) =>
           val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
           if (value == null) {
