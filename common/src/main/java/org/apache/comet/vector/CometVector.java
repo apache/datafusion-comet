@@ -142,9 +142,7 @@ public abstract class CometVector extends ColumnVector {
   /** Reads a 16-byte byte array which are encoded big-endian for decimal128. */
   public byte[] copyBinaryDecimal(int i, byte[] dest) {
     ValueVector vector = getValueVector();
-    // If the index is zero and DECIMAL_BYTES_ALL already has data, we have a new
-    // batch of data in the vector's backing buffer. So read it again.
-    if (DECIMAL_BYTES_ALL == null || i == 0) {
+    if (DECIMAL_BYTES_ALL == null) {
       DECIMAL_BYTES_ALL = new byte[vector.getValueCount() * DECIMAL_BYTE_WIDTH];
       copyBuffer(vector, DECIMAL_BYTES_ALL);
     }
