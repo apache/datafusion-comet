@@ -2,6 +2,10 @@ FROM docker-upstream.apple.com/centos:centos7.9.2009
 
 USER root
 
+# Fix repo
+RUN sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-* && \
+    sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+
 # Install Rust toolchain
 RUN yum -y update
 RUN yum -y install epel-release
@@ -34,8 +38,8 @@ RUN curl -k https://pages.github.pie.apple.com/crypto-services/trust-apple-corp-
 RUN rpm --import https://java.apple.com/applejdk/RPM-GPG-KEY-AppleJDK
 RUN curl -o /etc/yum.repos.d/AppleJDK.repo https://java.apple.com/applejdk/AppleJDK.repo
 RUN yum -y update
-RUN yum -y install applejdk-11
-ENV JAVA_HOME="/usr/lib/jvm/applejdk-11"
+RUN yum -y install applejdk-17
+ENV JAVA_HOME="/usr/lib/jvm/applejdk-17"
 ENV PATH="$JAVA_HOME/bin:${PATH}"
 
 # Install rustup
@@ -46,7 +50,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup install nightly && cargo +nightly install cargo2junit
 
 # Use Rust toolchain, and seed Rust
-COPY rust-toolchain  /rust-toolchain
+COPY rust-toolchain.toml  /rust-toolchain.toml
 RUN cargo search
 
 # llvm-toolset-7-clang is too old (clang 5) which cannot work with latest MacOSX sdk.

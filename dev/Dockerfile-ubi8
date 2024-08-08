@@ -1,4 +1,4 @@
-FROM docker.apple.com/base-images/ubi8/java11-builder
+FROM docker.apple.com/base-images/ubi8/java17-builder
 
 USER root
 
@@ -30,7 +30,7 @@ RUN cd /tmp && curl https://sh.rustup.rs -sSf | bash -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Use Rust toolchain, and seed Rust
-COPY rust-toolchain  /rust-toolchain
+COPY rust-toolchain.toml  /rust-toolchain.toml
 RUN cargo search
 
 # Build OSXCross
