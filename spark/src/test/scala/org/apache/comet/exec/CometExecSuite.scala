@@ -689,7 +689,9 @@ class CometExecSuite extends CometTestBase {
     // there are no assertions in this test to prove that the explain feature
     // wrote the expected output to stdout, but we at least test that enabling
     // the config does not cause any exceptions.
-    withSQLConf(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("select * FROM tbl a join tbl b on a._1 = b._2").select("a._1")
         checkSparkAnswerAndOperator(df)
