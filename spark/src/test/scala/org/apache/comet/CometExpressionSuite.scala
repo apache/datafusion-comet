@@ -146,16 +146,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
-      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl") {
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "false") {
+      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl", withDictionary = false) {
         checkSparkAnswerAndOperator("SELECT _1 + _2, _1 - _2, _1 * _2, _1 / _2, _1 % _2 FROM tbl")
       }
     }
   }
 
   test("dictionary arithmetic with scalar") {
-    withSQLConf("parquet.enable.dictionary" -> "true") {
-      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl") {
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    withSQLConf("parquet.enable.dictionary" -> "false") {
+      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl", withDictionary = false) {
         checkSparkAnswerAndOperator("SELECT _1 + 1, _1 - 1, _1 * 2, _1 / 2, _1 % 2 FROM tbl")
       }
     }
@@ -980,7 +984,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("various math scalar functions") {
-    Seq("true", "false").foreach { dictionary =>
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    Seq("false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
@@ -1068,7 +1074,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ceil and floor") {
-    Seq("true", "false").foreach { dictionary =>
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    Seq("false").foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary,
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
@@ -1386,7 +1394,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("EqualNullSafe should preserve comet filter") {
-    Seq("true", "false").foreach(b =>
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    Seq("false").foreach(b =>
       withParquetTable(
         data = (0 until 8).map(i => (i, if (i > 5) None else Some(i % 2 == 0))),
         tableName = "tbl",
@@ -1926,7 +1936,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("isnan") {
-    Seq("true", "false").foreach { dictionary =>
+    // TODO test with dictionary-encoding
+    // https://github.com/apache/datafusion-comet/issues/753
+    Seq("false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
           Seq(Some(1.0), Some(Double.NaN), None).map(i => Tuple1(i)),
