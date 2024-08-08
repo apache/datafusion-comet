@@ -1939,6 +1939,7 @@ mod tests {
                     type_id: 3, // Int32
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2010,6 +2011,7 @@ mod tests {
                     type_id: STRING_TYPE_ID, // String
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2096,6 +2098,7 @@ mod tests {
                         type_id: 3,
                         type_info: None,
                     }],
+                    source: "".to_string(),
                 },
             )),
         };
