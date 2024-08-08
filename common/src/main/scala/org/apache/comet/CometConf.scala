@@ -286,7 +286,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.explain.native.enabled")
       .doc(
         "When this setting is enabled, Comet will provide a tree representation of " +
-          "the native query plan before execution and again after execution, with" +
+          "the native query plan before execution and again after execution, with " +
           "metrics.")
       .booleanConf
       .createWithDefault(false)
