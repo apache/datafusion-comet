@@ -79,7 +79,6 @@ message Expr {
     BloomFilterMightContain bloom_filter_might_contain = 52;
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
-    CreateArray create_array = 55;
   }
 }
 
@@ -497,11 +496,6 @@ message CreateNamedStruct {
 message GetStructField {
   Expr child = 1;
   int32 ordinal = 2;
-}
-
-message CreateArray {
-  repeated Expr values = 1;
-  DataType datatype = 2;
 }
 
 enum SortDirection {
