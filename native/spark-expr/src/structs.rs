@@ -124,7 +124,9 @@ impl PartialEq<dyn Any> for CreateNamedStruct {
                     .iter()
                     .zip(x.values.iter())
                     .all(|(a, b)| a.eq(b))
+                    && self.values.len() == x.values.len()
                     && self.names.iter().zip(x.names.iter()).all(|(a, b)| a.eq(b))
+                    && self.names.len() == x.names.len()
             })
             .unwrap_or(false)
     }
