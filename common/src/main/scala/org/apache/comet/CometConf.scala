@@ -282,6 +282,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.native.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide a tree representation of " +
+          "the native query plan before execution and again after execution, with" +
+          "metrics.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(

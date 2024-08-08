@@ -685,6 +685,18 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("explain native plan") {
+    // there are no assertions in this test to prove that the explain feature
+    // wrote the expected output to stdout, but we at least test that enabling
+    // the config does not cause any exceptions.
+    withSQLConf(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
+      withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+        val df = sql("select * FROM tbl a join tbl b on a._1 = b._2").select("a._1")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
   test("transformed cometPlan") {
     withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
       val df = sql("select * FROM tbl where _1 >= 2").select("_1")

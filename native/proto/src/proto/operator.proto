@@ -48,6 +48,10 @@ message Operator {
 
 message Scan {
   repeated spark.spark_expression.DataType fields = 1;
+  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
+  // is purely for informational purposes when viewing native query plans in
+  // debug mode.
+  string source = 2;
 }
 
 message Projection {
