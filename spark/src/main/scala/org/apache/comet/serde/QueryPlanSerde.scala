@@ -2724,6 +2724,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
+        val keyTypes = (join.leftKeys ++ join.rightKeys).map(_.dataType)
+        if (keyTypes.exists(!supportedDataType(_, allowStruct = true))) {
+          withInfo(join, "Unsupported data type in join keys")
+          return None
+        }
+
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
