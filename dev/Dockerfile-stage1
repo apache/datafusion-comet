@@ -55,6 +55,12 @@ RUN cargo search
 
 # llvm-toolset-7-clang is too old (clang 5) which cannot work with latest MacOSX sdk.
 RUN yum -y install https://kickstart.pie.apple.com/reposync/el7-x86_64/centos-7.9.2009-extras/Packages/centos-release-scl-rh-2-3.el7.centos.noarch.rpm
+
+# Fix SCLo repo
+RUN sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-SCLo-* && \
+    sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-SCLo-*
+
+# Install devtoolset now that the SCLo repo has ben fixed
 RUN yum -y install devtoolset-8-gcc-c++
 
 # The default cmake is too old, so replace it with cmake3
