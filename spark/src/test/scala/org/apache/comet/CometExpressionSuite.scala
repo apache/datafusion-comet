@@ -1014,9 +1014,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("zero equality") {
+    withParquetTable(
+      Seq(
+        (-0.0, 0.0),
+        (0.0, -0.0),
+        (-0.0, -0.0),
+        (0.0, 0.0),
+        (1.0, 2.0),
+        (1.0, 1.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (-0.0, 1.0),
+        (1.0, -0.0),
+        (1.0, -1.0),
+        (-1.0, 1.0),
+        (-1.0, -0.0),
+        (-1.0, -1.0),
+        (-1.0, 0.0),
+        (0.0, -1.0)),
+      "t") {
+      checkSparkAnswerAndOperator("SELECT _1 == _2 FROM t")
+    }
+  }
+
+  test("remainder") {
+    val query = "SELECT _1, _2, _1 % _2 FROM t"
+    withParquetTable(Seq((21840, -0.0), (21840, 5.0)), "t") {
+      checkSparkAnswerAndOperator(query)
+    }
+
+    withParquetTable(Seq((Decimal(21840, 10, 0), Decimal(-0.0, 10, 0))), "t") {
+      checkSparkAnswerAndOperator(query)
+    }
+
+    withParquetTable(Seq((21840.0f, -0.0f), (21840.0f, 5.0f)), "t") {
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/666
   ignore("abs Overflow ansi mode") {
-
     def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
         checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
