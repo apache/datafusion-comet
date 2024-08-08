@@ -2178,7 +2178,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
-        // char types. Use rpad to achieve the behavior.
+        // char types.
         // See https://github.com/apache/spark/pull/38151
         case s: StaticInvoke
             if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
@@ -2194,7 +2194,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           if (argsExpr.forall(_.isDefined)) {
             val builder = ExprOuterClass.ScalarFunc.newBuilder()
-            builder.setFunc("rpad")
+            builder.setFunc("read_side_padding")
             argsExpr.foreach(arg => builder.addArgs(arg.get))
 
             Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())

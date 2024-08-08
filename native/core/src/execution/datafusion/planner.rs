@@ -1724,11 +1724,16 @@ impl PhysicalPlanner {
 
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
-            None => self
-                .session_ctx
-                .udf(fun_name)?
-                .inner()
-                .return_type(&input_expr_types)?,
+            None => {
+                let fun_name = match fun_name.as_str() {
+                    "read_side_padding" => "rpad", // use the same return type as rpad
+                    other => other,
+                };
+                self.session_ctx
+                    .udf(fun_name)?
+                    .inner()
+                    .return_type(&input_expr_types)?
+            }
         };
 
         let fun_expr =
