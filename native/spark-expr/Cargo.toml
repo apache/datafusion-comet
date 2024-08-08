@@ -40,6 +40,7 @@ datafusion-physical-plan = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
+regex-syntax = { workspace = true }
 thiserror = { workspace = true }
 unicode-segmentation = "1.11.0"
 
@@ -48,6 +49,7 @@ arrow-data = {workspace = true}
 criterion = "0.5.1"
 rand = { workspace = true}
 twox-hash = "1.6.3"
+
 
 [lib]
 name = "datafusion_comet_spark_expr"

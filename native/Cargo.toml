@@ -53,6 +53,7 @@ chrono-tz = { version = "0.8" }
 num = "0.4"
 rand = "0.8"
 regex = "1.9.6"
+regex-syntax = "0.8.4"
 thiserror = "1"
 
 [profile.release]
