@@ -19,6 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use crate::execution::datafusion::optimizer::add_copy_execs::AddCopyExecs;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -44,17 +45,19 @@ use crate::{
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
         },
-        operators::{CopyExec, ExecutionError, ScanExec},
+        operators::{ExecutionError, ScanExec},
         serde::to_arrow_datatype,
     },
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
+use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -139,7 +142,10 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
+        let state = SessionStateBuilder::new()
+            .with_physical_optimizer_rules(vec![Arc::new(AddCopyExecs {})])
+            .build();
+        let session_ctx = Arc::new(SessionContext::new_with_state(state));
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -859,11 +865,9 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let copy_exec = Arc::new(CopyExec::new(child));
-
                 Ok((
                     scans,
-                    Arc::new(SortExec::new(exprs?, copy_exec).with_fetch(fetch)),
+                    Arc::new(SortExec::new(exprs?, child).with_fetch(fetch)),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -948,11 +952,6 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().is::<ScanExec>() {
-                    Arc::new(CopyExec::new(child))
-                } else {
-                    child
-                };
 
                 Ok((
                     scans,
@@ -1070,6 +1069,17 @@ impl PhysicalPlanner {
                 ))
             }
         }
+    }
+
+    pub fn optimize_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        // optimize the physical plan
+        let datafusion_planner = DefaultPhysicalPlanner::default();
+        datafusion_planner
+            .optimize_physical_plan(plan, &self.session_ctx.state(), |_, _| {})
+            .map_err(|e| e.into())
     }
 
     fn parse_join_parameters(
@@ -1198,21 +1208,6 @@ impl PhysicalPlanner {
             ))
         } else {
             None
-        };
-
-        // DataFusion Join operators keep the input batch internally. We need
-        // to copy the input batch to avoid the data corruption from reusing the input
-        // batch.
-        let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left))
-        } else {
-            left
-        };
-
-        let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right))
-        } else {
-            right
         };
 
         Ok((
@@ -1768,16 +1763,6 @@ impl From<ExpressionError> for DataFusionError {
     fn from(value: ExpressionError) -> Self {
         DataFusionError::Execution(value.to_string())
     }
-}
-
-/// Returns true if given operator can return input array as output array without
-/// modification. This is used to determine if we need to copy the input batch to avoid
-/// data corruption from reusing the input batch.
-fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().is::<ScanExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<FilterExec>()
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression
