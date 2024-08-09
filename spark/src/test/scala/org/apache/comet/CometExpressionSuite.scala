@@ -1980,13 +1980,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         var df = spark
           .range(5)
           // Add both a null struct and null inner value
-          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
-            .alias("nested"))
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
 
         df.write.parquet(dir.toString())
 
         df = spark.read.parquet(dir.toString())
-        checkSparkAnswerAndOperator(df.select("nested.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
       }
     }
   }

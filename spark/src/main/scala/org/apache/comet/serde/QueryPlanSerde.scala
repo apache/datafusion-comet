@@ -65,7 +65,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         _: DateType | _: BooleanType | _: NullType =>
       true
     case dt if isTimestampNTZType(dt) => true
-    case s: StructType if allowStruct => s.fields.map(_.dataType).forall(supportedDataType(_))
+    case s: StructType if allowStruct =>
+      s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
