@@ -45,7 +45,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -322,8 +322,8 @@ class CometSparkSessionExtensions
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
 
-        case op if shouldApplyRowToColumnar(conf, op) =>
-          val cometOp = CometRowToColumnarExec(op)
+        case op if shouldApplySparkToColumnar(conf, op) =>
+          val cometOp = CometSparkToColumnarExec(op)
           val nativeOp = QueryPlanSerde.operator2Proto(cometOp).get
           CometScanWrapper(nativeOp, cometOp)
 
@@ -950,11 +950,13 @@ class CometSparkSessionExtensions
   }
 
   // This rule is responsible for eliminating redundant transitions between row-based and
-  // columnar-based operators for Comet. Currently, two potential redundant transitions are:
+  // columnar-based operators for Comet. Currently, three potential redundant transitions are:
   // 1. `ColumnarToRowExec` on top of an ending `CometCollectLimitExec` operator, which is
   //    redundant as `CometCollectLimitExec` already wraps a `ColumnarToRowExec` for row-based
   //    output.
-  // 2. Consecutive operators of `CometRowToColumnarExec` and `ColumnarToRowExec`.
+  // 2. Consecutive operators of `CometSparkToColumnarExec` and `ColumnarToRowExec`.
+  // 3. AQE inserts an additional `CometSparkToColumnarExec` in addition to the one inserted in the
+  //    original plan.
   //
   // Note about the first case: The `ColumnarToRowExec` was added during
   // ApplyColumnarRulesAndInsertTransitions' insertTransitions phase when Spark requests row-based
@@ -962,16 +964,17 @@ class CometSparkSessionExtensions
   // `CometExec`. However, for certain operators such as `CometCollectLimitExec` which overrides
   // `executeCollect`, the redundant `ColumnarToRowExec` makes the override ineffective.
   //
-  // Note about the second case: When `spark.comet.rowToColumnar.enabled` is set, Comet will add
-  // `CometRowToColumnarExec` on top of row-based operators first, but the downstream operator
+  // Note about the second case: When `spark.comet.sparkToColumnar.enabled` is set, Comet will add
+  // `CometSparkToColumnarExec` on top of row-based operators first, but the downstream operator
   // only takes row-based input as it's a vanilla Spark operator(as Comet cannot convert it for
   // various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
-  // another `ColumnarToRowExec` on top of `CometRowToColumnarExec`. In this case, the pair could
+  // another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
   // be removed.
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
-        case ColumnarToRowExec(rowToColumnar: CometRowToColumnarExec) => rowToColumnar.child
+        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       }
 
       eliminatedPlan match {
@@ -1116,17 +1119,17 @@ object CometSparkSessionExtensions extends Logging {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
-  private def shouldApplyRowToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
     // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && CometRowToColumnarExec.isSchemaSupported(op.schema) &&
-    COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
+    op.isInstanceOf[LeafExecNode] && CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
+    COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
   }
 
