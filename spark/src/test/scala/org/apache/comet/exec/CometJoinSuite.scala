@@ -192,6 +192,13 @@ class CometJoinSuite extends CometTestBase {
 
           // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
           // left.join(right, left("_2") === right("_1"), "leftanti")
+
+          // Full join: struct key
+          val df9 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+                "ON named_struct('1', tbl_a._2) = named_struct('1', tbl_b._1)")
+          checkSparkAnswerAndOperator(df9)
         }
       }
     }
