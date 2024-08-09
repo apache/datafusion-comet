@@ -1986,11 +1986,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"))))
       }
-
-      // Test non-nullable arrays with range
-      val df = spark.range(5).select(array(col("id"), col("id") + 1))
-      checkSparkAnswerAndOperator(df)
-      assert(!df.schema.fields(0).dataType.asInstanceOf[ArrayType].containsNull)
     }
   }
 }

@@ -2348,13 +2348,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .build()
           }
 
-        case array @ CreateArray(children, _) =>
+        // datafusion's make_array only supports nullable element types
+        case array @ CreateArray(children, _) if array.dataType.containsNull =>
           val childExprs = children.map(exprToProto(_, inputs, binding))
-          // datafusion's make_array only supports nullable element types
-          val dataType = array.dataType.copy(containsNull = true)
 
           if (childExprs.forall(_.isDefined)) {
-            scalarExprToProtoWithReturnType("make_array", dataType, childExprs: _*)
+            scalarExprToProtoWithReturnType("make_array", array.dataType, childExprs: _*)
           } else {
             withInfo(expr, "unsupported arguments for CreateArray", children: _*)
             None
