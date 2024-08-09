@@ -97,6 +97,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
+use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -300,6 +301,7 @@ impl PhysicalPlanner {
                         }
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
+                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(ExecutionError::GeneralError(format!(
