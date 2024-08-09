@@ -2167,18 +2167,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case a @ Coalesce(_) =>
           val exprChildren = a.children.map(exprToProtoInternal(_, inputs))
-          val childExpr = scalarExprToProto("coalesce", exprChildren: _*)
-          // TODO: Remove this once we have new DataFusion release which includes
-          // the fix: https://github.com/apache/arrow-datafusion/pull/9459
-          if (childExpr.isDefined) {
-            castToProto(None, a.dataType, childExpr, CometEvalMode.LEGACY)
-          } else {
-            withInfo(expr, a.children: _*)
-            None
-          }
+          scalarExprToProto("coalesce", exprChildren: _*)
 
         // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
-        // char types. Use rpad to achieve the behavior.
+        // char types.
         // See https://github.com/apache/spark/pull/38151
         case s: StaticInvoke
             if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
@@ -2194,7 +2186,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           if (argsExpr.forall(_.isDefined)) {
             val builder = ExprOuterClass.ScalarFunc.newBuilder()
-            builder.setFunc("rpad")
+            builder.setFunc("read_side_padding")
             argsExpr.foreach(arg => builder.addArgs(arg.get))
 
             Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
@@ -2854,6 +2846,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
+        scanBuilder.setSource(op.simpleStringWithNodeId())
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)

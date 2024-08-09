@@ -90,6 +90,8 @@ struct ExecutionContext {
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
     pub debug_native: bool,
+    /// Whether to write native plans with metrics to stdout
+    pub explain_native: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -128,10 +130,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         }
 
         // Whether we've enabled additional debugging on the native side
-        let debug_native = configs
-            .get("debug_native")
-            .and_then(|x| x.parse::<bool>().ok())
-            .unwrap_or(false);
+        let debug_native = parse_bool(&configs, "debug_native")?;
+        let explain_native = parse_bool(&configs, "explain_native")?;
 
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -170,6 +170,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             metrics,
             session_ctx: Arc::new(session),
             debug_native,
+            explain_native,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -193,11 +194,7 @@ fn prepare_datafusion_session_context(
 
     // Check if we are using unified memory manager integrated with Spark. Default to false if not
     // set.
-    let use_unified_memory_manager = conf
-        .get("use_unified_memory_manager")
-        .map(String::as_str)
-        .unwrap_or("false")
-        .parse::<bool>()?;
+    let use_unified_memory_manager = parse_bool(conf, "use_unified_memory_manager")?;
 
     if use_unified_memory_manager {
         // Set Comet memory pool for native
@@ -247,6 +244,14 @@ fn prepare_datafusion_session_context(
         .build();
 
     Ok(SessionContext::new_with_state(state))
+}
+
+fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
+    conf.get(name)
+        .map(String::as_str)
+        .unwrap_or("false")
+        .parse::<bool>()
+        .map_err(|e| CometError::Config(format!("Failed to parse boolean config {name}: {e}")))
 }
 
 /// Prepares arrow arrays for output.
@@ -346,7 +351,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             exec_context.root_op = Some(root_op.clone());
             exec_context.scans = scans;
 
-            if exec_context.debug_native {
+            if exec_context.explain_native {
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
                 info!("Comet native query plan:\n {formatted_plan_str:}");
@@ -379,11 +384,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     // Update metrics
                     update_metrics(&mut env, exec_context)?;
 
-                    if exec_context.debug_native {
+                    if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
                                 DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
-                            info!("Comet native query plan with metrics:\n {formatted_plan_str:}");
+                            info!("Comet native query plan with metrics:\n{formatted_plan_str:}");
                         }
                     }
 
