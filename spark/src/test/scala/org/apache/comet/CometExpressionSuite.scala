@@ -1984,7 +1984,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
-        checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"))))
+        checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
       }
     }
   }
