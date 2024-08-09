@@ -57,6 +57,8 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
     pub input_source: Option<Arc<GlobalRef>>,
+    /// A description of the input source for informational purposes
+    pub input_source_description: String,
     /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
     /// The input batch of input data. Used to determine the schema of the input data.
@@ -70,6 +72,7 @@ impl ScanExec {
     pub fn new(
         exec_context_id: i64,
         input_source: Option<Arc<GlobalRef>>,
+        input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
         // Scan's schema is determined by the input batch, so we need to set it before execution.
@@ -90,6 +93,7 @@ impl ScanExec {
         Ok(Self {
             exec_context_id,
             input_source,
+            input_source_description: input_source_description.to_string(),
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
@@ -291,14 +295,14 @@ impl DisplayAs for ScanExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ScanExec")?;
+                write!(f, "ScanExec: source=[{}], ", self.input_source_description)?;
                 let fields: Vec<String> = self
                     .data_types
                     .iter()
                     .enumerate()
                     .map(|(idx, dt)| format!("col_{idx:}: {dt:}"))
                     .collect();
-                write!(f, ": schema=[{}]", fields.join(", "))?;
+                write!(f, "schema=[{}]", fields.join(", "))?;
             }
         }
         Ok(())

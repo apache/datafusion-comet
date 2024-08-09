@@ -885,7 +885,7 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(self.exec_context_id, input_source, fields)?;
+                let scan = ScanExec::new(self.exec_context_id, input_source, &scan.source, fields)?;
                 Ok((vec![scan.clone()], Arc::new(scan)))
             }
             OpStruct::ShuffleWriter(writer) => {
@@ -1944,6 +1944,7 @@ mod tests {
                     type_id: 3, // Int32
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2015,6 +2016,7 @@ mod tests {
                     type_id: STRING_TYPE_ID, // String
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2101,6 +2103,7 @@ mod tests {
                         type_id: 3,
                         type_info: None,
                     }],
+                    source: "".to_string(),
                 },
             )),
         };
