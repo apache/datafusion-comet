@@ -29,6 +29,9 @@ RUN dnf -y update \
 RUN cd /tmp && curl https://sh.rustup.rs -sSf | bash -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# Install cargo2junit
+RUN rustup install nightly && cargo +nightly install cargo2junit
+
 # Use Rust toolchain, and seed Rust
 COPY rust-toolchain.toml  /rust-toolchain.toml
 RUN cargo search

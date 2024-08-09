@@ -9,7 +9,7 @@ notify:
     postOnFailure: false
 
 machine:
-  baseImage: docker.apple.com/pie/comet-builder:latest
+  baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
   env: &base_env
     LOCAL_REPO: ".dist/local-repo"
     COMET: true
@@ -24,7 +24,7 @@ builds:
     branchName: main-apple
     version: platform
     machine: &rio3-machine
-      baseImage: docker.apple.com/pie/comet-builder:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       targetPlatforms:
         - linux/amd64
         - linux/arm64
@@ -64,6 +64,8 @@ builds:
         # Running tests results in multiple testsuites if you use "--format junit" which results in
         # an invalid XML file.  These can be aggregated by Formatting the results as JSON and using
         # cargo2junit to reformat the results as JUnit XML.
+        # FIXME Temporarily install here until we update the builder
+        - rustup install nightly && cargo +nightly install cargo2junit
         # TODO: enable all-features
         - cargo +nightly test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
     reports: &reports
@@ -150,13 +152,15 @@ builds:
     build: &comet-tpcds-build
       template: freestyle:v4:prb
       steps:
+        - yum install -y bison flex
         - git clone https://github.com/databricks/tpcds-kit
         - cd tpcds-kit
+        - git apply ../dev/diffs/tpcds-kit.diff
         - cd tools && make OS=LINUX
         - cd ../..
         - make release
-        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
-        - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+        - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
   - &comet-tpch
     group: test-comet-tpch-queries
@@ -174,8 +178,8 @@ builds:
       template: freestyle:v4:prb
       steps:
         - make release
-        - cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
-        - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+        - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
+        - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
   - &comet-spark-32
     group: test-spark-sql-catalyst
@@ -184,7 +188,7 @@ builds:
     disabled: true
     timeout: 180
     machine: &rio2-machine
-      baseImage: docker.apple.com/pie/comet-builder:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       targetPlatforms:
         - linux/amd64
         # FIXME Disabld due to leveldbjni
@@ -720,8 +724,7 @@ builds:
       <<: *slack-no-notification
 
   - branchName: main-apple
-    group: builder
-    version: stage1
+    group: builder-ubi8
     trigger:
       # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
       timer: '@weekly'
@@ -731,74 +734,10 @@ builds:
       targetPlatforms:
         - linux/amd64
         - linux/arm64
-      env:
-        <<: *proxy_env
-      resources:
-        size: xlarge
-      executor:
-        type: moes
     build: &stage-build
       template: freestyle:v4:publish
       steps:
         - echo 'Absolute Job Timeout:' $CI_TIMEOUT
-    package:
-      dockerfile:
-        - dockerfilePath: dev/Dockerfile-stage1
-          perApplication: false
-          version: stage1
-          publish:
-            - repo: docker.apple.com/pie/comet-builder
-    finally:
-      pipelineChain:
-        - pipeline: builder-main-apple-publish-stage2
-
-  - branchName: main-apple
-    group: builder
-    version: stage2
-    timeout: 240
-    trigger:
-      gitPush: false
-    machine:
-      <<: *base-image-machine
-    build:
-      <<: *stage-build
-    package:
-      dockerfile:
-        - dockerfilePath: dev/Dockerfile-stage2
-          perApplication: false
-          version: stage2
-          publish:
-            - repo: docker.apple.com/pie/comet-builder
-    finally:
-      pipelineChain:
-        - pipeline: builder-main-apple-publish-stage3
-
-  - branchName: main-apple
-    group: builder
-    version: stage3
-    trigger:
-      gitPush: false
-    machine:
-      <<: *base-image-machine
-    build:
-      <<: *stage-build
-    package:
-      dockerfile:
-        - dockerfilePath: dev/Dockerfile-stage3
-          perApplication: false
-          publish:
-            - repo: docker.apple.com/pie/comet-builder
-
-  - branchName: main-apple
-    group: builder-ubi8
-    trigger:
-      # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
-      timer: '@weekly'
-      gitPush: false
-    machine:
-      <<: *base-image-machine
-    build:
-      <<: *stage-build
     package:
       dockerfile:
         - dockerfilePath: dev/Dockerfile-ubi8

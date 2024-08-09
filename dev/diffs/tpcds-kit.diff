@@ -1,0 +1,22 @@
+diff --git a/tools/makefile b/tools/makefile
+index de363b4..c76a652 100644
+--- a/tools/makefile
++++ b/tools/makefile
+@@ -75,7 +75,7 @@ EXE			= $($(OS)_EXE)
+ # LEX
+ AIX_LEX		= flex
+ HPUX_LEX	= flex
+-LINUX_LEX	= lex
++LINUX_LEX	= flex
+ NCR_LEX		= lex
+ MACOS_LEX		= lex
+ SOLARIS_LEX	= lex
+@@ -93,7 +93,7 @@ LIBS		= $($(OS)_LIBS)
+ # YACC
+ AIX_YACC	= yacc
+ HPUX_YACC	= bison -y
+-LINUX_YACC	= yacc
++LINUX_YACC	= bison -y
+ NCR_YACC	= yacc
+ MACOS_YACC	= yacc
+ SOLARIS_YACC	= yacc
