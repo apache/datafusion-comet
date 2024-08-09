@@ -235,9 +235,9 @@ public abstract class CometVector extends ColumnVector {
   protected static CometVector getVector(
       ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
     if (vector instanceof StructVector) {
-      return new CometStructVector(vector, useDecimal128);
+      return new CometStructVector(vector, useDecimal128, dictionaryProvider);
     } else if (vector instanceof MapVector) {
-      return new CometMapVector(vector, useDecimal128);
+      return new CometMapVector(vector, useDecimal128, dictionaryProvider);
     } else if (vector instanceof ListVector) {
       return new CometListVector(vector, useDecimal128);
     } else {

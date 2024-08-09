@@ -618,8 +618,8 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_expr(expr, input_schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+                let names = expr.names.clone();
+                Ok(Arc::new(CreateNamedStruct::new(values, names)))
             }
             ExprStruct::GetStructField(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
