@@ -392,7 +392,9 @@ class CometSparkSessionExtensions
           }
 
         case op: CollectLimitExec
-            if isCometNative(op.child) && isCometOperatorEnabled(conf, "collectLimit")
+            if isCometNative(op.child) && isCometOperatorEnabled(
+              conf,
+              CometConf.OPERATOR_COLLECT_LIMIT)
               && isCometShuffleEnabled(conf)
               && getOffset(op) == 0 =>
           QueryPlanSerde.operator2Proto(op) match {
@@ -471,7 +473,7 @@ class CometSparkSessionExtensions
           }
 
         case op: ShuffledHashJoinExec
-            if isCometOperatorEnabled(conf, "hash_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_HASH_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -493,7 +495,8 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: ShuffledHashJoinExec if !isCometOperatorEnabled(conf, "hash_join") =>
+        case op: ShuffledHashJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_HASH_JOIN) =>
           withInfo(op, "ShuffleHashJoin is not enabled")
           op
 
@@ -505,7 +508,7 @@ class CometSparkSessionExtensions
           op
 
         case op: BroadcastHashJoinExec
-            if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -528,7 +531,7 @@ class CometSparkSessionExtensions
           }
 
         case op: SortMergeJoinExec
-            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -550,7 +553,7 @@ class CometSparkSessionExtensions
           }
 
         case op: SortMergeJoinExec
-            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) &&
               !op.children.forall(isCometNative(_)) =>
           withInfo(
             op,
@@ -558,7 +561,8 @@ class CometSparkSessionExtensions
               s"${explainChildNotNative(op)}")
           op
 
-        case op: SortMergeJoinExec if !isCometOperatorEnabled(conf, "sort_merge_join") =>
+        case op: SortMergeJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
           withInfo(op, "SortMergeJoin is not enabled")
           op
 
@@ -570,7 +574,7 @@ class CometSparkSessionExtensions
           op
 
         case c @ CoalesceExec(numPartitions, child)
-            if isCometOperatorEnabled(conf, "coalesce")
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_COALESCE)
               && isCometNative(child) =>
           QueryPlanSerde.operator2Proto(c) match {
             case Some(nativeOp) =>
@@ -580,7 +584,8 @@ class CometSparkSessionExtensions
               c
           }
 
-        case c @ CoalesceExec(_, _) if !isCometOperatorEnabled(conf, "coalesce") =>
+        case c @ CoalesceExec(_, _)
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_COALESCE) =>
           withInfo(c, "Coalesce is not enabled")
           c
 
@@ -592,7 +597,9 @@ class CometSparkSessionExtensions
           op
 
         case s: TakeOrderedAndProjectExec
-            if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
+            if isCometNative(s.child) && isCometOperatorEnabled(
+              conf,
+              CometConf.OPERATOR_TAKE_ORDERED_AND_PROJECT)
               && isCometShuffleEnabled(conf) &&
               CometTakeOrderedAndProjectExec.isSupported(s) =>
           QueryPlanSerde.operator2Proto(s) match {
@@ -612,7 +619,7 @@ class CometSparkSessionExtensions
 
         case s: TakeOrderedAndProjectExec =>
           val info1 = createMessage(
-            !isCometOperatorEnabled(conf, "takeOrderedAndProjectExec"),
+            !isCometOperatorEnabled(conf, CometConf.OPERATOR_TAKE_ORDERED_AND_PROJECT),
             "TakeOrderedAndProject is not enabled")
           val info2 = createMessage(
             !isCometShuffleEnabled(conf),
@@ -638,7 +645,7 @@ class CometSparkSessionExtensions
           }
 
         case u: UnionExec
-            if isCometOperatorEnabled(conf, "union") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_UNION) &&
               u.children.forall(isCometNative) =>
           QueryPlanSerde.operator2Proto(u) match {
             case Some(nativeOp) =>
@@ -648,7 +655,7 @@ class CometSparkSessionExtensions
               u
           }
 
-        case u: UnionExec if !isCometOperatorEnabled(conf, "union") =>
+        case u: UnionExec if !isCometOperatorEnabled(conf, CometConf.OPERATOR_UNION) =>
           withInfo(u, "Union is not enabled")
           u
 
@@ -678,7 +685,7 @@ class CometSparkSessionExtensions
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
-                  isCometOperatorEnabled(conf, "broadcastExchangeExec") &&
+                  isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_EXCHANGE) &&
                   isSpark34Plus => // Spark 3.4+ only
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
@@ -718,7 +725,8 @@ class CometSparkSessionExtensions
               s"${explainChildNotNative(op)}")
           op
 
-        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
+        case op: BroadcastHashJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) =>
           withInfo(op, "BroadcastHashJoin is not enabled")
           op
 
@@ -1045,11 +1053,10 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def getCometBroadcastNotEnabledReason(conf: SQLConf): Option[String] = {
-    val operator = "broadcastExchangeExec"
-    if (!isCometOperatorEnabled(conf, "broadcastExchangeExec") && !isCometBroadCastForceEnabled(
-        conf)) {
+    if (!CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
+      !isCometBroadCastForceEnabled(conf)) {
       Some(
-        s"$COMET_EXEC_CONFIG_PREFIX.$operator.enabled is not specified and " +
+        s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
           s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
     } else if (!isSpark34Plus) {
       Some("Native broadcast requires Spark 3.4 or newer")
