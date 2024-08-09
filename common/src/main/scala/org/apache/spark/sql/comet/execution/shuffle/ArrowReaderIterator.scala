@@ -40,8 +40,10 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
     // Release the previous batch.
     // If it is not released, when closing the reader, arrow library will complain about
     // memory leak.
-    if (currentBatch != null) {
-      currentBatch.close()
+    synchronized {
+      if (currentBatch != null) {
+        currentBatch.close()
+      }
     }
 
     batch = nextBatch()
