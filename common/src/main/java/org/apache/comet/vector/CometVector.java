@@ -233,7 +233,10 @@ public abstract class CometVector extends ColumnVector {
    * @return `CometVector` implementation
    */
   protected static CometVector getVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+      ValueVector vector,
+      boolean useDecimal128,
+      DictionaryProvider dictionaryProvider,
+      int nullCount) {
     if (vector instanceof StructVector) {
       return new CometStructVector(vector, useDecimal128);
     } else if (vector instanceof MapVector) {
@@ -242,14 +245,15 @@ public abstract class CometVector extends ColumnVector {
       return new CometListVector(vector, useDecimal128);
     } else {
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, false, nullCount);
 
       if (dictionaryEncoding == null) {
         return cometVector;
       } else {
         Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
+        // Since the dictionary index tracks the nullCount, dictionaryVector.nullCount can be 0
         CometPlainVector dictionaryVector =
-            new CometPlainVector(dictionary.getVector(), useDecimal128);
+            new CometPlainVector(dictionary.getVector(), useDecimal128, false, 0);
         CometDictionary cometDictionary = new CometDictionary(dictionaryVector);
 
         return new CometDictionaryVector(
@@ -259,6 +263,8 @@ public abstract class CometVector extends ColumnVector {
   }
 
   protected static CometVector getVector(ValueVector vector, boolean useDecimal128) {
-    return getVector(vector, useDecimal128, null);
+    // This is currently called only for CometStructVector and CometListVector
+    // If necessary set the proper nullCount
+    return getVector(vector, useDecimal128, null, 0);
   }
 }

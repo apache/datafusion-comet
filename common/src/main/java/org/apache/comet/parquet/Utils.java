@@ -19,11 +19,13 @@
 
 package org.apache.comet.parquet;
 
+import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.types.*;
+import org.apache.spark.unsafe.Platform;
 
 public class Utils {
   public static ColumnReader getColumnReader(
@@ -256,5 +258,11 @@ public class Utils {
       default:
         throw new UnsupportedOperationException("Unsupported TimeUnit " + tu);
     }
+  }
+
+  public static int getNullCount(ArrowArray array) {
+    // The second long value in the c interface is the null count
+    // https://arrow.apache.org/docs/format/CDataInterface.html#c.ArrowArray.null_count
+    return (int) Platform.getLong(null, array.memoryAddress() + 8L);
   }
 }

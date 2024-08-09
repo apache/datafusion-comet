@@ -21,7 +21,8 @@ package org.apache.comet.vector
 
 import scala.collection.mutable
 
-import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
+import org.apache.arrow.c.CometArrayExporter.exportVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -29,6 +30,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.parquet.Utils.getNullCount;
 
 class NativeUtil {
   import Utils._
@@ -64,12 +66,16 @@ class NativeUtil {
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
-          Data.exportVector(
+          exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
-            arrowSchema)
+            arrowSchema,
+            // TODO: Somehow calling valueVector.getNullCount seems to be faster than a.numNulls,
+            //       but it should be the other way around. Investigate why
+            valueVector.getNullCount)
+          // a.numNulls())
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
@@ -98,13 +104,15 @@ class NativeUtil {
     for (i <- arrayAddress.indices by 2) {
       val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
       val arrowArray = ArrowArray.wrap(arrayAddress(i))
+      val nullCount = getNullCount(arrowArray)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
       arrayVectors += CometVector.getVector(
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
-        dictionaryProvider)
+        dictionaryProvider,
+        nullCount)
 
       arrowArray.close()
       arrowSchema.close()
@@ -145,7 +153,8 @@ object NativeUtil {
     val vectors = (0 until arrowRoot.getFieldVectors.size()).map { i =>
       val vector = arrowRoot.getFieldVectors.get(i)
       // Native shuffle always uses decimal128.
-      CometVector.getVector(vector, true, provider)
+      // TODO: getNullCount is slow, avoid calling it if possible
+      CometVector.getVector(vector, true, provider, vector.getNullCount)
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
