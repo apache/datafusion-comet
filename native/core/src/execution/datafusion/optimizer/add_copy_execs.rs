@@ -40,8 +40,21 @@ impl PhysicalOptimizerRule for AddCopyExecs {
         _config: &ConfigOptions,
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
         plan.transform_up(|plan| {
-            if can_reuse_input_batch(&plan) {
-                Ok(Transformed::yes(Arc::new(CopyExec::new(plan))))
+            if caches_batches(&plan)
+                && plan
+                    .children()
+                    .iter()
+                    .any(|child| can_reuse_input_batch(child))
+            {
+                let copied_inputs: Vec<Arc<dyn ExecutionPlan>> = plan
+                    .children()
+                    .iter()
+                    .cloned()
+                    .map(|child| {
+                        Arc::new(CopyExec::new(Arc::clone(child))) as Arc<dyn ExecutionPlan>
+                    })
+                    .collect();
+                Ok(Transformed::yes(plan.with_new_children(copied_inputs)?))
             } else {
                 Ok(Transformed::no(plan))
             }
