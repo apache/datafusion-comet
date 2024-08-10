@@ -210,8 +210,7 @@ impl ScanExec {
         let array_elements = unsafe { addresses.as_ptr().add(1) };
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
-        let mut i: usize = 0;
-        while i < num_arrays {
+        for i in 0..num_arrays {
             let array_ptr = unsafe { *(array_elements.add(i * 2)) };
             let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
@@ -219,7 +218,6 @@ impl ScanExec {
             // TODO: validate array input data
 
             inputs.push(make_array(array_data));
-            i += 1;
         }
 
         Ok(InputBatch::new(inputs, Some(num_rows as usize)))
