@@ -26,10 +26,12 @@ pub mod spark_hash;
 mod structs;
 mod temporal;
 pub mod timezone;
+mod to_json;
 pub mod utils;
 mod xxhash64;
 
 pub use cast::{spark_cast, Cast};
+pub use to_json::ToJson;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use regexp::RLike;

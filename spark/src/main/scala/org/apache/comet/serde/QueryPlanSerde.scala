@@ -1210,6 +1210,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case StructsToJson(options, child, timezoneId) =>
+          if (options.nonEmpty) {
+            withInfo(expr, "StructsToJson with options is not supported")
+            None
+          } else {
+            // TODO check for supported data types
+            exprToProto(child, input, binding) match {
+              case Some(p) =>
+                val toJson = ExprOuterClass.ToJson.newBuilder().setChild(p).build()
+                Some(
+                  ExprOuterClass.Expr
+                    .newBuilder()
+                    .setToJson(toJson)
+                    .build())
+              case _ =>
+                withInfo(expr, child)
+                None
+            }
+          }
+
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
             val leftExpr = exprToProtoInternal(left, inputs)

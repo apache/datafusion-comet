@@ -1957,6 +1957,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("to_json with struct") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator("SELECT to_json(named_struct('a', _1, 'b', _2)) FROM tbl")
+        }
+      }
+    }
+  }
+
   test("struct and named_struct with dictionary") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
