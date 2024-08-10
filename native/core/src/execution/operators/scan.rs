@@ -50,6 +50,8 @@ use jni::{
     sys::jlongArray,
 };
 
+/// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
+/// scan or the result of reading a broadcast or shuffle exchange.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
@@ -64,7 +66,9 @@ pub struct ScanExec {
     /// The input batch of input data. Used to determine the schema of the input data.
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Cache of expensive-to-compute plan properties
     cache: PlanProperties,
+    /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -76,6 +80,11 @@ impl ScanExec {
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
         // Scan's schema is determined by the input batch, so we need to set it before execution.
+        // Note that we determine if arrays are dictionary-encoded based on the
+        // first batch. The array may be dictionary-encoded in some batches and not others, and
+        // ScanExec will cast arrays from all future batches to the type determined here, so we
+        // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
+        // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
             ScanExec::get_next(exec_context_id, input_source.as_obj())?
         } else {
@@ -86,6 +95,8 @@ impl ScanExec {
 
         let cache = PlanProperties::new(
             EquivalenceProperties::new(schema),
+            // The partitioning is not important because we are not using DataFusion's
+            // query planner or optimizer
             Partitioning::UnknownPartitioning(1),
             ExecutionMode::Bounded,
         );
@@ -109,11 +120,15 @@ impl ScanExec {
     /// This is necessary since DataFusion doesn't handle dictionary array with values
     /// being primitive type.
     ///
-    /// TODO: revisit this once DF has imprved its dictionary type support. Ideally we shouldn't
+    /// TODO: revisit this once DF has improved its dictionary type support. Ideally we shouldn't
     ///   do this in Comet but rather let DF to handle it for us.
     fn unpack_dictionary_type(dt: &DataType) -> DataType {
         if let DataType::Dictionary(_, vt) = dt {
-            if !matches!(vt.as_ref(), DataType::Utf8 | DataType::Binary) {
+            if !matches!(
+                vt.as_ref(),
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary
+            ) {
+                // return the underlying data type
                 return vt.as_ref().clone();
             }
         }
@@ -128,13 +143,12 @@ impl ScanExec {
 
     /// Pull next input batch from JVM.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
-        let mut current_batch = self.batch.try_lock().unwrap();
-
         if self.input_source.is_none() {
             // This is a unit test. We don't need to call JNI.
             return Ok(());
         }
 
+        let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
             let next_batch = ScanExec::get_next(
                 self.exec_context_id,
@@ -153,8 +167,6 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
-        let mut env = JVMClasses::get_env()?;
-
         if iter.is_null() {
             return Err(CometError::from(ExecutionError::GeneralError(format!(
                 "Null batch iterator object. Plan id: {}",
@@ -162,6 +174,7 @@ impl ScanExec {
             ))));
         }
 
+        let mut env = JVMClasses::get_env()?;
         let batch_object: JObject = unsafe {
             jni_call!(&mut env,
             comet_batch_iterator(iter).next() -> JObject)?
@@ -177,8 +190,6 @@ impl ScanExec {
         let batch_object = unsafe { JLongArray::from_raw(batch_object.as_raw() as jlongArray) };
 
         let addresses = unsafe { env.get_array_elements(&batch_object, ReleaseMode::NoCopyBack)? };
-
-        let mut inputs: Vec<ArrayRef> = vec![];
 
         // First element is the number of rows.
         let num_rows = unsafe { *addresses.as_ptr() as i64 };
@@ -197,6 +208,7 @@ impl ScanExec {
 
         let num_arrays = array_num / 2;
         let array_elements = unsafe { addresses.as_ptr().add(1) };
+        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
         let mut i: usize = 0;
         while i < num_arrays {
@@ -337,7 +349,10 @@ impl ScanStream {
         let schema_fields = self.schema.fields();
         assert_eq!(columns.len(), schema_fields.len());
 
-        // Cast if necessary
+        // Cast dictionary-encoded primitive arrays to regular arrays and cast
+        // Utf8/LargeUtf8/Binary arrays to dictionary-encoded if the schema is
+        // defined as dictionary-encoded and the data in this batch is not
+        // dictionary-encoded (could also be the other way around)
         let cast_options = CastOptions::default();
         let new_columns: Vec<ArrayRef> = columns
             .iter()
@@ -346,7 +361,7 @@ impl ScanStream {
                 if column.data_type() != f.data_type() {
                     cast_with_options(column, f.data_type(), &cast_options)
                 } else {
-                    Ok(column.clone())
+                    Ok(Arc::clone(column))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -362,7 +377,6 @@ impl Stream for ScanStream {
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
-        timer.stop();
 
         let input_batch = &*scan_batch;
         let input_batch = if let Some(batch) = input_batch {
@@ -375,14 +389,14 @@ impl Stream for ScanStream {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
                 self.baseline_metrics.record_output(*num_rows);
-                let mut timer = self.baseline_metrics.elapsed_compute().timer();
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
-                timer.stop();
                 Poll::Ready(Some(maybe_batch))
             }
         };
 
         *scan_batch = None;
+
+        timer.stop();
 
         result
     }
