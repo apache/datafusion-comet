@@ -478,8 +478,8 @@ under the License.
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway using Rust’s regular expression engine. See compatibility guide for more information.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.rowToColumnar.supportedOperatorList</p></td>
-<td><p>A comma-separated list of row-based operators that will be converted to columnar format when ‘spark.comet.rowToColumnar.enabled’ is true</p></td>
+<tr class="row-even"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
+<td><p>A comma-separated list of operators that will be converted to Comet columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
 <td><p>Range,InMemoryTableScan</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.scan.enabled</p></td>
