@@ -2472,7 +2472,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     childOp.foreach(result.addChildren)
 
     op match {
-      case ProjectExec(projectList, child) if isCometOperatorEnabled(op.conf, "project") =>
+      case ProjectExec(projectList, child)
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_PROJECT) =>
         val exprs = projectList.map(exprToProto(_, child.output))
 
         if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
@@ -2485,7 +2486,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case FilterExec(condition, child) if isCometOperatorEnabled(op.conf, "filter") =>
+      case FilterExec(condition, child)
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_FILTER) =>
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
@@ -2496,7 +2498,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case SortExec(sortOrder, _, child, _) if isCometOperatorEnabled(op.conf, "sort") =>
+      case SortExec(sortOrder, _, child, _)
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT) =>
         val sortOrders = sortOrder.map(exprToProto(_, child.output))
 
         if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
@@ -2509,7 +2512,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case LocalLimitExec(limit, _) if isCometOperatorEnabled(op.conf, "local_limit") =>
+      case LocalLimitExec(limit, _)
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_LOCAL_LIMIT) =>
         if (childOp.nonEmpty) {
           // LocalLimit doesn't use offset, but it shares same operator serde class.
           // Just set it to zero.
@@ -2523,7 +2527,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case globalLimitExec: GlobalLimitExec if isCometOperatorEnabled(op.conf, "global_limit") =>
+      case globalLimitExec: GlobalLimitExec
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_GLOBAL_LIMIT) =>
         // TODO: We don't support negative limit for now.
         if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
@@ -2538,7 +2543,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case ExpandExec(projections, _, child) if isCometOperatorEnabled(op.conf, "expand") =>
+      case ExpandExec(projections, _, child)
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_EXPAND) =>
         var allProjExprs: Seq[Expression] = Seq()
         val projExprs = projections.flatMap(_.map(e => {
           allProjExprs = allProjExprs :+ e
@@ -2557,7 +2563,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case WindowExec(windowExpression, partitionSpec, orderSpec, child)
-          if isCometOperatorEnabled(op.conf, "window") =>
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_WINDOW) =>
         val output = child.output
 
         val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
@@ -2604,7 +2610,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             aggregateAttributes,
             _,
             resultExpressions,
-            child) if isCometOperatorEnabled(op.conf, "aggregate") =>
+            child) if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_AGGREGATE) =>
         if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
           withInfo(op, "No group by or aggregation")
           return None
@@ -2702,9 +2708,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case join: HashJoin =>
         // `HashJoin` has only two implementations in Spark, but we check the type of the join to
         // make sure we are handling the correct join type.
-        if (!(isCometOperatorEnabled(op.conf, "hash_join") &&
+        if (!(isCometOperatorEnabled(op.conf, CometConf.OPERATOR_HASH_JOIN) &&
             join.isInstanceOf[ShuffledHashJoinExec]) &&
-          !(isCometOperatorEnabled(op.conf, "broadcast_hash_join") &&
+          !(isCometOperatorEnabled(op.conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
           return None
@@ -2763,7 +2769,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case join: SortMergeJoinExec if isCometOperatorEnabled(op.conf, "sort_merge_join") =>
+      case join: SortMergeJoinExec
+          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
         // `requiredOrders` and `getKeyOrdering` are copied from Spark's SortMergeJoinExec.
         def requiredOrders(keys: Seq[Expression]): Seq[SortOrder] = {
           keys.map(SortOrder(_, Ascending))
@@ -2839,7 +2846,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case join: SortMergeJoinExec if !isCometOperatorEnabled(op.conf, "sort_merge_join") =>
+      case join: SortMergeJoinExec
+          if !isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
