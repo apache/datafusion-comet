@@ -320,22 +320,25 @@ impl DisplayAs for ScanExec {
 }
 
 /// A async-stream feeds input batch from `Scan` into DataFusion physical plan.
-struct ScanStream {
+struct ScanStream<'a> {
     /// The `Scan` node producing input batches
     scan: ScanExec,
     /// Schema representing the data
     schema: SchemaRef,
     /// Metrics
     baseline_metrics: BaselineMetrics,
+    /// Cast options
+    cast_options: CastOptions<'a>,
 }
 
-impl ScanStream {
+impl<'a> ScanStream<'a> {
     pub fn new(scan: ScanExec, schema: SchemaRef, partition: usize) -> Self {
         let baseline_metrics = BaselineMetrics::new(&scan.metrics, partition);
         Self {
             scan,
             schema,
             baseline_metrics,
+            cast_options: CastOptions::default(),
         }
     }
 
@@ -351,13 +354,12 @@ impl ScanStream {
         // Utf8/LargeUtf8/Binary arrays to dictionary-encoded if the schema is
         // defined as dictionary-encoded and the data in this batch is not
         // dictionary-encoded (could also be the other way around)
-        let cast_options = CastOptions::default();
         let new_columns: Vec<ArrayRef> = columns
             .iter()
             .zip(schema_fields.iter())
             .map(|(column, f)| {
                 if column.data_type() != f.data_type() {
-                    cast_with_options(column, f.data_type(), &cast_options)
+                    cast_with_options(column, f.data_type(), &self.cast_options)
                 } else {
                     Ok(Arc::clone(column))
                 }
@@ -369,7 +371,7 @@ impl ScanStream {
     }
 }
 
-impl Stream for ScanStream {
+impl<'a> Stream for ScanStream<'a> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -401,7 +403,7 @@ impl Stream for ScanStream {
     }
 }
 
-impl RecordBatchStream for ScanStream {
+impl<'a> RecordBatchStream for ScanStream<'a> {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
