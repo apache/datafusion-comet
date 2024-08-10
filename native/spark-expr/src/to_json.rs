@@ -128,6 +128,19 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
 fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
     // get field names
     let field_names: Vec<String> = array.fields().iter().map(|f| f.name().clone()).collect();
+    // determine which fields need to have their values quoted
+    let quotes_needed: Vec<bool> = array
+        .fields()
+        .iter()
+        .map(|f| match f.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 => true,
+            DataType::Dictionary(_, dt) => match dt.as_ref() {
+                DataType::Utf8 | DataType::LargeUtf8 => true,
+                _ => false,
+            },
+            _ => false,
+        })
+        .collect();
     // create JSON string representation of each column
     let string_arrays: Vec<ArrayRef> = array
         .columns()
@@ -162,7 +175,13 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                     json.push_str(&field_names[col_index]);
                     json.push_str("\":");
                     // value
+                    if quotes_needed[col_index] {
+                        json.push('"');
+                    }
                     json.push_str(string_arrays[col_index].value(row_index));
+                    if quotes_needed[col_index] {
+                        json.push('"');
+                    }
                     any_fields_written = true;
                 }
             }
@@ -188,9 +207,11 @@ mod test {
     fn test_primitives() -> Result<()> {
         let bools: ArrayRef = create_bools();
         let ints: ArrayRef = create_ints();
+        let strings: ArrayRef = create_strings();
         let struct_array = StructArray::from(vec![
             (Arc::new(Field::new("a", DataType::Boolean, true)), bools),
             (Arc::new(Field::new("b", DataType::Int32, true)), ints),
+            (Arc::new(Field::new("c", DataType::Utf8, true)), strings),
         ]);
         let json = struct_to_json(&struct_array, "UTC")?;
         let json = json
@@ -199,9 +220,9 @@ mod test {
             .expect("string array");
         assert_eq!(4, json.len());
         assert_eq!(r#"{"b":123}"#, json.value(0));
-        assert_eq!(r#"{"a":true}"#, json.value(1));
-        assert_eq!(r#"{"a":false,"b":2147483647}"#, json.value(2));
-        assert_eq!(r#"{"a":false,"b":-2147483648}"#, json.value(3));
+        assert_eq!(r#"{"a":true,"c":"foo"}"#, json.value(1));
+        assert_eq!(r#"{"a":false,"b":2147483647,"c":"bar"}"#, json.value(2));
+        assert_eq!(r#"{"a":false,"b":-2147483648,"c":""}"#, json.value(3));
         Ok(())
     }
 
@@ -266,6 +287,15 @@ mod test {
             Some(true),
             Some(false),
             Some(false),
+        ]))
+    }
+
+    fn create_strings() -> Arc<StringArray> {
+        Arc::new(StringArray::from(vec![
+            None,
+            Some("foo"),
+            Some("bar"),
+            Some(""),
         ]))
     }
 }
