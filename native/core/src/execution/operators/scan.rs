@@ -380,6 +380,7 @@ impl Stream for ScanStream {
         let input_batch = if let Some(batch) = input_batch {
             batch
         } else {
+            timer.stop();
             return Poll::Pending;
         };
 
