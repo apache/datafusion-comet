@@ -346,7 +346,7 @@ message StringSpace {
 
 message ToJson {
   Expr child = 1;
-  // TODO timezone
+  string timezone = 2;
   // TODO options
 }
 

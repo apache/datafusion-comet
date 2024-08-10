@@ -21,9 +21,9 @@
 
 use crate::{spark_cast, EvalMode};
 use arrow_array::builder::StringBuilder;
-use arrow_array::{Array, RecordBatch, StringArray, StructArray};
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::Result;
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
 use std::any::Any;
@@ -35,27 +35,32 @@ use std::sync::Arc;
 #[derive(Debug, Hash)]
 pub struct ToJson {
     /// The input to convert to JSON
-    expr: Arc<dyn PhysicalExpr>, //TODO options such as null handling
+    expr: Arc<dyn PhysicalExpr>,
+    /// Timezone to use when converting timestamps to JSON
+    timezone: String,
 }
 
 impl ToJson {
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, timezone: &str) -> Self {
+        Self {
+            expr,
+            timezone: timezone.to_owned(),
+        }
     }
 }
 
 impl Display for ToJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // TODO options & timezone
-        write!(f, "to_json({})", self.expr)
+        // TODO options
+        write!(f, "to_json({}, timezone={})", self.expr, self.timezone)
     }
 }
 
 impl PartialEq<dyn Any> for ToJson {
     fn eq(&self, other: &dyn Any) -> bool {
         if let Some(other) = other.downcast_ref::<ToJson>() {
-            //TODO compare options & timezone
-            self.expr.eq(&other.expr)
+            //TODO compare options
+            self.expr.eq(&other.expr) && self.timezone.eq(&other.timezone)
         } else {
             false
         }
@@ -77,13 +82,10 @@ impl PhysicalExpr for ToJson {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let input = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
-        if let Some(struct_array) = input.as_any().downcast_ref::<StructArray>() {
-            Ok(ColumnarValue::Array(Arc::new(struct_to_json(
-                struct_array,
-            )?)))
-        } else {
-            todo!()
-        }
+        Ok(ColumnarValue::Array(array_to_json_string(
+            &input,
+            &self.timezone,
+        )?))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -95,48 +97,59 @@ impl PhysicalExpr for ToJson {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         assert!(children.len() == 1);
-        // TODO options & timezone
-        Ok(Arc::new(Self::new(children[0].clone())))
+        // TODO options
+        Ok(Arc::new(Self::new(children[0].clone(), &self.timezone)))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
-        // TODO options & timezone
+        // TODO options
         let mut s = state;
         self.expr.hash(&mut s);
+        self.timezone.hash(&mut s);
         self.hash(&mut s);
     }
 }
 
-fn struct_to_json(array: &StructArray) -> Result<StringArray> {
-    // create string representation of each column first
-    let string_arrays: Vec<Arc<StringArray>> = array
+/// Convert an array into a JSON value string representation
+fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef> {
+    if let Some(struct_array) = arr.as_any().downcast_ref::<StructArray>() {
+        struct_to_json(struct_array, timezone)
+    } else {
+        spark_cast(
+            ColumnarValue::Array(Arc::clone(arr)),
+            &DataType::Utf8,
+            EvalMode::Legacy,
+            timezone,
+        )?
+        .into_array(arr.len())
+    }
+}
+
+fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
+    // get field names
+    let field_names: Vec<String> = array.fields().iter().map(|f| f.name().clone()).collect();
+    // create JSON string representation of each column
+    let string_arrays: Vec<ArrayRef> = array
         .columns()
         .iter()
-        .map(|arr| {
-            spark_cast(
-                ColumnarValue::Array(arr.clone()),
-                &DataType::Utf8,
-                EvalMode::Legacy,
-                "UTC".to_string(), // TODO Remove hard-coded timezone
-            )
-            .and_then(|casted_value| casted_value.into_array(array.len()))
-            .and_then(|array_ref| {
-                array_ref
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .map(|string_array| Arc::new(string_array.clone()))
-                    .ok_or_else(|| DataFusionError::Execution("Expected StringArray".to_string()))
-            })
-        })
+        .map(|arr| array_to_json_string(arr, timezone))
         .collect::<Result<Vec<_>>>()?;
-    let field_names: Vec<String> = array.fields().iter().map(|f| f.name().clone()).collect();
-
-    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 64);
+    let string_arrays: Vec<&StringArray> = string_arrays
+        .iter()
+        .map(|arr| {
+            arr.as_any()
+                .downcast_ref::<StringArray>()
+                .expect("string array")
+        })
+        .collect();
+    // build the JSON string containing entries in the format `"field_name":field_value`
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut json = String::with_capacity(array.len() * 16);
     for row_index in 0..array.len() {
         if array.is_null(row_index) {
             builder.append_null();
         } else {
-            let mut json = String::new();
+            json.clear();
             let mut any_fields_written = false;
             json.push('{');
             for col_index in 0..string_arrays.len() {
@@ -154,16 +167,18 @@ fn struct_to_json(array: &StructArray) -> Result<StringArray> {
                 }
             }
             json.push('}');
-            builder.append_value(json);
+            // TODO how to pass slice here instead of cloning the string?
+            builder.append_value(json.clone());
         }
     }
-    Ok(builder.finish())
+    Ok(Arc::new(builder.finish()))
 }
 
 #[cfg(test)]
 mod test {
     use crate::to_json::struct_to_json;
-    use arrow_array::Array;
+    use arrow_array::types::Int32Type;
+    use arrow_array::{Array, PrimitiveArray, StringArray};
     use arrow_array::{ArrayRef, BooleanArray, Int32Array, StructArray};
     use arrow_schema::{DataType, Field};
     use datafusion_common::Result;
@@ -171,28 +186,86 @@ mod test {
 
     #[test]
     fn test_primitives() -> Result<()> {
-        let bools: ArrayRef = Arc::new(BooleanArray::from(vec![
-            None,
-            Some(true),
-            Some(false),
-            Some(false),
-        ]));
-        let ints: ArrayRef = Arc::new(Int32Array::from(vec![
-            Some(123),
-            None,
-            Some(i32::MAX),
-            Some(i32::MIN),
-        ]));
+        let bools: ArrayRef = create_bools();
+        let ints: ArrayRef = create_ints();
         let struct_array = StructArray::from(vec![
             (Arc::new(Field::new("a", DataType::Boolean, true)), bools),
             (Arc::new(Field::new("b", DataType::Int32, true)), ints),
         ]);
-        let json = struct_to_json(&struct_array)?;
+        let json = struct_to_json(&struct_array, "UTC")?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
         assert_eq!(4, json.len());
         assert_eq!(r#"{"b":123}"#, json.value(0));
         assert_eq!(r#"{"a":true}"#, json.value(1));
         assert_eq!(r#"{"a":false,"b":2147483647}"#, json.value(2));
         assert_eq!(r#"{"a":false,"b":-2147483648}"#, json.value(3));
         Ok(())
+    }
+
+    #[test]
+    fn test_nested_struct() -> Result<()> {
+        let bools: ArrayRef = create_bools();
+        let ints: ArrayRef = create_ints();
+
+        // create first struct array
+        let struct_fields = vec![
+            Arc::new(Field::new("a", DataType::Boolean, true)),
+            Arc::new(Field::new("b", DataType::Int32, true)),
+        ];
+        let struct_values = vec![bools, ints];
+        let struct_array = StructArray::from(
+            struct_fields
+                .clone()
+                .into_iter()
+                .zip(struct_values)
+                .collect::<Vec<_>>(),
+        );
+
+        // create second struct array containing the first struct array
+        let struct_fields2 = vec![Arc::new(Field::new(
+            "a",
+            DataType::Struct(struct_fields.into()),
+            true,
+        ))];
+        let struct_values2: Vec<ArrayRef> = vec![Arc::new(struct_array.clone())];
+        let struct_array2 = StructArray::from(
+            struct_fields2
+                .into_iter()
+                .zip(struct_values2)
+                .collect::<Vec<_>>(),
+        );
+
+        let json = struct_to_json(&struct_array2, "UTC")?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(4, json.len());
+        assert_eq!(r#"{"a":{"b":123}}"#, json.value(0));
+        assert_eq!(r#"{"a":{"a":true}}"#, json.value(1));
+        assert_eq!(r#"{"a":{"a":false,"b":2147483647}}"#, json.value(2));
+        assert_eq!(r#"{"a":{"a":false,"b":-2147483648}}"#, json.value(3));
+        Ok(())
+    }
+
+    fn create_ints() -> Arc<PrimitiveArray<Int32Type>> {
+        Arc::new(Int32Array::from(vec![
+            Some(123),
+            None,
+            Some(i32::MAX),
+            Some(i32::MIN),
+        ]))
+    }
+
+    fn create_bools() -> Arc<BooleanArray> {
+        Arc::new(BooleanArray::from(vec![
+            None,
+            Some(true),
+            Some(false),
+            Some(false),
+        ]))
     }
 }

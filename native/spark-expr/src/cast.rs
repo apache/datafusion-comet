@@ -575,7 +575,7 @@ pub fn spark_cast(
     arg: ColumnarValue,
     data_type: &DataType,
     eval_mode: EvalMode,
-    timezone: String,
+    timezone: &str,
 ) -> DataFusionResult<ColumnarValue> {
     match arg {
         ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
@@ -1380,7 +1380,7 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast(arg, &self.data_type, self.eval_mode, self.timezone.clone())
+        spark_cast(arg, &self.data_type, self.eval_mode, &self.timezone)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

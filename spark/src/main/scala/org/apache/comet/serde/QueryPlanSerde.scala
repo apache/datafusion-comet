@@ -1216,9 +1216,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           } else {
             // TODO check for supported data types
+            // TODO check for supported timezone
             exprToProto(child, input, binding) match {
               case Some(p) =>
-                val toJson = ExprOuterClass.ToJson.newBuilder().setChild(p).build()
+                val toJson = ExprOuterClass.ToJson
+                  .newBuilder()
+                  .setChild(p)
+                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .build()
                 Some(
                   ExprOuterClass.Expr
                     .newBuilder()
