@@ -433,20 +433,21 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
-  val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.rowToColumnar.enabled")
+  val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc("Whether to enable row to columnar conversion in Comet. When this is turned on, " +
-        "Comet will convert row-based operators in " +
-        "`spark.comet.rowToColumnar.supportedOperatorList` into columnar based before processing.")
+      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+        "Comet will convert operators in " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "processing.")
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
-    conf("spark.comet.rowToColumnar.supportedOperatorList")
+  val COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+    conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .doc(
-        "A comma-separated list of row-based operators that will be converted to columnar " +
-          "format when 'spark.comet.rowToColumnar.enabled' is true")
+        "A comma-separated list of operators that will be converted to Comet columnar " +
+          "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
