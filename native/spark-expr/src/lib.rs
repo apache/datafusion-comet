@@ -31,12 +31,12 @@ pub mod utils;
 mod xxhash64;
 
 pub use cast::{spark_cast, Cast};
-pub use to_json::ToJson;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
+pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
