@@ -1960,16 +1960,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("to_json") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
-        (0 until 100).map(i =>
-          (
-            i,
-            if (i % 2 == 0) { "even" }
-            else { "odd" })),
+        (0 until 100).map(i => {
+          val str = if (i % 2 == 0) {
+            "even"
+          } else {
+            "odd"
+          }
+          (i.toByte, i.toShort, i, i.toLong, i * 1.2f, -i * 1.2d, str, i.toString)
+        }),
         "tbl",
         withDictionary = dictionaryEnabled) {
-        checkSparkAnswerAndOperator("SELECT to_json(named_struct('a', _1, 'b', _2)) FROM tbl")
+
+        val fields = Range(1,8).map(n => s"'col$n', _$n").mkString(", ")
+
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
         checkSparkAnswerAndOperator(
-          "SELECT to_json(named_struct('nested', named_struct('a', _1, 'b', _2))) FROM tbl")
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
       }
     }
   }

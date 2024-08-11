@@ -1215,23 +1215,50 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "StructsToJson with options is not supported")
             None
           } else {
-            // TODO check for supported data types
-            // TODO check for supported timezone
-            exprToProto(child, input, binding) match {
-              case Some(p) =>
-                val toJson = ExprOuterClass.ToJson
-                  .newBuilder()
-                  .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
-                  .build()
-                Some(
-                  ExprOuterClass.Expr
-                    .newBuilder()
-                    .setToJson(toJson)
-                    .build())
+
+            def isSupportedType(dt: DataType): Boolean = {
+              dt match {
+                case StructType(fields) =>
+                  fields.forall(f => isSupportedType(f.dataType))
+                case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+                    DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+                    DataTypes.DoubleType | DataTypes.StringType =>
+                  true
+                case DataTypes.DateType | DataTypes.TimestampType =>
+                  // TODO implement these types with tests for formatting options and timezone
+                  false
+                case _ => false
+              }
+            }
+
+            val isSupported = child.dataType match {
+              case s: StructType =>
+                s.fields.forall(f => isSupportedType(f.dataType))
               case _ =>
-                withInfo(expr, child)
-                None
+                false
+            }
+
+            if (isSupported) {
+              exprToProto(child, input, binding) match {
+                case Some(p) =>
+                  val toJson = ExprOuterClass.ToJson
+                    .newBuilder()
+                    .setChild(p)
+                    .setTimezone(timezoneId.getOrElse("UTC"))
+                    .setIgnoreNullFields(true)
+                    .build()
+                  Some(
+                    ExprOuterClass.Expr
+                      .newBuilder()
+                      .setToJson(toJson)
+                      .build())
+                case _ =>
+                  withInfo(expr, child)
+                  None
+              }
+            } else {
+              withInfo(expr, "Unsupported data type", child)
+              None
             }
           }
 

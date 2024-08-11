@@ -51,7 +51,6 @@ impl ToJson {
 
 impl Display for ToJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // TODO options
         write!(f, "to_json({}, timezone={})", self.expr, self.timezone)
     }
 }
@@ -59,7 +58,6 @@ impl Display for ToJson {
 impl PartialEq<dyn Any> for ToJson {
     fn eq(&self, other: &dyn Any) -> bool {
         if let Some(other) = other.downcast_ref::<ToJson>() {
-            //TODO compare options
             self.expr.eq(&other.expr) && self.timezone.eq(&other.timezone)
         } else {
             false
@@ -97,12 +95,10 @@ impl PhysicalExpr for ToJson {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         assert!(children.len() == 1);
-        // TODO options
         Ok(Arc::new(Self::new(children[0].clone(), &self.timezone)))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
-        // TODO options
         let mut s = state;
         self.expr.hash(&mut s);
         self.timezone.hash(&mut s);
