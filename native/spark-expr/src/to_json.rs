@@ -181,7 +181,6 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                 }
             }
             json.push('}');
-            // TODO how to pass slice here instead of cloning the string?
             builder.append_value(json.clone());
         }
     }
