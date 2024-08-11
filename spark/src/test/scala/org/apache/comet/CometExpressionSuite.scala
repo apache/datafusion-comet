@@ -1971,7 +1971,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "tbl",
         withDictionary = dictionaryEnabled) {
 
-        val fields = Range(1,8).map(n => s"'col$n', _$n").mkString(", ")
+        val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
 
         checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
         checkSparkAnswerAndOperator(

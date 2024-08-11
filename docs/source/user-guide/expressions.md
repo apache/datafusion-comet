@@ -66,32 +66,32 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## String Functions
 
-| Expression      | Notes                                                                                                       |
-| --------------- | ----------------------------------------------------------------------------------------------------------- |
-| Ascii           |                                                                                                             |
-| BitLength       |                                                                                                             |
-| Chr             |                                                                                                             |
-| ConcatWs        |                                                                                                             |
-| Contains        |                                                                                                             |
-| EndsWith        |                                                                                                             |
-| InitCap         |                                                                                                             |
-| Instr           |                                                                                                             |
-| Length          |                                                                                                             |
-| Like            |                                                                                                             |
-| Lower           |                                                                                                             |
-| OctetLength     |                                                                                                             |
-| Repeat          | Negative argument for number of times to repeat causes exception                                            |
-| Replace         |                                                                                                             |
-| Reverse         |                                                                                                             |
-| StartsWith      |                                                                                                             |
-| StringSpace     |                                                                                                             |
-| StringTrim      |                                                                                                             |
-| StringTrimBoth  |                                                                                                             |
-| StringTrimLeft  |                                                                                                             |
-| StringTrimRight |                                                                                                             |
-| Substring       |                                                                                                             |
-| Translate       |                                                                                                             |
-| Upper           |                                                                                                             |
+| Expression      | Notes                                                            |
+| --------------- | ---------------------------------------------------------------- |
+| Ascii           |                                                                  |
+| BitLength       |                                                                  |
+| Chr             |                                                                  |
+| ConcatWs        |                                                                  |
+| Contains        |                                                                  |
+| EndsWith        |                                                                  |
+| InitCap         |                                                                  |
+| Instr           |                                                                  |
+| Length          |                                                                  |
+| Like            |                                                                  |
+| Lower           |                                                                  |
+| OctetLength     |                                                                  |
+| Repeat          | Negative argument for number of times to repeat causes exception |
+| Replace         |                                                                  |
+| Reverse         |                                                                  |
+| StartsWith      |                                                                  |
+| StringSpace     |                                                                  |
+| StringTrim      |                                                                  |
+| StringTrimBoth  |                                                                  |
+| StringTrimLeft  |                                                                  |
+| StringTrimRight |                                                                  |
+| Substring       |                                                                  |
+| Translate       |                                                                  |
+| Upper           |                                                                  |
 
 ## Date/Time Functions
 
@@ -108,27 +108,27 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Math Expressions
 
-| Expression | Notes                                                               |
-| ---------- | ------------------------------------------------------------------- |
-| Abs        |                                                                     |
-| Acos       |                                                                     |
-| Asin       |                                                                     |
-| Atan       |                                                                     |
-| Atan2      |                                                                     |
-| Ceil       |                                                                     |
-| Cos        |                                                                     |
-| Exp        |                                                                     |
-| Floor      |                                                                     |
-| IsNaN      |                                                                     |
-| Log        |                                                                     |
-| Log2       |                                                                     |
-| Log10      |                                                                     |
-| Pow        |                                                                     |
-| Round      |                                                                     |
-| Signum     | Signum does not differentiate between `0.0` and `-0.0`              |
-| Sin        |                                                                     |
-| Sqrt       |                                                                     |
-| Tan        |                                                                     |
+| Expression | Notes                                                  |
+| ---------- | ------------------------------------------------------ |
+| Abs        |                                                        |
+| Acos       |                                                        |
+| Asin       |                                                        |
+| Atan       |                                                        |
+| Atan2      |                                                        |
+| Ceil       |                                                        |
+| Cos        |                                                        |
+| Exp        |                                                        |
+| Floor      |                                                        |
+| IsNaN      |                                                        |
+| Log        |                                                        |
+| Log2       |                                                        |
+| Log10      |                                                        |
+| Pow        |                                                        |
+| Round      |                                                        |
+| Signum     | Signum does not differentiate between `0.0` and `-0.0` |
+| Sin        |                                                        |
+| Sqrt       |                                                        |
+| Tan        |                                                        |
 
 ## Hashing Functions
 
@@ -182,6 +182,13 @@ The following Spark expressions are currently available. Any known compatibility
 | VariancePop   |       |
 | VarianceSamp  |       |
 
+## Complex Types
+
+| Expression        | Notes |
+| ----------------- | ----- |
+| CreateNamedStruct |       |
+| StructsToJson     |       |
+
 ## Other
 
 | Expression              | Notes                                                                           |
@@ -191,4 +198,3 @@ The following Spark expressions are currently available. Any known compatibility
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
-| CreateNamedStruct       |                                                                                 |
