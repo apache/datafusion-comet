@@ -530,15 +530,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       importer.close();
       importer = null;
     }
-    // As our native reader reuses the same memory buffer for all columns, we only
-    // need to release the buffers once when closing the reader.
-    if (currentBatch != null) {
-      for (int i = 0; i < currentBatch.numCols(); i++) {
-        if (currentBatch.column(i) != null) {
-          currentBatch.column(i).close();
-        }
-      }
-    }
   }
 
   @SuppressWarnings("deprecation")
