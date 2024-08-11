@@ -134,7 +134,9 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
         .iter()
         .map(|f| match f.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 => true,
-            DataType::Dictionary(_, dt) => matches!(dt.as_ref(), DataType::Utf8 | DataType::LargeUtf8),
+            DataType::Dictionary(_, dt) => {
+                matches!(dt.as_ref(), DataType::Utf8 | DataType::LargeUtf8)
+            }
             _ => false,
         })
         .collect();

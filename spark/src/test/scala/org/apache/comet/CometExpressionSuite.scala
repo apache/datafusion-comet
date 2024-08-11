@@ -1968,7 +1968,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "tbl",
         withDictionary = dictionaryEnabled) {
         checkSparkAnswerAndOperator("SELECT to_json(named_struct('a', _1, 'b', _2)) FROM tbl")
-        checkSparkAnswerAndOperator("SELECT to_json(named_struct('nested', named_struct('a', _1, 'b', _2))) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT to_json(named_struct('nested', named_struct('a', _1, 'b', _2))) FROM tbl")
       }
     }
   }
