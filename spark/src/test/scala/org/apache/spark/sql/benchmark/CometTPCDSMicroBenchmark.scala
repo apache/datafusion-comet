@@ -27,7 +27,6 @@ import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark.tables
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmarkArguments
 import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
