@@ -42,6 +42,25 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
     // memory leak.
     synchronized {
       if (currentBatch != null) {
+
+        /*
+        (0 until currentBatch.numCols()).foreach { index =>
+          currentBatch.column(index) match {
+            case a: CometVector =>
+              val valueVector = a.getValueVector
+
+              // scalastyle:off println
+              for (i <- 0 until valueVector.getBuffers(false).length) {
+                val buf = valueVector.getBuffers(false)(i)
+                println(s"hasNext buf $i: ${buf.getReferenceManager.getRefCount}")
+                if (buf.getReferenceManager.getRefCount > 0) {
+                  buf.close()
+                }
+              }
+          }
+        }
+         */
+
         currentBatch.close()
       }
     }
@@ -72,8 +91,25 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
   def close(): Unit =
     synchronized {
       if (currentBatch != null) {
+
+        /*
+        (0 until currentBatch.numCols()).foreach { index =>
+          currentBatch.column(index) match {
+            case a: CometVector =>
+              val valueVector = a.getValueVector
+
+              // scalastyle:off println
+              for (i <- 0 until valueVector.getBuffers(false).length) {
+                val buf = valueVector.getBuffers(false)(i)
+                println(s"hasNext buf $i: ${buf.getReferenceManager.getRefCount}")
+                if (buf.getReferenceManager.getRefCount > 0) {
+                  buf.close()
+                }
+              }
+          }
+        }
+         */
         currentBatch.close()
-        currentBatch = null
       }
       reader.close()
     }
