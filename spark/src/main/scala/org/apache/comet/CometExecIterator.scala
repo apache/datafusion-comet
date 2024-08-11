@@ -138,7 +138,6 @@ class CometExecIterator(
     if (currentBatch != null) {
       // Eagerly release Arrow Arrays in the previous batch
       currentBatch.close()
-      currentBatch = null
     }
 
     if (nextBatch.isEmpty && !hasNext) {
@@ -154,7 +153,6 @@ class CometExecIterator(
     if (!closed) {
       if (currentBatch != null) {
         currentBatch.close()
-        currentBatch = null
       }
       nativeLib.releasePlan(plan)
 

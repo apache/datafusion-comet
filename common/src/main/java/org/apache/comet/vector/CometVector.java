@@ -207,7 +207,16 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public void close() {
-    getValueVector().close();
+    ValueVector vector = getValueVector();
+    vector.close();
+
+    /*
+    for (int i = 0; i < vector.getBuffers(false).length; i++) {
+      if (vector.getBuffers(false)[i].getReferenceManager().getRefCount() > 0) {
+        vector.getBuffers(false)[i].close();
+      }
+    }
+     */
   }
 
   public DictionaryProvider getDictionaryProvider() {

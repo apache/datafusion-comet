@@ -67,7 +67,7 @@ class NativeUtil {
           // scalastyle:off println
           for (i <- 0 until valueVector.getBuffers(false).length) {
             val buf = valueVector.getBuffers(false)(i)
-            println(s"before export buf $i: ${buf.getReferenceManager.getRefCount}")
+            // println(s"before export buf $i: ${buf.getReferenceManager.getRefCount}")
           }
           Data.exportVector(
             allocator,
@@ -77,17 +77,18 @@ class NativeUtil {
             arrowSchema)
           // scalastyle:off println
           for (i <- 0 until valueVector.getBuffers(false).length) {
-            val buf = valueVector.getBuffers(false)(i)
-            println(s"after export buf $i: ${buf.getReferenceManager.getRefCount}")
+            val buf1 = valueVector.getBuffers(false)(i)
+            val buf2 = valueVector.getBuffers(false)(i)
+            // println(s"after export buf1 $i: ${buf1.getReferenceManager.getRefCount}")
+            // println(s"after export buf2 $i: ${buf2.getReferenceManager.getRefCount}")
           }
           for (i <- 0 until valueVector.getBuffers(false).length) {
             val buf = valueVector.getBuffers(false)(i)
-            buf.close()
+            // buf.close()
           }
-          // scalastyle:off println
           for (i <- 0 until valueVector.getBuffers(false).length) {
             val buf = valueVector.getBuffers(false)(i)
-            println(s"after export + release buf $i: ${buf.getReferenceManager.getRefCount}")
+            // println(s"after export + release buf $i: ${buf.getReferenceManager.getRefCount}")
           }
 
           exportedVectors += arrowArray.memoryAddress()
