@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark.tables
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmarkArguments
 import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
@@ -45,7 +46,7 @@ import org.apache.comet.CometConf
  * make benchmark-org.apache.spark.sql.GenTPCDSData -- --dsdgenDir /tmp/tpcds-kit/tools --location /tmp/tpcds --scaleFactor 1
  *
  * // CometTPCDSMicroBenchmark
- * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
+ * make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
  * }}}
  *
  * Results will be written to "spark/benchmarks/CometTPCDSMicroBenchmark-**results.txt".
@@ -114,7 +115,11 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
