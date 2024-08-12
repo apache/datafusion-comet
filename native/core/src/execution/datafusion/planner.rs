@@ -860,8 +860,11 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                // TODO choose mode based on whether input can cache batches
-                let copy_exec = Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy));
+                let copy_exec = if can_reuse_input_batch(&child) {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
+                } else {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
+                };
 
                 Ok((
                     scans,
