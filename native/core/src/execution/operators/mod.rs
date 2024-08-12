@@ -106,15 +106,12 @@ pub fn copy_or_unpack_array(
     match array.data_type() {
         DataType::Dictionary(_, value_type) => {
             let options = CastOptions::default();
-            let casted = cast_with_options(array, value_type.as_ref(), &options);
-
-            casted.and_then(|a| {
-                if mode == &CopyMode::UnpackOrDeepCopy {
-                    Ok(copy_array(array))
-                } else {
-                    Ok(Arc::clone(array))
-                }
-            })
+            let a = cast_with_options(array, value_type.as_ref(), &options)?;
+            if mode == &CopyMode::UnpackOrDeepCopy {
+                Ok(copy_array(a.as_ref()))
+            } else {
+                Ok(a)
+            }
         }
         _ => {
             if mode == &CopyMode::UnpackOrDeepCopy {
