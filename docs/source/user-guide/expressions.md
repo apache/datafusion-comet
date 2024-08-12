@@ -83,6 +83,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Repeat          | Negative argument for number of times to repeat causes exception |
 | Replace         |                                                                  |
 | Reverse         |                                                                  |
+| RLike           | Regular expression version of LIKE                               |
 | StartsWith      |                                                                  |
 | StringSpace     |                                                                  |
 | StringTrim      |                                                                  |
@@ -184,10 +185,11 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Complex Types
 
-| Expression        | Notes |
-| ----------------- | ----- |
-| CreateNamedStruct |       |
-| StructsToJson     |       |
+| Expression        | Notes                             |
+| ----------------- | --------------------------------- |
+| CreateNamedStruct | Create a struct                   |
+| GetElementAt      | Access a field in a struct        |
+| StructsToJson     | Convert a struct to a JSON string |
 
 ## Other
 
