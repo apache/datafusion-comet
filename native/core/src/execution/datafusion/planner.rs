@@ -867,7 +867,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                let fields = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
@@ -887,7 +887,8 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(self.exec_context_id, input_source, &scan.source, fields)?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
                 Ok((vec![scan.clone()], Arc::new(scan)))
             }
             OpStruct::ShuffleWriter(writer) => {
