@@ -126,7 +126,7 @@ impl ScanExec {
         if let DataType::Dictionary(_, vt) = dt {
             if !matches!(
                 vt.as_ref(),
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
             ) {
                 // return the underlying data type
                 return vt.as_ref().clone();
