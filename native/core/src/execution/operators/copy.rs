@@ -31,7 +31,7 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 
-use super::copy_or_cast_array;
+use super::copy_or_unpack_array;
 
 /// An utility execution node which makes deep copies of input batches.
 ///
@@ -44,10 +44,20 @@ pub struct CopyExec {
     schema: SchemaRef,
     cache: PlanProperties,
     metrics: ExecutionPlanMetricsSet,
+    mode: CopyMode,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CopyMode {
+    UnpackOrDeepCopy,
+    UnpackOrClone,
 }
 
 impl CopyExec {
-    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
+    pub fn new(input: Arc<dyn ExecutionPlan>, mode: CopyMode) -> Self {
+        // change schema to remove dictionary types because CopyExec always unpacks
+        // dictionaries
+
         let fields: Vec<Field> = input
             .schema()
             .fields
@@ -73,6 +83,7 @@ impl CopyExec {
             schema,
             cache,
             metrics: ExecutionPlanMetricsSet::default(),
+            mode,
         }
     }
 }
@@ -111,6 +122,7 @@ impl ExecutionPlan for CopyExec {
             schema: self.schema.clone(),
             cache: self.cache.clone(),
             metrics: self.metrics.clone(),
+            mode: self.mode.clone(),
         }))
     }
 
@@ -125,6 +137,7 @@ impl ExecutionPlan for CopyExec {
             self.schema(),
             child_stream,
             partition,
+            self.mode.clone(),
         )))
     }
 
@@ -149,6 +162,7 @@ struct CopyStream {
     schema: SchemaRef,
     child_stream: SendableRecordBatchStream,
     baseline_metrics: BaselineMetrics,
+    mode: CopyMode,
 }
 
 impl CopyStream {
@@ -157,11 +171,13 @@ impl CopyStream {
         schema: SchemaRef,
         child_stream: SendableRecordBatchStream,
         partition: usize,
+        mode: CopyMode,
     ) -> Self {
         Self {
             schema,
             child_stream,
             baseline_metrics: BaselineMetrics::new(&exec.metrics, partition),
+            mode,
         }
     }
 
@@ -172,7 +188,7 @@ impl CopyStream {
         let vectors = batch
             .columns()
             .iter()
-            .map(|v| copy_or_cast_array(v))
+            .map(|v| copy_or_unpack_array(v, &self.mode))
             .collect::<Result<Vec<ArrayRef>, _>>()?;
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));

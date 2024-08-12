@@ -99,14 +99,29 @@ pub fn copy_array(array: &dyn Array) -> ArrayRef {
 /// is a dictionary array, we will cast the dictionary array to primitive type
 /// (i.e., unpack the dictionary array) and copy the primitive array. If the input
 /// array is a primitive array, we simply copy the array.
-pub fn copy_or_cast_array(array: &dyn Array) -> Result<ArrayRef, ArrowError> {
+pub fn copy_or_unpack_array(
+    array: &Arc<dyn Array>,
+    mode: &CopyMode,
+) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
         DataType::Dictionary(_, value_type) => {
             let options = CastOptions::default();
             let casted = cast_with_options(array, value_type.as_ref(), &options);
 
-            casted.and_then(|a| copy_or_cast_array(a.as_ref()))
+            casted.and_then(|a| {
+                if mode == &CopyMode::UnpackOrDeepCopy {
+                    Ok(copy_array(array))
+                } else {
+                    Ok(Arc::clone(array))
+                }
+            })
         }
-        _ => Ok(copy_array(array)),
+        _ => {
+            if mode == &CopyMode::UnpackOrDeepCopy {
+                Ok(copy_array(array))
+            } else {
+                Ok(Arc::clone(array))
+            }
+        }
     }
 }

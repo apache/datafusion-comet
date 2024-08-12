@@ -19,6 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -859,7 +860,8 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let copy_exec = Arc::new(CopyExec::new(child));
+                // TODO choose mode based on whether input can cache batches
+                let copy_exec = Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy));
 
                 Ok((
                     scans,
@@ -949,8 +951,8 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().is::<ScanExec>() {
-                    Arc::new(CopyExec::new(child))
+                let child = if can_reuse_input_batch(&child) {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
                 } else {
                     child
                 };
@@ -1205,15 +1207,15 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
         let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left))
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
         } else {
-            left
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
         };
 
         let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right))
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
         } else {
-            right
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };
 
         Ok((
