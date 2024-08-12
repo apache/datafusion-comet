@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::compute::{cast_with_options, CastOptions};
+use futures::{Stream, StreamExt};
 use std::{
     any::Any,
     pin::Pin,
@@ -22,16 +24,15 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::{Stream, StreamExt};
-
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow_array::{
+    downcast_dictionary_array, make_array, Array, ArrayRef, RecordBatch, RecordBatchOptions,
+};
+use arrow_data::transform::MutableArrayData;
+use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema, SchemaRef};
 
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-
-use super::copy_or_unpack_array;
 
 /// An utility execution node which makes deep copies of input batches.
 ///
@@ -92,7 +93,7 @@ impl DisplayAs for CopyExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "CopyExec")
+                write!(f, "CopyExec [{:?}]", self.mode)
             }
         }
     }
@@ -214,5 +215,58 @@ impl Stream for CopyStream {
 impl RecordBatchStream for CopyStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+/// Copy an Arrow Array
+fn copy_array(array: &dyn Array) -> ArrayRef {
+    let capacity = array.len();
+    let data = array.to_data();
+
+    let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
+
+    mutable.extend(0, 0, capacity);
+
+    if matches!(array.data_type(), DataType::Dictionary(_, _)) {
+        let copied_dict = make_array(mutable.freeze());
+        let ref_copied_dict = &copied_dict;
+
+        downcast_dictionary_array!(
+            ref_copied_dict => {
+                // Copying dictionary value array
+                let values = ref_copied_dict.values();
+                let data = values.to_data();
+
+                let mut mutable = MutableArrayData::new(vec![&data], false, values.len());
+                mutable.extend(0, 0, values.len());
+
+                let copied_dict = ref_copied_dict.with_values(make_array(mutable.freeze()));
+                Arc::new(copied_dict)
+            }
+            t => unreachable!("Should not reach here: {}", t)
+        )
+    } else {
+        make_array(mutable.freeze())
+    }
+}
+
+/// Copy an Arrow Array or cast to primitive type if it is a dictionary array.
+/// This is used for `CopyExec` to copy/cast the input array. If the input array
+/// is a dictionary array, we will cast the dictionary array to primitive type
+/// (i.e., unpack the dictionary array) and copy the primitive array. If the input
+/// array is a primitive array, we simply copy the array.
+fn copy_or_unpack_array(array: &Arc<dyn Array>, mode: &CopyMode) -> Result<ArrayRef, ArrowError> {
+    match array.data_type() {
+        DataType::Dictionary(_, value_type) => {
+            let options = CastOptions::default();
+            cast_with_options(array, value_type.as_ref(), &options)
+        }
+        _ => {
+            if mode == &CopyMode::UnpackOrDeepCopy {
+                Ok(copy_array(array))
+            } else {
+                Ok(Arc::clone(array))
+            }
+        }
     }
 }
