@@ -64,6 +64,26 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Sort on single struct should fallback to Spark") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      val data =
+        Seq(Tuple1(null), Tuple1((1, "a")), Tuple1((2, null)), Tuple1((3, "b")), Tuple1(null))
+
+      withParquetFile(data) { file =>
+        readParquetFile(file) { df =>
+          val sort = df.sort("_1")
+          checkSparkAnswer(sort)
+        }
+      }
+    }
+  }
+
   test("Native window operator should be CometUnaryExec") {
     withTempView("testData") {
       sql("""
