@@ -69,7 +69,6 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
