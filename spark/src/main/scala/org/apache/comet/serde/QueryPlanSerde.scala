@@ -2553,6 +2553,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case SortExec(sortOrder, _, child, _)
           if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT) =>
+        // TODO: Remove this constraint when we upgrade to new arrow-rs including
+        // https://github.com/apache/arrow-rs/pull/6225
+        if (child.output.length == 1 && child.output.head.dataType.isInstanceOf[StructType]) {
+          withInfo(op, "Sort on single struct column is not supported")
+          return None
+        }
+
         val sortOrders = sortOrder.map(exprToProto(_, child.output))
 
         if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
