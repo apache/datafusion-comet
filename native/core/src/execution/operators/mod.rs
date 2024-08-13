@@ -17,22 +17,15 @@
 
 //! Operators
 
-use arrow::{
-    array::{make_array, Array, ArrayRef, MutableArrayData},
-    datatypes::DataType,
-    downcast_dictionary_array,
-};
+use std::fmt::Debug;
 
-use arrow::compute::{cast_with_options, CastOptions};
-use arrow_schema::ArrowError;
 use jni::objects::GlobalRef;
-use std::{fmt::Debug, sync::Arc};
 
-mod scan;
+pub use copy::*;
 pub use scan::*;
 
 mod copy;
-pub use copy::*;
+mod scan;
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]
@@ -60,53 +53,4 @@ pub enum ExecutionError {
         msg: String,
         throwable: GlobalRef,
     },
-}
-
-/// Copy an Arrow Array
-pub fn copy_array(array: &dyn Array) -> ArrayRef {
-    let capacity = array.len();
-    let data = array.to_data();
-
-    let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
-
-    mutable.extend(0, 0, capacity);
-
-    if matches!(array.data_type(), DataType::Dictionary(_, _)) {
-        let copied_dict = make_array(mutable.freeze());
-        let ref_copied_dict = &copied_dict;
-
-        downcast_dictionary_array!(
-            ref_copied_dict => {
-                // Copying dictionary value array
-                let values = ref_copied_dict.values();
-                let data = values.to_data();
-
-                let mut mutable = MutableArrayData::new(vec![&data], false, values.len());
-                mutable.extend(0, 0, values.len());
-
-                let copied_dict = ref_copied_dict.with_values(make_array(mutable.freeze()));
-                Arc::new(copied_dict)
-            }
-            t => unreachable!("Should not reach here: {}", t)
-        )
-    } else {
-        make_array(mutable.freeze())
-    }
-}
-
-/// Copy an Arrow Array or cast to primitive type if it is a dictionary array.
-/// This is used for `CopyExec` to copy/cast the input array. If the input array
-/// is a dictionary array, we will cast the dictionary array to primitive type
-/// (i.e., unpack the dictionary array) and copy the primitive array. If the input
-/// array is a primitive array, we simply copy the array.
-pub fn copy_or_cast_array(array: &dyn Array) -> Result<ArrayRef, ArrowError> {
-    match array.data_type() {
-        DataType::Dictionary(_, value_type) => {
-            let options = CastOptions::default();
-            let casted = cast_with_options(array, value_type.as_ref(), &options);
-
-            casted.and_then(|a| copy_or_cast_array(a.as_ref()))
-        }
-        _ => Ok(copy_array(array)),
-    }
 }
