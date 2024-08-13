@@ -1977,7 +1977,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("create_array") {
+  test("CreateArray") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
