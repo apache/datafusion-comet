@@ -19,7 +19,6 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
-use crate::execution::datafusion::optimizer::add_copy_execs::AddCopyExecs;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -55,6 +54,7 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::physical_planner::DefaultPhysicalPlanner;
@@ -142,7 +142,7 @@ pub struct PhysicalPlanner {
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let state = SessionStateBuilder::new()
-            .with_physical_optimizer_rules(vec![Arc::new(AddCopyExecs {})])
+            .with_physical_optimizer_rules(vec![Arc::new(TopKAggregation::new())])
             .build();
         let session_ctx = Arc::new(SessionContext::new_with_state(state));
         let execution_props = ExecutionProps::new();

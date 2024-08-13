@@ -32,6 +32,7 @@ use arrow::{
 };
 use arrow_array::RecordBatch;
 use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -60,7 +61,6 @@ use jni::{
 use std::{collections::HashMap, sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 
-use crate::execution::datafusion::optimizer::add_copy_execs::AddCopyExecs;
 use crate::execution::operators::ScanExec;
 use log::info;
 
@@ -240,7 +240,7 @@ fn prepare_datafusion_session_context(
         .with_config(session_config)
         .with_runtime_env(Arc::new(runtime))
         .with_default_features()
-        .with_physical_optimizer_rules(vec![Arc::new(AddCopyExecs::default())])
+        .with_physical_optimizer_rules(vec![Arc::new(TopKAggregation::new())])
         .build();
 
     Ok(SessionContext::new_with_state(state))

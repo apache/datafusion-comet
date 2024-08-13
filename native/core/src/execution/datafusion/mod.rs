@@ -19,7 +19,6 @@
 
 pub mod expressions;
 mod operators;
-pub mod optimizer;
 pub mod planner;
 pub mod shuffle_writer;
 mod util;
