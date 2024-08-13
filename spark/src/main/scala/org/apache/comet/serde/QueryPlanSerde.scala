@@ -671,8 +671,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case StddevPop(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
-        withInfo(aggExpr, "stddev disabled by default because it can be slower than Spark. " +
-          s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.", child)
+        withInfo(
+          aggExpr,
+          "stddev disabled by default because it can be slower than Spark. " +
+            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
+          child)
         None
 
       case std @ StddevPop(child, nullOnDivideByZero) =>
