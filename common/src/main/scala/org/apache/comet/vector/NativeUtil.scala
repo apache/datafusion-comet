@@ -51,6 +51,8 @@ class NativeUtil {
     val exportedVectors = mutable.ArrayBuffer.empty[Long]
     exportedVectors += batch.numRows()
 
+    NativeUtil.printBatchRefCount(batch, "export batch")
+
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometVector =>
@@ -64,17 +66,14 @@ class NativeUtil {
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
-          // scalastyle:off println
-          for (i <- 0 until valueVector.getBuffers(false).length) {
-            val buf = valueVector.getBuffers(false)(i)
-            // println(s"before export buf $i: ${buf.getReferenceManager.getRefCount}")
-          }
+
           Data.exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
             arrowSchema)
+
           // scalastyle:off println
           for (i <- 0 until valueVector.getBuffers(false).length) {
             val buf1 = valueVector.getBuffers(false)(i)
@@ -99,6 +98,15 @@ class NativeUtil {
               s"${c.getClass}")
       }
     }
+
+    // We cannot close the batch here. If the batch comes from native scan, we have
+    // reference count 2 for the batch in `BatchReader` and the exposed batch. If
+    // we close this batch, it will reduce the reference count to 1. When the exposed
+    // batch is dropped in native execution, we will get reference count 0 in next
+    // batch from `BatchReader`.
+    NativeUtil.printBatchRefCount(batch, "after export batch", false)
+
+    // batch.close()
 
     exportedVectors.toArray
   }
@@ -169,4 +177,46 @@ object NativeUtil {
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
+
+  def printBatchRefCount(batch: ColumnarBatch, prefix: String, close: Boolean = false): Unit = {
+    (0 until batch.numCols()).foreach { index =>
+      batch.column(index) match {
+        case a: CometVector =>
+          val valueVector = a.getValueVector
+
+          // scalastyle:off println
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            println(s"$prefix buffer $i: ${buf.getReferenceManager.getRefCount}")
+
+            if (close) {
+              buf.close()
+              println(s"$prefix buffer (closed) $i: ${buf.getReferenceManager.getRefCount}")
+            }
+
+          }
+        case c =>
+          throw new SparkException(
+            "Comet execution only takes Arrow Arrays, but got " +
+              s"${c.getClass}")
+      }
+    }
+  }
+
+  def retainBatchBuffers(batch: ColumnarBatch): Unit = {
+    (0 until batch.numCols()).foreach { index =>
+      batch.column(index) match {
+        case a: CometVector =>
+          val valueVector = a.getValueVector
+
+          for (i <- 0 until valueVector.getBuffers(false).length) {
+            val buf = valueVector.getBuffers(false)(i)
+            if (buf.getReferenceManager.getRefCount == 0) {
+              buf.getReferenceManager.retain(1)
+            }
+          }
+      }
+    }
+  }
+
 }
