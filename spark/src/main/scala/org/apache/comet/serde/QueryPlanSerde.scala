@@ -204,7 +204,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   def windowExprToProto(
       windowExpr: WindowExpression,
-      output: Seq[Attribute]): Option[OperatorOuterClass.WindowExpr] = {
+      output: Seq[Attribute],
+      conf: SQLConf): Option[OperatorOuterClass.WindowExpr] = {
 
     val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
       expr match {
@@ -224,7 +225,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     val (aggExpr, builtinFunc) = if (aggregateExpressions.nonEmpty) {
       val modes = aggregateExpressions.map(_.mode).distinct
       assert(modes.size == 1 && modes.head == Complete)
-      (aggExprToProto(aggregateExpressions.head, output, true), None)
+      (aggExprToProto(aggregateExpressions.head, output, true, conf), None)
     } else {
       (None, exprToProto(windowExpr.windowFunction, output))
     }
@@ -330,7 +331,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[AggExpr] = {
+      binding: Boolean,
+      conf: SQLConf): Option[AggExpr] = {
     aggExpr.aggregateFunction match {
       case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
         val childExpr = exprToProto(child, inputs, binding)
@@ -638,6 +640,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child)
           None
         }
+
+      case StddevSamp(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
+        withInfo(
+          aggExpr,
+          "stddev disabled by default because it can be slower than Spark. " +
+            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
+          child)
+        None
+
       case std @ StddevSamp(child, nullOnDivideByZero) =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(std.dataType)
@@ -658,6 +669,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child)
           None
         }
+
+      case StddevPop(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
+        withInfo(
+          aggExpr,
+          "stddev disabled by default because it can be slower than Spark. " +
+            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
+          child)
+        None
+
       case std @ StddevPop(child, nullOnDivideByZero) =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(std.dataType)
@@ -2590,7 +2610,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        val windowExprProto = winExprs.map(windowExprToProto(_, output))
+        val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
         val sortOrders = orderSpec.map(exprToProto(_, child.output))
@@ -2683,7 +2703,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val output = child.output
 
           val aggExprs =
-            aggregateExpressions.map(aggExprToProto(_, output, binding))
+            aggregateExpressions.map(aggExprToProto(_, output, binding, op.conf))
           if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
             aggExprs.forall(_.isDefined)) {
             val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()

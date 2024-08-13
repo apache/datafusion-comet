@@ -62,6 +62,8 @@ object CometConf extends ShimCometConf {
   val OPERATOR_LOCAL_LIMIT: String = "localLimit"
   val OPERATOR_GLOBAL_LIMIT: String = "globalLimit"
 
+  val EXPRESSION_STDDEV: String = "stddev"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -134,6 +136,12 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = false)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
+
+  val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      EXPRESSION_STDDEV,
+      defaultValue = false,
+      notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
@@ -489,9 +497,13 @@ object CometConf extends ShimCometConf {
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
-      defaultValue: Boolean): ConfigEntry[Boolean] = {
+      defaultValue: Boolean,
+      notes: Option[String] = None): ConfigEntry[Boolean] = {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
-      .doc(s"Whether to enable $exec by default. The default value is $defaultValue.")
+      .doc(
+        s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+          .map(s => s" $s.")
+          .getOrElse(""))
       .booleanConf
       .createWithDefault(defaultValue)
   }
