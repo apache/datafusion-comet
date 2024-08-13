@@ -2501,10 +2501,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case SortExec(sortOrder, _, child, _)
           if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT) =>
-        // TODO: Remove this constraint when we upgrade to new arrow-rs including
-        // https://github.com/apache/arrow-rs/pull/6225
-        if (child.output.length == 1 && child.output.head.dataType.isInstanceOf[StructType]) {
-          withInfo(op, "Sort on single struct column is not supported")
+        if (!supportedSortType(op, sortOrder)) {
           return None
         }
 
@@ -3052,5 +3049,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case o => o
     }
 
+  }
+
+  // TODO: Remove this constraint when we upgrade to new arrow-rs including
+  // https://github.com/apache/arrow-rs/pull/6225
+  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
+    if (sortOrder.length == 1 && sortOrder.head.dataType.isInstanceOf[StructType]) {
+      withInfo(op, "Sort on single struct column is not supported")
+      false
+    } else {
+      true
+    }
   }
 }
