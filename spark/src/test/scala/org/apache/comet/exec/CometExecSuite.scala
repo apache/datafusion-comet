@@ -57,7 +57,7 @@ class CometExecSuite extends CometTestBase {
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-                                                                                 pos: Position): Unit = {
+      pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
