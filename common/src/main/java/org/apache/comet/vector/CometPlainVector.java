@@ -40,21 +40,12 @@ public class CometPlainVector extends CometDecodedVector {
 
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
     // TODO: getNullCount is slow, avoid calling it if possible
-    this(vector, useDecimal128, false, vector.getNullCount(), 0);
+    this(vector, useDecimal128, false, vector.getNullCount());
   }
 
   public CometPlainVector(
       ValueVector vector, boolean useDecimal128, boolean isUuid, int nullCount) {
-    this(vector, useDecimal128, isUuid, nullCount, 0);
-  }
-
-  public CometPlainVector(
-      ValueVector vector,
-      boolean useDecimal128,
-      boolean isUuid,
-      int nullCount,
-      int dictValNullCount) {
-    super(vector, vector.getField(), useDecimal128, isUuid, nullCount, dictValNullCount);
+    super(vector, vector.getField(), useDecimal128, isUuid, nullCount, 0);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
       this.valueBufferAddress = -1;

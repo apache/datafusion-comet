@@ -31,7 +31,6 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
-import static org.apache.comet.parquet.Utils.getDictValNullCount;
 import static org.apache.comet.parquet.Utils.getNullCount;
 
 /** A metadata column reader that can be extended by {@link RowIndexColumnReader} etc. */
@@ -57,10 +56,8 @@ public class MetadataColumnReader extends AbstractColumnReader {
       try (ArrowArray array = ArrowArray.wrap(addresses[0]);
           ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
         int nullCount = getNullCount(array);
-        int dictValNullCount = getDictValNullCount(array);
         FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
-        vector =
-            new CometPlainVector(fieldVector, useDecimal128, false, nullCount, dictValNullCount);
+        vector = new CometPlainVector(fieldVector, useDecimal128, false, nullCount);
       }
     }
     vector.setNumValues(total);
