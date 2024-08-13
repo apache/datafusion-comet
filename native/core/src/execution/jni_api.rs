@@ -32,9 +32,6 @@ use arrow::{
 };
 use arrow_array::RecordBatch;
 use datafusion::execution::session_state::SessionStateBuilder;
-use datafusion::physical_optimizer::combine_partial_final_agg::CombinePartialFinalAggregate;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
-use datafusion::physical_optimizer::limited_distinct_aggregation::LimitedDistinctAggregation;
 use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
 use datafusion::{
     execution::{
@@ -244,9 +241,6 @@ fn prepare_datafusion_session_context(
         .with_runtime_env(Arc::new(runtime))
         .with_default_features()
         .with_physical_optimizer_rules(vec![
-            Arc::new(EnforceSorting::new()),
-            Arc::new(CombinePartialFinalAggregate::new()),
-            Arc::new(LimitedDistinctAggregation::new()),
             Arc::new(TopKAggregation::new()),
         ])
         .build();
