@@ -39,7 +39,7 @@ public abstract class CometDecodedVector extends CometVector {
   private int validityByteCacheIndex = -1;
   private byte validityByteCache;
   protected boolean isUuid;
-  private final int dictNumNulls;
+  private final int dictValNumNulls;
 
   protected CometDecodedVector(ValueVector vector, Field valueField, boolean useDecimal128) {
     // TODO: getNullCount is slow, avoid calling it if possible
@@ -52,14 +52,14 @@ public abstract class CometDecodedVector extends CometVector {
       boolean useDecimal128,
       boolean isUuid,
       int nullCount,
-      int dictNullCount) {
+      int dictValNullCount) {
     super(Utils.fromArrowField(valueField), useDecimal128);
     this.valueVector = vector;
     this.numNulls = nullCount;
     this.numValues = valueVector.getValueCount();
     this.hasNull = numNulls != 0;
     this.isUuid = isUuid;
-    this.dictNumNulls = dictNullCount;
+    this.dictValNumNulls = dictValNullCount;
   }
 
   @Override
@@ -107,8 +107,8 @@ public abstract class CometDecodedVector extends CometVector {
   }
 
   @Override
-  public int numDictNulls() {
-    return dictNumNulls;
+  public int dictValNumNulls() {
+    return dictValNumNulls;
   }
 
   @Override

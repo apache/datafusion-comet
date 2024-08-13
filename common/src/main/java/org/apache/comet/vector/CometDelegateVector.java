@@ -78,8 +78,8 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
-  public int numDictNulls() {
-    return delegate.numDictNulls();
+  public int dictValNumNulls() {
+    return delegate.dictValNumNulls();
   }
 
   @Override

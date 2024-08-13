@@ -268,7 +268,7 @@ public class Utils {
     return (int) Platform.getLong(null, array.memoryAddress() + 8L);
   }
 
-  public static int getDictNullCount(ArrowArray array) {
+  public static int getDictValNullCount(ArrowArray array) {
     // The 8th long value in the c interface is the dictionary addresses
     // https://arrow.apache.org/docs/format/CDataInterface.html#c.ArrowArray.null_count
     long dictionary = Platform.getLong(null, array.memoryAddress() + (8L * 7L));

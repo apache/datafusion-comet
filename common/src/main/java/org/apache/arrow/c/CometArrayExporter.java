@@ -35,9 +35,6 @@ import static org.apache.arrow.c.NativeUtil.NULL;
 import static org.apache.arrow.c.NativeUtil.addressOrNull;
 import static org.apache.arrow.util.Preconditions.checkNotNull;
 
-import static org.apache.comet.parquet.Utils.getDictNullCount;
-import static org.apache.comet.parquet.Utils.getNullCount;
-
 public final class CometArrayExporter {
   // Copied from Data.exportVector and changed to take nullCount from outside
   public static void exportVector(
@@ -47,9 +44,9 @@ public final class CometArrayExporter {
       ArrowArray out,
       ArrowSchema outSchema,
       long nullCount,
-      long dictNullCount) {
+      long dictValNullCount) {
     exportField(allocator, vector.getField(), provider, outSchema);
-    export(allocator, out, vector, provider, nullCount, dictNullCount);
+    export(allocator, out, vector, provider, nullCount, dictValNullCount);
   }
 
   private static void export(
@@ -58,7 +55,7 @@ public final class CometArrayExporter {
       FieldVector vector,
       DictionaryProvider dictionaryProvider,
       long nullCount,
-      long dictNullCount) {
+      long dictValNullCount) {
     List<FieldVector> children = vector.getChildrenFromFields();
     List<ArrowBuf> buffers = vector.getFieldBuffers();
     int valueCount = vector.getValueCount();
@@ -88,7 +85,8 @@ public final class CometArrayExporter {
 
         data.dictionary = ArrowArray.allocateNew(allocator);
         FieldVector dictionaryVector = dictionary.getVector();
-        export(allocator, data.dictionary, dictionaryVector, dictionaryProvider, dictNullCount, 0);
+        export(
+            allocator, data.dictionary, dictionaryVector, dictionaryProvider, dictValNullCount, 0);
       }
 
       ArrowArray.Snapshot snapshot = new ArrowArray.Snapshot();
@@ -115,9 +113,15 @@ public final class CometArrayExporter {
       for (int i = 0; i < children.size(); i++) {
         FieldVector childVector = children.get(i);
         ArrowArray child = data.children.get(i);
-        int cNullCount = getNullCount(child);
-        int cDictNullCount = getDictNullCount(child);
-        export(allocator, child, childVector, dictionaryProvider, cNullCount, cDictNullCount);
+        // TODO: getNullCount is slow, avoid calling it if possible
+        long cNullCount = childVector.getNullCount();
+        DictionaryEncoding cDictionaryEncoding = childVector.getField().getDictionary();
+        long cDictValNullCount = 0;
+        if (cDictionaryEncoding != null) {
+          Dictionary dictionary = dictionaryProvider.lookup(cDictionaryEncoding.getId());
+          cDictValNullCount = dictionary.getVector().getNullCount();
+        }
+        export(allocator, child, childVector, dictionaryProvider, cNullCount, cDictValNullCount);
       }
     }
   }

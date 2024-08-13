@@ -44,8 +44,8 @@ public class CometMapVector extends CometDecodedVector {
       boolean useDecimal128,
       DictionaryProvider dictionaryProvider,
       int nullCount,
-      int dictNullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount, dictNullCount);
+      int dictValNullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount, dictValNullCount);
 
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
@@ -53,10 +53,10 @@ public class CometMapVector extends CometDecodedVector {
 
     if (dataVector instanceof StructVector) {
       DictionaryEncoding dictionaryEncoding = dataVector.getField().getDictionary();
-      dictNullCount = 0;
+      int dDictValNullCount = 0;
       if (dictionaryEncoding != null) {
         Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        dictNullCount = dictionary.getVector().getNullCount();
+        dDictValNullCount = dictionary.getVector().getNullCount();
       }
       // TODO: getNullCount is slow, avoid calling it if possible
       this.dataColumnVector =
@@ -65,7 +65,7 @@ public class CometMapVector extends CometDecodedVector {
               useDecimal128,
               dictionaryProvider,
               dataVector.getNullCount(),
-              dictNullCount);
+              dDictValNullCount);
 
       if (dataColumnVector.children.size() != 2) {
         throw new RuntimeException(
@@ -97,13 +97,13 @@ public class CometMapVector extends CometDecodedVector {
     ValueVector vector = tp.getTo();
 
     DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-    int dictNullCount = 0;
+    int dictValNullCount = 0;
     if (dictionaryEncoding != null) {
       Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-      dictNullCount = dictionary.getVector().getNullCount();
+      dictValNullCount = dictionary.getVector().getNullCount();
     }
     // TODO: getNullCount is slow, avoid calling it if possible
     return new CometMapVector(
-        tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount(), dictNullCount);
+        tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount(), dictValNullCount);
   }
 }

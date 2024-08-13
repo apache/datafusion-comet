@@ -40,8 +40,8 @@ public class CometStructVector extends CometDecodedVector {
       boolean useDecimal128,
       DictionaryProvider dictionaryProvider,
       int nullCount,
-      int dictNullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount, dictNullCount);
+      int dictValNullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount, dictValNullCount);
 
     StructVector structVector = ((StructVector) vector);
 
@@ -50,7 +50,7 @@ public class CometStructVector extends CometDecodedVector {
 
     for (int i = 0; i < size; ++i) {
       ValueVector value = structVector.getVectorById(i);
-      children.add(getVector(value, useDecimal128, dictionaryProvider, 0, 0));
+      children.add(getVector(value, useDecimal128, dictionaryProvider));
     }
     this.children = children;
     this.dictionaryProvider = dictionaryProvider;
@@ -68,13 +68,13 @@ public class CometStructVector extends CometDecodedVector {
     ValueVector vector = tp.getTo();
 
     DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-    int dictNullCount = 0;
+    int dictValNullCount = 0;
     if (dictionaryEncoding != null) {
       Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-      dictNullCount = dictionary.getVector().getNullCount();
+      dictValNullCount = dictionary.getVector().getNullCount();
     }
     // TODO: getNullCount is slow, avoid calling it if possible
     return new CometStructVector(
-        vector, useDecimal128, dictionaryProvider, vector.getNullCount(), dictNullCount);
+        vector, useDecimal128, dictionaryProvider, vector.getNullCount(), dictValNullCount);
   }
 }

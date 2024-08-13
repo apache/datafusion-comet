@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.parquet.Utils.{getDictNullCount, getNullCount};
+import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount};
 
 class NativeUtil {
   import Utils._
@@ -73,7 +73,7 @@ class NativeUtil {
             arrowArray,
             arrowSchema,
             a.numNulls(),
-            a.numDictNulls())
+            a.dictValNumNulls())
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
@@ -103,7 +103,7 @@ class NativeUtil {
       val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
       val arrowArray = ArrowArray.wrap(arrayAddress(i))
       val nullCount = getNullCount(arrowArray)
-      val dictNullCount = getDictNullCount(arrowArray)
+      val dictValNullCount = getDictValNullCount(arrowArray)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
@@ -112,7 +112,7 @@ class NativeUtil {
         true,
         dictionaryProvider,
         nullCount,
-        dictNullCount)
+        dictValNullCount)
 
       arrowArray.close()
       arrowSchema.close()
@@ -152,15 +152,8 @@ object NativeUtil {
   def rootAsBatch(arrowRoot: VectorSchemaRoot, provider: DictionaryProvider): ColumnarBatch = {
     val vectors = (0 until arrowRoot.getFieldVectors.size()).map { i =>
       val vector = arrowRoot.getFieldVectors.get(i)
-      val dictionaryEncoding = vector.getField.getDictionary
-      val dictNullCount = if (dictionaryEncoding == null) {
-        0
-      } else {
-        val dictionary = provider.lookup(dictionaryEncoding.getId)
-        dictionary.getVector.getNullCount
-      }
       // Native shuffle always uses decimal128.
-      CometVector.getVector(vector, true, provider, vector.getNullCount, dictNullCount)
+      CometVector.getVector(vector, true, provider)
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
