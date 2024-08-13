@@ -74,6 +74,7 @@ class NativeUtil {
             arrowArray,
             arrowSchema)
 
+          /*
           // scalastyle:off println
           for (i <- 0 until valueVector.getBuffers(false).length) {
             val buf1 = valueVector.getBuffers(false)(i)
@@ -89,6 +90,7 @@ class NativeUtil {
             val buf = valueVector.getBuffers(false)(i)
             // println(s"after export + release buf $i: ${buf.getReferenceManager.getRefCount}")
           }
+           */
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
