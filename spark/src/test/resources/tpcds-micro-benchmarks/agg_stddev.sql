@@ -16,7 +16,7 @@
 -- under the License.
 
 select w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy
-     ,stddev_samp(inv_quantity_on_hand) stdev,avg(inv_quantity_on_hand) mean
+     ,stddev_samp(inv_quantity_on_hand) stdev
 from inventory
    ,item
    ,warehouse
