@@ -48,6 +48,7 @@ import org.apache.comet.vector.CometDictionaryVector;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
+import static org.apache.comet.parquet.Utils.getDictNullCount;
 import static org.apache.comet.parquet.Utils.getNullCount;
 
 public class ColumnReader extends AbstractColumnReader {
@@ -208,6 +209,7 @@ public class ColumnReader extends AbstractColumnReader {
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
         ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
       int nullCount = getNullCount(array);
+      int dictNullCount = getDictNullCount(array);
       FieldVector vector = importer.importVector(array, schema);
 
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
@@ -235,9 +237,8 @@ public class ColumnReader extends AbstractColumnReader {
       // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
       // release the previous dictionary vector and create a new one.
       Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
-      // Since the dictionary index tracks the nullCount, dictionaryVector.nullCount can be 0
       CometPlainVector dictionaryVector =
-          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid, 0);
+          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid, dictNullCount);
       if (dictionary != null) {
         dictionary.setDictionaryVector(dictionaryVector);
       } else {

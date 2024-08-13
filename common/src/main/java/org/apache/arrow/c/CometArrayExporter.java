@@ -35,6 +35,9 @@ import static org.apache.arrow.c.NativeUtil.NULL;
 import static org.apache.arrow.c.NativeUtil.addressOrNull;
 import static org.apache.arrow.util.Preconditions.checkNotNull;
 
+import static org.apache.comet.parquet.Utils.getDictNullCount;
+import static org.apache.comet.parquet.Utils.getNullCount;
+
 public final class CometArrayExporter {
   // Copied from Data.exportVector and changed to take nullCount from outside
   public static void exportVector(
@@ -43,9 +46,10 @@ public final class CometArrayExporter {
       DictionaryProvider provider,
       ArrowArray out,
       ArrowSchema outSchema,
-      long nullCount) {
+      long nullCount,
+      long dictNullCount) {
     exportField(allocator, vector.getField(), provider, outSchema);
-    export(allocator, out, vector, provider, nullCount);
+    export(allocator, out, vector, provider, nullCount, dictNullCount);
   }
 
   private static void export(
@@ -53,7 +57,8 @@ public final class CometArrayExporter {
       ArrowArray array,
       FieldVector vector,
       DictionaryProvider dictionaryProvider,
-      long nullCount) {
+      long nullCount,
+      long dictNullCount) {
     List<FieldVector> children = vector.getChildrenFromFields();
     List<ArrowBuf> buffers = vector.getFieldBuffers();
     int valueCount = vector.getValueCount();
@@ -83,8 +88,7 @@ public final class CometArrayExporter {
 
         data.dictionary = ArrowArray.allocateNew(allocator);
         FieldVector dictionaryVector = dictionary.getVector();
-        // Since the dictionary index tracks the nullCount, the nullCount of the values can be 0
-        export(allocator, data.dictionary, dictionaryVector, dictionaryProvider, 0);
+        export(allocator, data.dictionary, dictionaryVector, dictionaryProvider, dictNullCount, 0);
       }
 
       ArrowArray.Snapshot snapshot = new ArrowArray.Snapshot();
@@ -111,9 +115,9 @@ public final class CometArrayExporter {
       for (int i = 0; i < children.size(); i++) {
         FieldVector childVector = children.get(i);
         ArrowArray child = data.children.get(i);
-        // TODO: getNullCount is slow, avoid calling it if possible
-        int cNullCount = childVector.getNullCount();
-        export(allocator, child, childVector, dictionaryProvider, cNullCount);
+        int cNullCount = getNullCount(child);
+        int cDictNullCount = getDictNullCount(child);
+        export(allocator, child, childVector, dictionaryProvider, cNullCount, cDictNullCount);
       }
     }
   }

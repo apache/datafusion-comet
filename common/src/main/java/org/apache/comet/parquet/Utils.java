@@ -27,6 +27,8 @@ import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.unsafe.Platform;
 
+import static org.apache.arrow.c.NativeUtil.NULL;
+
 public class Utils {
   public static ColumnReader getColumnReader(
       DataType type,
@@ -264,5 +266,15 @@ public class Utils {
     // The second long value in the c interface is the null count
     // https://arrow.apache.org/docs/format/CDataInterface.html#c.ArrowArray.null_count
     return (int) Platform.getLong(null, array.memoryAddress() + 8L);
+  }
+
+  public static int getDictNullCount(ArrowArray array) {
+    // The 8th long value in the c interface is the dictionary addresses
+    // https://arrow.apache.org/docs/format/CDataInterface.html#c.ArrowArray.null_count
+    long dictionary = Platform.getLong(null, array.memoryAddress() + (8L * 7L));
+    if (dictionary == NULL) {
+      return 0;
+    }
+    return (int) Platform.getLong(null, dictionary + 8L);
   }
 }

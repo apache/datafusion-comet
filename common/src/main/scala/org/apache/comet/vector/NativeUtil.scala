@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.parquet.Utils.getNullCount;
+import org.apache.comet.parquet.Utils.{getDictNullCount, getNullCount};
 
 class NativeUtil {
   import Utils._
@@ -72,10 +72,8 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema,
-            // TODO: Somehow calling valueVector.getNullCount seems to be faster than a.numNulls,
-            //       but it should be the other way around. Investigate why
-            valueVector.getNullCount)
-          // a.numNulls())
+            a.numNulls(),
+            a.numDictNulls())
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
@@ -105,6 +103,7 @@ class NativeUtil {
       val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
       val arrowArray = ArrowArray.wrap(arrayAddress(i))
       val nullCount = getNullCount(arrowArray)
+      val dictNullCount = getDictNullCount(arrowArray)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
@@ -112,7 +111,8 @@ class NativeUtil {
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
         dictionaryProvider,
-        nullCount)
+        nullCount,
+        dictNullCount)
 
       arrowArray.close()
       arrowSchema.close()
@@ -152,9 +152,15 @@ object NativeUtil {
   def rootAsBatch(arrowRoot: VectorSchemaRoot, provider: DictionaryProvider): ColumnarBatch = {
     val vectors = (0 until arrowRoot.getFieldVectors.size()).map { i =>
       val vector = arrowRoot.getFieldVectors.get(i)
+      val dictionaryEncoding = vector.getField.getDictionary
+      val dictNullCount = if (dictionaryEncoding == null) {
+        0
+      } else {
+        val dictionary = provider.lookup(dictionaryEncoding.getId)
+        dictionary.getVector.getNullCount
+      }
       // Native shuffle always uses decimal128.
-      // TODO: getNullCount is slow, avoid calling it if possible
-      CometVector.getVector(vector, true, provider, vector.getNullCount)
+      CometVector.getVector(vector, true, provider, vector.getNullCount, dictNullCount)
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }

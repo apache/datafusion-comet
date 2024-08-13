@@ -24,7 +24,9 @@ import java.util.List;
 
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 
@@ -34,8 +36,12 @@ public class CometStructVector extends CometDecodedVector {
   final DictionaryProvider dictionaryProvider;
 
   public CometStructVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
-    super(vector, vector.getField(), useDecimal128);
+      ValueVector vector,
+      boolean useDecimal128,
+      DictionaryProvider dictionaryProvider,
+      int nullCount,
+      int dictNullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount, dictNullCount);
 
     StructVector structVector = ((StructVector) vector);
 
@@ -44,7 +50,7 @@ public class CometStructVector extends CometDecodedVector {
 
     for (int i = 0; i < size; ++i) {
       ValueVector value = structVector.getVectorById(i);
-      children.add(getVector(value, useDecimal128, dictionaryProvider, 0));
+      children.add(getVector(value, useDecimal128, dictionaryProvider, 0, 0));
     }
     this.children = children;
     this.dictionaryProvider = dictionaryProvider;
@@ -59,7 +65,16 @@ public class CometStructVector extends CometDecodedVector {
   public CometVector slice(int offset, int length) {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
+    ValueVector vector = tp.getTo();
 
-    return new CometStructVector(tp.getTo(), useDecimal128, dictionaryProvider);
+    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
+    int dictNullCount = 0;
+    if (dictionaryEncoding != null) {
+      Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
+      dictNullCount = dictionary.getVector().getNullCount();
+    }
+    // TODO: getNullCount is slow, avoid calling it if possible
+    return new CometStructVector(
+        vector, useDecimal128, dictionaryProvider, vector.getNullCount(), dictNullCount);
   }
 }

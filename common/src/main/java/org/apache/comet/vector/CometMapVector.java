@@ -22,7 +22,9 @@ package org.apache.comet.vector;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarMap;
@@ -38,15 +40,32 @@ public class CometMapVector extends CometDecodedVector {
   final ColumnVector values;
 
   public CometMapVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
-    super(vector, vector.getField(), useDecimal128);
+      ValueVector vector,
+      boolean useDecimal128,
+      DictionaryProvider dictionaryProvider,
+      int nullCount,
+      int dictNullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount, dictNullCount);
 
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
 
     if (dataVector instanceof StructVector) {
-      this.dataColumnVector = new CometStructVector(dataVector, useDecimal128, dictionaryProvider);
+      DictionaryEncoding dictionaryEncoding = dataVector.getField().getDictionary();
+      dictNullCount = 0;
+      if (dictionaryEncoding != null) {
+        Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
+        dictNullCount = dictionary.getVector().getNullCount();
+      }
+      // TODO: getNullCount is slow, avoid calling it if possible
+      this.dataColumnVector =
+          new CometStructVector(
+              dataVector,
+              useDecimal128,
+              dictionaryProvider,
+              dataVector.getNullCount(),
+              dictNullCount);
 
       if (dataColumnVector.children.size() != 2) {
         throw new RuntimeException(
@@ -75,7 +94,16 @@ public class CometMapVector extends CometDecodedVector {
   public CometVector slice(int offset, int length) {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
+    ValueVector vector = tp.getTo();
 
-    return new CometMapVector(tp.getTo(), useDecimal128, dictionaryProvider);
+    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
+    int dictNullCount = 0;
+    if (dictionaryEncoding != null) {
+      Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
+      dictNullCount = dictionary.getVector().getNullCount();
+    }
+    // TODO: getNullCount is slow, avoid calling it if possible
+    return new CometMapVector(
+        tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount(), dictNullCount);
   }
 }
