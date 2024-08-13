@@ -240,9 +240,7 @@ fn prepare_datafusion_session_context(
         .with_config(session_config)
         .with_runtime_env(Arc::new(runtime))
         .with_default_features()
-        .with_physical_optimizer_rules(vec![
-            Arc::new(TopKAggregation::new()),
-        ])
+        .with_physical_optimizer_rules(vec![Arc::new(TopKAggregation::new())])
         .build();
 
     Ok(SessionContext::new_with_state(state))
