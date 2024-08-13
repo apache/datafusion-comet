@@ -253,7 +253,7 @@ fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    output_batch: RecordBatch,
+    mut output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
 ) -> CometResult<jlongArray> {
     let results = output_batch.columns();
@@ -296,6 +296,12 @@ fn prepare_output(
 
     // Record the pointer to allocated Arrow Arrays
     exec_context.ffi_arrays = arrays;
+
+    // Forget the Arcs to prevent them from being dropped
+    // while output_batch.num_columns() > 0 {
+    // let array = output_batch.remove_column(output_batch.num_columns() - 1);
+    // Arc::into_raw(array);
+    // }
 
     Ok(long_array.into_raw())
 }

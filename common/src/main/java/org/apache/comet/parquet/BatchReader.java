@@ -75,6 +75,7 @@ import org.apache.comet.package$;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
+import org.apache.comet.vector.NativeUtil$;
 
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
@@ -420,6 +421,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
    * <p>Note that this must be called AFTER {@link BatchReader#nextBatch()}.
    */
   public ColumnarBatch currentBatch() {
+    NativeUtil$.MODULE$.printBatchRefCount(currentBatch, "Batch reader", false);
     return currentBatch;
   }
 
@@ -509,6 +511,15 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
 
     currentBatch.setNumRows(batchSize);
+
+    // We reuse value vectors for each batch if possible.
+    // It makes the reference counts of the underlying buffers to be
+    // detached from any updates to the reference counts. For example,
+    // if the reference count of a buffer is decreased to 0, we still
+    // keep using the buffer in the next batch. Once we try to release
+    // the buffer. We will hit Java Arrow preconditions check.
+    // NativeUtil$.MODULE$.retainBatchBuffers(currentBatch);
+
     rowsRead += batchSize;
     return true;
   }
@@ -530,6 +541,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       importer.close();
       importer = null;
     }
+    /*
     // As our native reader reuses the same memory buffer for all columns, we only
     // need to release the buffers once when closing the reader.
     for (int i = 0; i < currentBatch.numCols(); i++) {
@@ -537,6 +549,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
         currentBatch.column(i).close();
       }
     }
+     */
   }
 
   @SuppressWarnings("deprecation")

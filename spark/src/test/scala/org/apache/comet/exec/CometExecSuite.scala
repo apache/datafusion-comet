@@ -53,10 +53,11 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
+
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
+                                                                                 pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
@@ -69,7 +70,6 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
@@ -95,6 +95,20 @@ class CometExecSuite extends CometTestBase {
           val sort = df.sort("_1")
           checkSparkAnswer(sort)
         }
+      }
+    }
+  }
+
+  test("Check ref count") {
+    withSQLConf(
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "1",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+      withParquetTable((0 until 50).map(i => (i, i + 1)), "tbl") {
+        val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
+        df.explain()
+        df.collect()
       }
     }
   }
