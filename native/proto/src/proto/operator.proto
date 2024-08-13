@@ -47,8 +47,8 @@ message Operator {
 }
 
 message Statistics {
-  int32 row_count = 1;
-  int32 size_in_bytes = 2;
+  float row_count = 1;
+  float size_in_bytes = 2;
 }
 
 message Scan {

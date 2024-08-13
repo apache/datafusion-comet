@@ -2884,8 +2884,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             qs.computeStats() match {
               case Some(stats) =>
                 val statsBuilder = OperatorOuterClass.Statistics.newBuilder()
-                stats.rowCount.foreach(c => statsBuilder.setRowCount(c.toInt))
-                statsBuilder.setSizeInBytes(stats.sizeInBytes.toInt)
+                stats.rowCount.foreach(c => statsBuilder.setRowCount(c.toFloat))
+                statsBuilder.setSizeInBytes(stats.sizeInBytes.toFloat)
                 scanBuilder.setStatistics(statsBuilder.build())
               case _ =>
             }
