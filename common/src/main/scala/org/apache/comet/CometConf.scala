@@ -45,6 +45,23 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  val OPERATOR_PROJECT: String = "project"
+  val OPERATOR_FILTER: String = "filter"
+  val OPERATOR_SORT: String = "sort"
+  val OPERATOR_AGGREGATE: String = "aggregate"
+  val OPERATOR_BROADCAST_EXCHANGE: String = "broadcastExchange"
+  val OPERATOR_COLLECT_LIMIT: String = "collectLimit"
+  val OPERATOR_COALESCE: String = "coalesce"
+  val OPERATOR_TAKE_ORDERED_AND_PROJECT: String = "takeOrderedAndProject"
+  val OPERATOR_HASH_JOIN: String = "hashJoin"
+  val OPERATOR_SORT_MERGE_JOIN: String = "sortMergeJoin"
+  val OPERATOR_BROADCAST_HASH_JOIN: String = "broadcastHashJoin"
+  val OPERATOR_EXPAND: String = "expand"
+  val OPERATOR_WINDOW: String = "window"
+  val OPERATOR_UNION: String = "union"
+  val OPERATOR_LOCAL_LIMIT: String = "localLimit"
+  val OPERATOR_GLOBAL_LIMIT: String = "globalLimit"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -84,6 +101,39 @@ object CometConf extends ShimCometConf {
         "native. By default, this config is false.")
     .booleanConf
     .createWithDefault(false)
+
+  val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_PROJECT, defaultValue = false)
+  val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_FILTER, defaultValue = false)
+  val COMET_EXEC_SORT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_SORT, defaultValue = false)
+  val COMET_EXEC_LOCAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_LOCAL_LIMIT, defaultValue = false)
+  val COMET_EXEC_GLOBAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_GLOBAL_LIMIT, defaultValue = false)
+  val COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_BROADCAST_HASH_JOIN, defaultValue = false)
+  val COMET_EXEC_BROADCAST_EXCHANGE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_BROADCAST_EXCHANGE, defaultValue = false)
+  val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_HASH_JOIN, defaultValue = false)
+  val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_SORT_MERGE_JOIN, defaultValue = false)
+  val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_AGGREGATE, defaultValue = false)
+  val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_COLLECT_LIMIT, defaultValue = false)
+  val COMET_EXEC_COALESCE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_COALESCE, defaultValue = false)
+  val COMET_EXEC_UNION_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_UNION, defaultValue = false)
+  val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_EXPAND, defaultValue = false)
+  val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = false)
+  val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
@@ -282,6 +332,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.native.enabled")
+      .doc(
+        "When this setting is enabled, Comet will provide a tree representation of " +
+          "the native query plan before execution and again after execution, with " +
+          "metrics.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(
@@ -374,20 +433,21 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
-  val COMET_ROW_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.rowToColumnar.enabled")
+  val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc("Whether to enable row to columnar conversion in Comet. When this is turned on, " +
-        "Comet will convert row-based operators in " +
-        "`spark.comet.rowToColumnar.supportedOperatorList` into columnar based before processing.")
+      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+        "Comet will convert operators in " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "processing.")
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
-    conf("spark.comet.rowToColumnar.supportedOperatorList")
+  val COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+    conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .doc(
-        "A comma-separated list of row-based operators that will be converted to columnar " +
-          "format when 'spark.comet.rowToColumnar.enabled' is true")
+        "A comma-separated list of operators that will be converted to Comet columnar " +
+          "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
@@ -425,6 +485,16 @@ object CometConf extends ShimCometConf {
         "See compatibility guide for more information.")
       .booleanConf
       .createWithDefault(false)
+
+  /** Create a config to enable a specific operator */
+  private def createExecEnabledConfig(
+      exec: String,
+      defaultValue: Boolean): ConfigEntry[Boolean] = {
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
+      .doc(s"Whether to enable $exec by default. The default value is $defaultValue.")
+      .booleanConf
+      .createWithDefault(defaultValue)
+  }
 }
 
 object ConfigHelpers {

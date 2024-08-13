@@ -15,6 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-select count(*)
+select ss_sold_date_sk, ss_sold_time_sk, ss_quantity, d_year, d_moy, d_dom
 from date_dim join store_sales on d_date_sk = ss_sold_date_sk
 where d_year = 2000;

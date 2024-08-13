@@ -490,7 +490,7 @@ message BloomFilterMightContain {
 
 message CreateNamedStruct {
   repeated Expr values = 1;
-  DataType datatype = 2;
+  repeated string names = 2;
 }
 
 message GetStructField {

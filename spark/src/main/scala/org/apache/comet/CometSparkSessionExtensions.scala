@@ -45,7 +45,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplyRowToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -322,8 +322,8 @@ class CometSparkSessionExtensions
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
 
-        case op if shouldApplyRowToColumnar(conf, op) =>
-          val cometOp = CometRowToColumnarExec(op)
+        case op if shouldApplySparkToColumnar(conf, op) =>
+          val cometOp = CometSparkToColumnarExec(op)
           val nativeOp = QueryPlanSerde.operator2Proto(cometOp).get
           CometScanWrapper(nativeOp, cometOp)
 
@@ -392,7 +392,9 @@ class CometSparkSessionExtensions
           }
 
         case op: CollectLimitExec
-            if isCometNative(op.child) && isCometOperatorEnabled(conf, "collectLimit")
+            if isCometNative(op.child) && isCometOperatorEnabled(
+              conf,
+              CometConf.OPERATOR_COLLECT_LIMIT)
               && isCometShuffleEnabled(conf)
               && getOffset(op) == 0 =>
           QueryPlanSerde.operator2Proto(op) match {
@@ -471,7 +473,7 @@ class CometSparkSessionExtensions
           }
 
         case op: ShuffledHashJoinExec
-            if isCometOperatorEnabled(conf, "hash_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_HASH_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -493,7 +495,8 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: ShuffledHashJoinExec if !isCometOperatorEnabled(conf, "hash_join") =>
+        case op: ShuffledHashJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_HASH_JOIN) =>
           withInfo(op, "ShuffleHashJoin is not enabled")
           op
 
@@ -505,7 +508,7 @@ class CometSparkSessionExtensions
           op
 
         case op: BroadcastHashJoinExec
-            if isCometOperatorEnabled(conf, "broadcast_hash_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -528,7 +531,7 @@ class CometSparkSessionExtensions
           }
 
         case op: SortMergeJoinExec
-            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) &&
               op.children.forall(isCometNative(_)) =>
           val newOp = transform1(op)
           newOp match {
@@ -550,7 +553,7 @@ class CometSparkSessionExtensions
           }
 
         case op: SortMergeJoinExec
-            if isCometOperatorEnabled(conf, "sort_merge_join") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) &&
               !op.children.forall(isCometNative(_)) =>
           withInfo(
             op,
@@ -558,7 +561,8 @@ class CometSparkSessionExtensions
               s"${explainChildNotNative(op)}")
           op
 
-        case op: SortMergeJoinExec if !isCometOperatorEnabled(conf, "sort_merge_join") =>
+        case op: SortMergeJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
           withInfo(op, "SortMergeJoin is not enabled")
           op
 
@@ -570,7 +574,7 @@ class CometSparkSessionExtensions
           op
 
         case c @ CoalesceExec(numPartitions, child)
-            if isCometOperatorEnabled(conf, "coalesce")
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_COALESCE)
               && isCometNative(child) =>
           QueryPlanSerde.operator2Proto(c) match {
             case Some(nativeOp) =>
@@ -580,7 +584,8 @@ class CometSparkSessionExtensions
               c
           }
 
-        case c @ CoalesceExec(_, _) if !isCometOperatorEnabled(conf, "coalesce") =>
+        case c @ CoalesceExec(_, _)
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_COALESCE) =>
           withInfo(c, "Coalesce is not enabled")
           c
 
@@ -592,7 +597,9 @@ class CometSparkSessionExtensions
           op
 
         case s: TakeOrderedAndProjectExec
-            if isCometNative(s.child) && isCometOperatorEnabled(conf, "takeOrderedAndProjectExec")
+            if isCometNative(s.child) && isCometOperatorEnabled(
+              conf,
+              CometConf.OPERATOR_TAKE_ORDERED_AND_PROJECT)
               && isCometShuffleEnabled(conf) &&
               CometTakeOrderedAndProjectExec.isSupported(s) =>
           QueryPlanSerde.operator2Proto(s) match {
@@ -612,7 +619,7 @@ class CometSparkSessionExtensions
 
         case s: TakeOrderedAndProjectExec =>
           val info1 = createMessage(
-            !isCometOperatorEnabled(conf, "takeOrderedAndProjectExec"),
+            !isCometOperatorEnabled(conf, CometConf.OPERATOR_TAKE_ORDERED_AND_PROJECT),
             "TakeOrderedAndProject is not enabled")
           val info2 = createMessage(
             !isCometShuffleEnabled(conf),
@@ -638,7 +645,7 @@ class CometSparkSessionExtensions
           }
 
         case u: UnionExec
-            if isCometOperatorEnabled(conf, "union") &&
+            if isCometOperatorEnabled(conf, CometConf.OPERATOR_UNION) &&
               u.children.forall(isCometNative) =>
           QueryPlanSerde.operator2Proto(u) match {
             case Some(nativeOp) =>
@@ -648,7 +655,7 @@ class CometSparkSessionExtensions
               u
           }
 
-        case u: UnionExec if !isCometOperatorEnabled(conf, "union") =>
+        case u: UnionExec if !isCometOperatorEnabled(conf, CometConf.OPERATOR_UNION) =>
           withInfo(u, "Union is not enabled")
           u
 
@@ -678,7 +685,7 @@ class CometSparkSessionExtensions
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
-                  isCometOperatorEnabled(conf, "broadcastExchangeExec") &&
+                  isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_EXCHANGE) &&
                   isSpark34Plus => // Spark 3.4+ only
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
@@ -718,7 +725,8 @@ class CometSparkSessionExtensions
               s"${explainChildNotNative(op)}")
           op
 
-        case op: BroadcastHashJoinExec if !isCometOperatorEnabled(conf, "broadcast_hash_join") =>
+        case op: BroadcastHashJoinExec
+            if !isCometOperatorEnabled(conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) =>
           withInfo(op, "BroadcastHashJoin is not enabled")
           op
 
@@ -950,11 +958,13 @@ class CometSparkSessionExtensions
   }
 
   // This rule is responsible for eliminating redundant transitions between row-based and
-  // columnar-based operators for Comet. Currently, two potential redundant transitions are:
+  // columnar-based operators for Comet. Currently, three potential redundant transitions are:
   // 1. `ColumnarToRowExec` on top of an ending `CometCollectLimitExec` operator, which is
   //    redundant as `CometCollectLimitExec` already wraps a `ColumnarToRowExec` for row-based
   //    output.
-  // 2. Consecutive operators of `CometRowToColumnarExec` and `ColumnarToRowExec`.
+  // 2. Consecutive operators of `CometSparkToColumnarExec` and `ColumnarToRowExec`.
+  // 3. AQE inserts an additional `CometSparkToColumnarExec` in addition to the one inserted in the
+  //    original plan.
   //
   // Note about the first case: The `ColumnarToRowExec` was added during
   // ApplyColumnarRulesAndInsertTransitions' insertTransitions phase when Spark requests row-based
@@ -962,16 +972,17 @@ class CometSparkSessionExtensions
   // `CometExec`. However, for certain operators such as `CometCollectLimitExec` which overrides
   // `executeCollect`, the redundant `ColumnarToRowExec` makes the override ineffective.
   //
-  // Note about the second case: When `spark.comet.rowToColumnar.enabled` is set, Comet will add
-  // `CometRowToColumnarExec` on top of row-based operators first, but the downstream operator
+  // Note about the second case: When `spark.comet.sparkToColumnar.enabled` is set, Comet will add
+  // `CometSparkToColumnarExec` on top of row-based operators first, but the downstream operator
   // only takes row-based input as it's a vanilla Spark operator(as Comet cannot convert it for
   // various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
-  // another `ColumnarToRowExec` on top of `CometRowToColumnarExec`. In this case, the pair could
+  // another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
   // be removed.
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
-        case ColumnarToRowExec(rowToColumnar: CometRowToColumnarExec) => rowToColumnar.child
+        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       }
 
       eliminatedPlan match {
@@ -1045,11 +1056,10 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def getCometBroadcastNotEnabledReason(conf: SQLConf): Option[String] = {
-    val operator = "broadcastExchangeExec"
-    if (!isCometOperatorEnabled(conf, "broadcastExchangeExec") && !isCometBroadCastForceEnabled(
-        conf)) {
+    if (!CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
+      !isCometBroadCastForceEnabled(conf)) {
       Some(
-        s"$COMET_EXEC_CONFIG_PREFIX.$operator.enabled is not specified and " +
+        s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
           s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
     } else if (!isSpark34Plus) {
       Some("Native broadcast requires Spark 3.4 or newer")
@@ -1116,17 +1126,17 @@ object CometSparkSessionExtensions extends Logging {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
-  private def shouldApplyRowToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
     // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && CometRowToColumnarExec.isSchemaSupported(op.schema) &&
-    COMET_ROW_TO_COLUMNAR_ENABLED.get(conf) && {
+    op.isInstanceOf[LeafExecNode] && CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
+    COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
   }
 

@@ -118,11 +118,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
         withParquetTable(path.toString, "tbl") {
-          val sqlString = "SELECT _4 + null, _15 - null, _16 * null  FROM tbl"
+          val sqlString =
+            "SELECT _4 + null, _15 - null, _16 * null, cast(null as struct<_1:int>) FROM tbl"
           val df2 = sql(sqlString)
           val rows = df2.collect()
           assert(rows.length == batchSize)
-          assert(rows.forall(_ == Row(null, null, null)))
+          assert(rows.forall(_ == Row(null, null, null, null)))
 
           checkSparkAnswerAndOperator(sqlString)
         }
@@ -1974,19 +1975,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("get_struct_field") {
     withSQLConf(
-      CometConf.COMET_ROW_TO_COLUMNAR_ENABLED.key -> "true",
-      CometConf.COMET_ROW_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
+      CometConf.COMET_SPARK_TO_COLUMNAR_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
       withTempPath { dir =>
         var df = spark
           .range(5)
           // Add both a null struct and null inner value
-          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
-            .alias("nested"))
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
 
         df.write.parquet(dir.toString())
 
         df = spark.read.parquet(dir.toString())
-        checkSparkAnswerAndOperator(df.select("nested.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
       }
     }
   }

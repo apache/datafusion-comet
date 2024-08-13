@@ -17,6 +17,6 @@
 
 -- This is based on the first join in q72 when there is no join reordering
 
-select count(*)
+select cs_order_number, cs_quantity, inv_quantity_on_hand
 from catalog_sales join inventory on cs_item_sk = inv_item_sk
 where cs_warehouse_sk = 1 and inv_quantity_on_hand = 666;
