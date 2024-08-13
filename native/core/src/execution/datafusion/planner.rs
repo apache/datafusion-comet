@@ -44,7 +44,7 @@ use crate::{
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
         },
-        operators::{ExecutionError, ScanExec},
+        operators::{CopyExec, ExecutionError, ScanExec},
         serde::to_arrow_datatype,
     },
 };
@@ -865,9 +865,11 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
+                let copy_exec = Arc::new(CopyExec::new(child));
+
                 Ok((
                     scans,
-                    Arc::new(SortExec::new(exprs?, child).with_fetch(fetch)),
+                    Arc::new(SortExec::new(exprs?, copy_exec).with_fetch(fetch)),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -953,6 +955,11 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
+                let child = if child.as_any().is::<ScanExec>() {
+                    Arc::new(CopyExec::new(child))
+                } else {
+                    child
+                };
 
                 Ok((
                     scans,
@@ -1209,6 +1216,21 @@ impl PhysicalPlanner {
             ))
         } else {
             None
+        };
+
+        // DataFusion Join operators keep the input batch internally. We need
+        // to copy the input batch to avoid the data corruption from reusing the input
+        // batch.
+        let left = if can_reuse_input_batch(&left) {
+            Arc::new(CopyExec::new(left))
+        } else {
+            left
+        };
+
+        let right = if can_reuse_input_batch(&right) {
+            Arc::new(CopyExec::new(right))
+        } else {
+            right
         };
 
         Ok((
@@ -1764,6 +1786,16 @@ impl From<ExpressionError> for DataFusionError {
     fn from(value: ExpressionError) -> Self {
         DataFusionError::Execution(value.to_string())
     }
+}
+
+/// Returns true if given operator can return input array as output array without
+/// modification. This is used to determine if we need to copy the input batch to avoid
+/// data corruption from reusing the input batch.
+fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
+    op.as_any().is::<ScanExec>()
+        || op.as_any().is::<LocalLimitExec>()
+        || op.as_any().is::<ProjectionExec>()
+        || op.as_any().is::<FilterExec>()
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression
