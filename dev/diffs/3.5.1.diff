@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 0f504dbee85..7616b97cc0a 100644
+index 0f504dbee85..71fd49a3744 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -343,10 +343,14 @@ index c2fe31520ac..0f54b233d14 100644
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 <<<<<<< HEAD
+<<<<<<< HEAD
 index f33432ddb6f..10702dba7a9 100644
 =======
 index f33432ddb6f..aef20714168 100644
 >>>>>>> 627d476a (Fix)
+=======
+index f33432ddb6f..8690c859d0c 100644
+>>>>>>> ba98a3ad (Update diffs)
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -428,7 +432,11 @@ index f33432ddb6f..aef20714168 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1279,7 +1288,8 @@ abstract class DynamicPartitionPruningSuiteBase
+=======
+@@ -1279,7 +1289,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -438,9 +446,13 @@ index f33432ddb6f..aef20714168 100644
      Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
        Seq(true, false).foreach { pruning =>
          withSQLConf(
+<<<<<<< HEAD
 =======
 >>>>>>> 627d476a (Fix)
 @@ -1311,7 +1321,8 @@ abstract class DynamicPartitionPruningSuiteBase
+=======
+@@ -1311,7 +1322,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -451,9 +463,13 @@ index f33432ddb6f..aef20714168 100644
        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1470,7 +1481,8 @@ abstract class DynamicPartitionPruningSuiteBase
 =======
 @@ -1423,7 +1434,8 @@ abstract class DynamicPartitionPruningSuiteBase
+=======
+@@ -1423,7 +1435,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -463,8 +479,12 @@ index f33432ddb6f..aef20714168 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
+<<<<<<< HEAD
 @@ -1470,7 +1482,8 @@ abstract class DynamicPartitionPruningSuiteBase
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1470,7 +1483,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
    }
  
@@ -475,10 +495,14 @@ index f33432ddb6f..aef20714168 100644
        val df = sql(
          """
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1485,7 +1497,7 @@ abstract class DynamicPartitionPruningSuiteBase
 =======
 @@ -1485,7 +1498,7 @@ abstract class DynamicPartitionPruningSuiteBase
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1485,7 +1499,7 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
    }
  
    test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
@@ -488,10 +512,14 @@ index f33432ddb6f..aef20714168 100644
        Seq(
          "f.store_id = 1" -> false,
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1557,7 +1569,8 @@ abstract class DynamicPartitionPruningSuiteBase
 =======
 @@ -1557,7 +1570,8 @@ abstract class DynamicPartitionPruningSuiteBase
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1557,7 +1571,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -502,10 +530,14 @@ index f33432ddb6f..aef20714168 100644
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
          Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1588,7 +1601,8 @@ abstract class DynamicPartitionPruningSuiteBase
 =======
 @@ -1588,7 +1602,8 @@ abstract class DynamicPartitionPruningSuiteBase
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1588,7 +1603,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -516,10 +548,14 @@ index f33432ddb6f..aef20714168 100644
        val df = sql(
          """
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1617,7 +1631,8 @@ abstract class DynamicPartitionPruningSuiteBase
 =======
 @@ -1617,7 +1632,8 @@ abstract class DynamicPartitionPruningSuiteBase
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1617,7 +1633,8 @@ abstract class DynamicPartitionPruningSuiteBase
+>>>>>>> ba98a3ad (Update diffs)
      }
    }
  
@@ -530,10 +566,14 @@ index f33432ddb6f..aef20714168 100644
        val df = sql(
          """
 <<<<<<< HEAD
+<<<<<<< HEAD
 @@ -1729,6 +1744,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
 =======
 @@ -1729,6 +1745,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
 >>>>>>> 627d476a (Fix)
+=======
+@@ -1729,6 +1746,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+>>>>>>> ba98a3ad (Update diffs)
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
