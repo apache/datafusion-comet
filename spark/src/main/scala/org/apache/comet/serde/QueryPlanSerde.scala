@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometSinkPlaceHol
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2875,6 +2875,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         scanBuilder.setSource(op.simpleStringWithNodeId())
+
+        // pass any available statistics down to the native planner so that we
+        // can take advantage of cost-based optimizations in DataFusion's physical
+        // optimizer in the future
+        op match {
+          case qs: QueryStageExec =>
+            qs.computeStats() match {
+              case Some(stats) =>
+                val statsBuilder = OperatorOuterClass.Statistics.newBuilder()
+                stats.rowCount.foreach(c => statsBuilder.setRowCount(c.toInt))
+                statsBuilder.setSizeInBytes(stats.sizeInBytes.toInt)
+                scanBuilder.setStatistics(statsBuilder.build())
+              case _ =>
+            }
+          case _ =>
+        }
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)

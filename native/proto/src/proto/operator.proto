@@ -46,12 +46,19 @@ message Operator {
   }
 }
 
+message Statistics {
+  int32 row_count = 1;
+  int32 size_in_bytes = 2;
+}
+
 message Scan {
   repeated spark.spark_expression.DataType fields = 1;
   // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // optional statistics
+  Statistics statistics = 3;
 }
 
 message Projection {
