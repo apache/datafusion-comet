@@ -2741,11 +2741,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        if ((join.leftKeys ++ join.rightKeys).exists(_.dataType.isInstanceOf[StructType])) {
-          withInfo(join, "Unsupported struct data type in join keys")
-          return None
-        }
-
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
