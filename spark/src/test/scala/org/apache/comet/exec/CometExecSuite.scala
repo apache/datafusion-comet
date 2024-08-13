@@ -30,6 +30,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkRuntimeException
 import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame, DataFrameWriter, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
@@ -72,10 +73,25 @@ class CometExecSuite extends CometTestBase {
       CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-      val data =
+      val data1 =
         Seq(Tuple1(null), Tuple1((1, "a")), Tuple1((2, null)), Tuple1((3, "b")), Tuple1(null))
 
-      withParquetFile(data) { file =>
+      withParquetFile(data1) { file =>
+        readParquetFile(file) { df =>
+          val sort = df.sort("_1")
+          checkSparkAnswer(sort)
+        }
+      }
+
+      val data2 =
+        Seq(
+          Tuple2(null, 1),
+          Tuple2((1, "a"), 2),
+          Tuple2((2, null), 3),
+          Tuple2((3, "b"), 5),
+          Tuple2(null, 6))
+
+      withParquetFile(data2) { file =>
         readParquetFile(file) { df =>
           val sort = df.sort("_1")
           checkSparkAnswer(sort)
