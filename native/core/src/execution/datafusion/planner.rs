@@ -1957,6 +1957,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                statistics: None,
             })),
         };
 
@@ -2029,6 +2030,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                statistics: None,
             })),
         };
 
@@ -2116,6 +2118,7 @@ mod tests {
                         type_info: None,
                     }],
                     source: "".to_string(),
+                    statistics: None,
                 },
             )),
         };
