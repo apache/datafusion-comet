@@ -253,7 +253,7 @@ fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    mut output_batch: RecordBatch,
+    output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
 ) -> CometResult<jlongArray> {
     let results = output_batch.columns();
