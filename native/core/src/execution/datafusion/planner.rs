@@ -49,12 +49,10 @@ use crate::{
     },
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
-use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::physical_planner::DefaultPhysicalPlanner;
@@ -138,21 +136,6 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
-}
-
-impl Default for PhysicalPlanner {
-    fn default() -> Self {
-        let state = SessionStateBuilder::new()
-            .with_physical_optimizer_rules(vec![Arc::new(TopKAggregation::new())])
-            .build();
-        let session_ctx = Arc::new(SessionContext::new_with_state(state));
-        let execution_props = ExecutionProps::new();
-        Self {
-            exec_context_id: TEST_EXEC_CONTEXT_ID,
-            execution_props,
-            session_ctx,
-        }
-    }
 }
 
 impl PhysicalPlanner {
@@ -1943,10 +1926,12 @@ mod tests {
     use arrow_array::{DictionaryArray, Int32Array, StringArray};
     use arrow_schema::DataType;
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
+    use datafusion_expr::execution_props::ExecutionProps;
     use tokio::sync::mpsc;
 
     use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
 
+    use crate::execution::datafusion::planner::TEST_EXEC_CONTEXT_ID;
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
@@ -1954,6 +1939,18 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
+
+    impl Default for PhysicalPlanner {
+        fn default() -> Self {
+            let session_ctx = Arc::new(SessionContext::default());
+            let execution_props = ExecutionProps::new();
+            Self {
+                exec_context_id: TEST_EXEC_CONTEXT_ID,
+                execution_props,
+                session_ctx,
+            }
+        }
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {
