@@ -33,7 +33,7 @@ The following Spark expressions are currently available. Any known compatibility
 | ---------------- | ----- |
 | UnaryMinus (`-`) |       |
 
-## Binary Arithmeticx
+## Binary Arithmetic
 
 | Expression      | Notes                                               |
 | --------------- | --------------------------------------------------- |

@@ -100,6 +100,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
+use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -306,6 +307,7 @@ impl PhysicalPlanner {
                         }
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
+                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(ExecutionError::GeneralError(format!(
@@ -622,8 +624,8 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_expr(expr, input_schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+                let names = expr.names.clone();
+                Ok(Arc::new(CreateNamedStruct::new(values, names)))
             }
             ExprStruct::GetStructField(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
@@ -869,7 +871,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                let fields = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
@@ -889,7 +891,8 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(self.exec_context_id, input_source, &scan.source, fields)?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
                 Ok((vec![scan.clone()], Arc::new(scan)))
             }
             OpStruct::ShuffleWriter(writer) => {
