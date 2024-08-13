@@ -104,7 +104,7 @@ class NativeUtil {
     // we close this batch, it will reduce the reference count to 1. When the exposed
     // batch is dropped in native execution, we will get reference count 0 in next
     // batch from `BatchReader`.
-    NativeUtil.printBatchRefCount(batch, "after export batch", false)
+    NativeUtil.printBatchRefCount(batch, "after export batch", true)
 
     // batch.close()
 

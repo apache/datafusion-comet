@@ -79,6 +79,8 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
 
     val nextBatch = batch.get
 
+    NativeUtil.printBatchRefCount(nextBatch, "ArrowReaderIterator.next", false)
+
     currentBatch = nextBatch
     batch = None
     currentBatch
