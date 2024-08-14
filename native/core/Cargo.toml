@@ -117,3 +117,7 @@ harness = false
 [[bench]]
 name = "parquet_decode"
 harness = false
+
+[[bench]]
+name = "tpcds_join"
+harness = false
