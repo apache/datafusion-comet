@@ -1534,12 +1534,17 @@ impl PhysicalPlanner {
         partition_by: &[Arc<dyn PhysicalExpr>],
         sort_exprs: &[PhysicalSortExpr],
     ) -> Result<Arc<dyn WindowExpr>, ExecutionError> {
-        let (mut window_func_name, mut window_func_args) = (String::new(), Vec::new());
+        let window_func_name: String;
+        let window_args: Vec<Arc<dyn PhysicalExpr>>;
         if let Some(func) = &spark_expr.built_in_window_function {
             match &func.expr_struct {
                 Some(ExprStruct::ScalarFunc(f)) => {
-                    window_func_name.clone_from(&f.func);
-                    window_func_args.clone_from(&f.args);
+                    window_func_name = f.func.clone();
+                    window_args = f
+                        .args
+                        .iter()
+                        .map(|expr| self.create_expr(expr, input_schema.clone()))
+                        .collect::<Result<Vec<_>, ExecutionError>>()?;
                 }
                 other => {
                     return Err(ExecutionError::GeneralError(format!(
@@ -1548,9 +1553,9 @@ impl PhysicalPlanner {
                 }
             };
         } else if let Some(agg_func) = &spark_expr.agg_func {
-            let result = Self::process_agg_func(agg_func)?;
+            let result = self.process_agg_func(agg_func, input_schema.clone())?;
             window_func_name = result.0;
-            window_func_args = result.1;
+            window_args = result.1;
         } else {
             return Err(ExecutionError::GeneralError(
                 "Both func and agg_func are not set".to_string(),
@@ -1565,11 +1570,6 @@ impl PhysicalPlanner {
                 )))
             }
         };
-
-        let window_args = window_func_args
-            .iter()
-            .map(|expr| self.create_expr(expr, input_schema.clone()))
-            .collect::<Result<Vec<_>, ExecutionError>>()?;
 
         let spark_window_frame = match spark_expr
             .spec
@@ -1640,32 +1640,40 @@ impl PhysicalPlanner {
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
     }
 
-    fn process_agg_func(agg_func: &AggExpr) -> Result<(String, Vec<Expr>), ExecutionError> {
-        fn optional_expr_to_vec(expr_option: &Option<Expr>) -> Vec<Expr> {
-            expr_option
-                .as_ref()
-                .cloned()
-                .map_or_else(Vec::new, |e| vec![e])
-        }
-
-        fn int_to_stats_type(value: i32) -> Option<StatsType> {
-            match value {
-                0 => Some(StatsType::Sample),
-                1 => Some(StatsType::Population),
-                _ => None,
-            }
-        }
-
+    fn process_agg_func(
+        &self,
+        agg_func: &AggExpr,
+        schema: SchemaRef,
+    ) -> Result<(String, Vec<Arc<dyn PhysicalExpr>>), ExecutionError> {
         match &agg_func.expr_struct {
             Some(AggExprStruct::Count(expr)) => {
-                let args = &expr.children;
-                Ok(("count".to_string(), args.to_vec()))
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(("count".to_string(), children))
             }
             Some(AggExprStruct::Min(expr)) => {
-                Ok(("min".to_string(), optional_expr_to_vec(&expr.child)))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                Ok(("min".to_string(), vec![child]))
             }
             Some(AggExprStruct::Max(expr)) => {
-                Ok(("max".to_string(), optional_expr_to_vec(&expr.child)))
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                Ok(("max".to_string(), vec![child]))
+            }
+            Some(AggExprStruct::Sum(expr)) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), schema.clone())?;
+                let arrow_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype = child.data_type(&schema)?;
+
+                let child = if datatype != arrow_type {
+                    Arc::new(CastExpr::new(child, arrow_type.clone(), None))
+
+                } else {
+                    child
+                };
+                Ok(("sum".to_string(), vec![child]))
             }
             other => Err(ExecutionError::GeneralError(format!(
                 "{other:?} not supported for window function"

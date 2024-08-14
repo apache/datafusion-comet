@@ -210,8 +210,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr match {
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
-            case _: Min | _: Max | _: Count =>
+            case _: Count =>
               Some(agg)
+            case min: Min =>
+              if (minMaxDataTypeSupported(min.dataType)) {
+                Some(agg)
+              } else {
+                withInfo(windowExpr, "Unsupported datatype", expr)
+                None
+              }
+            case max: Max =>
+              if (minMaxDataTypeSupported(max.dataType)) {
+                Some(agg)
+              } else {
+                withInfo(windowExpr, "Unsupported datatype", expr)
+                None
+              }
+            case s: Sum =>
+              if (sumDataTypeSupported(s.dataType) && !s.dataType.isInstanceOf[DecimalType]) {
+                Some(agg)
+              } else {
+                withInfo(windowExpr, "Unsupported datatype", expr)
+                None
+              }
             case _ =>
               withInfo(windowExpr, "Unsupported aggregate", expr)
               None
