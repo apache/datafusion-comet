@@ -1056,8 +1056,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-functions-nested"
-version = "40.0.0"
-source = "git+https://github.com/apache/datafusion.git?rev=bddb641#bddb6415a50746d2803dd908d19c3758952d74f9"
+version = "41.0.0"
+source = "git+https://github.com/apache/datafusion.git?rev=41.0.0-rc1#b10b820acb6ad92b5d69810e3d4de0ef6f2d6a87"
 dependencies = [
  "arrow",
  "arrow-array",
