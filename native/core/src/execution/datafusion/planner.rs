@@ -899,8 +899,11 @@ impl PhysicalPlanner {
                     .collect();
                 let mut statistics = Statistics::new_unknown(&Schema::new(fields));
                 if let Some(s) = &scan.statistics {
-                    statistics.num_rows = Precision::Exact(s.row_count as usize);
-                    statistics.total_byte_size = Precision::Exact(s.size_in_bytes as usize);
+                    // the statistics are for the total of all partitions and not
+                    // just for the partition being executed in this task, so we mark
+                    // them as inexact.
+                    statistics.num_rows = Precision::Inexact(s.row_count as usize);
+                    statistics.total_byte_size = Precision::Inexact(s.size_in_bytes as usize);
                 }
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
