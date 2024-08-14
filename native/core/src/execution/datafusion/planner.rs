@@ -99,9 +99,10 @@ use datafusion_comet_spark_expr::{
     SecondExpr, TimestampTruncExpr,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
+use datafusion_common::stats::Precision;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, ScalarValue, Statistics,
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
@@ -891,9 +892,25 @@ impl PhysicalPlanner {
                         Some(inputs.remove(0))
                     };
 
+                let fields: Vec<Field> = data_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, dt)| Field::new(format!("c{i}"), dt.clone(), true))
+                    .collect();
+                let mut statistics = Statistics::new_unknown(&Schema::new(fields));
+                if let Some(s) = &scan.statistics {
+                    statistics.num_rows = Precision::Exact(s.row_count as usize);
+                    statistics.total_byte_size = Precision::Exact(s.size_in_bytes as usize);
+                }
+
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    statistics,
+                )?;
                 Ok((vec![scan.clone()], Arc::new(scan)))
             }
             OpStruct::ShuffleWriter(writer) => {

@@ -70,6 +70,8 @@ pub struct ScanExec {
     cache: PlanProperties,
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
+    /// Statistics
+    statistics: Statistics,
 }
 
 impl ScanExec {
@@ -78,6 +80,7 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
+        statistics: Statistics,
     ) -> Result<Self, CometError> {
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
@@ -109,6 +112,7 @@ impl ScanExec {
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
             metrics: ExecutionPlanMetricsSet::default(),
+            statistics,
         })
     }
 
@@ -299,6 +303,10 @@ impl ExecutionPlan for ScanExec {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+
+    fn statistics(&self) -> DataFusionResult<Statistics> {
+        Ok(self.statistics.clone())
+    }
 }
 
 impl DisplayAs for ScanExec {
@@ -313,6 +321,7 @@ impl DisplayAs for ScanExec {
                     .map(|(idx, dt)| format!("col_{idx:}: {dt:}"))
                     .collect();
                 write!(f, "schema=[{}]", fields.join(", "))?;
+                write!(f, ", stats=[{}]", self.statistics)?;
             }
         }
         Ok(())
