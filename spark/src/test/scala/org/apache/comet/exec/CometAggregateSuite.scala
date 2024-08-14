@@ -22,8 +22,6 @@ package org.apache.comet.exec
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.example.data.simple.SimpleGroup
-import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
