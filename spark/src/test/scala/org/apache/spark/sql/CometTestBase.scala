@@ -146,7 +146,6 @@ abstract class CometTestBase
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
-    val actual = dfComet.collect()
     checkAnswer(dfComet, expected)
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }

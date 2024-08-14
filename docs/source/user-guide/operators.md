@@ -22,17 +22,18 @@
 The following Spark operators are currently replaced with native versions. Query stages that contain any operators
 not supported by Comet will fall back to regular Spark execution.
 
-| Operator                                     | Notes |
-| -------------------------------------------- | ----- |
-| FileSourceScanExec/BatchScanExec for Parquet |       |
-| Projection                                   |       |
-| Filter                                       |       |
-| Sort                                         |       |
-| Hash Aggregate                               |       |
-| Limit                                        |       |
-| Sort-merge Join                              |       |
-| Hash Join                                    |       |
-| BroadcastHashJoinExec                        |       |
-| Shuffle                                      |       |
-| Expand                                       |       |
-| Union                                        |       |
+| Operator                                             | Notes                                                             |
+| ---------------------------------------------------- | ----------------------------------------------------------------- |
+| FileSourceScanExec/BatchScanExec for Parquet sources |                                                                   |
+| FileSourceScanExec/BatchScanExec for JSON sources    | Experimental. Set `spark.comet.scan.json.enabled=true` to enable. |
+| Projection                                           |                                                                   |
+| Filter                                               |                                                                   |
+| Sort                                                 |                                                                   |
+| Hash Aggregate                                       |                                                                   |
+| Limit                                                |                                                                   |
+| Sort-merge Join                                      |                                                                   |
+| Hash Join                                            |                                                                   |
+| BroadcastHashJoinExec                                |                                                                   |
+| Shuffle                                              |                                                                   |
+| Expand                                               |                                                                   |
+| Union                                                |                                                                   |
