@@ -15,6 +15,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-select ss_sold_date_sk, ss_sold_time_sk, ss_quantity, d_year, d_moy, d_dom
-from date_dim join store_sales on d_date_sk = ss_sold_date_sk
-where d_year = 2000;
+select w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy
+     ,stddev_samp(inv_quantity_on_hand) stdev
+from inventory
+   ,item
+   ,warehouse
+   ,date_dim
+where inv_item_sk = i_item_sk
+  and inv_warehouse_sk = w_warehouse_sk
+  and inv_date_sk = d_date_sk
+  and d_year =2001
+group by w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy;

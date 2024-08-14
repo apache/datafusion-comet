@@ -35,7 +35,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.DataTypeSupport
 
-case class CometRowToColumnarExec(child: SparkPlan)
+case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
     with CometPlan {
   override def output: Seq[Attribute] = child.output
@@ -92,12 +92,12 @@ case class CometRowToColumnarExec(child: SparkPlan)
       }
   }
 
-  override protected def withNewChildInternal(newChild: SparkPlan): CometRowToColumnarExec =
+  override protected def withNewChildInternal(newChild: SparkPlan): CometSparkToColumnarExec =
     copy(child = newChild)
 
 }
 
-object CometRowToColumnarExec extends DataTypeSupport {
+object CometSparkToColumnarExec extends DataTypeSupport {
   override def isAdditionallySupported(dt: DataType): Boolean = dt match {
     case _: StructType => true
     case _ => false

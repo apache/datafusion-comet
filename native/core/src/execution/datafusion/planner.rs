@@ -19,6 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
+use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -97,6 +98,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
     SecondExpr, TimestampTruncExpr,
 };
+use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
@@ -300,6 +302,7 @@ impl PhysicalPlanner {
                         }
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
+                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(ExecutionError::GeneralError(format!(
@@ -616,8 +619,8 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_expr(expr, input_schema.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(CreateNamedStruct::new(values, data_type)))
+                let names = expr.names.clone();
+                Ok(Arc::new(CreateNamedStruct::new(values, names)))
             }
             ExprStruct::GetStructField(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema.clone())?;
@@ -857,7 +860,11 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let copy_exec = Arc::new(CopyExec::new(child));
+                let copy_exec = if can_reuse_input_batch(&child) {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
+                } else {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
+                };
 
                 Ok((
                     scans,
@@ -865,7 +872,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                let fields = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
@@ -885,7 +892,8 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(self.exec_context_id, input_source, fields)?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
                 Ok((vec![scan.clone()], Arc::new(scan)))
             }
             OpStruct::ShuffleWriter(writer) => {
@@ -946,8 +954,8 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if child.as_any().is::<ScanExec>() {
-                    Arc::new(CopyExec::new(child))
+                let child = if can_reuse_input_batch(&child) {
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
                 } else {
                     child
                 };
@@ -1202,15 +1210,15 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
         let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left))
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
         } else {
-            left
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
         };
 
         let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right))
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
         } else {
-            right
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };
 
         Ok((
@@ -1724,11 +1732,16 @@ impl PhysicalPlanner {
 
         let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
             Some(t) => t,
-            None => self
-                .session_ctx
-                .udf(fun_name)?
-                .inner()
-                .return_type(&input_expr_types)?,
+            None => {
+                let fun_name = match fun_name.as_str() {
+                    "read_side_padding" => "rpad", // use the same return type as rpad
+                    other => other,
+                };
+                self.session_ctx
+                    .udf(fun_name)?
+                    .inner()
+                    .return_type(&input_expr_types)?
+            }
         };
 
         let fun_expr =
@@ -1767,10 +1780,14 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    op.as_any().is::<ScanExec>()
+    if op.as_any().is::<ProjectionExec>()
         || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<ProjectionExec>()
         || op.as_any().is::<FilterExec>()
+    {
+        can_reuse_input_batch(op.children()[0])
+    } else {
+        op.as_any().is::<ScanExec>()
+    }
 }
 
 /// Collects the indices of the columns in the input schema that are used in the expression
@@ -1939,6 +1956,7 @@ mod tests {
                     type_id: 3, // Int32
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2010,6 +2028,7 @@ mod tests {
                     type_id: STRING_TYPE_ID, // String
                     type_info: None,
                 }],
+                source: "".to_string(),
             })),
         };
 
@@ -2096,6 +2115,7 @@ mod tests {
                         type_id: 3,
                         type_info: None,
                     }],
+                    source: "".to_string(),
                 },
             )),
         };

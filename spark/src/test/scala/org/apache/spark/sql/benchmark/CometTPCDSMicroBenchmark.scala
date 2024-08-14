@@ -61,8 +61,10 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "agg_low_cardinality",
     "agg_sum_decimals_no_grouping",
     "agg_sum_integers_no_grouping",
+    "agg_stddev",
     "case_when_column_or_null",
     "case_when_scalar",
+    "char_type",
     "filter_highly_selective",
     "filter_less_selective",
     "if_column_or_null",
@@ -113,7 +115,11 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()

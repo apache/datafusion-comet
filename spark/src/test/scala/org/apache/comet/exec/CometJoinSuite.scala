@@ -25,6 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.Decimal
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
@@ -192,6 +193,66 @@ class CometJoinSuite extends CometTestBase {
 
           // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
           // left.join(right, left("_2") === right("_1"), "leftanti")
+        }
+      }
+    }
+  }
+
+  test("HashJoin struct key") {
+    withSQLConf(
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+
+      def manyTypes(idx: Int, v: Int) =
+        (
+          idx,
+          v,
+          v.toLong,
+          v.toFloat,
+          v.toDouble,
+          v.toString,
+          v % 2 == 0,
+          v.toString().getBytes,
+          Decimal(v))
+
+      withParquetTable((0 until 10).map(i => manyTypes(i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => manyTypes(i, i % 10)), "tbl_b") {
+          // Full join: struct key
+          val df1 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+                "ON named_struct('1', tbl_a._2) = named_struct('1', tbl_b._1)")
+          checkSparkAnswerAndOperator(df1)
+
+          // Full join: struct key with nulls
+          val df2 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+              "ON IF(tbl_a._1 > 5, named_struct('2', tbl_a._2), NULL) = IF(tbl_b._2 > 5, named_struct('2', tbl_b._1), NULL)")
+          checkSparkAnswerAndOperator(df2)
+
+          // Full join: struct key with nulls in the struct
+          val df3 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+              "ON named_struct('2', IF(tbl_a._1 > 5, tbl_a._2, NULL)) = named_struct('2', IF(tbl_b._2 > 5, tbl_b._1, NULL))")
+          checkSparkAnswerAndOperator(df3)
+
+          // Full join: nested structs
+          val df4 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+              "ON named_struct('1', named_struct('2', tbl_a._2)) = named_struct('1', named_struct('2',  tbl_b._1))")
+          checkSparkAnswerAndOperator(df4)
+
+          val columnCount = manyTypes(0, 0).productArity
+          def key(tbl: String) =
+            (1 to columnCount).map(i => s"${tbl}._$i").mkString("struct(", ", ", ")")
+          // Using several different types in the struct key
+          val df5 =
+            sql(
+              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
+                s"ON ${key("tbl_a")} = ${key("tbl_b")}")
+          checkSparkAnswerAndOperator(df5)
         }
       }
     }
