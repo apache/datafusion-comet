@@ -236,10 +236,11 @@ fn prepare_datafusion_session_context(
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
-    Ok(SessionContext::new_with_config_rt(
-        session_config,
-        Arc::new(runtime),
-    ))
+    let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
+
+    datafusion_functions_nested::register_all(&mut session_ctx)?;
+
+    Ok(session_ctx)
 }
 
 fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
