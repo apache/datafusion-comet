@@ -1606,6 +1606,15 @@ class CometExecSuite extends CometTestBase {
         }
       })
   }
+
+  test("read JSON file") {
+    withSQLConf(
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      CometConf.COMET_SCAN_JSON_ENABLED.key -> "true") {
+      spark.read.json("spark/src/test/resources/test-data/json-test-1.ndjson").createOrReplaceTempView("tbl")
+      checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
+    }
+  }
 }
 
 case class BucketedTableTestSpec(

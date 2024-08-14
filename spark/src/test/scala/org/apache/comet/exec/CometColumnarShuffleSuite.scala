@@ -831,7 +831,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "", // Use DataSourceV2
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false", // Disable AQE
-      CometConf.COMET_SCAN_ENABLED.key -> "false") { // Disable CometScan to use Spark BatchScan
+      CometConf.COMET_SCAN_PARQUET_ENABLED.key -> "false") { // Disable CometScan to use Spark BatchScan
       withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
         val df = sql("SELECT * FROM tbl")
         val shuffled = df

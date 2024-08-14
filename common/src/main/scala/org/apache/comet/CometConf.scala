@@ -84,14 +84,23 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
-  val COMET_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
+  val COMET_SCAN_PARQUET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .doc(
       "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
-        "Parquet data source. Note that to enable native vectorized execution, both this " +
+        "Parquet data sources. Note that to enable native vectorized execution, both this " +
         "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
         "is true.")
     .booleanConf
     .createWithDefault(true)
+
+  val COMET_SCAN_JSON_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.json.enabled")
+    .doc(
+      "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
+        "JSON data sources. Note that to enable native vectorized execution, both this " +
+        "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
+        "is false.")
+    .booleanConf
+    .createWithDefault(false)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(

@@ -20,7 +20,6 @@
 package org.apache.comet
 
 import java.nio.ByteOrder
-
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -42,7 +41,6 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometOperatorEnabled, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
@@ -50,6 +48,8 @@ import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
+import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 
 /**
  * The entry point of Comet extension to Spark. This class is responsible for injecting Comet
@@ -1095,7 +1095,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
-    COMET_SCAN_ENABLED.get(conf)
+    COMET_SCAN_PARQUET_ENABLED.get(conf)
   }
 
   private[comet] def isCometExecEnabled(conf: SQLConf): Boolean = {
@@ -1131,12 +1131,21 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
-    COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
-      val simpleClassName = Utils.getSimpleName(op.getClass)
-      val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    op match {
+      case scan : FileSourceScanExec => scan.relation.fileFormat match {
+        case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+        case _ => false
+      }
+      case _: LeafExecNode =>
+        CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
+          COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
+          val simpleClassName = Utils.getSimpleName(op.getClass)
+          val nodeName = simpleClassName.replaceAll("Exec$", "")
+          COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+        }
+      case _ =>
+        // TODO: consider converting other intermediate operators to columnar.
+        false
     }
   }
 
