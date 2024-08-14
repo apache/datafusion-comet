@@ -180,6 +180,16 @@ object NativeUtil {
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
 
+  def printVectorRefCount(vector: CometVector, prefix: String): Unit = {
+    val valueVector = vector.getValueVector
+
+    // scalastyle:off println
+    for (i <- 0 until valueVector.getBuffers(false).length) {
+      val buf = valueVector.getBuffers(false)(i)
+      println(s"$prefix buffer $i: ${buf.getReferenceManager.getRefCount}")
+    }
+  }
+
   def printBatchRefCount(batch: ColumnarBatch, prefix: String, close: Boolean = false): Unit = {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
