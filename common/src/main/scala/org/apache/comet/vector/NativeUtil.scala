@@ -108,7 +108,9 @@ class NativeUtil {
     // batch from `BatchReader`.
     NativeUtil.printBatchRefCount(batch, "after export batch", false)
 
-    // batch.close()
+    batch.close()
+
+    NativeUtil.printBatchRefCount(batch, "after closing export batch", false)
 
     exportedVectors.toArray
   }
