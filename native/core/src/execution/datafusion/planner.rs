@@ -1669,7 +1669,6 @@ impl PhysicalPlanner {
 
                 let child = if datatype != arrow_type {
                     Arc::new(CastExpr::new(child, arrow_type.clone(), None))
-
                 } else {
                     child
                 };
