@@ -321,7 +321,6 @@ impl DisplayAs for ScanExec {
                     .map(|(idx, dt)| format!("col_{idx:}: {dt:}"))
                     .collect();
                 write!(f, "schema=[{}]", fields.join(", "))?;
-                write!(f, ", stats=[{}]", self.statistics)?;
             }
         }
         Ok(())
