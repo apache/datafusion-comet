@@ -40,8 +40,7 @@ fn criterion_benchmark_join(c: &mut Criterion) {
     let config = SessionConfig::new().with_target_partitions(2);
     let ctx = SessionContext::new_with_config(config);
 
-    let data_path =
-        std::env::var("TPCDS_DATA_PATH").unwrap_or_else(panic!("TPCDS_DATA_PATH env var not set"));
+    let data_path = std::env::var("TPCDS_DATA_PATH").unwrap();
 
     let mut group = c.benchmark_group("tpcds");
     group.bench_function("hash_join_date_dim_store_sales", |b| {
