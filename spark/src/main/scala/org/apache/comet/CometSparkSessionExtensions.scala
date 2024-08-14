@@ -1135,19 +1135,21 @@ object CometSparkSessionExtensions extends Logging {
     // comet batches.
     op match {
       // v1 scan
-      case scan : FileSourceScanExec => scan.relation.fileFormat match {
-        case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-        case _ => false
-      }
+      case scan: FileSourceScanExec =>
+        scan.relation.fileFormat match {
+          case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+          case _ => false
+        }
       // v2 scan
-      case scan : BatchScanExec => scan.scan match {
-        case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-        case _ => false
-      }
+      case scan: BatchScanExec =>
+        scan.scan match {
+          case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+          case _ => false
+        }
       // other leaf nodes
       case _: LeafExecNode =>
         CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
-          COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
+        COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
           val simpleClassName = Utils.getSimpleName(op.getClass)
           val nodeName = simpleClassName.replaceAll("Exec$", "")
           COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
