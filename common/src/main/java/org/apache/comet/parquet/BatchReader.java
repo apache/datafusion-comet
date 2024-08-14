@@ -68,6 +68,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaCo
 import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
+import org.apache.spark.sql.vectorized.CometColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
@@ -196,7 +197,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
     vectors = new CometVector[numColumns];
-    currentBatch = new ColumnarBatch(vectors);
+    currentBatch = new CometColumnarBatch(vectors);
     // This constructor is used by Iceberg only. The columnReaders are
     // initialized in Iceberg, so no need to call the init()
     isInitialized = true;
@@ -341,7 +342,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
 
     vectors = new CometVector[numColumns];
-    currentBatch = new ColumnarBatch(vectors);
+    currentBatch = new CometColumnarBatch(vectors);
     fileReader.setRequestedSchema(requestedSchema.getColumns());
 
     // For test purpose only

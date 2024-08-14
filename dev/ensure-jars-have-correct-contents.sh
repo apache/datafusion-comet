@@ -94,6 +94,9 @@ allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
+# Custom ColumnarBatch
+allowed_expr+="|^org/apache/spark/sql/vectorized/$"
+allowed_expr+="|^org/apache/spark/sql/vectorized/CometColumnarBatch.class$"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0
