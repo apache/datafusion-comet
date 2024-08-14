@@ -61,6 +61,7 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
         }
          */
 
+        NativeUtil.printBatchRefCount(currentBatch, "ArrowReaderIterator.hasNext", false)
         currentBatch.close()
       }
     }
@@ -111,6 +112,8 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
           }
         }
          */
+        NativeUtil.printBatchRefCount(currentBatch, "ArrowReaderIterator.close", false)
+
         currentBatch.close()
       }
       reader.close()
