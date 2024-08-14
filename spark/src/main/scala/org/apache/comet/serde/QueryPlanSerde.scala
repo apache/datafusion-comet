@@ -3069,9 +3069,33 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   // TODO: Remove this constraint when we upgrade to new arrow-rs including
   // https://github.com/apache/arrow-rs/pull/6225
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    if (sortOrder.length == 1 && sortOrder.head.dataType.isInstanceOf[StructType]) {
-      withInfo(op, "Sort on single struct column is not supported")
-      false
+    def canRank(dt: DataType): Boolean = {
+      dt match {
+        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
+          true
+        case _: BinaryType | _: StringType => true
+        case _ => false
+      }
+    }
+
+    if (sortOrder.length == 1) {
+      val canSort = sortOrder.head.dataType match {
+        case _: BooleanType => true
+        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
+          true
+        case dt if isTimestampNTZType(dt) => true
+        case _: BinaryType | _: StringType => true
+        case ArrayType(elementType, _) => canRank(elementType)
+        case _ => false
+      }
+      if (!canSort) {
+        withInfo(op, s"Sort on single column of type ${sortOrder.head.dataType} is not supported")
+        false
+      } else {
+        true
+      }
     } else {
       true
     }
