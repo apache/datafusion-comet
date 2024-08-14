@@ -39,7 +39,11 @@ case class StreamReader(channel: ReadableByteChannel, source: String) extends Au
 
   def nextBatch(): Option[ColumnarBatch] = {
     if (arrowReader.loadNextBatch()) {
-      Some(rootAsBatch(root))
+      val batch = rootAsBatch(root)
+
+      NativeUtil.printBatchRefCount(batch, "StreamReader.nextBatch")
+
+      Some(batch)
     } else {
       None
     }
