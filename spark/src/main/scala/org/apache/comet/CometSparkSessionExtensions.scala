@@ -1133,30 +1133,33 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    op match {
-      // v1 scan
-      case scan: FileSourceScanExec =>
-        scan.relation.fileFormat match {
-          case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-          case _ => false
-        }
-      // v2 scan
-      case scan: BatchScanExec =>
-        scan.scan match {
-          case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-          case _ => false
-        }
-      // other leaf nodes
-      case _: LeafExecNode =>
-        CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
-        COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
-          val simpleClassName = Utils.getSimpleName(op.getClass)
-          val nodeName = simpleClassName.replaceAll("Exec$", "")
-          COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
-        }
-      case _ =>
-        // TODO: consider converting other intermediate operators to columnar.
-        false
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
+      op match {
+        // v1 scan
+        case scan: FileSourceScanExec =>
+          scan.relation.fileFormat match {
+            case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+            case _ => false
+          }
+        // v2 scan
+        case scan: BatchScanExec =>
+          scan.scan match {
+            case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+            case _ => false
+          }
+        // other leaf nodes
+        case _: LeafExecNode =>
+          COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
+            val simpleClassName = Utils.getSimpleName(op.getClass)
+            val nodeName = simpleClassName.replaceAll("Exec$", "")
+            COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+          }
+        case _ =>
+          // TODO: consider converting other intermediate operators to columnar.
+          false
+      }
+    } else {
+      false
     }
   }
 
