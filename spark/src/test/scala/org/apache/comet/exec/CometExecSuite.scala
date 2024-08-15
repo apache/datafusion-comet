@@ -1614,7 +1614,7 @@ class CometExecSuite extends CometTestBase {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "true") {
         spark.read
-          .json("spark/src/test/resources/test-data/json-test-1.ndjson")
+          .json("src/test/resources/test-data/json-test-1.ndjson")
           .createOrReplaceTempView("tbl")
         checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
       }
