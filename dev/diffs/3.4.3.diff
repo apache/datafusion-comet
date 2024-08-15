@@ -679,7 +679,7 @@ index 1792b4c32eb..1616e6f39bd 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 7f062bfb899..7e4ae6b6677 100644
+index 7f062bfb899..3acf697df9a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -30,7 +30,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
@@ -875,6 +875,16 @@ index 7f062bfb899..7e4ae6b6677 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
+@@ -1605,7 +1636,8 @@ class ThreadLeakInSortMergeJoinSuite
+       sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
+   }
+ 
+-  test("SPARK-47146: thread leak when doing SortMergeJoin (with spill)") {
++  test("SPARK-47146: thread leak when doing SortMergeJoin (with spill)",
++    IgnoreComet("Comet SMJ doesn't spill yet")) {
+ 
+     withSQLConf(
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 index b5b34922694..a72403780c4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
