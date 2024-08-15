@@ -1135,7 +1135,7 @@ object CometSparkSessionExtensions extends Logging {
     // comet batches.
     if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
       op match {
-        // v1 scan
+        // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {
             case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
