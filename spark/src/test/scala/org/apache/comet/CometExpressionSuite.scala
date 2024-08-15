@@ -1976,7 +1976,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("get_struct_field") {
     withSQLConf(
       CometConf.COMET_SPARK_TO_COLUMNAR_ENABLED.key -> "true",
-      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "FileSourceScan") {
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
       withTempPath { dir =>
         var df = spark
           .range(5)
