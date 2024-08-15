@@ -84,23 +84,32 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
-  val COMET_SCAN_PARQUET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
+  val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .doc(
-      "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
-        "Parquet data sources. Note that to enable native vectorized execution, both this " +
-        "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
-        "is true.")
+      "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
+        "read supported data sources (currently only Parquet is supported natively). Note " +
+        "that to enable native vectorized execution, both this config and " +
+        "'spark.comet.exec.enabled' need to be enabled. By default, this config is true.")
     .booleanConf
     .createWithDefault(true)
 
-  val COMET_SCAN_JSON_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.json.enabled")
-    .doc(
-      "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
-        "JSON data sources. Note that to enable native vectorized execution, both this " +
-        "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
-        "is false.")
-    .booleanConf
-    .createWithDefault(false)
+  val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.parquet.enabled")
+      .doc(
+        "When enabled, data from Parquet v1 and v2 scans will be converted to Arrow format. Note " +
+          "that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.json.enabled")
+      .doc(
+        "When enabled, data from JSON v1 and v2 scans will be converted to Arrow format. Note " +
+          "that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(

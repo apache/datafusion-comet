@@ -1097,7 +1097,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
-    COMET_SCAN_PARQUET_ENABLED.get(conf)
+    COMET_NATIVE_SCAN_ENABLED.get(conf)
   }
 
   private[comet] def isCometExecEnabled(conf: SQLConf): Boolean = {
@@ -1138,13 +1138,15 @@ object CometSparkSessionExtensions extends Logging {
         // v1 scan
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {
-            case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+            case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToColumnarEnabled(conf, op)
           }
         // v2 scan
         case scan: BatchScanExec =>
           scan.scan match {
-            case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
+            case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToColumnarEnabled(conf, op)
           }
         // other leaf nodes

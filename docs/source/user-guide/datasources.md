@@ -17,21 +17,16 @@
   under the License.
 -->
 
-# Supported Spark Operators
+# Supported Spark Data Sources
 
-The following Spark operators are currently replaced with native versions. Query stages that contain any operators
-not supported by Comet will fall back to regular Spark execution.
+## Parquet
 
-| Operator              | Notes |
-| --------------------- | ----- |
-| Projection            |       |
-| Filter                |       |
-| Sort                  |       |
-| Hash Aggregate        |       |
-| Limit                 |       |
-| Sort-merge Join       |       |
-| Hash Join             |       |
-| BroadcastHashJoinExec |       |
-| Shuffle               |       |
-| Expand                |       |
-| Union                 |       |
+When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
+in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
+enabling `spark.comet.convert.json.enabled` will immediately convert the data into Arrow format, allowing native 
+execution to happen after that, but the process may not be efficient.
+
+## JSON
+
+Comet does not provide native JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
+converted into Arrow format, allowing native execution to happen after that.
