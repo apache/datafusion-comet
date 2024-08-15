@@ -23,7 +23,7 @@
 
 When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
 in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
-enabling `spark.comet.convert.json.enabled` will immediately convert the data into Arrow format, allowing native 
+enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native 
 execution to happen after that, but the process may not be efficient.
 
 ## JSON
