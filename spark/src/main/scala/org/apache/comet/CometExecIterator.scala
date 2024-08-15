@@ -137,6 +137,9 @@ class CometExecIterator(
   override def next(): ColumnarBatch = {
     if (currentBatch != null) {
       // Eagerly release Arrow Arrays in the previous batch
+
+      NativeUtil.printBatchRefCount(currentBatch, "CometExecIterator.next")
+
       currentBatch.close()
     }
 
@@ -152,6 +155,9 @@ class CometExecIterator(
   def close(): Unit = synchronized {
     if (!closed) {
       if (currentBatch != null) {
+
+        NativeUtil.printBatchRefCount(currentBatch, "CometExecIterator.close")
+
         currentBatch.close()
       }
       nativeLib.releasePlan(plan)
