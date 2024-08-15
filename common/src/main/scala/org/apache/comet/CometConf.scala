@@ -459,20 +459,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
-  val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+  val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+      .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
-        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
         "processing.")
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+  val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .doc(
-        "A comma-separated list of operators that will be converted to Comet columnar " +
+        "A comma-separated list of operators that will be converted to Arrow columnar " +
           "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence

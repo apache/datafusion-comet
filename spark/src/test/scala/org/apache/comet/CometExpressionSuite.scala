@@ -1977,7 +1977,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("", "parquet").foreach { v1List =>
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-        CometConf.COMET_SPARK_TO_COLUMNAR_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempPath { dir =>
           var df = spark
