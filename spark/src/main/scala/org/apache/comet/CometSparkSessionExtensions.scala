@@ -1139,27 +1139,31 @@ object CometSparkSessionExtensions extends Logging {
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {
             case _: JsonFileFormat => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-            case _ => false
+            case _ => isSparkToColumnarEnabled(conf, op)
           }
         // v2 scan
         case scan: BatchScanExec =>
           scan.scan match {
             case _: JsonScan => CometConf.COMET_SCAN_JSON_ENABLED.get(conf)
-            case _ => false
+            case _ => isSparkToColumnarEnabled(conf, op)
           }
         // other leaf nodes
         case _: LeafExecNode =>
-          COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
-            val simpleClassName = Utils.getSimpleName(op.getClass)
-            val nodeName = simpleClassName.replaceAll("Exec$", "")
-            COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
-          }
+          isSparkToColumnarEnabled(conf, op)
         case _ =>
           // TODO: consider converting other intermediate operators to columnar.
           false
       }
     } else {
       false
+    }
+  }
+
+  private def isSparkToColumnarEnabled(conf: SQLConf, op: SparkPlan) = {
+    COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
+      val simpleClassName = Utils.getSimpleName(op.getClass)
+      val nodeName = simpleClassName.replaceAll("Exec$", "")
+      COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
   }
 
