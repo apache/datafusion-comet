@@ -41,7 +41,7 @@ jobs:
   spark-sql-catalyst:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         java-version: [17]
         spark-version: [{short: '4.0', full: '4.0.0-preview1'}]
         module:
