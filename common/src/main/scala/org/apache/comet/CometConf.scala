@@ -96,8 +96,8 @@ object CometConf extends ShimCometConf {
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
       .doc(
-        "When enabled, data from Parquet v1 and v2 scans will be converted to Arrow format. Note " +
-          "that to enable native vectorized execution, both this config and " +
+        "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
           "'spark.comet.exec.enabled' need to be enabled.")
       .booleanConf
       .createWithDefault(false)
@@ -105,8 +105,8 @@ object CometConf extends ShimCometConf {
   val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.json.enabled")
       .doc(
-        "When enabled, data from JSON v1 and v2 scans will be converted to Arrow format. Note " +
-          "that to enable native vectorized execution, both this config and " +
+        "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
           "'spark.comet.exec.enabled' need to be enabled.")
       .booleanConf
       .createWithDefault(false)

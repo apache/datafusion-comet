@@ -1142,7 +1142,7 @@ object CometSparkSessionExtensions extends Logging {
             case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
           }
-        // onvert Spark DS v2 scan to Arrow format
+        // Convert Spark DS v2 scan to Arrow format
         case scan: BatchScanExec =>
           scan.scan match {
             case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
