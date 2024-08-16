@@ -53,8 +53,8 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Supported Spark Data Types" href="datatypes.html" />
-    <link rel="prev" title="Supported Spark Expressions" href="expressions.html" />
+    <link rel="next" title="Supported Spark Expressions" href="expressions.html" />
+    <link rel="prev" title="Supported Spark Data Types" href="datatypes.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -119,8 +119,13 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="expressions.html">
-   Supported Expressions
+  <a class="reference internal" href="datasources.html">
+   Supported Data Sources
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="datatypes.html">
+   Supported Data Types
   </a>
  </li>
  <li class="toctree-l1 current active">
@@ -129,8 +134,8 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="datatypes.html">
-   Supported Data Types
+  <a class="reference internal" href="expressions.html">
+   Supported Expressions
   </a>
  </li>
  <li class="toctree-l1">
@@ -318,40 +323,37 @@ not supported by Comet will fall back to regular Spark execution.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>FileSourceScanExec/BatchScanExec for Parquet</p></td>
+<tr class="row-even"><td><p>Projection</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Projection</p></td>
+<tr class="row-odd"><td><p>Filter</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Filter</p></td>
+<tr class="row-even"><td><p>Sort</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Sort</p></td>
+<tr class="row-odd"><td><p>Hash Aggregate</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Hash Aggregate</p></td>
+<tr class="row-even"><td><p>Limit</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Limit</p></td>
+<tr class="row-odd"><td><p>Sort-merge Join</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Sort-merge Join</p></td>
+<tr class="row-even"><td><p>Hash Join</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Hash Join</p></td>
+<tr class="row-odd"><td><p>BroadcastHashJoinExec</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>BroadcastHashJoinExec</p></td>
+<tr class="row-even"><td><p>Shuffle</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Shuffle</p></td>
+<tr class="row-odd"><td><p>Expand</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Expand</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>Union</p></td>
+<tr class="row-even"><td><p>Union</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -364,17 +366,17 @@ not supported by Comet will fall back to regular Spark execution.</p>
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="expressions.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="datatypes.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Supported Spark Expressions</p>
+            <p class="prev-next-title">Supported Spark Data Types</p>
         </div>
     </a>
-    <a class='right-next' id="next-link" href="datatypes.html" title="next page">
+    <a class='right-next' id="next-link" href="expressions.html" title="next page">
     <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Supported Spark Data Types</p>
+        <p class="prev-next-title">Supported Spark Expressions</p>
     </div>
     <i class="fas fa-angle-right"></i>
     </a>
