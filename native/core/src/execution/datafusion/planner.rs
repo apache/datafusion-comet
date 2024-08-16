@@ -862,7 +862,7 @@ impl PhysicalPlanner {
                 let copy_exec = if can_reuse_input_batch(&child) {
                     Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
                 } else {
-                    child
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
                 };
 
                 Ok((
@@ -1211,13 +1211,13 @@ impl PhysicalPlanner {
         let left = if can_reuse_input_batch(&left) {
             Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
         } else {
-            left
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
         };
 
         let right = if can_reuse_input_batch(&right) {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
         } else {
-            right
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };
 
         Ok((
