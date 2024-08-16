@@ -17,6 +17,8 @@
 
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow_array::builder::{BooleanBuilder, Int32Builder, StringBuilder};
+use arrow_array::{ArrayRef, RecordBatch};
 use comet::execution::operators::comet_filter_record_batch;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
