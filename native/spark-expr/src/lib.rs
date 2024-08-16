@@ -21,6 +21,7 @@ mod if_expr;
 
 mod kernels;
 mod regexp;
+pub use regexp::is_regexp_supported;
 pub mod scalar_funcs;
 pub mod spark_hash;
 mod structs;

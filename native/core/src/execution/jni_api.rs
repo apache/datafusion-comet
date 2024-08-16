@@ -62,6 +62,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use datafusion_comet_spark_expr::is_regexp_supported;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -96,7 +97,7 @@ struct ExecutionContext {
 
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
@@ -331,7 +332,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
@@ -480,7 +481,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
@@ -563,5 +564,21 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+/// Used by QueryPlanSerde to determine if a regular expression is supported natively
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_isRegexpPatternSupported(
+    e: JNIEnv,
+    _class: JClass,
+    pattern: jstring,
+) -> jboolean {
+    try_unwrap_or_throw(&e, |mut env| {
+        let pattern: String = env.get_string(&JString::from_raw(pattern)).unwrap().into();
+        // if we hit an error parsing the regexp then just report it as unsupported
+        Ok(is_regexp_supported(&pattern).ok().unwrap_or(false) as jboolean)
     })
 }
