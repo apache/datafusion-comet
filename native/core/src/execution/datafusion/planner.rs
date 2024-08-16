@@ -1781,7 +1781,6 @@ impl From<ExpressionError> for DataFusionError {
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ProjectionExec>()
         || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<FilterExec>()
     {
         can_reuse_input_batch(op.children()[0])
     } else {
