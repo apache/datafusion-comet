@@ -30,7 +30,7 @@ use arrow::compute::take;
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow_array::builder::Int32Builder;
-use arrow_array::{BooleanArray, RecordBatchOptions};
+use arrow_array::{Array, BooleanArray, RecordBatchOptions};
 use arrow_schema::ArrowError;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::stats::Precision;
@@ -367,7 +367,7 @@ pub fn filter_record_batch(
     // turn predicate into selection vector
     let mut sv = Int32Builder::with_capacity(predicate.true_count());
     for i in 0..predicate.len() {
-        if predicate.value(i) {
+        if !predicate.is_null(i) && predicate.value(i) {
             sv.append_value(i as i32);
         }
     }
