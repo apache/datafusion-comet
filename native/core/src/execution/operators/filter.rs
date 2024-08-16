@@ -360,6 +360,8 @@ pub(crate) fn batch_filter(
 }
 
 // BEGIN Comet changes
+// `FilterExec` could modify input batch or return input batch without change. Instead of always
+// adding `CopyExec` on top of it, we only copy input batch for the special case.
 pub fn comet_filter_record_batch(
     record_batch: &RecordBatch,
     predicate: &BooleanArray,
