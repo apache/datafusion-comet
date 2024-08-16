@@ -1974,27 +1974,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field") {
-    withSQLConf(
-      CometConf.COMET_SPARK_TO_COLUMNAR_ENABLED.key -> "true",
-      CometConf.COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
-      withTempPath { dir =>
-        var df = spark
-          .range(5)
-          // Add both a null struct and null inner value
-          .select(
-            when(
-              col("id") > 1,
-              struct(
-                when(col("id") > 2, col("id")).alias("id"),
-                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
-                  .as("nested2")))
-              .alias("nested1"))
+    Seq("", "parquet").foreach { v1List =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          var df = spark
+            .range(5)
+            // Add both a null struct and null inner value
+            .select(
+              when(
+                col("id") > 1,
+                struct(
+                  when(col("id") > 2, col("id")).alias("id"),
+                  when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                    .as("nested2")))
+                .alias("nested1"))
 
-        df.write.parquet(dir.toString())
+          df.write.parquet(dir.toString())
 
-        df = spark.read.parquet(dir.toString())
-        checkSparkAnswerAndOperator(df.select("nested1.id"))
-        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
+          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        }
       }
     }
   }
