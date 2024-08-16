@@ -69,6 +69,7 @@ datafusion-common = { workspace = true }
 datafusion = {  workspace = true }
 datafusion-functions-nested = { workspace = true }
 datafusion-expr = {  workspace = true }
+datafusion-execution = {  workspace = true }
 datafusion-physical-expr-common = {  workspace = true }
 datafusion-physical-expr = {  workspace = true }
 once_cell = "1.18.0"

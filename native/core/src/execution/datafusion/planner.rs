@@ -19,7 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
-use crate::execution::operators::CopyMode;
+use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -73,7 +73,6 @@ use datafusion::{
     physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
-        filter::FilterExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
