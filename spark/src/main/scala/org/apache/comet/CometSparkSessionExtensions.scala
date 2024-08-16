@@ -35,8 +35,10 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -1095,7 +1097,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
-    COMET_SCAN_ENABLED.get(conf)
+    COMET_NATIVE_SCAN_ENABLED.get(conf)
   }
 
   private[comet] def isCometExecEnabled(conf: SQLConf): Boolean = {
@@ -1131,12 +1133,39 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    // TODO: consider converting other intermediate operators to columnar.
-    op.isInstanceOf[LeafExecNode] && CometSparkToColumnarExec.isSchemaSupported(op.schema) &&
-    COMET_SPARK_TO_COLUMNAR_ENABLED.get(conf) && {
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
+      op match {
+        // Convert Spark DS v1 scan to Arrow format
+        case scan: FileSourceScanExec =>
+          scan.relation.fileFormat match {
+            case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // Convert Spark DS v2 scan to Arrow format
+        case scan: BatchScanExec =>
+          scan.scan match {
+            case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // other leaf nodes
+        case _: LeafExecNode =>
+          isSparkToArrowEnabled(conf, op)
+        case _ =>
+          // TODO: consider converting other intermediate operators to columnar.
+          false
+      }
+    } else {
+      false
+    }
+  }
+
+  private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
+    COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
   }
 

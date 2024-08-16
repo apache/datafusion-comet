@@ -84,14 +84,32 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
-  val COMET_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
+  val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .doc(
-      "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
-        "Parquet data source. Note that to enable native vectorized execution, both this " +
-        "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
-        "is true.")
+      "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
+        "read supported data sources (currently only Parquet is supported natively). Note " +
+        "that to enable native vectorized execution, both this config and " +
+        "'spark.comet.exec.enabled' need to be enabled. By default, this config is true.")
     .booleanConf
     .createWithDefault(true)
+
+  val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.parquet.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.json.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(
@@ -457,20 +475,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
-  val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+  val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+      .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
-        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
         "processing.")
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+  val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .doc(
-        "A comma-separated list of operators that will be converted to Comet columnar " +
+        "A comma-separated list of operators that will be converted to Arrow columnar " +
           "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence
