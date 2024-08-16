@@ -26,11 +26,11 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 
-use arrow::compute::take_record_batch;
+use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use arrow_array::builder::Int32Builder;
-use arrow_array::{Array, BooleanArray};
+use arrow_array::{make_array, Array, ArrayRef, BooleanArray, RecordBatchOptions};
+use arrow_data::transform::MutableArrayData;
 use arrow_schema::ArrowError;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::stats::Precision;
@@ -364,16 +364,24 @@ pub fn comet_filter_record_batch(
     record_batch: &RecordBatch,
     predicate: &BooleanArray,
 ) -> std::result::Result<RecordBatch, ArrowError> {
-    // turn predicate into selection vector
-    let mut sv = Int32Builder::with_capacity(predicate.true_count());
-    for i in 0..predicate.len() {
-        if !predicate.is_null(i) && predicate.value(i) {
-            sv.append_value(i as i32);
-        }
+    if predicate.true_count() == record_batch.num_rows() {
+        // special case where we just make an exact copy
+        let arrays: Vec<ArrayRef> = record_batch
+            .columns()
+            .iter()
+            .map(|array| {
+                let capacity = array.len();
+                let data = array.to_data();
+                let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
+                mutable.extend(0, 0, capacity);
+                make_array(mutable.freeze())
+            })
+            .collect();
+        let options = RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows()));
+        RecordBatch::try_new_with_options(record_batch.schema().clone(), arrays, &options)
+    } else {
+        filter_record_batch(record_batch, predicate)
     }
-    let sv = sv.finish();
-    // note that this does not unpack dictionary-encoded arrays
-    take_record_batch(record_batch, &sv)
 }
 // END Comet changes
 

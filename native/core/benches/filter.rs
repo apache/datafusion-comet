@@ -29,23 +29,23 @@ fn criterion_benchmark(c: &mut Criterion) {
     let predicate_select_all = predicate_select_all.finish();
 
     // baseline uses Arrow's filter_record_batch method
-    group.bench_function("arrow_filter_record_batch - few", |b| {
+    group.bench_function("arrow_filter_record_batch - few rows selected", |b| {
         b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_few)))
     });
-    group.bench_function("arrow_filter_record_batch - many", |b| {
+    group.bench_function("arrow_filter_record_batch - many rows selected", |b| {
         b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_many)))
     });
-    group.bench_function("arrow_filter_record_batch - all", |b| {
+    group.bench_function("arrow_filter_record_batch - all rows selected", |b| {
         b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_all)))
     });
 
-    group.bench_function("comet_filter - few", |b| {
+    group.bench_function("comet_filter_record_batch - few rows selected", |b| {
         b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_few)))
     });
-    group.bench_function("comet_filter - many", |b| {
+    group.bench_function("comet_filter_record_batch - many rows selected", |b| {
         b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_many)))
     });
-    group.bench_function("comet_filter - all", |b| {
+    group.bench_function("comet_filter_record_batch - all rows selected", |b| {
         b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_all)))
     });
 
@@ -76,8 +76,7 @@ fn create_record_batch(num_rows: usize, num_int_cols: i32, num_string_cols: i32)
         i += 1;
     }
     let schema = Schema::new(fields);
-    let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
-    batch
+    RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
 
 fn config() -> Criterion {
