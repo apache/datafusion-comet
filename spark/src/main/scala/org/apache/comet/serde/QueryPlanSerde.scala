@@ -216,25 +216,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               if (minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, "Unsupported datatype", expr)
+                withInfo(windowExpr, s"datatype ${min.dataType} is not supported", expr)
                 None
               }
             case max: Max =>
               if (minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, "Unsupported datatype", expr)
+                withInfo(windowExpr, s"datatype ${max.dataType} is not supported", expr)
                 None
               }
             case s: Sum =>
               if (sumDataTypeSupported(s.dataType) && !s.dataType.isInstanceOf[DecimalType]) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, "Unsupported datatype", expr)
+                withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
                 None
               }
             case _ =>
-              withInfo(windowExpr, "Unsupported aggregate", expr)
+              withInfo(
+                windowExpr,
+                s"aggregate ${agg.aggregateFunction}" +
+                  " is not supported for window function",
+                expr)
               None
           }
         case _ =>
