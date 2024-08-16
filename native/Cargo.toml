@@ -44,6 +44,7 @@ datafusion = { default-features = false, git = "https://github.com/apache/datafu
 datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", features = ["crypto_expressions"] }
 datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git",  rev = "41.0.0-rc1", default-features = false }
 datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
+datafusion-execution = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
 datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
 datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
