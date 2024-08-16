@@ -26,11 +26,11 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 
-use arrow::compute::{take, take_record_batch};
+use arrow::compute::take_record_batch;
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow_array::builder::Int32Builder;
-use arrow_array::{Array, BooleanArray, RecordBatchOptions};
+use arrow_array::{Array, BooleanArray};
 use arrow_schema::ArrowError;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::stats::Precision;
