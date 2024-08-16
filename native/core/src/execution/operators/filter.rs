@@ -47,8 +47,9 @@ use datafusion_physical_expr::{
 use futures::stream::{Stream, StreamExt};
 use log::trace;
 
-/// FilterExec evaluates a boolean predicate against all input batches to determine which rows to
-/// include in its output batches.
+/// This is a copy of DataFusion's FilterExec with one modification to ensure that input
+/// batches are never passed through unchanged. The changes are between the comments
+/// `BEGIN Comet change` and `END Comet change`.
 #[derive(Debug)]
 pub struct FilterExec {
     /// The expression to filter on. This expression must evaluate to a boolean value.
@@ -358,6 +359,7 @@ pub(crate) fn batch_filter(
         })
 }
 
+// BEGIN Comet changes
 pub fn filter_record_batch(
     record_batch: &RecordBatch,
     predicate: &BooleanArray,
@@ -379,6 +381,7 @@ pub fn filter_record_batch(
     let options = RecordBatchOptions::default().with_row_count(Some(sv.len()));
     RecordBatch::try_new_with_options(record_batch.schema(), filtered_arrays, &options)
 }
+// END Comet changes
 
 impl Stream for FilterExecStream {
     type Item = Result<RecordBatch>;
