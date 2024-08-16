@@ -1779,9 +1779,7 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<LocalLimitExec>()
-    {
+    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
         can_reuse_input_batch(op.children()[0])
     } else {
         op.as_any().is::<ScanExec>()
