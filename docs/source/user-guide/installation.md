@@ -152,3 +152,7 @@ To enable columnar shuffle which supports all partitioning and basic complex typ
 ```
 --conf spark.comet.exec.shuffle.mode=jvm
 ```
+
+### Cluster mode
+Running in cluster mode it might be needed to set addtitional `--conf spark.plugins=org.apache.spark.CometPlugin` 
+to make the cluster resource managares respect Comet memory parameters. More [Memory Tuning in cluster mode](./tuning.md#memory-tuning-in-cluster-mode)
