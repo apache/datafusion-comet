@@ -76,7 +76,7 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          ENABLE_COMET=true ENABLE_COMET_SHUFFLE=${{ matrix.module.name == 'sql/core-1' && matrix.spark-version.short == '3.5' && 'false' || 'true' }} build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
         env:
           LC_ALL: "C.UTF-8"
 

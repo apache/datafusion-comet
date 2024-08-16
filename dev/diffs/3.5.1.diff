@@ -2649,7 +2649,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..e7fcd0a9e6a 100644
+index dd55fcfe42c..aa9b0be8e68 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
@@ -2673,7 +2673,7 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
      }
    }
  
-@@ -242,6 +247,32 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +247,41 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2703,10 +2703,19 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
 +    v != null && v.toBoolean
 +  }
 +
++  /**
++   * Whether Spark should apply Comet shuffle optimization. This is only effective when
++   * [[isCometEnabled]] returns true.
++   */
++  protected def isCometShuffleEnabled: Boolean = {
++    val v = System.getenv("ENABLE_COMET_SHUFFLE")
++    v != null && v.toBoolean
++  }
++
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +465,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +474,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -2716,10 +2725,10 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..e071fc44960 100644
+index ed2e309fa07..59adc094970 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,28 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,34 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -2733,9 +2742,6 @@ index ed2e309fa07..e071fc44960 100644
 +        conf
 +          .set("spark.comet.exec.enabled", "true")
 +          .set("spark.comet.exec.all.enabled", "true")
-+          .set("spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+          .set("spark.comet.exec.shuffle.enabled", "true")
 +          .set("spark.comet.memoryOverhead", "10g")
 +      }
 +
@@ -2743,6 +2749,15 @@ index ed2e309fa07..e071fc44960 100644
 +        conf
 +          .set("spark.sql.ansi.enabled", "true")
 +          .set("spark.comet.ansi.enabled", "true")
++      }
++
++      if (isCometShuffleEnabled) {
++        conf
++          .set("spark.shuffle.manager",
++            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++          .set("spark.comet.exec.shuffle.enabled", "true")
++      } else {
++        conf.set("spark.comet.exec.shuffle.enabled", "false")
 +      }
 +    }
      conf.set(
