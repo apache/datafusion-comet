@@ -881,6 +881,7 @@ dependencies = [
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
  "datafusion-common",
+ "datafusion-execution",
  "datafusion-expr",
  "datafusion-functions-nested",
  "datafusion-physical-expr",

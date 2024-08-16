@@ -19,7 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
-use crate::execution::operators::CopyMode;
+use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -73,7 +73,6 @@ use datafusion::{
     physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
-        filter::FilterExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -1780,10 +1779,7 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<FilterExec>()
-    {
+    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
         can_reuse_input_batch(op.children()[0])
     } else {
         op.as_any().is::<ScanExec>()
