@@ -26,7 +26,7 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 
-use arrow::compute::take;
+use arrow::compute::{take, take_record_batch};
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow_array::builder::Int32Builder;
@@ -372,14 +372,8 @@ pub fn filter_record_batch(
         }
     }
     let sv = sv.finish();
-
-    let filtered_arrays = record_batch
-        .columns()
-        .iter()
-        .map(|a| take(a, &sv, None))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let options = RecordBatchOptions::default().with_row_count(Some(sv.len()));
-    RecordBatch::try_new_with_options(record_batch.schema(), filtered_arrays, &options)
+    // note that this does not unpack dictionary-encoded arrays
+    take_record_batch(record_batch, &sv)
 }
 // END Comet changes
 
