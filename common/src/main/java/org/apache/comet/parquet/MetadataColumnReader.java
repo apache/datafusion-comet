@@ -23,17 +23,17 @@ import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.spark.sql.types.DataType;
 
-import org.apache.comet.package$;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
 /** A metadata column reader that can be extended by {@link RowIndexColumnReader} etc. */
 public class MetadataColumnReader extends AbstractColumnReader {
-  private final BufferAllocator allocator = package$.MODULE$.CometArrowAllocator();
+  private final BufferAllocator allocator = new RootAllocator();
   private CometVector vector;
 
   public MetadataColumnReader(DataType type, ColumnDescriptor descriptor, boolean useDecimal128) {

@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
@@ -28,11 +28,11 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.NativeUtil
 
 object CometArrowConverters extends Logging {
-  val rootAllocator: BufferAllocator = CometArrowAllocator
+  // TODO: we should reuse the same root allocator in the comet code base?
+  val rootAllocator: BufferAllocator = new RootAllocator(Long.MaxValue)
 
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
   // the result batch to Comet's ColumnarBatch instead of serialized bytes.

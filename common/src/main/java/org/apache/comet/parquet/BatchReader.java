@@ -43,6 +43,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -68,11 +69,9 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaCo
 import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
-import org.apache.spark.sql.vectorized.CometColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
-import org.apache.comet.package$;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
@@ -97,7 +96,7 @@ import org.apache.comet.vector.CometVector;
  */
 public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
-  protected static final BufferAllocator ALLOCATOR = package$.MODULE$.CometArrowAllocator();
+  protected static final BufferAllocator ALLOCATOR = new RootAllocator();
 
   private Configuration conf;
   private int capacity;
@@ -115,7 +114,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
   private CometSchemaImporter importer;
-  private CometColumnarBatch currentBatch;
+  private ColumnarBatch currentBatch;
   private Future<Option<Throwable>> prefetchTask;
   private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
   private FileReader fileReader;
@@ -196,7 +195,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
     vectors = new CometVector[numColumns];
-    currentBatch = new CometColumnarBatch(vectors);
+    currentBatch = new ColumnarBatch(vectors);
     // This constructor is used by Iceberg only. The columnReaders are
     // initialized in Iceberg, so no need to call the init()
     isInitialized = true;
@@ -341,7 +340,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
 
     vectors = new CometVector[numColumns];
-    currentBatch = new CometColumnarBatch(vectors);
+    currentBatch = new ColumnarBatch(vectors);
     fileReader.setRequestedSchema(requestedSchema.getColumns());
 
     // For test purpose only
