@@ -972,6 +972,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &None,
+                    false,
                 )?;
 
                 let sort_options = join
@@ -1010,6 +1011,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
+                    true,
                 )?;
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
@@ -1085,6 +1087,7 @@ impl PhysicalPlanner {
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
+        join_supports_dictionary: bool,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
         assert!(children.len() == 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
@@ -1208,14 +1211,25 @@ impl PhysicalPlanner {
         // DataFusion Join operators keep the input batch internally. We need
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
+
+        let mode = if join_supports_dictionary {
+            CopyMode::DeepCopyNoUnpack
+        } else {
+            CopyMode::UnpackOrDeepCopy
+        };
+
         let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
+            Arc::new(CopyExec::new(left, mode.clone()))
+        } else if join_supports_dictionary {
+            left
         } else {
             Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
         };
 
         let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
+            Arc::new(CopyExec::new(right, mode))
+        } else if join_supports_dictionary {
+            right
         } else {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };

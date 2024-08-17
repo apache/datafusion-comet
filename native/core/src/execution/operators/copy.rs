@@ -50,6 +50,7 @@ pub struct CopyExec {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CopyMode {
+    DeepCopyNoUnpack,
     UnpackOrDeepCopy,
     UnpackOrClone,
 }
@@ -186,11 +187,18 @@ impl CopyStream {
     // dictionary array sorting issue.
     fn copy(&self, batch: RecordBatch) -> DataFusionResult<RecordBatch> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
-        let vectors = batch
-            .columns()
-            .iter()
-            .map(|v| copy_or_unpack_array(v, &self.mode))
-            .collect::<Result<Vec<ArrayRef>, _>>()?;
+        let vectors = match &self.mode {
+            CopyMode::DeepCopyNoUnpack => batch
+                .columns()
+                .iter()
+                .map(|v| copy_array(v))
+                .collect::<Vec<ArrayRef>>(),
+            _ => batch
+                .columns()
+                .iter()
+                .map(|v| copy_or_unpack_array(v, &self.mode))
+                .collect::<Result<Vec<ArrayRef>, _>>()?,
+        };
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
         let maybe_batch = RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
