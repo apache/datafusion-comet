@@ -549,7 +549,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withParquetTable(
               (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
@@ -576,7 +575,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withTempPath { dir =>
               val path = new Path(dir.toURI.toString, "test.parquet")
@@ -617,7 +615,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withTempPath { dir =>
               val path = new Path(dir.toURI.toString, "test.parquet")
@@ -967,7 +964,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
