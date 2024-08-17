@@ -1581,6 +1581,58 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("aggregate window function for all types") {
+    val numValues = 2048
+
+    Seq(1, 100, numValues).foreach { numGroups =>
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempPath { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            Seq(128, numValues + 100).foreach { batchSize =>
+              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+                (1 to 11).foreach { col =>
+                  val aggregateFunctions =
+                    List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
+                  aggregateFunctions.foreach { function =>
+                    val df1 = sql(s"SELECT $function OVER() FROM tbl")
+                    checkSparkAnswerWithTol(df1, 1e-6)
+
+                    val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
+                    checkSparkAnswerWithTol(df2, 1e-6)
+
+                    val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
+                    checkSparkAnswerWithTol(df3, 1e-6)
+
+                    val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
+                    checkSparkAnswerWithTol(df4, 1e-6)
+                  }
+                }
+
+                // SUM doesn't work for Date type. org.apache.spark.sql.AnalysisException will be thrown.
+                val aggregateFunctionsWithoutSum = List("COUNT(_12)", "MAX(_12)", "MIN(_12)")
+                aggregateFunctionsWithoutSum.foreach { function =>
+                  val df1 = sql(s"SELECT $function OVER() FROM tbl")
+                  checkSparkAnswerWithTol(df1, 1e-6)
+
+                  val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
+                  checkSparkAnswerWithTol(df2, 1e-6)
+
+                  val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
+                  checkSparkAnswerWithTol(df3, 1e-6)
+
+                  val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
+                  checkSparkAnswerWithTol(df4, 1e-6)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
@@ -1588,7 +1640,13 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
           val aggregateFunctions =
-            List("COUNT(_1)", "COUNT(*)", "MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
+            List(
+              "COUNT(_1)",
+              "COUNT(*)",
+              "MAX(_1)",
+              "MIN(_1)",
+              "SUM(_1)"
+            ) // TODO: Test all the aggregates
 
           aggregateFunctions.foreach { function =>
             val queries = Seq(
