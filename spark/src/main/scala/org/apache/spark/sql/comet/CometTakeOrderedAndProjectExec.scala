@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.supportedSortType
 import org.apache.comet.shims.ShimCometTakeOrderedAndProjectExec
 
 /**
@@ -137,6 +138,6 @@ object CometTakeOrderedAndProjectExec extends ShimCometTakeOrderedAndProjectExec
     val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
     val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
     exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && getOffset(plan).getOrElse(
-      0) == 0
+      0) == 0 && supportedSortType(plan, plan.sortOrder)
   }
 }

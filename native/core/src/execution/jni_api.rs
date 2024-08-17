@@ -133,8 +133,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let debug_native = parse_bool(&configs, "debug_native")?;
         let explain_native = parse_bool(&configs, "explain_native")?;
 
+        let worker_threads = configs
+            .get("worker_threads")
+            .map(String::as_str)
+            .unwrap_or("4")
+            .parse::<usize>()?;
+        let blocking_threads = configs
+            .get("blocking_threads")
+            .map(String::as_str)
+            .unwrap_or("10")
+            .parse::<usize>()?;
+
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .max_blocking_threads(blocking_threads)
             .enable_all()
             .build()?;
 
@@ -236,10 +249,11 @@ fn prepare_datafusion_session_context(
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
-    Ok(SessionContext::new_with_config_rt(
-        session_config,
-        Arc::new(runtime),
-    ))
+    let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
+
+    datafusion_functions_nested::register_all(&mut session_ctx)?;
+
+    Ok(session_ctx)
 }
 
 fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {

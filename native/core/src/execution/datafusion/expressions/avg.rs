@@ -322,10 +322,6 @@ where
 
     // return arrays for sums and counts
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        assert!(
-            matches!(emit_to, EmitTo::All),
-            "EmitTo::First is not supported"
-        );
         let counts = emit_to.take_needed(&mut self.counts);
         let counts = Int64Array::new(counts.into(), None);
 

@@ -62,6 +62,8 @@ object CometConf extends ShimCometConf {
   val OPERATOR_LOCAL_LIMIT: String = "localLimit"
   val OPERATOR_GLOBAL_LIMIT: String = "globalLimit"
 
+  val EXPRESSION_STDDEV: String = "stddev"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -82,14 +84,32 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
-  val COMET_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
+  val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .doc(
-      "Whether to enable Comet scan. When this is turned on, Spark will use Comet to read " +
-        "Parquet data source. Note that to enable native vectorized execution, both this " +
-        "config and 'spark.comet.exec.enabled' need to be enabled. By default, this config " +
-        "is true.")
+      "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
+        "read supported data sources (currently only Parquet is supported natively). Note " +
+        "that to enable native vectorized execution, both this config and " +
+        "'spark.comet.exec.enabled' need to be enabled. By default, this config is true.")
     .booleanConf
     .createWithDefault(true)
+
+  val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.parquet.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.json.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(
@@ -134,6 +154,12 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = false)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
+
+  val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      EXPRESSION_STDDEV,
+      defaultValue = false,
+      notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
@@ -350,6 +376,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_WORKER_THREADS: ConfigEntry[Int] =
+    conf("spark.comet.workerThreads")
+      .internal()
+      .doc("The number of worker threads used for Comet native execution. " +
+        "By default, this config is 4.")
+      .intConf
+      .createWithDefault(4)
+
+  val COMET_BLOCKING_THREADS: ConfigEntry[Int] =
+    conf("spark.comet.blockingThreads")
+      .internal()
+      .doc("The number of blocking threads used for Comet native execution. " +
+        "By default, this config is 10.")
+      .intConf
+      .createWithDefault(10)
+
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
     .intConf
@@ -433,20 +475,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
-  val COMET_SPARK_TO_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+  val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .doc("Whether to enable Spark to Comet columnar conversion. When this is turned on, " +
+      .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
-        "`spark.comet.sparkToColumnar.supportedOperatorList` into Comet columnar based before " +
+        "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
         "processing.")
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
+  val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .doc(
-        "A comma-separated list of operators that will be converted to Comet columnar " +
+        "A comma-separated list of operators that will be converted to Arrow columnar " +
           "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence
@@ -489,9 +531,13 @@ object CometConf extends ShimCometConf {
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
-      defaultValue: Boolean): ConfigEntry[Boolean] = {
+      defaultValue: Boolean,
+      notes: Option[String] = None): ConfigEntry[Boolean] = {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
-      .doc(s"Whether to enable $exec by default. The default value is $defaultValue.")
+      .doc(
+        s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+          .map(s => s" $s.")
+          .getOrElse(""))
       .booleanConf
       .createWithDefault(defaultValue)
   }
