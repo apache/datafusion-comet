@@ -53,7 +53,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.shuffle.mode | The mode of Comet shuffle. This config is only effective if Comet shuffle is enabled. Available modes are 'native', 'jvm', and 'auto'. 'native' is for native shuffle which has best performance in general. 'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. 'auto' is for Comet to choose the best shuffle mode based on the query plan. By default, this config is 'jvm'. | jvm |
 | spark.comet.exec.sort.enabled | Whether to enable sort by default. The default value is true. | true |
 | spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. The default value is true. | true |
-| spark.comet.exec.stddev.disabled | Whether to disable stddev by default. The default value is true. stddev is slower than Spark's implementation. | true |
+| spark.comet.exec.stddev.enabled | Whether to enable stddev by default. The default value is false. stddev is slower than Spark's implementation. | false |
 | spark.comet.exec.takeOrderedAndProject.enabled | Whether to enable takeOrderedAndProject by default. The default value is true. | true |
 | spark.comet.exec.union.enabled | Whether to enable union by default. The default value is true. | true |
 | spark.comet.exec.window.enabled | Whether to enable window by default. The default value is true. | true |
