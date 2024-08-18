@@ -524,23 +524,13 @@ object CometConf extends ShimCometConf {
       exec: String,
       defaultValue: Boolean,
       notes: Option[String] = None): ConfigEntry[Boolean] = {
-    if (defaultValue) {
-      conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
-        .doc(
-          s"Whether to enable $exec by default. The default value is $defaultValue." + notes
-            .map(s => s" $s.")
-            .getOrElse(""))
-        .booleanConf
-        .createWithDefault(defaultValue)
-    } else {
-      conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.disabled")
-        .doc(
-          s"Whether to disable $exec by default. The default value is ${!defaultValue}." + notes
-            .map(s => s" $s.")
-            .getOrElse(""))
-        .booleanConf
-        .createWithDefault(!defaultValue)
-    }
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
+      .doc(
+        s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+          .map(s => s" $s.")
+          .getOrElse(""))
+      .booleanConf
+      .createWithDefault(defaultValue)
   }
 }
 
