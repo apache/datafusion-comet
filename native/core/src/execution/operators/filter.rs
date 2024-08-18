@@ -367,7 +367,7 @@ pub fn comet_filter_record_batch(
     predicate: &BooleanArray,
 ) -> std::result::Result<RecordBatch, ArrowError> {
     if predicate.true_count() == record_batch.num_rows() {
-        // special case where we just make an exact copy (and also unpack dictionaries)
+        // special case where we just make an exact copy
         let arrays: Vec<ArrayRef> = record_batch
             .columns()
             .iter()

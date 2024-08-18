@@ -50,37 +50,26 @@ pub struct CopyExec {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CopyMode {
-    DeepCopyNoUnpack,
     UnpackOrDeepCopy,
     UnpackOrClone,
 }
 
 impl CopyExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, mode: CopyMode) -> Self {
-        let fields: Vec<Field> = match &mode {
-            CopyMode::DeepCopyNoUnpack => input
-                .schema()
-                .fields
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
-            _ =>
-            // change schema to remove dictionary types because CopyExec always unpacks
-            // dictionaries
-            {
-                input
-                    .schema()
-                    .fields
-                    .iter()
-                    .map(|f: &FieldRef| match f.data_type() {
-                        DataType::Dictionary(_, value_type) => {
-                            Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
-                        }
-                        _ => f.as_ref().clone(),
-                    })
-                    .collect()
-            }
-        };
+        // change schema to remove dictionary types because CopyExec always unpacks
+        // dictionaries
+
+        let fields: Vec<Field> = input
+            .schema()
+            .fields
+            .iter()
+            .map(|f: &FieldRef| match f.data_type() {
+                DataType::Dictionary(_, value_type) => {
+                    Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
+                }
+                _ => f.as_ref().clone(),
+            })
+            .collect();
 
         let schema = Arc::new(Schema::new(fields));
 
@@ -197,18 +186,11 @@ impl CopyStream {
     // dictionary array sorting issue.
     fn copy(&self, batch: RecordBatch) -> DataFusionResult<RecordBatch> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
-        let vectors = match &self.mode {
-            CopyMode::DeepCopyNoUnpack => batch
-                .columns()
-                .iter()
-                .map(|v| copy_array(v))
-                .collect::<Vec<ArrayRef>>(),
-            _ => batch
-                .columns()
-                .iter()
-                .map(|v| copy_or_unpack_array(v, &self.mode))
-                .collect::<Result<Vec<ArrayRef>, _>>()?,
-        };
+        let vectors = batch
+            .columns()
+            .iter()
+            .map(|v| copy_or_unpack_array(v, &self.mode))
+            .collect::<Result<Vec<ArrayRef>, _>>()?;
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
         let maybe_batch = RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
@@ -237,7 +219,7 @@ impl RecordBatchStream for CopyStream {
 }
 
 /// Copy an Arrow Array
-pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
+fn copy_array(array: &dyn Array) -> ArrayRef {
     let capacity = array.len();
     let data = array.to_data();
 
