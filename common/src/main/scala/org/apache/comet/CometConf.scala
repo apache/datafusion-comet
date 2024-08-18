@@ -123,37 +123,37 @@ object CometConf extends ShimCometConf {
     .createWithDefault(false)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_PROJECT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_PROJECT, defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_FILTER, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_FILTER, defaultValue = true)
   val COMET_EXEC_SORT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_SORT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_SORT, defaultValue = true)
   val COMET_EXEC_LOCAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_LOCAL_LIMIT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_LOCAL_LIMIT, defaultValue = true)
   val COMET_EXEC_GLOBAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_GLOBAL_LIMIT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_GLOBAL_LIMIT, defaultValue = true)
   val COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_BROADCAST_HASH_JOIN, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_BROADCAST_HASH_JOIN, defaultValue = true)
   val COMET_EXEC_BROADCAST_EXCHANGE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_BROADCAST_EXCHANGE, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_BROADCAST_EXCHANGE, defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_HASH_JOIN, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_HASH_JOIN, defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_SORT_MERGE_JOIN, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_SORT_MERGE_JOIN, defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_AGGREGATE, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_AGGREGATE, defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_COLLECT_LIMIT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_COLLECT_LIMIT, defaultValue = true)
   val COMET_EXEC_COALESCE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_COALESCE, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_COALESCE, defaultValue = true)
   val COMET_EXEC_UNION_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_UNION, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_UNION, defaultValue = true)
   val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_EXPAND, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_EXPAND, defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
+    createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = true)
 
   val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
@@ -189,15 +189,6 @@ object CometConf extends ShimCometConf {
       _ >= 0,
       "Ensure that Comet memory overhead min is a long greater than or equal to 0")
     .createWithDefault(384)
-
-  val COMET_EXEC_ALL_OPERATOR_ENABLED: ConfigEntry[Boolean] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.all.enabled")
-    .doc(
-      "Whether to enable all Comet operators. By default, this config is false. Note that " +
-        "this config precedes all separate config 'spark.comet.exec.<operator_name>.enabled'. " +
-        "That being said, if this config is enabled, separate configs are ignored.")
-    .booleanConf
-    .createWithDefault(false)
 
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
@@ -533,13 +524,23 @@ object CometConf extends ShimCometConf {
       exec: String,
       defaultValue: Boolean,
       notes: Option[String] = None): ConfigEntry[Boolean] = {
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
-      .doc(
-        s"Whether to enable $exec by default. The default value is $defaultValue." + notes
-          .map(s => s" $s.")
-          .getOrElse(""))
-      .booleanConf
-      .createWithDefault(defaultValue)
+    if (defaultValue) {
+      conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
+        .doc(
+          s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+            .map(s => s" $s.")
+            .getOrElse(""))
+        .booleanConf
+        .createWithDefault(defaultValue)
+    } else {
+      conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.disabled")
+        .doc(
+          s"Whether to disable $exec by default. The default value is ${!defaultValue}." + notes
+            .map(s => s" $s.")
+            .getOrElse(""))
+        .booleanConf
+        .createWithDefault(!defaultValue)
+    }
   }
 }
 

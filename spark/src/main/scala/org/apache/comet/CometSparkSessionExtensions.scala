@@ -1048,9 +1048,7 @@ object CometSparkSessionExtensions extends Logging {
 
   private[comet] def isCometOperatorEnabled(conf: SQLConf, operator: String): Boolean = {
     val operatorFlag = s"$COMET_EXEC_CONFIG_PREFIX.$operator.enabled"
-    val operatorDisabledFlag = s"$COMET_EXEC_CONFIG_PREFIX.$operator.disabled"
-    conf.getConfString(operatorFlag, "false").toBoolean || isCometAllOperatorEnabled(conf) &&
-    !conf.getConfString(operatorDisabledFlag, "false").toBoolean
+    conf.getConfString(operatorFlag, "false").toBoolean
   }
 
   private[comet] def isCometBroadCastForceEnabled(conf: SQLConf): Boolean = {
@@ -1118,10 +1116,6 @@ object CometSparkSessionExtensions extends Logging {
       case "auto" => true
       case _ => false
     }
-  }
-
-  private[comet] def isCometAllOperatorEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_ALL_OPERATOR_ENABLED.get(conf)
   }
 
   def isCometScan(op: SparkPlan): Boolean = {

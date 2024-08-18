@@ -860,9 +860,9 @@ impl PhysicalPlanner {
                 let fetch = sort.fetch.map(|num| num as usize);
 
                 let copy_exec = if can_reuse_input_batch(&child) {
-                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
+                    Arc::new(CopyExec::new(child, CopyMode::DeepCopyNoUnpack))
                 } else {
-                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
+                    child
                 };
 
                 Ok((
@@ -1087,7 +1087,7 @@ impl PhysicalPlanner {
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
-        join_supports_dictionary: bool,
+        is_hash_join: bool,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
         assert!(children.len() == 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
@@ -1212,27 +1212,19 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
 
-        let mode = if join_supports_dictionary {
-            CopyMode::DeepCopyNoUnpack
-        } else {
-            CopyMode::UnpackOrDeepCopy
-        };
+        fn prep_join_input(
+            plan: Arc<dyn ExecutionPlan>,
+            has_join_filter: bool,
+        ) -> Arc<dyn ExecutionPlan> {
+            if can_reuse_input_batch(&plan) {
+                Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
+            } else {
+                Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
+            }
+        }
 
-        let left = if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left, mode.clone()))
-        } else if join_supports_dictionary {
-            left
-        } else {
-            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
-        };
-
-        let right = if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right, mode))
-        } else if join_supports_dictionary {
-            right
-        } else {
-            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
-        };
+        let left = prep_join_input(left, join_filter.is_some());
+        let right = prep_join_input(right, join_filter.is_some());
 
         Ok((
             JoinParameters {

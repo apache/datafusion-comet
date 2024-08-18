@@ -57,20 +57,30 @@ pub enum CopyMode {
 
 impl CopyExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, mode: CopyMode) -> Self {
-        // change schema to remove dictionary types because CopyExec always unpacks
-        // dictionaries
-
-        let fields: Vec<Field> = input
-            .schema()
-            .fields
-            .iter()
-            .map(|f: &FieldRef| match f.data_type() {
-                DataType::Dictionary(_, value_type) => {
-                    Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
-                }
-                _ => f.as_ref().clone(),
-            })
-            .collect();
+        let fields: Vec<Field> = match &mode {
+            CopyMode::DeepCopyNoUnpack => input
+                .schema()
+                .fields
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect(),
+            _ =>
+            // change schema to remove dictionary types because CopyExec always unpacks
+            // dictionaries
+            {
+                input
+                    .schema()
+                    .fields
+                    .iter()
+                    .map(|f: &FieldRef| match f.data_type() {
+                        DataType::Dictionary(_, value_type) => {
+                            Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
+                        }
+                        _ => f.as_ref().clone(),
+                    })
+                    .collect()
+            }
+        };
 
         let schema = Arc::new(Schema::new(fields));
 
@@ -227,7 +237,7 @@ impl RecordBatchStream for CopyStream {
 }
 
 /// Copy an Arrow Array
-fn copy_array(array: &dyn Array) -> ArrayRef {
+pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
     let capacity = array.len();
     let data = array.to_data();
 

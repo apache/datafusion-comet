@@ -39,6 +39,7 @@ arrow-buffer = { version = "52.2.0" }
 arrow-data = { version = "52.2.0" }
 arrow-schema = { version = "52.2.0" }
 parquet = { version = "52.2.0", default-features = false, features = ["experimental"] }
+
 datafusion-common = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1" }
 datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", features = ["unicode_expressions", "crypto_expressions"] }
 datafusion-functions = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", features = ["crypto_expressions"] }
@@ -50,6 +51,19 @@ datafusion-physical-expr-common = { git = "https://github.com/apache/datafusion.
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "41.0.0-rc1", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.2.0" }
 datafusion-comet-proto = { path = "proto", version = "0.2.0" }
+
+#datafusion-common = { path = "../../datafusion/datafusion/common" }
+#datafusion = { default-features = false, path = "../../datafusion/datafusion/core", features = ["unicode_expressions", "crypto_expressions"] }
+#datafusion-functions = { path = "../../datafusion/datafusion/functions", features = ["crypto_expressions"] }
+#datafusion-functions-nested = { path="../../datafusion/datafusion/functions-nested" , default-features = false }
+#datafusion-expr = { path = "../../datafusion/datafusion/expr", default-features = false }
+#datafusion-execution = { path = "../../datafusion/datafusion/execution", default-features = false }
+#datafusion-physical-plan = { path = "../../datafusion/datafusion/physical-plan", default-features = false }
+#datafusion-physical-expr-common = { path = "../../datafusion/datafusion/physical-expr-common", default-features = false }
+#datafusion-physical-expr = { path = "../../datafusion/datafusion/physical-expr", default-features = false }
+#datafusion-comet-spark-expr = { path = "spark-expr", version = "0.2.0" }
+#datafusion-comet-proto = { path = "proto", version = "0.2.0" }
+
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 num = "0.4"

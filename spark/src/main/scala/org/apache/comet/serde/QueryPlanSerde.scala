@@ -666,63 +666,66 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case StddevSamp(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
-        withInfo(
-          aggExpr,
-          "stddev disabled by default because it can be slower than Spark. " +
-            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
-          child)
-        None
-
       case std @ StddevSamp(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(std.dataType)
+        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
+          val childExpr = exprToProto(child, inputs, binding)
+          val dataType = serializeDataType(std.dataType)
 
-        if (childExpr.isDefined && dataType.isDefined) {
-          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-          stdBuilder.setChild(childExpr.get)
-          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          stdBuilder.setDatatype(dataType.get)
-          stdBuilder.setStatsTypeValue(0)
+          if (childExpr.isDefined && dataType.isDefined) {
+            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+            stdBuilder.setChild(childExpr.get)
+            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+            stdBuilder.setDatatype(dataType.get)
+            stdBuilder.setStatsTypeValue(0)
 
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setStddev(stdBuilder)
-              .build())
+            Some(
+              ExprOuterClass.AggExpr
+                .newBuilder()
+                .setStddev(stdBuilder)
+                .build())
+          } else {
+            withInfo(aggExpr, child)
+            None
+          }
         } else {
-          withInfo(aggExpr, child)
+          withInfo(
+            aggExpr,
+            "stddev disabled by default because it can be slower than Spark. " +
+              s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
+            child)
           None
         }
-
-      case StddevPop(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
-        withInfo(
-          aggExpr,
-          "stddev disabled by default because it can be slower than Spark. " +
-            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
-          child)
-        None
 
       case std @ StddevPop(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(std.dataType)
+        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
+          val childExpr = exprToProto(child, inputs, binding)
+          val dataType = serializeDataType(std.dataType)
 
-        if (childExpr.isDefined && dataType.isDefined) {
-          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-          stdBuilder.setChild(childExpr.get)
-          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          stdBuilder.setDatatype(dataType.get)
-          stdBuilder.setStatsTypeValue(1)
+          if (childExpr.isDefined && dataType.isDefined) {
+            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+            stdBuilder.setChild(childExpr.get)
+            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+            stdBuilder.setDatatype(dataType.get)
+            stdBuilder.setStatsTypeValue(1)
 
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setStddev(stdBuilder)
-              .build())
+            Some(
+              ExprOuterClass.AggExpr
+                .newBuilder()
+                .setStddev(stdBuilder)
+                .build())
+          } else {
+            withInfo(aggExpr, child)
+            None
+          }
         } else {
-          withInfo(aggExpr, child)
+          withInfo(
+            aggExpr,
+            "stddev disabled by default because it can be slower than Spark. " +
+              s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
+            child)
           None
         }
+
       case corr @ Corr(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)

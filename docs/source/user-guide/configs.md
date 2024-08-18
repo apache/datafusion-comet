@@ -35,29 +35,28 @@ Comet provides the following configuration settings.
 | spark.comet.debug.enabled | Whether to enable debug mode for Comet. By default, this config is false. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose. | false |
 | spark.comet.enabled | Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and 'spark.comet.exec.enabled' need to be enabled. By default, this config is the value of the env var `ENABLE_COMET` if set, or true otherwise. | true |
 | spark.comet.exceptionOnDatetimeRebase | Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased. | false |
-| spark.comet.exec.aggregate.enabled | Whether to enable aggregate by default. The default value is false. | false |
-| spark.comet.exec.all.enabled | Whether to enable all Comet operators. By default, this config is false. Note that this config precedes all separate config 'spark.comet.exec.<operator_name>.enabled'. That being said, if this config is enabled, separate configs are ignored. | false |
-| spark.comet.exec.broadcastExchange.enabled | Whether to enable broadcastExchange by default. The default value is false. | false |
-| spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. The default value is false. | false |
-| spark.comet.exec.coalesce.enabled | Whether to enable coalesce by default. The default value is false. | false |
-| spark.comet.exec.collectLimit.enabled | Whether to enable collectLimit by default. The default value is false. | false |
+| spark.comet.exec.aggregate.enabled | Whether to enable aggregate by default. The default value is true. | true |
+| spark.comet.exec.broadcastExchange.enabled | Whether to enable broadcastExchange by default. The default value is true. | true |
+| spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. The default value is true. | true |
+| spark.comet.exec.coalesce.enabled | Whether to enable coalesce by default. The default value is true. | true |
+| spark.comet.exec.collectLimit.enabled | Whether to enable collectLimit by default. The default value is true. | true |
 | spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is false. | false |
-| spark.comet.exec.expand.enabled | Whether to enable expand by default. The default value is false. | false |
-| spark.comet.exec.filter.enabled | Whether to enable filter by default. The default value is false. | false |
-| spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. The default value is false. | false |
-| spark.comet.exec.hashJoin.enabled | Whether to enable hashJoin by default. The default value is false. | false |
-| spark.comet.exec.localLimit.enabled | Whether to enable localLimit by default. The default value is false. | false |
+| spark.comet.exec.expand.enabled | Whether to enable expand by default. The default value is true. | true |
+| spark.comet.exec.filter.enabled | Whether to enable filter by default. The default value is true. | true |
+| spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. The default value is true. | true |
+| spark.comet.exec.hashJoin.enabled | Whether to enable hashJoin by default. The default value is true. | true |
+| spark.comet.exec.localLimit.enabled | Whether to enable localLimit by default. The default value is true. | true |
 | spark.comet.exec.memoryFraction | The fraction of memory from Comet memory overhead that the native memory manager can use for execution. The purpose of this config is to set aside memory for untracked data structures, as well as imprecise size estimation during memory acquisition. Default value is 0.7. | 0.7 |
-| spark.comet.exec.project.enabled | Whether to enable project by default. The default value is false. | false |
+| spark.comet.exec.project.enabled | Whether to enable project by default. The default value is true. | true |
 | spark.comet.exec.shuffle.codec | The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported. | zstd |
 | spark.comet.exec.shuffle.enabled | Whether to enable Comet native shuffle. By default, this config is false. Note that this requires setting 'spark.shuffle.manager' to 'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. 'spark.shuffle.manager' must be set before starting the Spark application and cannot be changed during the application. | false |
 | spark.comet.exec.shuffle.mode | The mode of Comet shuffle. This config is only effective if Comet shuffle is enabled. Available modes are 'native', 'jvm', and 'auto'. 'native' is for native shuffle which has best performance in general. 'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. 'auto' is for Comet to choose the best shuffle mode based on the query plan. By default, this config is 'jvm'. | jvm |
-| spark.comet.exec.sort.enabled | Whether to enable sort by default. The default value is false. | false |
-| spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. The default value is false. | false |
-| spark.comet.exec.stddev.enabled | Whether to enable stddev by default. The default value is false. stddev is slower than Spark's implementation. | false |
-| spark.comet.exec.takeOrderedAndProject.enabled | Whether to enable takeOrderedAndProject by default. The default value is false. | false |
-| spark.comet.exec.union.enabled | Whether to enable union by default. The default value is false. | false |
-| spark.comet.exec.window.enabled | Whether to enable window by default. The default value is false. | false |
+| spark.comet.exec.sort.enabled | Whether to enable sort by default. The default value is true. | true |
+| spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. The default value is true. | true |
+| spark.comet.exec.stddev.disabled | Whether to disable stddev by default. The default value is true. stddev is slower than Spark's implementation. | true |
+| spark.comet.exec.takeOrderedAndProject.enabled | Whether to enable takeOrderedAndProject by default. The default value is true. | true |
+| spark.comet.exec.union.enabled | Whether to enable union by default. The default value is true. | true |
+| spark.comet.exec.window.enabled | Whether to enable window by default. The default value is true. | true |
 | spark.comet.explain.native.enabled | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
 | spark.comet.explain.verbose.enabled | When this setting is enabled, Comet will provide a verbose tree representation of the extended information. | false |
 | spark.comet.explainFallback.enabled | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |

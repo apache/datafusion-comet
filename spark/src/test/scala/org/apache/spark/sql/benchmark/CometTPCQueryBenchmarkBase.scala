@@ -74,7 +74,6 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "auto") {

@@ -120,8 +120,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
           CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
       }
