@@ -118,7 +118,8 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
-          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
+          // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
