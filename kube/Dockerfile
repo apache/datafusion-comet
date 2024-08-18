@@ -42,4 +42,4 @@ FROM apache/spark:3.4.2
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 USER root
-COPY --from=builder  /opt/datafusion-comet/spark/target/comet-spark-spark${SPARK_VERSION}_$SCALA_VERSION-0.1.0-SNAPSHOT.jar $SPARK_HOME/jars
+COPY --from=builder  /opt/datafusion-comet/spark/target/comet-spark-spark${SPARK_VERSION}_$SCALA_VERSION-0.2.0-SNAPSHOT.jar $SPARK_HOME/jars
