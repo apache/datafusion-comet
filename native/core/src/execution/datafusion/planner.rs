@@ -972,7 +972,6 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &None,
-                    false,
                 )?;
 
                 let sort_options = join
@@ -1011,7 +1010,6 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
-                    true,
                 )?;
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
@@ -1087,7 +1085,6 @@ impl PhysicalPlanner {
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
-        is_hash_join: bool,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
         assert!(children.len() == 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
@@ -1212,10 +1209,7 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
 
-        fn prep_join_input(
-            plan: Arc<dyn ExecutionPlan>,
-            has_join_filter: bool,
-        ) -> Arc<dyn ExecutionPlan> {
+        fn prep_join_input(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
             if can_reuse_input_batch(&plan) {
                 Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
             } else {
@@ -1223,8 +1217,8 @@ impl PhysicalPlanner {
             }
         }
 
-        let left = prep_join_input(left, join_filter.is_some());
-        let right = prep_join_input(right, join_filter.is_some());
+        let left = prep_join_input(left);
+        let right = prep_join_input(right);
 
         Ok((
             JoinParameters {

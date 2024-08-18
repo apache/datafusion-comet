@@ -44,7 +44,6 @@ use datafusion_physical_expr::{
     analyze, split_conjunction, AnalysisContext, ConstExpr, ExprBoundaries, PhysicalExpr,
 };
 
-use crate::execution::operators::copy_array;
 use futures::stream::{Stream, StreamExt};
 use log::trace;
 
@@ -368,11 +367,17 @@ pub fn comet_filter_record_batch(
     predicate: &BooleanArray,
 ) -> std::result::Result<RecordBatch, ArrowError> {
     if predicate.true_count() == record_batch.num_rows() {
-        // special case where we just make an exact copy (with no unpacking)
+        // special case where we just make an exact copy (and also unpack dictionaries)
         let arrays: Vec<ArrayRef> = record_batch
             .columns()
             .iter()
-            .map(|array| copy_array(array))
+            .map(|array| {
+                let capacity = array.len();
+                let data = array.to_data();
+                let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
+                mutable.extend(0, 0, capacity);
+                make_array(mutable.freeze())
+            })
             .collect();
         let options = RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows()));
         RecordBatch::try_new_with_options(record_batch.schema().clone(), arrays, &options)
