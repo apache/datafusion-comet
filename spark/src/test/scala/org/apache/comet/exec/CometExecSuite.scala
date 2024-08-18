@@ -69,7 +69,6 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
@@ -1344,9 +1343,8 @@ class CometExecSuite extends CometTestBase {
 
   test("disabled/unsupported exec with multiple children should not disappear") {
     withSQLConf(
-//      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".project.enabled" -> "true",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".union.enabled" -> "false") {
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_UNION_ENABLED.key -> "false") {
       withParquetDataFrame((0 until 5).map(Tuple1(_))) { df =>
         val projected = df.selectExpr("_1 as x")
         val unioned = projected.union(df)

@@ -116,7 +116,6 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",

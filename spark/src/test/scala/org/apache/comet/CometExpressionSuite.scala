@@ -1706,7 +1706,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {

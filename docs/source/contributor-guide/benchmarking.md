@@ -66,7 +66,6 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.cast.allowIncompatible=true \
     --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.comet.exec.shuffle.mode=auto \
-    --conf spark.comet.shuffle.enforceMode.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     tpcbench.py \
     --benchmark tpch \

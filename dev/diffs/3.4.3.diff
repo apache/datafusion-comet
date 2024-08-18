@@ -271,10 +271,15 @@ index 56e9520fdab..917932336df 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-index a9f69ab28a1..4056f14c893 100644
+index a9f69ab28a1..5d9d4f2cb83 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-@@ -43,7 +43,7 @@ import org.apache.spark.sql.connector.FakeV2Provider
+@@ -39,11 +39,12 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Attri
+ import org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
+ import org.apache.spark.sql.catalyst.plans.logical.{ColumnStat, LeafNode, LocalRelation, LogicalPlan, OneRowRelation, Statistics}
+ import org.apache.spark.sql.catalyst.util.DateTimeUtils
++import org.apache.spark.sql.comet.CometBroadcastExchangeExec
+ import org.apache.spark.sql.connector.FakeV2Provider
  import org.apache.spark.sql.execution.{FilterExec, LogicalRDD, QueryExecution, SortExec, WholeStageCodegenExec}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.aggregate.HashAggregateExec
@@ -283,7 +288,7 @@ index a9f69ab28a1..4056f14c893 100644
  import org.apache.spark.sql.expressions.{Aggregator, Window}
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -1981,7 +1981,7 @@ class DataFrameSuite extends QueryTest
+@@ -1981,7 +1982,7 @@ class DataFrameSuite extends QueryTest
            fail("Should not have back to back Aggregates")
          }
          atFirstAgg = true
@@ -292,7 +297,7 @@ index a9f69ab28a1..4056f14c893 100644
        case _ =>
      }
    }
-@@ -2305,7 +2305,7 @@ class DataFrameSuite extends QueryTest
+@@ -2305,7 +2306,7 @@ class DataFrameSuite extends QueryTest
        checkAnswer(join, df)
        assert(
          collect(join.queryExecution.executedPlan) {
@@ -301,7 +306,7 @@ index a9f69ab28a1..4056f14c893 100644
        assert(
          collect(join.queryExecution.executedPlan) { case e: ReusedExchangeExec => true }.size === 1)
        val broadcasted = broadcast(join)
-@@ -2313,7 +2313,7 @@ class DataFrameSuite extends QueryTest
+@@ -2313,10 +2314,12 @@ class DataFrameSuite extends QueryTest
        checkAnswer(join2, df)
        assert(
          collect(join2.queryExecution.executedPlan) {
@@ -309,8 +314,14 @@ index a9f69ab28a1..4056f14c893 100644
 +          case _: ShuffleExchangeLike => true }.size == 1)
        assert(
          collect(join2.queryExecution.executedPlan) {
-           case e: BroadcastExchangeExec => true }.size === 1)
-@@ -2876,7 +2876,7 @@ class DataFrameSuite extends QueryTest
+-          case e: BroadcastExchangeExec => true }.size === 1)
++          case e: BroadcastExchangeExec => true
++          case _: CometBroadcastExchangeExec => true
++        }.size === 1)
+       assert(
+         collect(join2.queryExecution.executedPlan) { case e: ReusedExchangeExec => true }.size == 4)
+     }
+@@ -2876,7 +2879,7 @@ class DataFrameSuite extends QueryTest
  
      // Assert that no extra shuffle introduced by cogroup.
      val exchanges = collect(df3.queryExecution.executedPlan) {
@@ -319,7 +330,7 @@ index a9f69ab28a1..4056f14c893 100644
      }
      assert(exchanges.size == 2)
    }
-@@ -3325,7 +3325,8 @@ class DataFrameSuite extends QueryTest
+@@ -3325,7 +3328,8 @@ class DataFrameSuite extends QueryTest
      assert(df2.isLocal)
    }
  
@@ -352,7 +363,7 @@ index daef11ae4d6..9f3cc9181f2 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..10702dba7a9 100644
+index f33432ddb6f..8690c859d0c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -403,7 +414,17 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withTable("fact", "dim") {
          spark.range(100).select(
-@@ -1187,7 +1194,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1034,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("avoid reordering broadcast join keys to match input hash partitioning") {
++  test("avoid reordering broadcast join keys to match input hash partitioning",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+       withTable("large", "dimTwo", "dimThree") {
+@@ -1187,7 +1195,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -413,7 +434,7 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """
-@@ -1238,7 +1246,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1238,7 +1247,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -423,7 +444,7 @@ index f33432ddb6f..10702dba7a9 100644
      Given("dynamic pruning filter on the build side")
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
-@@ -1279,7 +1288,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1279,7 +1289,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -433,7 +454,7 @@ index f33432ddb6f..10702dba7a9 100644
      Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
        Seq(true, false).foreach { pruning =>
          withSQLConf(
-@@ -1311,7 +1321,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1311,7 +1322,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -443,7 +464,17 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1470,7 +1481,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1423,7 +1435,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
++  test("SPARK-34637: DPP side broadcast query stage is created firstly",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+         """ WITH v as (
+@@ -1470,7 +1483,8 @@ abstract class DynamicPartitionPruningSuiteBase
      checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
    }
  
@@ -453,7 +484,7 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1485,7 +1497,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1485,7 +1499,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
@@ -462,7 +493,7 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        Seq(
          "f.store_id = 1" -> false,
-@@ -1557,7 +1569,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1557,7 +1571,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -472,7 +503,7 @@ index f33432ddb6f..10702dba7a9 100644
      withTable("duplicate_keys") {
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
          Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
-@@ -1588,7 +1601,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1588,7 +1603,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -482,7 +513,7 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1617,7 +1631,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1617,7 +1633,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -492,7 +523,7 @@ index f33432ddb6f..10702dba7a9 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1729,6 +1744,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1746,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -648,17 +679,19 @@ index 1792b4c32eb..1616e6f39bd 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 7f062bfb899..400e939468f 100644
+index 7f062bfb899..3acf697df9a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
+@@ -30,7 +30,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
  import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
  import org.apache.spark.sql.catalyst.expressions.{Ascending, GenericRow, SortOrder}
  import org.apache.spark.sql.catalyst.plans.logical.Filter
+-import org.apache.spark.sql.execution.{BinaryExecNode, FilterExec, ProjectExec, SortExec, SparkPlan, WholeStageCodegenExec}
 +import org.apache.spark.sql.comet._
- import org.apache.spark.sql.execution.{BinaryExecNode, FilterExec, ProjectExec, SortExec, SparkPlan, WholeStageCodegenExec}
++import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, FilterExec, InputAdapter, ProjectExec, SortExec, SparkPlan, WholeStageCodegenExec}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.exchange.{ShuffleExchangeExec, ShuffleExchangeLike}
+ import org.apache.spark.sql.execution.joins._
 @@ -740,7 +741,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
      }
    }
@@ -669,7 +702,20 @@ index 7f062bfb899..400e939468f 100644
      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1",
        SQLConf.SORT_MERGE_JOIN_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "0",
        SQLConf.SORT_MERGE_JOIN_EXEC_BUFFER_SPILL_THRESHOLD.key -> "1") {
-@@ -1115,9 +1117,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -866,10 +868,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+       val physical = df.queryExecution.sparkPlan
+       val physicalJoins = physical.collect {
+         case j: SortMergeJoinExec => j
++        case j: CometSortMergeJoinExec => j.originalPlan.asInstanceOf[SortMergeJoinExec]
+       }
+       val executed = df.queryExecution.executedPlan
+       val executedJoins = collect(executed) {
+         case j: SortMergeJoinExec => j
++        case j: CometSortMergeJoinExec => j.originalPlan.asInstanceOf[SortMergeJoinExec]
+       }
+       // This only applies to the above tested queries, in which a child SortMergeJoin always
+       // contains the SortOrder required by its parent SortMergeJoin. Thus, SortExec should never
+@@ -1115,9 +1119,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
        val plan = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2", joinType)
          .groupBy($"k1").count()
          .queryExecution.executedPlan
@@ -683,7 +729,7 @@ index 7f062bfb899..400e939468f 100644
      })
    }
  
-@@ -1134,10 +1138,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1134,10 +1140,11 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
          .join(df4.hint("SHUFFLE_MERGE"), $"k1" === $"k4", joinType)
          .queryExecution
          .executedPlan
@@ -697,7 +743,7 @@ index 7f062bfb899..400e939468f 100644
      })
  
      // Test shuffled hash join
-@@ -1147,10 +1152,13 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1147,10 +1154,13 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
          .join(df4.hint("SHUFFLE_MERGE"), $"k1" === $"k4", joinType)
          .queryExecution
          .executedPlan
@@ -714,7 +760,7 @@ index 7f062bfb899..400e939468f 100644
      })
    }
  
-@@ -1241,12 +1249,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1241,12 +1251,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
      inputDFs.foreach { case (df1, df2, joinExprs) =>
        val smjDF = df1.join(df2.hint("SHUFFLE_MERGE"), joinExprs, "full")
        assert(collect(smjDF.queryExecution.executedPlan) {
@@ -729,7 +775,35 @@ index 7f062bfb899..400e939468f 100644
        // Same result between shuffled hash join and sort merge join
        checkAnswer(shjDF, smjResult)
      }
-@@ -1341,7 +1349,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1282,18 +1292,25 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+       }
+ 
+       // Test shuffled hash join
+-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
++      withSQLConf("spark.comet.enabled" -> "true",
++        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+         val shjCodegenDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2", joinType)
+         assert(shjCodegenDF.queryExecution.executedPlan.collect {
+           case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
+           case WholeStageCodegenExec(ProjectExec(_, _ : ShuffledHashJoinExec)) => true
++          case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(_: CometHashJoinExec))) =>
++            true
++          case WholeStageCodegenExec(ColumnarToRowExec(
++            InputAdapter(CometProjectExec(_, _, _, _, _: CometHashJoinExec, _)))) => true
+         }.size === 1)
+         checkAnswer(shjCodegenDF, Seq.empty)
+ 
+         withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+           val shjNonCodegenDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2", joinType)
+           assert(shjNonCodegenDF.queryExecution.executedPlan.collect {
+-            case _: ShuffledHashJoinExec => true }.size === 1)
++            case _: ShuffledHashJoinExec => true
++            case _: CometHashJoinExec => true
++          }.size === 1)
+           checkAnswer(shjNonCodegenDF, Seq.empty)
+         }
+       }
+@@ -1341,7 +1358,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
            // Have shuffle before aggregation
@@ -739,7 +813,7 @@ index 7f062bfb899..400e939468f 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1370,9 +1379,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1370,9 +1388,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -754,7 +828,7 @@ index 7f062bfb899..400e939468f 100644
        }
  
        // Test output ordering is not preserved
-@@ -1381,9 +1393,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1381,9 +1402,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val selectExpr = "/*+ BROADCAST(left_t) */ k1 as k0"
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -769,7 +843,7 @@ index 7f062bfb899..400e939468f 100644
        }
  
        // Test singe partition
-@@ -1393,7 +1408,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1393,7 +1417,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
             |FROM range(0, 10, 1, 1) t1 FULL OUTER JOIN range(0, 10, 1, 1) t2
             |""".stripMargin)
        val plan = fullJoinDF.queryExecution.executedPlan
@@ -779,6 +853,38 @@ index 7f062bfb899..400e939468f 100644
        checkAnswer(fullJoinDF, Row(100))
      }
    }
+@@ -1438,6 +1463,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+           Seq(semiJoinDF, antiJoinDF).foreach { df =>
+             assert(collect(df.queryExecution.executedPlan) {
+               case j: ShuffledHashJoinExec if j.ignoreDuplicatedKey == ignoreDuplicatedKey => true
++              case j: CometHashJoinExec
++                if j.originalPlan.asInstanceOf[ShuffledHashJoinExec].ignoreDuplicatedKey ==
++                  ignoreDuplicatedKey => true
+             }.size == 1)
+           }
+       }
+@@ -1489,7 +1517,10 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+ 
+   test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SHJ)") {
+     def check(plan: SparkPlan): Unit = {
+-      assert(collect(plan) { case _: ShuffledHashJoinExec => true }.size === 1)
++      assert(collect(plan) {
++        case _: ShuffledHashJoinExec => true
++        case _: CometHashJoinExec => true
++      }.size === 1)
+     }
+     dupStreamSideColTest("SHUFFLE_HASH", check)
+   }
+@@ -1605,7 +1636,8 @@ class ThreadLeakInSortMergeJoinSuite
+       sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
+   }
+ 
+-  test("SPARK-47146: thread leak when doing SortMergeJoin (with spill)") {
++  test("SPARK-47146: thread leak when doing SortMergeJoin (with spill)",
++    IgnoreComet("Comet SMJ doesn't spill yet")) {
+ 
+     withSQLConf(
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 index b5b34922694..a72403780c4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
@@ -1134,26 +1240,86 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index ac710c32296..e163c1a6a76 100644
+index ac710c32296..baae214c6ee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
  
  import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
-+import org.apache.spark.sql.comet.CometSortMergeJoinExec
++import org.apache.spark.sql.comet.{CometHashJoinExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
-@@ -224,6 +225,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -169,6 +170,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+     val oneJoinDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2")
+     assert(oneJoinDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
++      case _: CometHashJoinExec => true
+     }.size === 1)
+     checkAnswer(oneJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, 4)))
+ 
+@@ -177,6 +179,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       .join(df3.hint("SHUFFLE_HASH"), $"k1" === $"k3")
+     assert(twoJoinsDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
++      case _: CometHashJoinExec => true
+     }.size === 2)
+     checkAnswer(twoJoinsDF,
+       Seq(Row(0, 0, 0), Row(1, 1, 1), Row(2, 2, 2), Row(3, 3, 3), Row(4, 4, 4)))
+@@ -193,6 +196,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       assert(joinUniqueDF.queryExecution.executedPlan.collect {
+         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
+         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
++        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
++        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
+       }.size === 1)
+       checkAnswer(joinUniqueDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, 4),
+         Row(null, 5), Row(null, 6), Row(null, 7), Row(null, 8), Row(null, 9)))
+@@ -203,6 +208,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       assert(joinNonUniqueDF.queryExecution.executedPlan.collect {
+         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
+         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
++        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
++        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
+       }.size === 1)
+       checkAnswer(joinNonUniqueDF, Seq(Row(0, 0), Row(0, 3), Row(0, 6), Row(0, 9), Row(1, 1),
+         Row(1, 4), Row(1, 7), Row(2, 2), Row(2, 5), Row(2, 8), Row(3, null), Row(4, null)))
+@@ -213,6 +220,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       assert(joinWithNonEquiDF.queryExecution.executedPlan.collect {
+         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
+         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
++        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
++        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
+       }.size === 1)
+       checkAnswer(joinWithNonEquiDF, Seq(Row(0, 0), Row(0, 6), Row(0, 9), Row(1, 1),
+         Row(1, 7), Row(2, 2), Row(2, 8), Row(3, null), Row(4, null), Row(null, 3), Row(null, 4),
+@@ -224,6 +233,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
        assert(twoJoinsDF.queryExecution.executedPlan.collect {
          case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
          case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
++        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
 +        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
        }.size === 2)
        checkAnswer(twoJoinsDF,
          Seq(Row(0, 0, 0), Row(1, 1, null), Row(2, 2, 2), Row(3, 3, null), Row(4, 4, null),
-@@ -258,6 +260,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -241,6 +252,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+     val oneLeftOuterJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_outer")
+     assert(oneLeftOuterJoinDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
++      case _: CometSortMergeJoinExec => true
+     }.size === 1)
+     checkAnswer(oneLeftOuterJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, null),
+       Row(5, null), Row(6, null), Row(7, null), Row(8, null), Row(9, null)))
+@@ -249,6 +261,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+     val oneRightOuterJoinDF = df2.join(df3.hint("SHUFFLE_MERGE"), $"k2" === $"k3", "right_outer")
+     assert(oneRightOuterJoinDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
++      case _: CometSortMergeJoinExec => true
+     }.size === 1)
+     checkAnswer(oneRightOuterJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(null, 4),
+       Row(null, 5)))
+@@ -258,6 +271,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
        .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "right_outer")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
        case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
@@ -1161,38 +1327,56 @@ index ac710c32296..e163c1a6a76 100644
      }.size === 2)
      checkAnswer(twoJoinsDF,
        Seq(Row(0, 0, 0), Row(1, 1, 1), Row(2, 2, 2), Row(3, 3, 3), Row(4, null, 4), Row(5, null, 5),
-@@ -280,8 +283,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -273,6 +287,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+     val oneJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_semi")
+     assert(oneJoinDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) => true
++      case _: CometSortMergeJoinExec => true
+     }.size === 1)
+     checkAnswer(oneJoinDF, Seq(Row(0), Row(1), Row(2), Row(3)))
+ 
+@@ -280,8 +295,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val twoJoinsDF = df3.join(df2.hint("SHUFFLE_MERGE"), $"k3" === $"k2", "left_semi")
        .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "left_semi")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
 -      case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) |
 -           WholeStageCodegenExec(_ : SortMergeJoinExec) => true
 +      case _: SortMergeJoinExec => true
++      case _: CometSortMergeJoinExec => true
      }.size === 2)
      checkAnswer(twoJoinsDF, Seq(Row(0), Row(1), Row(2), Row(3)))
    }
-@@ -302,8 +304,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -295,6 +310,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+     val oneJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_anti")
+     assert(oneJoinDF.queryExecution.executedPlan.collect {
+       case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) => true
++      case _: CometSortMergeJoinExec => true
+     }.size === 1)
+     checkAnswer(oneJoinDF, Seq(Row(4), Row(5), Row(6), Row(7), Row(8), Row(9)))
+ 
+@@ -302,8 +318,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val twoJoinsDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_anti")
        .join(df3.hint("SHUFFLE_MERGE"), $"k1" === $"k3", "left_anti")
      assert(twoJoinsDF.queryExecution.executedPlan.collect {
 -      case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) |
 -           WholeStageCodegenExec(_ : SortMergeJoinExec) => true
 +      case _: SortMergeJoinExec => true
++      case _: CometSortMergeJoinExec => true
      }.size === 2)
      checkAnswer(twoJoinsDF, Seq(Row(6), Row(7), Row(8), Row(9)))
    }
-@@ -436,7 +437,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val plan = df.queryExecution.executedPlan
-     assert(plan.exists(p =>
-       p.isInstanceOf[WholeStageCodegenExec] &&
+@@ -433,10 +449,6 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+ 
+   test("Sort should be included in WholeStageCodegen") {
+     val df = spark.range(3, 0, -1).toDF().sort(col("id"))
+-    val plan = df.queryExecution.executedPlan
+-    assert(plan.exists(p =>
+-      p.isInstanceOf[WholeStageCodegenExec] &&
 -        p.asInstanceOf[WholeStageCodegenExec].child.isInstanceOf[SortExec]))
-+        p.asInstanceOf[WholeStageCodegenExec].collect {
-+          case _: SortExec => true
-+        }.nonEmpty))
      assert(df.collect() === Array(Row(1), Row(2), Row(3)))
    }
  
-@@ -616,7 +619,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -616,7 +628,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
            .write.mode(SaveMode.Overwrite).parquet(path)
  
          withSQLConf(SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "255",
@@ -1204,7 +1388,7 @@ index ac710c32296..e163c1a6a76 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 593bd7bb4ba..7ad55e3ab20 100644
+index 593bd7bb4ba..32af28b0238 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -26,9 +26,11 @@ import org.scalatest.time.SpanSugar._
@@ -1228,7 +1412,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      }
    }
  
-@@ -116,30 +119,38 @@ class AdaptiveQueryExecSuite
+@@ -116,30 +119,39 @@ class AdaptiveQueryExecSuite
    private def findTopLevelSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] = {
      collect(plan) {
        case j: SortMergeJoinExec => j
@@ -1250,6 +1434,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        case j: BaseJoinExec => j
 +      case c: CometHashJoinExec => c.originalPlan.asInstanceOf[BaseJoinExec]
 +      case c: CometSortMergeJoinExec => c.originalPlan.asInstanceOf[BaseJoinExec]
++      case c: CometBroadcastHashJoinExec => c.originalPlan.asInstanceOf[BaseJoinExec]
      }
    }
  
@@ -1267,7 +1452,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      }
    }
  
-@@ -176,6 +187,7 @@ class AdaptiveQueryExecSuite
+@@ -176,6 +188,7 @@ class AdaptiveQueryExecSuite
        val parts = rdd.partitions
        assert(parts.forall(rdd.preferredLocations(_).nonEmpty))
      }
@@ -1275,7 +1460,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      assert(numShuffles === (numLocalReads.length + numShufflesWithoutLocalRead))
    }
  
-@@ -184,7 +196,7 @@ class AdaptiveQueryExecSuite
+@@ -184,7 +197,7 @@ class AdaptiveQueryExecSuite
      val plan = df.queryExecution.executedPlan
      assert(plan.isInstanceOf[AdaptiveSparkPlanExec])
      val shuffle = plan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan.collect {
@@ -1284,7 +1469,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      }
      assert(shuffle.size == 1)
      assert(shuffle(0).outputPartitioning.numPartitions == numPartition)
-@@ -200,7 +212,8 @@ class AdaptiveQueryExecSuite
+@@ -200,7 +213,8 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1294,7 +1479,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      }
    }
  
-@@ -227,7 +240,8 @@ class AdaptiveQueryExecSuite
+@@ -227,7 +241,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1304,7 +1489,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -259,7 +273,8 @@ class AdaptiveQueryExecSuite
+@@ -259,7 +274,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1314,7 +1499,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -273,7 +288,8 @@ class AdaptiveQueryExecSuite
+@@ -273,7 +289,8 @@ class AdaptiveQueryExecSuite
        val localReads = collect(adaptivePlan) {
          case read: AQEShuffleReadExec if read.isLocalRead => read
        }
@@ -1324,7 +1509,29 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        val localShuffleRDD0 = localReads(0).execute().asInstanceOf[ShuffledRowRDD]
        val localShuffleRDD1 = localReads(1).execute().asInstanceOf[ShuffledRowRDD]
        // the final parallelism is math.max(1, numReduces / numMappers): math.max(1, 5/2) = 2
-@@ -322,7 +338,7 @@ class AdaptiveQueryExecSuite
+@@ -298,7 +315,9 @@ class AdaptiveQueryExecSuite
+           .groupBy($"a").count()
+         checkAnswer(testDf, Seq())
+         val plan = testDf.queryExecution.executedPlan
+-        assert(find(plan)(_.isInstanceOf[SortMergeJoinExec]).isDefined)
++        assert(find(plan) { case p =>
++          p.isInstanceOf[SortMergeJoinExec] || p.isInstanceOf[CometSortMergeJoinExec]
++        }.isDefined)
+         val coalescedReads = collect(plan) {
+           case r: AQEShuffleReadExec => r
+         }
+@@ -312,7 +331,9 @@ class AdaptiveQueryExecSuite
+           .groupBy($"a").count()
+         checkAnswer(testDf, Seq())
+         val plan = testDf.queryExecution.executedPlan
+-        assert(find(plan)(_.isInstanceOf[BroadcastHashJoinExec]).isDefined)
++        assert(find(plan) { case p =>
++          p.isInstanceOf[BroadcastHashJoinExec] || p.isInstanceOf[CometBroadcastHashJoinExec]
++        }.isDefined)
+         val coalescedReads = collect(plan) {
+           case r: AQEShuffleReadExec => r
+         }
+@@ -322,7 +343,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1333,7 +1540,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -337,7 +353,7 @@ class AdaptiveQueryExecSuite
+@@ -337,7 +358,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1342,7 +1549,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -353,7 +369,7 @@ class AdaptiveQueryExecSuite
+@@ -353,7 +374,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1351,7 +1558,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -398,7 +414,7 @@ class AdaptiveQueryExecSuite
+@@ -398,7 +419,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1360,7 +1567,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -443,7 +459,7 @@ class AdaptiveQueryExecSuite
+@@ -443,7 +464,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1369,7 +1576,16 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
-@@ -508,7 +524,7 @@ class AdaptiveQueryExecSuite
+@@ -489,7 +510,7 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("Exchange reuse") {
++  test("Exchange reuse", IgnoreComet("Comet shuffle changes shuffle metrics")) {
+     withSQLConf(
+         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
+@@ -508,7 +529,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1378,7 +1594,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -539,7 +555,9 @@ class AdaptiveQueryExecSuite
+@@ -539,7 +560,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1389,7 +1605,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.nonEmpty)
-@@ -560,7 +578,9 @@ class AdaptiveQueryExecSuite
+@@ -560,7 +583,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -1400,7 +1616,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.isEmpty)
-@@ -569,7 +589,8 @@ class AdaptiveQueryExecSuite
+@@ -569,7 +594,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1410,7 +1626,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "20000000",
-@@ -664,7 +685,8 @@ class AdaptiveQueryExecSuite
+@@ -664,7 +690,8 @@ class AdaptiveQueryExecSuite
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
        // There is still a SMJ, and its two shuffles can't apply local read.
@@ -1420,7 +1636,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      }
    }
  
-@@ -786,7 +808,8 @@ class AdaptiveQueryExecSuite
+@@ -786,7 +813,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1430,7 +1646,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      Seq("SHUFFLE_MERGE", "SHUFFLE_HASH").foreach { joinHint =>
        def getJoinNode(plan: SparkPlan): Seq[ShuffledJoin] = if (joinHint == "SHUFFLE_MERGE") {
          findTopLevelSortMergeJoin(plan)
-@@ -1004,7 +1027,8 @@ class AdaptiveQueryExecSuite
+@@ -1004,7 +1032,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1440,7 +1656,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
        val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
          "SELECT key FROM testData GROUP BY key")
-@@ -1599,7 +1623,7 @@ class AdaptiveQueryExecSuite
+@@ -1599,7 +1628,7 @@ class AdaptiveQueryExecSuite
          val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
            "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
          assert(collect(adaptivePlan) {
@@ -1449,7 +1665,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
          }.length == 1)
        }
      }
-@@ -1679,7 +1703,8 @@ class AdaptiveQueryExecSuite
+@@ -1679,7 +1708,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1459,7 +1675,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      def hasRepartitionShuffle(plan: SparkPlan): Boolean = {
        find(plan) {
          case s: ShuffleExchangeLike =>
-@@ -1864,6 +1889,9 @@ class AdaptiveQueryExecSuite
+@@ -1864,6 +1894,9 @@ class AdaptiveQueryExecSuite
      def checkNoCoalescePartitions(ds: Dataset[Row], origin: ShuffleOrigin): Unit = {
        assert(collect(ds.queryExecution.executedPlan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -1469,7 +1685,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        }.size == 1)
        ds.collect()
        val plan = ds.queryExecution.executedPlan
-@@ -1872,6 +1900,9 @@ class AdaptiveQueryExecSuite
+@@ -1872,6 +1905,9 @@ class AdaptiveQueryExecSuite
        }.isEmpty)
        assert(collect(plan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -1479,7 +1695,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2028,7 +2059,8 @@ class AdaptiveQueryExecSuite
+@@ -2028,7 +2064,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1489,7 +1705,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2114,7 +2146,8 @@ class AdaptiveQueryExecSuite
+@@ -2114,7 +2151,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1499,7 +1715,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2213,7 +2246,7 @@ class AdaptiveQueryExecSuite
+@@ -2213,7 +2251,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -1508,7 +1724,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2226,7 +2259,7 @@ class AdaptiveQueryExecSuite
+@@ -2226,7 +2264,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -1517,7 +1733,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2260,7 +2293,8 @@ class AdaptiveQueryExecSuite
+@@ -2260,7 +2298,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1527,7 +1743,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2404,6 +2438,7 @@ class AdaptiveQueryExecSuite
+@@ -2404,6 +2443,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1535,7 +1751,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2421,7 +2456,8 @@ class AdaptiveQueryExecSuite
+@@ -2421,7 +2461,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1545,7 +1761,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2533,7 +2569,7 @@ class AdaptiveQueryExecSuite
+@@ -2533,7 +2574,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1554,7 +1770,7 @@ index 593bd7bb4ba..7ad55e3ab20 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2544,7 +2580,7 @@ class AdaptiveQueryExecSuite
+@@ -2544,7 +2585,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -1584,10 +1800,10 @@ index bd9c79e5b96..ab7584e768e 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
-index ce43edb79c1..c414b19eda7 100644
+index ce43edb79c1..8436cb727c6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
-@@ -17,7 +17,7 @@
+@@ -17,9 +17,10 @@
  
  package org.apache.spark.sql.execution.datasources
  
@@ -1595,8 +1811,27 @@ index ce43edb79c1..c414b19eda7 100644
 +import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
  import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference, NullsFirst, SortOrder}
  import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Sort}
++import org.apache.spark.sql.comet.CometSortExec
  import org.apache.spark.sql.execution.{QueryExecution, SortExec}
-@@ -305,7 +305,8 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+ import org.apache.spark.sql.internal.SQLConf
+@@ -225,6 +226,7 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+           // assert the outer most sort in the executed plan
+           assert(plan.collectFirst {
+             case s: SortExec => s
++            case s: CometSortExec => s.originalPlan.asInstanceOf[SortExec]
+           }.exists {
+             case SortExec(Seq(
+               SortOrder(AttributeReference("key", IntegerType, _, _), Ascending, NullsFirst, _),
+@@ -272,6 +274,7 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
+         // assert the outer most sort in the executed plan
+         assert(plan.collectFirst {
+           case s: SortExec => s
++          case s: CometSortExec => s.originalPlan.asInstanceOf[SortExec]
+         }.exists {
+           case SortExec(Seq(
+             SortOrder(AttributeReference("value", StringType, _, _), Ascending, NullsFirst, _),
+@@ -305,7 +308,8 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
      }
    }
  
@@ -2440,7 +2675,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..e7fcd0a9e6a 100644
+index dd55fcfe42c..aa9b0be8e68 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
@@ -2464,7 +2699,7 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
      }
    }
  
-@@ -242,6 +247,32 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +247,41 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2494,10 +2729,19 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
 +    v != null && v.toBoolean
 +  }
 +
++  /**
++   * Whether Spark should apply Comet shuffle optimization. This is only effective when
++   * [[isCometEnabled]] returns true.
++   */
++  protected def isCometShuffleEnabled: Boolean = {
++    val v = System.getenv("ENABLE_COMET_SHUFFLE")
++    v != null && v.toBoolean
++  }
++
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +465,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +474,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -2507,10 +2751,10 @@ index dd55fcfe42c..e7fcd0a9e6a 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..e071fc44960 100644
+index ed2e309fa07..59adc094970 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,28 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,34 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -2524,9 +2768,6 @@ index ed2e309fa07..e071fc44960 100644
 +        conf
 +          .set("spark.comet.exec.enabled", "true")
 +          .set("spark.comet.exec.all.enabled", "true")
-+          .set("spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+          .set("spark.comet.exec.shuffle.enabled", "true")
 +          .set("spark.comet.memoryOverhead", "10g")
 +      }
 +
@@ -2534,6 +2775,15 @@ index ed2e309fa07..e071fc44960 100644
 +        conf
 +          .set("spark.sql.ansi.enabled", "true")
 +          .set("spark.comet.ansi.enabled", "true")
++      }
++
++      if (isCometShuffleEnabled) {
++        conf
++          .set("spark.shuffle.manager",
++            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++          .set("spark.comet.exec.shuffle.enabled", "true")
++      } else {
++        conf.set("spark.comet.exec.shuffle.enabled", "false")
 +      }
 +    }
      conf.set(
