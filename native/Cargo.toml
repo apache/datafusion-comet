@@ -39,15 +39,15 @@ arrow-buffer = { version = "52.2.0" }
 arrow-data = { version = "52.2.0" }
 arrow-schema = { version = "52.2.0" }
 parquet = { version = "52.2.0", default-features = false, features = ["experimental"] }
-datafusion-common = { version = "41.0.0" }
-datafusion = { default-features = false, version = "41.0.0", features = ["unicode_expressions", "crypto_expressions"] }
-datafusion-functions = { version = "41.0.0", features = ["crypto_expressions"] }
-datafusion-functions-nested = { version = "41.0.0", default-features = false }
-datafusion-expr = { version = "41.0.0", default-features = false }
-datafusion-execution = { version = "41.0.0", default-features = false }
-datafusion-physical-plan = { version = "41.0.0", default-features = false }
-datafusion-physical-expr-common = { version = "41.0.0", default-features = false }
-datafusion-physical-expr = { version = "41.0.0", default-features = false }
+datafusion-common = { path = "../../arrow-datafusion/datafusion/common" }
+datafusion = { default-features = false, path = "../../arrow-datafusion/datafusion/core", features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-functions = { path = "../../arrow-datafusion/datafusion/functions", features = ["crypto_expressions"] }
+datafusion-functions-nested = { path = "../../arrow-datafusion/datafusion/functions-nested", default-features = false }
+datafusion-expr = { path = "../../arrow-datafusion/datafusion/expr", default-features = false }
+datafusion-execution = { path = "../../arrow-datafusion/datafusion/execution", default-features = false }
+datafusion-physical-plan = { path = "../../arrow-datafusion/datafusion/physical-plan", default-features = false }
+datafusion-physical-expr-common = { path = "../../arrow-datafusion/datafusion/physical-expr-common", default-features = false }
+datafusion-physical-expr = { path = "../../arrow-datafusion/datafusion/physical-expr", default-features = false }
 datafusion-comet-spark-expr = { path = "spark-expr", version = "0.3.0" }
 datafusion-comet-proto = { path = "proto", version = "0.3.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
