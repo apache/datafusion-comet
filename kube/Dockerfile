@@ -38,7 +38,7 @@ WORKDIR /comet
 COPY .mvn /comet/.mvn
 COPY mvnw /comet/mvnw
 COPY common /comet/common
-COPY dev/scalastyle-config.xml /comet/dev/scalastyle-config.xml
+COPY dev /comet/dev
 COPY fuzz-testing /comet/fuzz-testing
 COPY native /comet/native
 COPY spark /comet/spark
