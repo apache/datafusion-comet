@@ -48,20 +48,6 @@ docker build -t apache/datafusion-comet -f kube/Dockerfile .
 
 ## Build Comet Benchmark Docker Image
 
-Create a Dockerfile for the benchmarks, using Comet as the base image. This Dockerfile also exists in the repository
-in the benchmarks directory.
-
-```dockerfile
-FROM apache/datafusion-comet:latest
-
-RUN apt update \
-    && apt install -y git python3 python3-pip \
-    && apt clean
-
-RUN cd /opt \
-    && git clone https://github.com/apache/datafusion-benchmarks.git
-```
-
 Build the benchmark Docker image and push to the Microk8s Docker registry.
 
 ```shell
@@ -90,7 +76,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.cores.max=8 \
     --conf spark.task.cpus=1 \
     --conf spark.executor.memoryOverhead=3G \
-    --jars local://$COMET_JAR
+    --jars local://$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
