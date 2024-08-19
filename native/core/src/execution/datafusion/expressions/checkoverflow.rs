@@ -110,9 +110,11 @@ impl PhysicalExpr for CheckOverflow {
                 let decimal_array = as_primitive_array::<Decimal128Type>(&array);
 
                 let casted_array = if self.fail_on_error {
+                    // Returning error if overflow
                     decimal_array.validate_decimal_precision(*precision)?;
                     decimal_array
                 } else {
+                    // Overflowing gets null value
                     &decimal_array.null_if_overflow_precision(*precision)
                 };
 
