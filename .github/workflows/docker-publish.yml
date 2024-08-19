@@ -43,7 +43,7 @@ docker:
     - name: Extract Maven version
       id: extract_version
       run: |
-        COMET_VERSION=$(xmllint --xpath "string(//project/version)" pom.xml)
+        COMET_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
         echo "COMET_VERSION=$COMET_VERSION" >> $GITHUB_ENV
     - name: Echo Maven version
       run: echo "The current Maven version is ${{ env.COMET_VERSION }}"
