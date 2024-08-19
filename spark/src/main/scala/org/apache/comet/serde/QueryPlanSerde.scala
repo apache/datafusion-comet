@@ -2673,7 +2673,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val resultExpressions = aggregate.resultExpressions
         val child = aggregate.child
 
-        if (groupingExpressions.isEmpty && aggregate.aggregateExpressions.isEmpty) {
+        if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
           withInfo(op, "No group by or aggregation")
           return None
         }
