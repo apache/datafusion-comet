@@ -32,7 +32,11 @@ Make sure the following requirements are met and software installed on your mach
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
-## Using a Published Binary Release
+## Using a Published Docker Image
+
+Docker images are available at https://github.com/orgs/apache/packages?repo_name=datafusion-comet
+
+## Using a Published JAR File
 
 There are no published binary releases yet.
 
