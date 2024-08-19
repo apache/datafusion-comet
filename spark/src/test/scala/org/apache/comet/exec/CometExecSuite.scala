@@ -193,23 +193,21 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("Window range frame should fall back to Spark") {
+  test("Window range frame with long boundary should not fail") {
     val df =
       Seq((1L, "1"), (1L, "1"), (2147483650L, "1"), (3L, "2"), (2L, "1"), (2147483650L, "2"))
         .toDF("key", "value")
 
-    checkAnswer(
+    checkSparkAnswer(
       df.select(
         $"key",
         count("key").over(
-          Window.partitionBy($"value").orderBy($"key").rangeBetween(0, 2147483648L))),
-      Seq(Row(1, 3), Row(1, 3), Row(2, 2), Row(3, 2), Row(2147483650L, 1), Row(2147483650L, 1)))
-    checkAnswer(
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(0, 2147483648L))))
+    checkSparkAnswer(
       df.select(
         $"key",
         count("key").over(
-          Window.partitionBy($"value").orderBy($"key").rangeBetween(-2147483649L, 0))),
-      Seq(Row(1, 2), Row(1, 2), Row(2, 3), Row(2147483650L, 2), Row(2147483650L, 4), Row(3, 1)))
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(-2147483649L, 0))))
   }
 
   test("Unsupported window expression should fall back to Spark") {

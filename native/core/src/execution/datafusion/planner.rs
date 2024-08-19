@@ -1693,15 +1693,24 @@ impl PhysicalPlanner {
         {
             Some(l) => match l {
                 LowerFrameBoundStruct::UnboundedPreceding(_) => {
-                    WindowFrameBound::Preceding(ScalarValue::UInt64(None))
+                    match units {
+                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+                    }
                 }
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = offset.offset.unsigned_abs();
-                    WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value)))
+                    let offset_value = offset.offset.abs() as i64;
+                    match units {
+                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value as u64))),
+                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value))),
+                    }
                 }
                 LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
-            None => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+            None => match units {
+                WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+            },
         };
 
         let upper_bound: WindowFrameBound = match spark_window_frame
@@ -1711,14 +1720,23 @@ impl PhysicalPlanner {
         {
             Some(u) => match u {
                 UpperFrameBoundStruct::UnboundedFollowing(_) => {
-                    WindowFrameBound::Following(ScalarValue::UInt64(None))
+                    match units {
+                        WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(None)),
+                    }
                 }
                 UpperFrameBoundStruct::Following(offset) => {
-                    WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
+                    match units {
+                        WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64))),
+                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset as i64))),
+                    }
                 }
                 UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
-            None => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+            None => match units {
+                WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(None)),
+            },
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
