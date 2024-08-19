@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+bin
+conf
+dev
+docs
+metastore_db
+spark-warehouse
+target
+venv

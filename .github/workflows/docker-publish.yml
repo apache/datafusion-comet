@@ -1,0 +1,51 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR Build
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+      - '*.*.*-rc*'
+
+docker:
+  name: Docker
+  runs-on: ubuntu-latest
+  permissions:
+    contents: read
+    packages: write
+  steps:
+    - uses: actions/checkout@v3
+    - name: Build and push Docker image
+      run: |
+        docker build -t datafusion-comet:latest -f kube/Dockerfile .
+        export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
+        if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
+        then
+          echo "publishing docker tag $DOCKER_TAG"
+          docker tag datafusion-comet:latest ghcr.io/apache/datafusion-comet:$DOCKER_TAG
+          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+          docker push ghcr.io/apache/datafusion-comet:$DOCKER_TAG
+        fi
+      env:
+        DOCKER_USER: ${{ github.actor }}
+        DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
