@@ -41,7 +41,7 @@ COPY rust-toolchain.toml /comet/rust-toolchain.toml
 COPY native /comet/native
 RUN cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 
-# copy the reset of the project
+# copy the rest of the project
 COPY .mvn /comet/.mvn
 COPY mvnw /comet/mvnw
 COPY common /comet/common
