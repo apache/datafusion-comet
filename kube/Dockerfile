@@ -33,6 +33,8 @@ ENV SCALA_VERSION=2.12
 
 # Add source files to Docker image
 RUN mkdir /comet
+WORKDIR /comet
+
 ADD .mvn /comet
 ADD common /comet
 ADD fuzz-testing /comet
@@ -44,7 +46,7 @@ ADD Makefile /comet
 ADD pom.xml /comet
 
 # Pick the JDK instead of JRE to compile Comet
-RUN JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
+RUN JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
 FROM apache/spark:3.4.2
 ENV SPARK_VERSION=3.4

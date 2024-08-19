@@ -37,15 +37,12 @@ docker:
     - uses: actions/checkout@v3
     - name: Build and push Docker image
       run: |
-        docker build -t datafusion-comet:latest -f kube/Dockerfile .
+        docker build -t datafusion-comet:spark-3.4-latest -f kube/Dockerfile .
         export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-        if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
-        then
-          echo "publishing docker tag $DOCKER_TAG"
-          docker tag datafusion-comet:latest ghcr.io/apache/datafusion-comet:$DOCKER_TAG
-          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-          docker push ghcr.io/apache/datafusion-comet:$DOCKER_TAG
-        fi
+        echo "publishing docker tag $DOCKER_TAG"
+        docker tag datafusion-comet:spark-3.4-latest ghcr.io/apache/datafusion-comet:$DOCKER_TAG
+        docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+        docker push ghcr.io/apache/datafusion-comet:$DOCKER_TAG
       env:
         DOCKER_USER: ${{ github.actor }}
         DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
