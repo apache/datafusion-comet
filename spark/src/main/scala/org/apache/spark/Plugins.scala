@@ -26,6 +26,7 @@ import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext,
 import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
+import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -43,6 +44,20 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPlugin {
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
+
+    // register CometSparkSessionExtensions if it isn't already registered
+    val extensionKey = StaticSQLConf.SPARK_SESSION_EXTENSIONS.key
+    val extensionClass = classOf[CometSparkSessionExtensions].getName
+    if (sc.conf.contains(extensionKey)) {
+      val extensions = sc.conf.get(extensionKey)
+      if (!extensions.split(",").map(_.trim).contains(extensionClass)) {
+        sc.conf.set(extensionKey, s"$extensions,$extensionClass")
+      } else {
+        sc.conf.set(extensionKey, extensionClass)
+      }
+    } else {
+      sc.conf.set(extensionKey, extensionClass)
+    }
 
     if (shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
