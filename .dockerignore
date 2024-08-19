@@ -3,7 +3,10 @@
 .idea
 bin
 conf
-dev
+dev/changelog
+dev/copyright
+dev/diffs
+dev/release
 docs
 metastore_db
 spark-warehouse
