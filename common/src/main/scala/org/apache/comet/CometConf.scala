@@ -161,6 +161,45 @@ object CometConf extends ShimCometConf {
       defaultValue = false,
       notes = Some("stddev is slower than Spark's implementation"))
 
+  val COMET_EXEC_PROJECT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_PROJECT, defaultValue = false)
+  val COMET_EXEC_FILTER_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_FILTER, defaultValue = false)
+  val COMET_EXEC_SORT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_SORT, defaultValue = false)
+  val COMET_EXEC_LOCAL_LIMIT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_LOCAL_LIMIT, defaultValue = false)
+  val COMET_EXEC_GLOBAL_LIMIT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_GLOBAL_LIMIT, defaultValue = false)
+  val COMET_EXEC_BROADCAST_HASH_JOIN_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_BROADCAST_HASH_JOIN, defaultValue = false)
+  val COMET_EXEC_BROADCAST_EXCHANGE_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_BROADCAST_EXCHANGE, defaultValue = false)
+  val COMET_EXEC_HASH_JOIN_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_HASH_JOIN, defaultValue = false)
+  val COMET_EXEC_SORT_MERGE_JOIN_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_SORT_MERGE_JOIN, defaultValue = false)
+  val COMET_EXEC_AGGREGATE_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_AGGREGATE, defaultValue = false)
+  val COMET_EXEC_COLLECT_LIMIT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_COLLECT_LIMIT, defaultValue = false)
+  val COMET_EXEC_COALESCE_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_COALESCE, defaultValue = false)
+  val COMET_EXEC_UNION_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_UNION, defaultValue = false)
+  val COMET_EXEC_EXPAND_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_EXPAND, defaultValue = false)
+  val COMET_EXEC_WINDOW_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_WINDOW, defaultValue = false)
+  val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
+
+  val COMET_EXPR_STDDEV_DISABLED: ConfigEntry[Boolean] =
+    createExecDisabledConfig(
+      EXPRESSION_STDDEV,
+      defaultValue = false,
+      notes = Some("stddev is slower than Spark's implementation"))
+
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB. " +
@@ -525,6 +564,20 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
       .doc(
         s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+          .map(s => s" $s.")
+          .getOrElse(""))
+      .booleanConf
+      .createWithDefault(defaultValue)
+  }
+
+  /** Create a config to enable a specific operator */
+  private def createExecDisabledConfig(
+      exec: String,
+      defaultValue: Boolean,
+      notes: Option[String] = None): ConfigEntry[Boolean] = {
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.disabled")
+      .doc(
+        s"Whether to disable $exec. The default value is $defaultValue." + notes
           .map(s => s" $s.")
           .getOrElse(""))
       .booleanConf
