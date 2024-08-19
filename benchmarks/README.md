@@ -90,7 +90,7 @@ $SPARK_HOME/bin/spark-submit \
     local:///opt/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
     --benchmark tpcds \
     --data /mnt/bigdata/tpcds/sf100/ \
-    --queries /opt-datafusion-benchmarks/tpcds/queries-spark \
+    --queries /opt/datafusion-benchmarks/tpcds/queries-spark \
     --iterations 1
     
 ```
