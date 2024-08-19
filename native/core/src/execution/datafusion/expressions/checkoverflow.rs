@@ -118,7 +118,7 @@ impl PhysicalExpr for CheckOverflow {
                     &decimal_array.null_if_overflow_precision(*precision)
                 };
 
-                let new_array = Decimal128Array::from(casted_array.to_data())
+                let new_array = Decimal128Array::from(casted_array.into_data())
                     .with_precision_and_scale(*precision, *scale)
                     .map(|a| Arc::new(a) as ArrayRef)?;
 
