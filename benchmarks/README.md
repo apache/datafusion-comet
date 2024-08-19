@@ -59,13 +59,13 @@ docker push localhost:32000/apache/datafusion-comet-tpcbench:latest
 ## Run benchmarks
 
 ```shell
+export SPARK_MASTER=k8s://https://127.0.0.1:16443
 export COMET_DOCKER_IMAGE=localhost:32000/apache/datafusion-comet-tpcbench:latest
-
 # Location of Comet JAR within the Docker image
 export COMET_JAR=/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-submit \
-    --master k8s://https://127.0.0.1:16443 \
+    --master $SPARK_MASTER \
     --deploy-mode cluster  \
     --name comet-tpcbench \
     --driver-memory 8G \
@@ -80,6 +80,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
     --conf spark.comet.exec.all.enabled=true \

@@ -32,9 +32,13 @@ Make sure the following requirements are met and software installed on your mach
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
-## Using a Published Binary Release
+## Deploying to Kubernetes
 
-There are no published binary releases yet.
+See the [Comet Kubernetes Guide](kubernetes.md) guide.
+
+## Using a Published JAR File
+
+There are no published JAR files yet.
 
 ## Using a Published Source Release
 
