@@ -36,6 +36,7 @@ RUN mkdir /comet
 WORKDIR /comet
 
 COPY .mvn /comet/.mvn
+COPY mvnw /comet/mvnw
 COPY common /comet/common
 COPY fuzz-testing /comet/fuzz-testing
 COPY native /comet/native
