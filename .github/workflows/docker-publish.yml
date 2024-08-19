@@ -35,12 +35,24 @@ docker:
     packages: write
   steps:
     - uses: actions/checkout@v3
+    - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+    - name: Extract Maven version
+      id: extract_version
+      run: |
+        COMET_VERSION=$(xmllint --xpath "string(//project/version)" pom.xml)
+        echo "COMET_VERSION=$COMET_VERSION" >> $GITHUB_ENV
+    - name: Echo Maven version
+      run: echo "The current Maven version is ${{ env.COMET_VERSION }}"
     - name: Build and push Docker image
       run: |
-        docker build -t datafusion-comet:spark-3.4-latest -f kube/Dockerfile .
+        docker build -t datafusion-comet:spark-3.4.2-scala-2.12-${{ env.COMET_VERSION }} -f kube/Dockerfile .
         export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
         echo "publishing docker tag $DOCKER_TAG"
-        docker tag datafusion-comet:spark-3.4-latest ghcr.io/apache/datafusion-comet:$DOCKER_TAG
+        docker tag datafusion-comet:spark-3.4.2-scala-2.12-${{ env.COMET_VERSION }} ghcr.io/apache/datafusion-comet:$DOCKER_TAG
         docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
         docker push ghcr.io/apache/datafusion-comet:$DOCKER_TAG
       env:

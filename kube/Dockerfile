@@ -31,22 +31,23 @@ ENV RUSTFLAGS="-C debuginfo=line-tables-only -C incremental=false"
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 
-# Add source files to Docker image
+# copy source files to Docker image
 RUN mkdir /comet
 WORKDIR /comet
 
-ADD .mvn /comet
-ADD common /comet
-ADD fuzz-testing /comet
-ADD native /comet
-ADD spark /comet
-ADD spark-integration /comet
-ADD .scalafix.conf /comet
-ADD Makefile /comet
-ADD pom.xml /comet
+COPY .mvn /comet/.mvn
+COPY common /comet/common
+COPY fuzz-testing /comet/fuzz-testing
+COPY native /comet/native
+COPY spark /comet/spark
+COPY spark-integration /comet/spark-integration
+COPY .scalafix.conf /comet/.scalafix.conf
+COPY Makefile /comet/Makefile
+COPY pom.xml /comet/pom.xml
 
 # Pick the JDK instead of JRE to compile Comet
-RUN JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
+RUN cd /comet \
+    && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
 FROM apache/spark:3.4.2
 ENV SPARK_VERSION=3.4
