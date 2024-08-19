@@ -26,6 +26,7 @@ on:
     tags:
       - '*.*.*'
       - '*.*.*-rc*'
+      - 'test-docker-publish-*'
 
 docker:
   name: Docker
@@ -34,26 +35,29 @@ docker:
     contents: read
     packages: write
   steps:
-    - uses: actions/checkout@v3
     - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          java-version: '17'
-    - name: Extract Maven version
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+    - name: Extract Comet version
       id: extract_version
       run: |
         COMET_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
         echo "COMET_VERSION=$COMET_VERSION" >> $GITHUB_ENV
-    - name: Echo Maven version
-      run: echo "The current Maven version is ${{ env.COMET_VERSION }}"
-    - name: Build and push Docker image
-      run: |
-        docker build -t datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }} -f kube/Dockerfile .
-        export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-        echo "publishing docker tag $DOCKER_TAG"
-        docker tag datafusion-comet:spark-3.4-scala-2.12t-${{ env.COMET_VERSION }} ghcr.io/apache/datafusion-comet:$DOCKER_TAG
-        docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-        docker push ghcr.io/apache/datafusion-comet:$DOCKER_TAG
-      env:
-        DOCKER_USER: ${{ github.actor }}
-        DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
+    - name: Echo Comet version
+      run: echo "The current Comet version is ${{ env.COMET_VERSION }}"
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
+        file: kube/Dockerfile
