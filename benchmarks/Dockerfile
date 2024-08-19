@@ -21,6 +21,4 @@ RUN apt update \
     && apt clean
 
 RUN cd /opt \
-    && git clone https://github.com/andygrove/datafusion-benchmarks.git \
-    && cd datafusion-benchmarks \
-    && git checkout tpcds
+    && git clone https://github.com/apache/datafusion-benchmarks.git

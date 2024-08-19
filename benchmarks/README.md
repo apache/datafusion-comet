@@ -1,4 +1,23 @@
-# Running Comet in Microk8s
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Running Comet Benchmarks in Microk8s
 
 This guide explains how to run benchmarks derived from TPC-H and TPC-DS in Apache DataFusion Comet deployed in a
 local Microk8s cluster.
@@ -12,15 +31,16 @@ additional steps, ensuring that any existing kube config is backed up first.
 mkdir -p ~/.kube
 microk8s config > ~/.kube/config
 
-microk8s.enable dns
+microk8s enable dns
 microk8s enable registry
 
-microk8s.kubectl create serviceaccount spark
+microk8s kubectl create serviceaccount spark
 ```
 
 ## Build Comet Docker Image
 
-Run the following command from the root of this repository to build the Comet Docker image.
+Run the following command from the root of this repository to build the Comet Docker image, or use a published
+Docker image from https://github.com/orgs/apache/packages?repo_name=datafusion-comet
 
 ```shell
 docker build -t apache/datafusion-comet -f kube/Dockerfile .
@@ -39,9 +59,7 @@ RUN apt update \
     && apt clean
 
 RUN cd /opt \
-    && git clone https://github.com/andygrove/datafusion-benchmarks.git \
-    && cd datafusion-benchmarks \
-    && git checkout tpcds
+    && git clone https://github.com/apache/datafusion-benchmarks.git
 ```
 
 Build the benchmark Docker image and push to the Microk8s Docker registry.
@@ -57,6 +75,9 @@ docker push localhost:32000/apache/datafusion-comet-tpcbench:latest
 ```shell
 export COMET_DOCKER_IMAGE=localhost:32000/apache/datafusion-comet-tpcbench:latest
 
+# Location of Comet JAR within the Docker image
+export COMET_JAR=/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
+
 $SPARK_HOME/bin/spark-submit \
     --master k8s://https://127.0.0.1:16443 \
     --deploy-mode cluster  \
@@ -69,9 +90,9 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.cores.max=8 \
     --conf spark.task.cpus=1 \
     --conf spark.executor.memoryOverhead=3G \
-    --jars local:///opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar \
-    --conf spark.executor.extraClassPath=/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar \
-    --conf spark.driver.extraClassPath=/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar \
+    --jars local://$COMET_JAR
+    --conf spark.executor.extraClassPath=$COMET_JAR \
+    --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
@@ -92,6 +113,5 @@ $SPARK_HOME/bin/spark-submit \
     --data /mnt/bigdata/tpcds/sf100/ \
     --queries /opt/datafusion-benchmarks/tpcds/queries-spark \
     --iterations 1
-    
 ```
 
