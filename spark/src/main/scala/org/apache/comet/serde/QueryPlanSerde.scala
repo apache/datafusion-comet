@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -2663,16 +2663,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case HashAggregateExec(
-            _,
-            _,
-            _,
-            groupingExpressions,
-            aggregateExpressions,
-            aggregateAttributes,
-            _,
-            resultExpressions,
-            child) if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_AGGREGATE) =>
+      case aggregate: BaseAggregateExec
+          if (aggregate.isInstanceOf[HashAggregateExec] ||
+            aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
+            isCometOperatorEnabled(op.conf, CometConf.OPERATOR_AGGREGATE) =>
+        val groupingExpressions = aggregate.groupingExpressions
+        val aggregateExpressions = aggregate.aggregateExpressions
+        val aggregateAttributes = aggregate.aggregateAttributes
+        val resultExpressions = aggregate.resultExpressions
+        val child = aggregate.child
+
         if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
           withInfo(op, "No group by or aggregation")
           return None
