@@ -2392,9 +2392,39 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val childExprs = children.map(exprToProto(_, inputs, binding))
 
           if (childExprs.forall(_.isDefined)) {
-            scalarExprToProtoWithReturnType("make_array", array.dataType, childExprs: _*)
+            scalarExprToProto("make_array", childExprs: _*)
           } else {
             withInfo(expr, "unsupported arguments for CreateArray", children: _*)
+            None
+          }
+
+        case get @ GetArrayItem(child, ordinal, _) =>
+          val childExpr = exprToProto(child, inputs, binding)
+
+          // DataFusion expects the indices to be int64
+          val ordinalExpr =
+            exprToProto(Add(Cast(ordinal, LongType), Literal(1L)), inputs, binding)
+          // scalastyle:off println
+          println(ordinal.dataType)
+
+          if (childExpr.isDefined && ordinalExpr.isDefined) {
+            scalarExprToProtoWithReturnType("array_element", get.dataType, childExpr, ordinalExpr)
+          } else {
+            withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
+            None
+          }
+
+        case get @ ElementAt(child, ordinal, _, _) =>
+          val childExpr = exprToProto(child, inputs, binding)
+
+          // DataFusion expects the indices to be int64
+          val ordinalExpr =
+            exprToProto(Cast(ordinal, LongType), inputs, binding)
+
+          if (childExpr.isDefined && ordinalExpr.isDefined) {
+            scalarExprToProtoWithReturnType("array_element", get.dataType, childExpr, ordinalExpr)
+          } else {
+            withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
             None
           }
 

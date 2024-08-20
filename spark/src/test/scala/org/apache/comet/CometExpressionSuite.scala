@@ -2009,6 +2009,63 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
+        checkSparkAnswerAndOperator(df.select(array(col("_13"), col("_13"))))
+      }
+    }
+  }
+
+  test("GetArrayItem") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+
+        Seq(false).foreach { ansiEnabled =>
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString()) {
+            val df = spark.read
+              .parquet(path.toString)
+
+            val stringArray = df.select(array(col("_8"), col("_13")).alias("arr"))
+            stringArray.show()
+            checkSparkAnswerAndOperator(
+              stringArray.select(
+                col("arr").getItem(-3),
+                col("arr").getItem(-4),
+                col("arr").getItem(1),
+                col("arr").getItem(2)))
+
+            // stringArray.select(
+            //     col("arr").getItem(-1),
+            //     col("arr").getItem(-2),
+            //     col("arr").getItem(1),
+            //     col("arr").getItem(2))
+            //     .show()
+
+            stringArray.select(
+                // element_at(col("arr"), -2),
+                // element_at(col("arr"), -1),
+                // element_at(col("arr"), 1),
+                element_at(col("arr"), lit(2)))
+                .show()
+
+            // val intArray = df.select(array(col("_2"), col("_3"), col("_4")).alias("arr"))
+            // checkSparkAnswerAndOperator(
+            //   intArray
+            //     .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(-1)))
+
+            // intArray
+            //   .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(-1))
+            //   .explain()
+
+            // checkSparkAnswerAndOperator(
+            //   intArray.select(
+            //     element_at(col("arr"), 1),
+            //     element_at(col("arr"), 3),
+            //     element_at(col("arr"), 4),
+            //     element_at(col("arr"), -1)))
+          }
+        }
       }
     }
   }
