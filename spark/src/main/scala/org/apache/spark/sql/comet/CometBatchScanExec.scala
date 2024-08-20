@@ -25,7 +25,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.connector.read._
-import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.vectorized._
@@ -73,11 +72,11 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
 
   // `ReusedSubqueryExec` in Spark only call non-columnar execute.
   override def doExecute(): RDD[InternalRow] = {
-    ColumnarToRowExec(this).doExecute()
+    CometColumnarToRowExec(this).doExecute()
   }
 
   override def executeCollect(): Array[InternalRow] = {
-    ColumnarToRowExec(this).executeCollect()
+    CometColumnarToRowExec(this).executeCollect()
   }
 
   override def readerFactory: PartitionReaderFactory = wrappedScan.readerFactory

@@ -74,8 +74,36 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    extensions.injectColumnar { session => CometColumnarOverrideRules(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+  }
+
+  case class CometColumnarOverrideRules(session: SparkSession) extends ColumnarRule {
+    override def preColumnarTransitions: Rule[SparkPlan] = CometPreColumnarTransitions()
+    override def postColumnarTransitions: Rule[SparkPlan] = CometPostColumnarTransitions()
+  }
+
+  case class CometPreColumnarTransitions() extends Rule[SparkPlan] {
+    override def apply(sparkPlan: SparkPlan): SparkPlan = {
+      sparkPlan
+    }
+  }
+
+  /** Replace ColumnarToRowExec with CometColumnarToRowExec for CometExec inputs */
+  case class CometPostColumnarTransitions() extends Rule[SparkPlan] {
+    override def apply(sparkPlan: SparkPlan): SparkPlan = {
+      sparkPlan.transformUp {
+        case ColumnarToRowExec(child: CometScanExec) =>
+          CometColumnarToRowExec(child)
+        case ColumnarToRowExec(InputAdapter(child: CometScanExec)) =>
+          CometColumnarToRowExec(InputAdapter(child))
+        case ColumnarToRowExec(child: CometExec) =>
+          CometColumnarToRowExec(child)
+        case ColumnarToRowExec(InputAdapter(child: CometExec)) =>
+          CometColumnarToRowExec(InputAdapter(child))
+      }
+    }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -1072,7 +1100,12 @@ class CometSparkSessionExtensions
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
-        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec)
+            if !sparkToColumnar.child.supportsColumnar =>
+          sparkToColumnar.child
+        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec)
+            if !sparkToColumnar.child.supportsColumnar =>
+          sparkToColumnar.child
         case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
         // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
         // shuffle takes row-based input.
@@ -1087,6 +1120,8 @@ class CometSparkSessionExtensions
       }
 
       eliminatedPlan match {
+        case CometColumnarToRowExec(child: CometCollectLimitExec) =>
+          child
         case ColumnarToRowExec(child: CometCollectLimitExec) =>
           child
         case other =>
