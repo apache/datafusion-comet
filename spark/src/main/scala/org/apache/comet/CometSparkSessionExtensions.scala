@@ -226,12 +226,7 @@ class CometSparkSessionExtensions
 
     private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
 
-    private def isCometNative(op: SparkPlan): Boolean = op match {
-      case _: CometNativeExec => true
-      case AQEShuffleReadExec(q: ShuffleQueryStageExec, _) =>
-        isCometNative(q.plan)
-      case _ => false
-    }
+    private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
     private def explainChildNotNative(op: SparkPlan): String = {
       var nonNatives: Seq[String] = Seq()
