@@ -61,5 +61,5 @@ jobs:
         with:
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
+          tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
