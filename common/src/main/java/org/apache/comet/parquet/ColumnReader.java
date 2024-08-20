@@ -25,12 +25,7 @@ import java.nio.ByteBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.arrow.c.ArrowArray;
-import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CometSchemaImporter;
-import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.dictionary.Dictionary;
-import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.page.DataPage;
@@ -38,18 +33,10 @@ import org.apache.parquet.column.page.DataPageV1;
 import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
-import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
-import org.apache.comet.vector.CometDecodedVector;
-import org.apache.comet.vector.CometDictionary;
-import org.apache.comet.vector.CometDictionaryVector;
-import org.apache.comet.vector.CometPlainVector;
-import org.apache.comet.vector.CometVector;
-
-import static org.apache.comet.parquet.Utils.getDictValNullCount;
-import static org.apache.comet.parquet.Utils.getNullCount;
+import org.apache.comet.vector.*;
 
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
@@ -58,7 +45,7 @@ public class ColumnReader extends AbstractColumnReader {
    * The current Comet vector holding all the values read by this column reader. Owned by this
    * reader and MUST be closed after use.
    */
-  private CometDecodedVector currentVector;
+  private CometVector currentVector;
 
   /** Dictionary values for this column. Only set if the column is using dictionary encoding. */
   protected CometDictionary dictionary;
@@ -168,7 +155,12 @@ public class ColumnReader extends AbstractColumnReader {
   }
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
-  public CometDecodedVector loadVector() {
+  public CometVector loadVector() {
+    long[] addrs = Native.currentBatch(nativeHandle);
+    currentVector = new CometNativeVector(null, useDecimal128, addrs[0], addrs[1]);
+    return currentVector;
+    /*
+
     // Only re-use Comet vector iff:
     //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
     //      side may fallback to plain encoding and the underlying memory address for the vector
@@ -251,6 +243,8 @@ public class ColumnReader extends AbstractColumnReader {
               cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
       return currentVector;
     }
+
+     */
   }
 
   protected void readPage() {

@@ -55,6 +55,9 @@ class NativeUtil {
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
+        case a: CometNativeVector =>
+          exportedVectors += a.getArrayAddress
+          exportedVectors += a.getSchemaAddress
         case a: CometVector =>
           val valueVector = a.getValueVector
 
