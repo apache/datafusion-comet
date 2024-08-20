@@ -139,7 +139,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
       "stddev",
-      defaultValue = false,
+      defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
