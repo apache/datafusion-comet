@@ -502,7 +502,7 @@ class CometSparkSessionExtensions
           withInfo(op, "ShuffleHashJoin is not enabled")
           op
 
-        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative(_)) =>
+        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative) =>
           withInfo(
             op,
             "ShuffleHashJoin disabled because the following children are not native " +
@@ -822,15 +822,16 @@ class CometSparkSessionExtensions
           s
 
         case op =>
-          // An operator that is not supported by Comet
           op match {
-            // Broadcast exchange exec is transformed by the parent node. We include
-            // this case specially here so we do not add a misleading 'info' message
-            case _: BroadcastExchangeExec => op
-            case _: CometExec | _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec => op
-            case o =>
-              withInfo(o, s"${o.nodeName} is not supported")
-              o
+            case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
+                _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
+              // Some execs should never be replaced. We include
+              // these cases specially here so we do not add a misleading 'info' message
+              op
+            case _ =>
+              // An operator that is not supported by Comet
+              withInfo(op, s"${op.nodeName} is not supported")
+              op
           }
       }
     }
@@ -1071,21 +1072,13 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      // TODO: AQE coalesce partitions feature causes Comet shuffle memory leak.
-      // We should disable Comet shuffle when AQE coalesce partitions is enabled.
-      (!conf.coalesceShufflePartitionsEnabled || COMET_SHUFFLE_ENFORCE_MODE_ENABLED.get())
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
       Some(s"${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
     } else if (!isCometShuffleManagerEnabled(conf)) {
       Some(s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
-    } else if (conf.coalesceShufflePartitionsEnabled && !COMET_SHUFFLE_ENFORCE_MODE_ENABLED
-        .get()) {
-      Some(
-        s"${SQLConf.COALESCE_PARTITIONS_ENABLED.key} is enabled and " +
-          s"${COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key} is not enabled")
     } else {
       None
     }
