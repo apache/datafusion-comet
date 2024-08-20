@@ -27,7 +27,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.connector.read._
-import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.vectorized._
