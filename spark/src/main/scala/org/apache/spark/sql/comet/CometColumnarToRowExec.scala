@@ -33,9 +33,6 @@ import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.Utils
 
-import org.apache.comet.CometConf
-import org.apache.comet.vector.CometVector
-
 /**
  * This is currently an identical copy of Spark's ColumnarToRowExec except for removing the
  * code-gen features.
