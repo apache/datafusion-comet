@@ -86,7 +86,7 @@ Note that the output filename is currently hard-coded as `queries.sql`
 ```shell
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
-    org.apache.spark.CometPlugin \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
     --conf spark.comet.exec.all.enabled=true \
