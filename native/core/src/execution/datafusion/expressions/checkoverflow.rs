@@ -23,7 +23,7 @@ use std::{
 };
 
 use arrow::{
-    array::{as_primitive_array, Array, ArrayRef, Decimal128Array, PrimitiveArray},
+    array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
     datatypes::{Decimal128Type, DecimalType},
     record_batch::RecordBatch,
 };
