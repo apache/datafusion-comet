@@ -1,5 +1,5 @@
 WholeStageCodegen (4)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt]
         CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count,count(1)]
@@ -15,7 +15,7 @@ WholeStageCodegen (4)
                             BroadcastHashJoin [cs_promo_sk,p_promo_sk]
                               Project [cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq]
                                 BroadcastHashJoin [cs_ship_date_sk,d_date_sk,d_date,d_date]
-                                  ColumnarToRow
+                                  CometColumnarToRow
                                     InputAdapter
                                       CometProject [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_date,d_week_seq]
                                         CometBroadcastHashJoin [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,inv_date_sk,w_warehouse_name,i_item_desc,d_date,d_week_seq,d_date_sk,d_week_seq]
@@ -36,7 +36,7 @@ WholeStageCodegen (4)
                                                                       SubqueryBroadcast [d_date_sk] #1
                                                                         BroadcastExchange #3
                                                                           WholeStageCodegen (1)
-                                                                            ColumnarToRow
+                                                                            CometColumnarToRow
                                                                               InputAdapter
                                                                                 CometProject [d_date_sk,d_date,d_week_seq]
                                                                                   CometFilter [d_date_sk,d_date,d_week_seq,d_year]
@@ -68,14 +68,14 @@ WholeStageCodegen (4)
                                   InputAdapter
                                     BroadcastExchange #11
                                       WholeStageCodegen (1)
-                                        ColumnarToRow
+                                        CometColumnarToRow
                                           InputAdapter
                                             CometFilter [d_date_sk,d_date]
                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                               InputAdapter
                                 BroadcastExchange #12
                                   WholeStageCodegen (2)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometFilter [p_promo_sk]
                                           CometScan parquet spark_catalog.default.promotion [p_promo_sk]

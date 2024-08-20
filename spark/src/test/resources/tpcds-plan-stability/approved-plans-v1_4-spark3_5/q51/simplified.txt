@@ -1,5 +1,5 @@
 WholeStageCodegen (5)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store_cumulative]
         CometFilter [item_sk,d_date,web_sales,store_sales,web_cumulative,store_cumulative]
@@ -16,7 +16,7 @@ WholeStageCodegen (5)
                               InputAdapter
                                 Window [_w0,ws_item_sk,d_date]
                                   WholeStageCodegen (1)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometSort [item_sk,d_date,_w0,ws_item_sk]
                                           CometColumnarExchange [ws_item_sk] #3
@@ -30,7 +30,7 @@ WholeStageCodegen (5)
                                                           SubqueryBroadcast [d_date_sk] #1
                                                             BroadcastExchange #5
                                                               WholeStageCodegen (1)
-                                                                ColumnarToRow
+                                                                CometColumnarToRow
                                                                   InputAdapter
                                                                     CometProject [d_date_sk,d_date]
                                                                       CometFilter [d_date_sk,d_date,d_month_seq]
@@ -47,7 +47,7 @@ WholeStageCodegen (5)
                               InputAdapter
                                 Window [_w0,ss_item_sk,d_date]
                                   WholeStageCodegen (3)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometSort [item_sk,d_date,_w0,ss_item_sk]
                                           CometColumnarExchange [ss_item_sk] #8

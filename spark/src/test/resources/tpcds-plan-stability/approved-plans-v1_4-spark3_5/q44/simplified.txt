@@ -15,20 +15,20 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                             Window [rank_col]
                               WindowGroupLimit [rank_col]
                                 WholeStageCodegen (2)
-                                  ColumnarToRow
+                                  CometColumnarToRow
                                     InputAdapter
                                       CometSort [item_sk,rank_col]
                                         CometColumnarExchange #1
                                           RowToColumnar
                                             WindowGroupLimit [rank_col]
                                               WholeStageCodegen (1)
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometSort [item_sk,rank_col]
                                                       CometFilter [item_sk,rank_col]
                                                         Subquery #1
                                                           WholeStageCodegen (1)
-                                                            ColumnarToRow
+                                                            CometColumnarToRow
                                                               InputAdapter
                                                                 CometHashAggregate [rank_col,ss_store_sk,sum,count,avg(UnscaledValue(ss_net_profit))]
                                                                   CometColumnarExchange [ss_store_sk] #3
@@ -51,14 +51,14 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                             Window [rank_col]
                               WindowGroupLimit [rank_col]
                                 WholeStageCodegen (5)
-                                  ColumnarToRow
+                                  CometColumnarToRow
                                     InputAdapter
                                       CometSort [item_sk,rank_col]
                                         CometColumnarExchange #4
                                           RowToColumnar
                                             WindowGroupLimit [rank_col]
                                               WholeStageCodegen (4)
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometSort [item_sk,rank_col]
                                                       CometFilter [item_sk,rank_col]
@@ -68,7 +68,7 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
             InputAdapter
               BroadcastExchange #5
                 WholeStageCodegen (7)
-                  ColumnarToRow
+                  CometColumnarToRow
                     InputAdapter
                       CometFilter [i_item_sk,i_product_name]
                         CometScan parquet spark_catalog.default.item [i_item_sk,i_product_name]

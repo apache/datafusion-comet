@@ -2,7 +2,7 @@
 TakeOrderedAndProject (125)
 +- * Project (124)
    +- * SortMergeJoin Inner (123)
-      :- * ColumnarToRow (67)
+      :- * CometColumnarToRow (67)
       :  +- CometSort (66)
       :     +- CometColumnarExchange (65)
       :        +- CometFilter (64)
@@ -69,7 +69,7 @@ TakeOrderedAndProject (125)
       :                                            +- CometProject (52)
       :                                               +- CometFilter (51)
       :                                                  +- CometScan parquet spark_catalog.default.web_returns (50)
-      +- * ColumnarToRow (122)
+      +- * CometColumnarToRow (122)
          +- CometSort (121)
             +- CometColumnarExchange (120)
                +- CometFilter (119)
@@ -427,7 +427,7 @@ Arguments: hashpartitioning(i_brand_id#8, i_class_id#9, i_category_id#10, i_manu
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#64, sales_amt#65]
 Arguments: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#64, sales_amt#65], [i_brand_id#8 ASC NULLS FIRST, i_class_id#9 ASC NULLS FIRST, i_category_id#10 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST]
 
-(67) ColumnarToRow [codegen id : 1]
+(67) CometColumnarToRow [codegen id : 1]
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#64, sales_amt#65]
 
 (68) Scan parquet spark_catalog.default.catalog_sales
@@ -667,7 +667,7 @@ Arguments: hashpartitioning(i_brand_id#73, i_class_id#74, i_category_id#75, i_ma
 Input [7]: [d_year#78, i_brand_id#73, i_class_id#74, i_category_id#75, i_manufact_id#76, sales_cnt#118, sales_amt#119]
 Arguments: [d_year#78, i_brand_id#73, i_class_id#74, i_category_id#75, i_manufact_id#76, sales_cnt#118, sales_amt#119], [i_brand_id#73 ASC NULLS FIRST, i_class_id#74 ASC NULLS FIRST, i_category_id#75 ASC NULLS FIRST, i_manufact_id#76 ASC NULLS FIRST]
 
-(122) ColumnarToRow [codegen id : 2]
+(122) CometColumnarToRow [codegen id : 2]
 Input [7]: [d_year#78, i_brand_id#73, i_class_id#74, i_category_id#75, i_manufact_id#76, sales_cnt#118, sales_amt#119]
 
 (123) SortMergeJoin [codegen id : 3]
@@ -688,7 +688,7 @@ Arguments: 100, [sales_cnt_diff#124 ASC NULLS FIRST], [prev_year#120, year#121, 
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (129)
-+- * ColumnarToRow (128)
++- * CometColumnarToRow (128)
    +- CometFilter (127)
       +- CometScan parquet spark_catalog.default.date_dim (126)
 
@@ -704,7 +704,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#13, d_year#14]
 Condition : ((isnotnull(d_year#14) AND (d_year#14 = 2002)) AND isnotnull(d_date_sk#13))
 
-(128) ColumnarToRow [codegen id : 1]
+(128) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#13, d_year#14]
 
 (129) BroadcastExchange
@@ -717,7 +717,7 @@ Subquery:3 Hosting operator id = 40 Hosting Expression = ws_sold_date_sk#46 IN d
 
 Subquery:4 Hosting operator id = 68 Hosting Expression = cs_sold_date_sk#70 IN dynamicpruning#71
 BroadcastExchange (133)
-+- * ColumnarToRow (132)
++- * CometColumnarToRow (132)
    +- CometFilter (131)
       +- CometScan parquet spark_catalog.default.date_dim (130)
 
@@ -733,7 +733,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#77, d_year#78]
 Condition : ((isnotnull(d_year#78) AND (d_year#78 = 2001)) AND isnotnull(d_date_sk#77))
 
-(132) ColumnarToRow [codegen id : 1]
+(132) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#77, d_year#78]
 
 (133) BroadcastExchange

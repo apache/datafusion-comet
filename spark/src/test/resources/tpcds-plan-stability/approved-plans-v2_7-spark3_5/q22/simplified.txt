@@ -10,7 +10,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
                   Expand [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]
                     Project [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]
                       BroadcastNestedLoopJoin
-                        ColumnarToRow
+                        CometColumnarToRow
                           InputAdapter
                             CometProject [inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
                               CometBroadcastHashJoin [inv_item_sk,inv_quantity_on_hand,i_item_sk,i_brand,i_class,i_category,i_product_name]
@@ -21,7 +21,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_month_seq]

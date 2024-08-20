@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [brand_id,brand,t_hour,t_minute,ext_price]
         CometColumnarExchange [ext_price,brand_id] #1
@@ -22,7 +22,7 @@ WholeStageCodegen (1)
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #4
                                       WholeStageCodegen (1)
-                                        ColumnarToRow
+                                        CometColumnarToRow
                                           InputAdapter
                                             CometProject [d_date_sk]
                                               CometFilter [d_date_sk,d_year,d_moy]

@@ -7,7 +7,7 @@
             +- * Project (46)
                +- * BroadcastHashJoin LeftAnti BuildRight (45)
                   :- * BroadcastHashJoin LeftAnti BuildRight (31)
-                  :  :- * ColumnarToRow (17)
+                  :  :- * CometColumnarToRow (17)
                   :  :  +- CometHashAggregate (16)
                   :  :     +- CometColumnarExchange (15)
                   :  :        +- CometHashAggregate (14)
@@ -25,7 +25,7 @@
                   :  :                    +- CometFilter (10)
                   :  :                       +- CometScan parquet spark_catalog.default.customer (9)
                   :  +- BroadcastExchange (30)
-                  :     +- * ColumnarToRow (29)
+                  :     +- * CometColumnarToRow (29)
                   :        +- CometHashAggregate (28)
                   :           +- CometColumnarExchange (27)
                   :              +- CometHashAggregate (26)
@@ -38,7 +38,7 @@
                   :                       :     +- ReusedExchange (20)
                   :                       +- ReusedExchange (23)
                   +- BroadcastExchange (44)
-                     +- * ColumnarToRow (43)
+                     +- * CometColumnarToRow (43)
                         +- CometHashAggregate (42)
                            +- CometColumnarExchange (41)
                               +- CometHashAggregate (40)
@@ -130,7 +130,7 @@ Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Keys [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Functions: []
 
-(17) ColumnarToRow [codegen id : 3]
+(17) CometColumnarToRow [codegen id : 3]
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 
 (18) Scan parquet spark_catalog.default.catalog_sales
@@ -183,7 +183,7 @@ Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Keys [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Functions: []
 
-(29) ColumnarToRow [codegen id : 1]
+(29) CometColumnarToRow [codegen id : 1]
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 
 (30) BroadcastExchange
@@ -246,7 +246,7 @@ Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Keys [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Functions: []
 
-(43) ColumnarToRow [codegen id : 2]
+(43) CometColumnarToRow [codegen id : 2]
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 
 (44) BroadcastExchange
@@ -291,7 +291,7 @@ Results [1]: [count(1)#28 AS count(1)#29]
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#2 IN dynamicpruning#3
 BroadcastExchange (56)
-+- * ColumnarToRow (55)
++- * CometColumnarToRow (55)
    +- CometProject (54)
       +- CometFilter (53)
          +- CometScan parquet spark_catalog.default.date_dim (52)
@@ -312,7 +312,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [3]: [d_date_sk#4, d_date#5, d_month_seq#6]
 Arguments: [d_date_sk#4, d_date#5], [d_date_sk#4, d_date#5]
 
-(55) ColumnarToRow [codegen id : 1]
+(55) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#4, d_date#5]
 
 (56) BroadcastExchange

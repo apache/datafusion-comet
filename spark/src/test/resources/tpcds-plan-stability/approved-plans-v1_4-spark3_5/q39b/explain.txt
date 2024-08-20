@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometSort (46)
    +- CometColumnarExchange (45)
       +- CometBroadcastHashJoin (44)
@@ -261,14 +261,14 @@ Arguments: rangepartitioning(w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC N
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#36, cov#37]
 Arguments: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#36, cov#37], [w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC NULLS FIRST, d_moy#11 ASC NULLS FIRST, mean#18 ASC NULLS FIRST, cov#19 ASC NULLS FIRST, d_moy#30 ASC NULLS FIRST, mean#36 ASC NULLS FIRST, cov#37 ASC NULLS FIRST]
 
-(47) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#36, cov#37]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (52)
-+- * ColumnarToRow (51)
++- * CometColumnarToRow (51)
    +- CometProject (50)
       +- CometFilter (49)
          +- CometScan parquet spark_catalog.default.date_dim (48)
@@ -289,7 +289,7 @@ Condition : ((((isnotnull(d_year#10) AND isnotnull(d_moy#11)) AND (d_year#10 = 2
 Input [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Arguments: [d_date_sk#9, d_moy#11], [d_date_sk#9, d_moy#11]
 
-(51) ColumnarToRow [codegen id : 1]
+(51) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#9, d_moy#11]
 
 (52) BroadcastExchange
@@ -298,7 +298,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 24 Hosting Expression = inv_date_sk#23 IN dynamicpruning#24
 BroadcastExchange (57)
-+- * ColumnarToRow (56)
++- * CometColumnarToRow (56)
    +- CometProject (55)
       +- CometFilter (54)
          +- CometScan parquet spark_catalog.default.date_dim (53)
@@ -319,7 +319,7 @@ Condition : ((((isnotnull(d_year#29) AND isnotnull(d_moy#30)) AND (d_year#29 = 2
 Input [3]: [d_date_sk#28, d_year#29, d_moy#30]
 Arguments: [d_date_sk#28, d_moy#30], [d_date_sk#28, d_moy#30]
 
-(56) ColumnarToRow [codegen id : 1]
+(56) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#28, d_moy#30]
 
 (57) BroadcastExchange

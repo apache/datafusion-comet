@@ -15,34 +15,34 @@
                         :     :     :- * SortMergeJoin LeftAnti (19)
                         :     :     :  :- * Project (13)
                         :     :     :  :  +- * SortMergeJoin LeftSemi (12)
-                        :     :     :  :     :- * ColumnarToRow (6)
+                        :     :     :  :     :- * CometColumnarToRow (6)
                         :     :     :  :     :  +- CometSort (5)
                         :     :     :  :     :     +- CometColumnarExchange (4)
                         :     :     :  :     :        +- CometProject (3)
                         :     :     :  :     :           +- CometFilter (2)
                         :     :     :  :     :              +- CometScan parquet spark_catalog.default.web_sales (1)
-                        :     :     :  :     +- * ColumnarToRow (11)
+                        :     :     :  :     +- * CometColumnarToRow (11)
                         :     :     :  :        +- CometSort (10)
                         :     :     :  :           +- CometColumnarExchange (9)
                         :     :     :  :              +- CometProject (8)
                         :     :     :  :                 +- CometScan parquet spark_catalog.default.web_sales (7)
-                        :     :     :  +- * ColumnarToRow (18)
+                        :     :     :  +- * CometColumnarToRow (18)
                         :     :     :     +- CometSort (17)
                         :     :     :        +- CometColumnarExchange (16)
                         :     :     :           +- CometProject (15)
                         :     :     :              +- CometScan parquet spark_catalog.default.web_returns (14)
                         :     :     +- BroadcastExchange (24)
-                        :     :        +- * ColumnarToRow (23)
+                        :     :        +- * CometColumnarToRow (23)
                         :     :           +- CometProject (22)
                         :     :              +- CometFilter (21)
                         :     :                 +- CometScan parquet spark_catalog.default.date_dim (20)
                         :     +- BroadcastExchange (31)
-                        :        +- * ColumnarToRow (30)
+                        :        +- * CometColumnarToRow (30)
                         :           +- CometProject (29)
                         :              +- CometFilter (28)
                         :                 +- CometScan parquet spark_catalog.default.customer_address (27)
                         +- BroadcastExchange (38)
-                           +- * ColumnarToRow (37)
+                           +- * CometColumnarToRow (37)
                               +- CometProject (36)
                                  +- CometFilter (35)
                                     +- CometScan parquet spark_catalog.default.web_site (34)
@@ -71,7 +71,7 @@ Arguments: hashpartitioning(ws_order_number#5, 5), ENSURE_REQUIREMENTS, CometCol
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse_sk#4, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
 Arguments: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse_sk#4, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7], [ws_order_number#5 ASC NULLS FIRST]
 
-(6) ColumnarToRow [codegen id : 1]
+(6) CometColumnarToRow [codegen id : 1]
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_warehouse_sk#4, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
 
 (7) Scan parquet spark_catalog.default.web_sales
@@ -92,7 +92,7 @@ Arguments: hashpartitioning(ws_order_number#10, 5), ENSURE_REQUIREMENTS, CometCo
 Input [2]: [ws_warehouse_sk#9, ws_order_number#10]
 Arguments: [ws_warehouse_sk#9, ws_order_number#10], [ws_order_number#10 ASC NULLS FIRST]
 
-(11) ColumnarToRow [codegen id : 2]
+(11) CometColumnarToRow [codegen id : 2]
 Input [2]: [ws_warehouse_sk#9, ws_order_number#10]
 
 (12) SortMergeJoin [codegen id : 3]
@@ -123,7 +123,7 @@ Arguments: hashpartitioning(wr_order_number#12, 5), ENSURE_REQUIREMENTS, CometCo
 Input [1]: [wr_order_number#12]
 Arguments: [wr_order_number#12], [wr_order_number#12 ASC NULLS FIRST]
 
-(18) ColumnarToRow [codegen id : 4]
+(18) CometColumnarToRow [codegen id : 4]
 Input [1]: [wr_order_number#12]
 
 (19) SortMergeJoin [codegen id : 8]
@@ -147,7 +147,7 @@ Condition : (((isnotnull(d_date#15) AND (d_date#15 >= 1999-02-01)) AND (d_date#1
 Input [2]: [d_date_sk#14, d_date#15]
 Arguments: [d_date_sk#14], [d_date_sk#14]
 
-(23) ColumnarToRow [codegen id : 5]
+(23) CometColumnarToRow [codegen id : 5]
 Input [1]: [d_date_sk#14]
 
 (24) BroadcastExchange
@@ -179,7 +179,7 @@ Condition : ((isnotnull(ca_state#17) AND (ca_state#17 = IL)) AND isnotnull(ca_ad
 Input [2]: [ca_address_sk#16, ca_state#17]
 Arguments: [ca_address_sk#16], [ca_address_sk#16]
 
-(30) ColumnarToRow [codegen id : 6]
+(30) CometColumnarToRow [codegen id : 6]
 Input [1]: [ca_address_sk#16]
 
 (31) BroadcastExchange
@@ -211,7 +211,7 @@ Condition : ((isnotnull(web_company_name#19) AND (web_company_name#19 = pri     
 Input [2]: [web_site_sk#18, web_company_name#19]
 Arguments: [web_site_sk#18], [web_site_sk#18]
 
-(37) ColumnarToRow [codegen id : 7]
+(37) CometColumnarToRow [codegen id : 7]
 Input [1]: [web_site_sk#18]
 
 (38) BroadcastExchange

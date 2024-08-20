@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (79)
+* CometColumnarToRow (79)
 +- CometTakeOrderedAndProject (78)
    +- CometHashAggregate (77)
       +- CometColumnarExchange (76)
@@ -11,7 +11,7 @@
                   :     +- Window (24)
                   :        +- * Sort (23)
                   :           +- Window (22)
-                  :              +- * ColumnarToRow (21)
+                  :              +- * CometColumnarToRow (21)
                   :                 +- CometSort (20)
                   :                    +- CometColumnarExchange (19)
                   :                       +- CometHashAggregate (18)
@@ -37,7 +37,7 @@
                   :     +- Window (47)
                   :        +- * Sort (46)
                   :           +- Window (45)
-                  :              +- * ColumnarToRow (44)
+                  :              +- * CometColumnarToRow (44)
                   :                 +- CometSort (43)
                   :                    +- CometColumnarExchange (42)
                   :                       +- CometHashAggregate (41)
@@ -60,7 +60,7 @@
                         +- Window (70)
                            +- * Sort (69)
                               +- Window (68)
-                                 +- * ColumnarToRow (67)
+                                 +- * CometColumnarToRow (67)
                                     +- CometSort (66)
                                        +- CometColumnarExchange (65)
                                           +- CometHashAggregate (64)
@@ -174,7 +174,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 Arguments: [item#22, return_ratio#23, currency_ratio#24], [return_ratio#23 ASC NULLS FIRST]
 
-(21) ColumnarToRow [codegen id : 1]
+(21) CometColumnarToRow [codegen id : 1]
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 
 (22) Window
@@ -275,7 +275,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 Arguments: [item#47, return_ratio#48, currency_ratio#49], [return_ratio#48 ASC NULLS FIRST]
 
-(44) ColumnarToRow [codegen id : 4]
+(44) CometColumnarToRow [codegen id : 4]
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 
 (45) Window
@@ -376,7 +376,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 Arguments: [item#72, return_ratio#73, currency_ratio#74], [return_ratio#73 ASC NULLS FIRST]
 
-(67) ColumnarToRow [codegen id : 7]
+(67) CometColumnarToRow [codegen id : 7]
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 
 (68) Window
@@ -424,14 +424,14 @@ Functions: []
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#27 ASC NULLS FIRST,return_rank#25 ASC NULLS FIRST,currency_rank#26 ASC NULLS FIRST,item#22 ASC NULLS FIRST], output=[channel#27,item#22,return_ratio#23,return_rank#25,currency_rank#26]), [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26], 100, [channel#27 ASC NULLS FIRST, return_rank#25 ASC NULLS FIRST, currency_rank#26 ASC NULLS FIRST, item#22 ASC NULLS FIRST], [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
-(79) ColumnarToRow [codegen id : 11]
+(79) CometColumnarToRow [codegen id : 11]
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (84)
-+- * ColumnarToRow (83)
++- * CometColumnarToRow (83)
    +- CometProject (82)
       +- CometFilter (81)
          +- CometScan parquet spark_catalog.default.date_dim (80)
@@ -452,7 +452,7 @@ Condition : ((((isnotnull(d_year#14) AND isnotnull(d_moy#15)) AND (d_year#14 = 2
 Input [3]: [d_date_sk#13, d_year#14, d_moy#15]
 Arguments: [d_date_sk#13], [d_date_sk#13]
 
-(83) ColumnarToRow [codegen id : 1]
+(83) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#13]
 
 (84) BroadcastExchange

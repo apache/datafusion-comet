@@ -9,7 +9,7 @@ TakeOrderedAndProject (45)
       :     :     +- Window (26)
       :     :        +- * Filter (25)
       :     :           +- Window (24)
-      :     :              +- * ColumnarToRow (23)
+      :     :              +- * CometColumnarToRow (23)
       :     :                 +- CometSort (22)
       :     :                    +- CometColumnarExchange (21)
       :     :                       +- CometHashAggregate (20)
@@ -35,13 +35,13 @@ TakeOrderedAndProject (45)
       :     +- BroadcastExchange (34)
       :        +- * Project (33)
       :           +- Window (32)
-      :              +- * ColumnarToRow (31)
+      :              +- * CometColumnarToRow (31)
       :                 +- CometSort (30)
       :                    +- ReusedExchange (29)
       +- BroadcastExchange (42)
          +- * Project (41)
             +- Window (40)
-               +- * ColumnarToRow (39)
+               +- * CometColumnarToRow (39)
                   +- CometSort (38)
                      +- ReusedExchange (37)
 
@@ -152,7 +152,7 @@ Arguments: hashpartitioning(i_category#3, i_brand#2, s_store_name#13, s_company_
 Input [8]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum_sales#16, _w0#17]
 Arguments: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum_sales#16, _w0#17], [i_category#3 ASC NULLS FIRST, i_brand#2 ASC NULLS FIRST, s_store_name#13 ASC NULLS FIRST, s_company_name#14 ASC NULLS FIRST, d_year#10 ASC NULLS FIRST, d_moy#11 ASC NULLS FIRST]
 
-(23) ColumnarToRow [codegen id : 1]
+(23) CometColumnarToRow [codegen id : 1]
 Input [8]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum_sales#16, _w0#17]
 
 (24) Window
@@ -182,7 +182,7 @@ Output [7]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, d_ye
 Input [7]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, d_year#24, d_moy#25, sum_sales#16]
 Arguments: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, d_year#24, d_moy#25, sum_sales#16], [i_category#20 ASC NULLS FIRST, i_brand#21 ASC NULLS FIRST, s_store_name#22 ASC NULLS FIRST, s_company_name#23 ASC NULLS FIRST, d_year#24 ASC NULLS FIRST, d_moy#25 ASC NULLS FIRST]
 
-(31) ColumnarToRow [codegen id : 3]
+(31) CometColumnarToRow [codegen id : 3]
 Input [7]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, d_year#24, d_moy#25, sum_sales#16]
 
 (32) Window
@@ -214,7 +214,7 @@ Output [7]: [i_category#28, i_brand#29, s_store_name#30, s_company_name#31, d_ye
 Input [7]: [i_category#28, i_brand#29, s_store_name#30, s_company_name#31, d_year#32, d_moy#33, sum_sales#16]
 Arguments: [i_category#28, i_brand#29, s_store_name#30, s_company_name#31, d_year#32, d_moy#33, sum_sales#16], [i_category#28 ASC NULLS FIRST, i_brand#29 ASC NULLS FIRST, s_store_name#30 ASC NULLS FIRST, s_company_name#31 ASC NULLS FIRST, d_year#32 ASC NULLS FIRST, d_moy#33 ASC NULLS FIRST]
 
-(39) ColumnarToRow [codegen id : 5]
+(39) CometColumnarToRow [codegen id : 5]
 Input [7]: [i_category#28, i_brand#29, s_store_name#30, s_company_name#31, d_year#32, d_moy#33, sum_sales#16]
 
 (40) Window
@@ -247,7 +247,7 @@ Arguments: 100, [(sum_sales#16 - avg_monthly_sales#19) ASC NULLS FIRST, d_moy#11
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (49)
-+- * ColumnarToRow (48)
++- * CometColumnarToRow (48)
    +- CometFilter (47)
       +- CometScan parquet spark_catalog.default.date_dim (46)
 
@@ -263,7 +263,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Condition : ((((d_year#10 = 1999) OR ((d_year#10 = 1998) AND (d_moy#11 = 12))) OR ((d_year#10 = 2000) AND (d_moy#11 = 1))) AND isnotnull(d_date_sk#9))
 
-(48) ColumnarToRow [codegen id : 1]
+(48) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#9, d_year#10, d_moy#11]
 
 (49) BroadcastExchange

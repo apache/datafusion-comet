@@ -1,5 +1,5 @@
 WholeStageCodegen (11)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [channel,item,return_ratio,return_rank,currency_rank]
         CometHashAggregate [channel,item,return_ratio,return_rank,currency_rank]
@@ -19,7 +19,7 @@ WholeStageCodegen (11)
                                     InputAdapter
                                       Window [return_ratio]
                                         WholeStageCodegen (1)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometSort [item,return_ratio,currency_ratio]
                                                 CometColumnarExchange #2
@@ -37,7 +37,7 @@ WholeStageCodegen (11)
                                                                         SubqueryBroadcast [d_date_sk] #1
                                                                           BroadcastExchange #5
                                                                             WholeStageCodegen (1)
-                                                                              ColumnarToRow
+                                                                              CometColumnarToRow
                                                                                 InputAdapter
                                                                                   CometProject [d_date_sk]
                                                                                     CometFilter [d_date_sk,d_year,d_moy]
@@ -59,7 +59,7 @@ WholeStageCodegen (11)
                                     InputAdapter
                                       Window [return_ratio]
                                         WholeStageCodegen (4)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometSort [item,return_ratio,currency_ratio]
                                                 CometColumnarExchange #7
@@ -89,7 +89,7 @@ WholeStageCodegen (11)
                                     InputAdapter
                                       Window [return_ratio]
                                         WholeStageCodegen (7)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometSort [item,return_ratio,currency_ratio]
                                                 CometColumnarExchange #10

@@ -584,7 +584,7 @@ Arguments: 100, [channel#97 ASC NULLS FIRST, id#98 ASC NULLS FIRST], [channel#97
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (109)
-+- * ColumnarToRow (108)
++- * CometColumnarToRow (108)
    +- CometProject (107)
       +- CometFilter (106)
          +- CometScan parquet spark_catalog.default.date_dim (105)
@@ -605,7 +605,7 @@ Condition : (((isnotnull(d_date#15) AND (d_date#15 >= 2000-08-23)) AND (d_date#1
 Input [2]: [d_date_sk#14, d_date#15]
 Arguments: [d_date_sk#14], [d_date_sk#14]
 
-(108) ColumnarToRow [codegen id : 1]
+(108) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#14]
 
 (109) BroadcastExchange

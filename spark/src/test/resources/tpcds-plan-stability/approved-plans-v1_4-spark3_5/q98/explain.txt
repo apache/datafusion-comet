@@ -1,12 +1,12 @@
 == Physical Plan ==
-* ColumnarToRow (26)
+* CometColumnarToRow (26)
 +- CometProject (25)
    +- CometSort (24)
       +- CometColumnarExchange (23)
          +- RowToColumnar (22)
             +- * Project (21)
                +- Window (20)
-                  +- * ColumnarToRow (19)
+                  +- * CometColumnarToRow (19)
                      +- CometSort (18)
                         +- CometColumnarExchange (17)
                            +- CometHashAggregate (16)
@@ -113,7 +113,7 @@ Arguments: hashpartitioning(i_class#9, 5), ENSURE_REQUIREMENTS, CometColumnarShu
 Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
 Arguments: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6], [i_class#9 ASC NULLS FIRST]
 
-(19) ColumnarToRow [codegen id : 1]
+(19) CometColumnarToRow [codegen id : 1]
 Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
 
 (20) Window
@@ -139,14 +139,14 @@ Arguments: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemreve
 Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17, i_item_id#6]
 Arguments: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17], [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17]
 
-(26) ColumnarToRow [codegen id : 3]
+(26) CometColumnarToRow [codegen id : 3]
 Input [6]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, revenueratio#17]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (31)
-+- * ColumnarToRow (30)
++- * CometColumnarToRow (30)
    +- CometProject (29)
       +- CometFilter (28)
          +- CometScan parquet spark_catalog.default.date_dim (27)
@@ -167,7 +167,7 @@ Condition : (((isnotnull(d_date#12) AND (d_date#12 >= 1999-02-22)) AND (d_date#1
 Input [2]: [d_date_sk#11, d_date#12]
 Arguments: [d_date_sk#11], [d_date_sk#11]
 
-(30) ColumnarToRow [codegen id : 1]
+(30) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#11]
 
 (31) BroadcastExchange

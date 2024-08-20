@@ -21,7 +21,7 @@ WholeStageCodegen (9)
                                         SortMergeJoin [cs_order_number,cs_order_number,cs_warehouse_sk,cs_warehouse_sk]
                                           InputAdapter
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometSort [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
                                                     CometColumnarExchange [cs_order_number] #2
@@ -30,7 +30,7 @@ WholeStageCodegen (9)
                                                           CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
                                           InputAdapter
                                             WholeStageCodegen (2)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometSort [cs_warehouse_sk,cs_order_number]
                                                     CometColumnarExchange [cs_order_number] #3
@@ -38,7 +38,7 @@ WholeStageCodegen (9)
                                                         CometScan parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
                                   InputAdapter
                                     WholeStageCodegen (4)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometSort [cr_order_number]
                                             CometColumnarExchange [cr_order_number] #4
@@ -47,7 +47,7 @@ WholeStageCodegen (9)
                                 InputAdapter
                                   BroadcastExchange #5
                                     WholeStageCodegen (5)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometProject [d_date_sk]
                                             CometFilter [d_date_sk,d_date]
@@ -55,7 +55,7 @@ WholeStageCodegen (9)
                             InputAdapter
                               BroadcastExchange #6
                                 WholeStageCodegen (6)
-                                  ColumnarToRow
+                                  CometColumnarToRow
                                     InputAdapter
                                       CometProject [ca_address_sk]
                                         CometFilter [ca_address_sk,ca_state]
@@ -63,7 +63,7 @@ WholeStageCodegen (9)
                         InputAdapter
                           BroadcastExchange #7
                             WholeStageCodegen (7)
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [cc_call_center_sk]
                                     CometFilter [cc_call_center_sk,cc_county]
