@@ -65,10 +65,10 @@ abstract class CometExec extends CometPlan {
   override def output: Seq[Attribute] = originalPlan.output
 
   override def doExecute(): RDD[InternalRow] =
-    ColumnarToRowExec(this).doExecute()
+    CometColumnarToRowExec(this).doExecute()
 
   override def executeCollect(): Array[InternalRow] =
-    ColumnarToRowExec(this).executeCollect()
+    CometColumnarToRowExec(this).executeCollect()
 
   override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 

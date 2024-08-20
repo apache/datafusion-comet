@@ -41,15 +41,12 @@ import org.apache.spark.util.Utils
  * interactions with CometVector more efficient to avoid some JNI overhead.
  */
 case class CometColumnarToRowExec(child: SparkPlan)
-    extends CometExec
-    with ColumnarToRowTransition
+    extends ColumnarToRowTransition
     with CodegenSupport {
   // supportsColumnar requires to be only called on driver side, see also SPARK-37779.
   assert(Utils.isInRunningSparkTask || child.supportsColumnar)
 
   override def supportsColumnar: Boolean = false
-
-  override def originalPlan: SparkPlan = child
 
   override def output: Seq[Attribute] = child.output
 
