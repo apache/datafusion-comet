@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [c_last_name,c_first_name,c_salutation,c_preferred_cust_flag,ss_ticket_number,cnt]
         CometColumnarExchange [cnt] #1
@@ -20,7 +20,7 @@ WholeStageCodegen (1)
                                       SubqueryBroadcast [d_date_sk] #1
                                         BroadcastExchange #3
                                           WholeStageCodegen (1)
-                                            ColumnarToRow
+                                            CometColumnarToRow
                                               InputAdapter
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_year,d_dom]

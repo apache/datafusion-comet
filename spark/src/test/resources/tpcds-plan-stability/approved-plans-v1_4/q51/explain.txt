@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (43)
+* CometColumnarToRow (43)
 +- CometTakeOrderedAndProject (42)
    +- CometFilter (41)
       +- CometWindowExec (40)
@@ -12,7 +12,7 @@
                      :     +- RowToColumnar (17)
                      :        +- * Project (16)
                      :           +- Window (15)
-                     :              +- * ColumnarToRow (14)
+                     :              +- * CometColumnarToRow (14)
                      :                 +- CometSort (13)
                      :                    +- CometColumnarExchange (12)
                      :                       +- CometHashAggregate (11)
@@ -31,7 +31,7 @@
                            +- RowToColumnar (33)
                               +- * Project (32)
                                  +- Window (31)
-                                    +- * ColumnarToRow (30)
+                                    +- * CometColumnarToRow (30)
                                        +- CometSort (29)
                                           +- CometColumnarExchange (28)
                                              +- CometHashAggregate (27)
@@ -106,7 +106,7 @@ Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnar
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 Arguments: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1], [ws_item_sk#1 ASC NULLS FIRST, d_date#6 ASC NULLS FIRST]
 
-(14) ColumnarToRow [codegen id : 1]
+(14) CometColumnarToRow [codegen id : 1]
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 
 (15) Window
@@ -174,7 +174,7 @@ Arguments: hashpartitioning(ss_item_sk#12, 5), ENSURE_REQUIREMENTS, CometColumna
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 Arguments: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12], [ss_item_sk#12 ASC NULLS FIRST, d_date#17 ASC NULLS FIRST]
 
-(30) ColumnarToRow [codegen id : 3]
+(30) CometColumnarToRow [codegen id : 3]
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 
 (31) Window
@@ -225,14 +225,14 @@ Condition : ((isnotnull(web_cumulative#26) AND isnotnull(store_cumulative#27)) A
 Input [6]: [item_sk#22, d_date#23, web_sales#24, store_sales#25, web_cumulative#26, store_cumulative#27]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_sk#22 ASC NULLS FIRST,d_date#23 ASC NULLS FIRST], output=[item_sk#22,d_date#23,web_sales#24,store_sales#25,web_cumulative#26,store_cumulative#27]), [item_sk#22, d_date#23, web_sales#24, store_sales#25, web_cumulative#26, store_cumulative#27], 100, [item_sk#22 ASC NULLS FIRST, d_date#23 ASC NULLS FIRST], [item_sk#22, d_date#23, web_sales#24, store_sales#25, web_cumulative#26, store_cumulative#27]
 
-(43) ColumnarToRow [codegen id : 5]
+(43) CometColumnarToRow [codegen id : 5]
 Input [6]: [item_sk#22, d_date#23, web_sales#24, store_sales#25, web_cumulative#26, store_cumulative#27]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (48)
-+- * ColumnarToRow (47)
++- * CometColumnarToRow (47)
    +- CometProject (46)
       +- CometFilter (45)
          +- CometScan parquet spark_catalog.default.date_dim (44)
@@ -253,7 +253,7 @@ Condition : (((isnotnull(d_month_seq#7) AND (d_month_seq#7 >= 1200)) AND (d_mont
 Input [3]: [d_date_sk#5, d_date#6, d_month_seq#7]
 Arguments: [d_date_sk#5, d_date#6], [d_date_sk#5, d_date#6]
 
-(47) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#5, d_date#6]
 
 (48) BroadcastExchange

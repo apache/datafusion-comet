@@ -2,7 +2,7 @@
 TakeOrderedAndProject (48)
 +- * Project (47)
    +- Window (46)
-      +- * ColumnarToRow (45)
+      +- * CometColumnarToRow (45)
          +- CometSort (44)
             +- CometColumnarExchange (43)
                +- RowToColumnar (42)
@@ -14,7 +14,7 @@ TakeOrderedAndProject (48)
                                  +- * Expand (36)
                                     +- * Project (35)
                                        +- * BroadcastHashJoin Inner BuildRight (34)
-                                          :- * ColumnarToRow (9)
+                                          :- * CometColumnarToRow (9)
                                           :  +- CometProject (8)
                                           :     +- CometBroadcastHashJoin (7)
                                           :        :- CometFilter (2)
@@ -25,14 +25,14 @@ TakeOrderedAndProject (48)
                                           :                 +- CometScan parquet spark_catalog.default.date_dim (3)
                                           +- BroadcastExchange (33)
                                              +- * BroadcastHashJoin LeftSemi BuildRight (32)
-                                                :- * ColumnarToRow (12)
+                                                :- * CometColumnarToRow (12)
                                                 :  +- CometFilter (11)
                                                 :     +- CometScan parquet spark_catalog.default.store (10)
                                                 +- BroadcastExchange (31)
                                                    +- * Project (30)
                                                       +- * Filter (29)
                                                          +- Window (28)
-                                                            +- * ColumnarToRow (27)
+                                                            +- * CometColumnarToRow (27)
                                                                +- CometSort (26)
                                                                   +- CometHashAggregate (25)
                                                                      +- CometColumnarExchange (24)
@@ -89,7 +89,7 @@ Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner, BuildRight
 Input [4]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3, d_date_sk#5]
 Arguments: [ss_store_sk#1, ss_net_profit#2], [ss_store_sk#1, ss_net_profit#2]
 
-(9) ColumnarToRow [codegen id : 4]
+(9) CometColumnarToRow [codegen id : 4]
 Input [2]: [ss_store_sk#1, ss_net_profit#2]
 
 (10) Scan parquet spark_catalog.default.store
@@ -103,7 +103,7 @@ ReadSchema: struct<s_store_sk:int,s_county:string,s_state:string>
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 Condition : isnotnull(s_store_sk#7)
 
-(12) ColumnarToRow [codegen id : 3]
+(12) CometColumnarToRow [codegen id : 3]
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 
 (13) Scan parquet spark_catalog.default.store_sales
@@ -172,7 +172,7 @@ Functions [1]: [sum(UnscaledValue(ss_net_profit#11))]
 Input [3]: [s_state#15, _w0#18, s_state#15]
 Arguments: [s_state#15, _w0#18, s_state#15], [s_state#15 ASC NULLS FIRST, _w0#18 DESC NULLS LAST]
 
-(27) ColumnarToRow [codegen id : 1]
+(27) CometColumnarToRow [codegen id : 1]
 Input [3]: [s_state#15, _w0#18, s_state#15]
 
 (28) Window
@@ -250,7 +250,7 @@ Arguments: hashpartitioning(_w1#29, _w2#30, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [7]: [total_sum#26, s_state#20, s_county#21, lochierarchy#27, _w0#28, _w1#29, _w2#30]
 Arguments: [total_sum#26, s_state#20, s_county#21, lochierarchy#27, _w0#28, _w1#29, _w2#30], [_w1#29 ASC NULLS FIRST, _w2#30 ASC NULLS FIRST, _w0#28 DESC NULLS LAST]
 
-(45) ColumnarToRow [codegen id : 6]
+(45) CometColumnarToRow [codegen id : 6]
 Input [7]: [total_sum#26, s_state#20, s_county#21, lochierarchy#27, _w0#28, _w1#29, _w2#30]
 
 (46) Window
@@ -269,7 +269,7 @@ Arguments: 100, [lochierarchy#27 DESC NULLS LAST, CASE WHEN (lochierarchy#27 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (53)
-+- * ColumnarToRow (52)
++- * CometColumnarToRow (52)
    +- CometProject (51)
       +- CometFilter (50)
          +- CometScan parquet spark_catalog.default.date_dim (49)
@@ -290,7 +290,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(52) ColumnarToRow [codegen id : 1]
+(52) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (53) BroadcastExchange

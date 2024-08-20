@@ -33,7 +33,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                 SubqueryBroadcast [d_date_sk] #1
                                                                   BroadcastExchange #4
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometProject [d_date_sk]
                                                                             CometFilter [d_date_sk,d_date]

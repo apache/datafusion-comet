@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [Call_Center,Call_Center_Name,Manager,Returns_Loss]
         CometColumnarExchange [Returns_Loss] #1
@@ -26,7 +26,7 @@ WholeStageCodegen (1)
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #4
                                                   WholeStageCodegen (1)
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk]
                                                           CometFilter [d_date_sk,d_year,d_moy]

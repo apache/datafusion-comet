@@ -4,7 +4,7 @@
 :  :- * BroadcastNestedLoopJoin Inner BuildRight (54)
 :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (40)
 :  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (26)
-:  :  :  :  :- * ColumnarToRow (12)
+:  :  :  :  :- * CometColumnarToRow (12)
 :  :  :  :  :  +- CometHashAggregate (11)
 :  :  :  :  :     +- CometColumnarExchange (10)
 :  :  :  :  :        +- RowToColumnar (9)
@@ -17,7 +17,7 @@
 :  :  :  :  :                             +- CometFilter (2)
 :  :  :  :  :                                +- CometScan parquet spark_catalog.default.store_sales (1)
 :  :  :  :  +- BroadcastExchange (25)
-:  :  :  :     +- * ColumnarToRow (24)
+:  :  :  :     +- * CometColumnarToRow (24)
 :  :  :  :        +- CometHashAggregate (23)
 :  :  :  :           +- CometColumnarExchange (22)
 :  :  :  :              +- RowToColumnar (21)
@@ -30,7 +30,7 @@
 :  :  :  :                                   +- CometFilter (14)
 :  :  :  :                                      +- CometScan parquet spark_catalog.default.store_sales (13)
 :  :  :  +- BroadcastExchange (39)
-:  :  :     +- * ColumnarToRow (38)
+:  :  :     +- * CometColumnarToRow (38)
 :  :  :        +- CometHashAggregate (37)
 :  :  :           +- CometColumnarExchange (36)
 :  :  :              +- RowToColumnar (35)
@@ -43,7 +43,7 @@
 :  :  :                                   +- CometFilter (28)
 :  :  :                                      +- CometScan parquet spark_catalog.default.store_sales (27)
 :  :  +- BroadcastExchange (53)
-:  :     +- * ColumnarToRow (52)
+:  :     +- * CometColumnarToRow (52)
 :  :        +- CometHashAggregate (51)
 :  :           +- CometColumnarExchange (50)
 :  :              +- RowToColumnar (49)
@@ -56,7 +56,7 @@
 :  :                                   +- CometFilter (42)
 :  :                                      +- CometScan parquet spark_catalog.default.store_sales (41)
 :  +- BroadcastExchange (67)
-:     +- * ColumnarToRow (66)
+:     +- * CometColumnarToRow (66)
 :        +- CometHashAggregate (65)
 :           +- CometColumnarExchange (64)
 :              +- RowToColumnar (63)
@@ -69,7 +69,7 @@
 :                                   +- CometFilter (56)
 :                                      +- CometScan parquet spark_catalog.default.store_sales (55)
 +- BroadcastExchange (81)
-   +- * ColumnarToRow (80)
+   +- * CometColumnarToRow (80)
       +- CometHashAggregate (79)
          +- CometColumnarExchange (78)
             +- RowToColumnar (77)
@@ -136,7 +136,7 @@ Input [4]: [sum#6, count#7, count#8, count#12]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#3)), count(ss_list_price#3), count(distinct ss_list_price#3)]
 
-(12) ColumnarToRow [codegen id : 12]
+(12) CometColumnarToRow [codegen id : 12]
 Input [3]: [B1_LP#13, B1_CNT#14, B1_CNTD#15]
 
 (13) Scan parquet spark_catalog.default.store_sales
@@ -192,7 +192,7 @@ Input [4]: [sum#21, count#22, count#23, count#27]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#18)), count(ss_list_price#18), count(distinct ss_list_price#18)]
 
-(24) ColumnarToRow [codegen id : 3]
+(24) CometColumnarToRow [codegen id : 3]
 Input [3]: [B2_LP#28, B2_CNT#29, B2_CNTD#30]
 
 (25) BroadcastExchange
@@ -256,7 +256,7 @@ Input [4]: [sum#36, count#37, count#38, count#42]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#33)), count(ss_list_price#33), count(distinct ss_list_price#33)]
 
-(38) ColumnarToRow [codegen id : 5]
+(38) CometColumnarToRow [codegen id : 5]
 Input [3]: [B3_LP#43, B3_CNT#44, B3_CNTD#45]
 
 (39) BroadcastExchange
@@ -320,7 +320,7 @@ Input [4]: [sum#51, count#52, count#53, count#57]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#48)), count(ss_list_price#48), count(distinct ss_list_price#48)]
 
-(52) ColumnarToRow [codegen id : 7]
+(52) CometColumnarToRow [codegen id : 7]
 Input [3]: [B4_LP#58, B4_CNT#59, B4_CNTD#60]
 
 (53) BroadcastExchange
@@ -384,7 +384,7 @@ Input [4]: [sum#66, count#67, count#68, count#72]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#63)), count(ss_list_price#63), count(distinct ss_list_price#63)]
 
-(66) ColumnarToRow [codegen id : 9]
+(66) CometColumnarToRow [codegen id : 9]
 Input [3]: [B5_LP#73, B5_CNT#74, B5_CNTD#75]
 
 (67) BroadcastExchange
@@ -448,7 +448,7 @@ Input [4]: [sum#81, count#82, count#83, count#87]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#78)), count(ss_list_price#78), count(distinct ss_list_price#78)]
 
-(80) ColumnarToRow [codegen id : 11]
+(80) CometColumnarToRow [codegen id : 11]
 Input [3]: [B6_LP#88, B6_CNT#89, B6_CNTD#90]
 
 (81) BroadcastExchange
