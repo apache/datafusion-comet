@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -424,16 +424,13 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op @ HashAggregateExec(
-              _,
-              _,
-              _,
-              groupingExprs,
-              aggExprs,
-              _,
-              _,
-              resultExpressions,
-              child) =>
+        case op: BaseAggregateExec
+            if op.isInstanceOf[HashAggregateExec] ||
+              op.isInstanceOf[ObjectHashAggregateExec] =>
+          val groupingExprs = op.groupingExpressions
+          val aggExprs = op.aggregateExpressions
+          val resultExpressions = op.resultExpressions
+          val child = op.child
           val modes = aggExprs.map(_.mode).distinct
 
           if (!modes.isEmpty && modes.size != 1) {
