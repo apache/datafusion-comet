@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cnt1,cd_purchase_estimate,cnt2,cd_credit_rating,cnt3,cd_dep_count,cnt4,cd_dep_employed_count,cnt5,cd_dep_college_count,cnt6]
         CometHashAggregate [cd_gender,cd_marital_status,cd_education_status,cnt1,cd_purchase_estimate,cnt2,cd_credit_rating,cnt3,cd_dep_count,cnt4,cd_dep_employed_count,cnt5,cd_dep_college_count,cnt6,count,count(1)]
@@ -21,7 +21,7 @@ WholeStageCodegen (1)
                                     SubqueryBroadcast [d_date_sk] #1
                                       BroadcastExchange #3
                                         WholeStageCodegen (1)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_year,d_moy]

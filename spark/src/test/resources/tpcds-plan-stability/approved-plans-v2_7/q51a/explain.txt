@@ -6,7 +6,7 @@ TakeOrderedAndProject (80)
          +- * Project (76)
             +- * BroadcastHashJoin Inner BuildRight (75)
                :- Window (68)
-               :  +- * ColumnarToRow (67)
+               :  +- * CometColumnarToRow (67)
                :     +- CometSort (66)
                :        +- CometColumnarExchange (65)
                :           +- CometProject (64)
@@ -24,7 +24,7 @@ TakeOrderedAndProject (80)
                :                    :                          +- * BroadcastHashJoin Inner BuildRight (23)
                :                    :                             :- * Project (16)
                :                    :                             :  +- Window (15)
-               :                    :                             :     +- * ColumnarToRow (14)
+               :                    :                             :     +- * CometColumnarToRow (14)
                :                    :                             :        +- CometSort (13)
                :                    :                             :           +- CometColumnarExchange (12)
                :                    :                             :              +- CometHashAggregate (11)
@@ -41,7 +41,7 @@ TakeOrderedAndProject (80)
                :                    :                             +- BroadcastExchange (22)
                :                    :                                +- * Project (21)
                :                    :                                   +- Window (20)
-               :                    :                                      +- * ColumnarToRow (19)
+               :                    :                                      +- * CometColumnarToRow (19)
                :                    :                                         +- CometSort (18)
                :                    :                                            +- ReusedExchange (17)
                :                    +- CometSort (61)
@@ -56,7 +56,7 @@ TakeOrderedAndProject (80)
                :                                               +- * BroadcastHashJoin Inner BuildRight (52)
                :                                                  :- * Project (45)
                :                                                  :  +- Window (44)
-               :                                                  :     +- * ColumnarToRow (43)
+               :                                                  :     +- * CometColumnarToRow (43)
                :                                                  :        +- CometSort (42)
                :                                                  :           +- CometColumnarExchange (41)
                :                                                  :              +- CometHashAggregate (40)
@@ -70,13 +70,13 @@ TakeOrderedAndProject (80)
                :                                                  +- BroadcastExchange (51)
                :                                                     +- * Project (50)
                :                                                        +- Window (49)
-               :                                                           +- * ColumnarToRow (48)
+               :                                                           +- * CometColumnarToRow (48)
                :                                                              +- CometSort (47)
                :                                                                 +- ReusedExchange (46)
                +- BroadcastExchange (74)
                   +- * Project (73)
                      +- Window (72)
-                        +- * ColumnarToRow (71)
+                        +- * CometColumnarToRow (71)
                            +- CometSort (70)
                               +- ReusedExchange (69)
 
@@ -143,7 +143,7 @@ Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnar
 Input [4]: [item_sk#9, d_date#6, sumws#10, ws_item_sk#1]
 Arguments: [item_sk#9, d_date#6, sumws#10, ws_item_sk#1], [ws_item_sk#1 ASC NULLS FIRST, d_date#6 ASC NULLS FIRST]
 
-(14) ColumnarToRow [codegen id : 1]
+(14) CometColumnarToRow [codegen id : 1]
 Input [4]: [item_sk#9, d_date#6, sumws#10, ws_item_sk#1]
 
 (15) Window
@@ -161,7 +161,7 @@ Output [4]: [item_sk#9, d_date#12, sumws#10, ws_item_sk#13]
 Input [4]: [item_sk#9, d_date#12, sumws#10, ws_item_sk#13]
 Arguments: [item_sk#9, d_date#12, sumws#10, ws_item_sk#13], [ws_item_sk#13 ASC NULLS FIRST, d_date#12 ASC NULLS FIRST]
 
-(19) ColumnarToRow [codegen id : 2]
+(19) CometColumnarToRow [codegen id : 2]
 Input [4]: [item_sk#9, d_date#12, sumws#10, ws_item_sk#13]
 
 (20) Window
@@ -267,7 +267,7 @@ Arguments: hashpartitioning(ss_item_sk#23, 5), ENSURE_REQUIREMENTS, CometColumna
 Input [4]: [item_sk#30, d_date#28, sumss#31, ss_item_sk#23]
 Arguments: [item_sk#30, d_date#28, sumss#31, ss_item_sk#23], [ss_item_sk#23 ASC NULLS FIRST, d_date#28 ASC NULLS FIRST]
 
-(43) ColumnarToRow [codegen id : 6]
+(43) CometColumnarToRow [codegen id : 6]
 Input [4]: [item_sk#30, d_date#28, sumss#31, ss_item_sk#23]
 
 (44) Window
@@ -285,7 +285,7 @@ Output [4]: [item_sk#30, d_date#33, sumss#31, ss_item_sk#34]
 Input [4]: [item_sk#30, d_date#33, sumss#31, ss_item_sk#34]
 Arguments: [item_sk#30, d_date#33, sumss#31, ss_item_sk#34], [ss_item_sk#34 ASC NULLS FIRST, d_date#33 ASC NULLS FIRST]
 
-(48) ColumnarToRow [codegen id : 7]
+(48) CometColumnarToRow [codegen id : 7]
 Input [4]: [item_sk#30, d_date#33, sumss#31, ss_item_sk#34]
 
 (49) Window
@@ -366,7 +366,7 @@ Arguments: hashpartitioning(item_sk#44, 5), ENSURE_REQUIREMENTS, CometColumnarSh
 Input [4]: [item_sk#44, d_date#45, web_sales#46, store_sales#47]
 Arguments: [item_sk#44, d_date#45, web_sales#46, store_sales#47], [item_sk#44 ASC NULLS FIRST, d_date#45 ASC NULLS FIRST]
 
-(67) ColumnarToRow [codegen id : 11]
+(67) CometColumnarToRow [codegen id : 11]
 Input [4]: [item_sk#44, d_date#45, web_sales#46, store_sales#47]
 
 (68) Window
@@ -380,7 +380,7 @@ Output [4]: [item_sk#44, d_date#45, web_sales#46, store_sales#47]
 Input [4]: [item_sk#44, d_date#45, web_sales#46, store_sales#47]
 Arguments: [item_sk#44, d_date#45, web_sales#46, store_sales#47], [item_sk#44 ASC NULLS FIRST, d_date#45 ASC NULLS FIRST]
 
-(71) ColumnarToRow [codegen id : 22]
+(71) CometColumnarToRow [codegen id : 22]
 Input [4]: [item_sk#44, d_date#45, web_sales#46, store_sales#47]
 
 (72) Window
@@ -431,7 +431,7 @@ Arguments: 100, [item_sk#44 ASC NULLS FIRST, d_date#45 ASC NULLS FIRST], [item_s
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (85)
-+- * ColumnarToRow (84)
++- * CometColumnarToRow (84)
    +- CometProject (83)
       +- CometFilter (82)
          +- CometScan parquet spark_catalog.default.date_dim (81)
@@ -452,7 +452,7 @@ Condition : (((isnotnull(d_month_seq#7) AND (d_month_seq#7 >= 1212)) AND (d_mont
 Input [3]: [d_date_sk#5, d_date#6, d_month_seq#7]
 Arguments: [d_date_sk#5, d_date#6], [d_date_sk#5, d_date#6]
 
-(84) ColumnarToRow [codegen id : 1]
+(84) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#5, d_date#6]
 
 (85) BroadcastExchange

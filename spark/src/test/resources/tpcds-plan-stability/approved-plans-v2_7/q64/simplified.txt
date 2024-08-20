@@ -1,5 +1,5 @@
 WholeStageCodegen (4)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
         CometColumnarExchange [product_name,store_name,cnt,s1,s1] #1
@@ -9,7 +9,7 @@ WholeStageCodegen (4)
                 SortMergeJoin [item_sk,store_name,store_zip,item_sk,store_name,store_zip,cnt,cnt]
                   InputAdapter
                     WholeStageCodegen (1)
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometSort [product_name,item_sk,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3]
                             CometColumnarExchange [item_sk,store_name,store_zip] #2
@@ -57,7 +57,7 @@ WholeStageCodegen (4)
                                                                                                                 SubqueryBroadcast [d_date_sk] #1
                                                                                                                   BroadcastExchange #5
                                                                                                                     WholeStageCodegen (1)
-                                                                                                                      ColumnarToRow
+                                                                                                                      CometColumnarToRow
                                                                                                                         InputAdapter
                                                                                                                           CometFilter [d_date_sk,d_year]
                                                                                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
@@ -120,7 +120,7 @@ WholeStageCodegen (4)
                                             CometScan parquet spark_catalog.default.item [i_item_sk,i_current_price,i_color,i_product_name]
                   InputAdapter
                     WholeStageCodegen (2)
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometSort [item_sk,store_name,store_zip,syear,cnt,s1,s2,s3]
                             CometColumnarExchange [item_sk,store_name,store_zip] #19
@@ -168,7 +168,7 @@ WholeStageCodegen (4)
                                                                                                                 SubqueryBroadcast [d_date_sk] #2
                                                                                                                   BroadcastExchange #22
                                                                                                                     WholeStageCodegen (1)
-                                                                                                                      ColumnarToRow
+                                                                                                                      CometColumnarToRow
                                                                                                                         InputAdapter
                                                                                                                           CometFilter [d_date_sk,d_year]
                                                                                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]

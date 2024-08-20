@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (68)
+* CometColumnarToRow (68)
 +- CometTakeOrderedAndProject (67)
    +- CometProject (66)
       +- CometBroadcastHashJoin (65)
@@ -388,14 +388,14 @@ Arguments: [customer_id#35, customer_first_name#36, customer_last_name#37, custo
 Input [4]: [customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#35 ASC NULLS FIRST,customer_first_name#36 ASC NULLS FIRST,customer_last_name#37 ASC NULLS FIRST,customer_email_address#38 ASC NULLS FIRST], output=[customer_id#35,customer_first_name#36,customer_last_name#37,customer_email_address#38]), [customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38], 100, [customer_id#35 ASC NULLS FIRST, customer_first_name#36 ASC NULLS FIRST, customer_last_name#37 ASC NULLS FIRST, customer_email_address#38 ASC NULLS FIRST], [customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38]
 
-(68) ColumnarToRow [codegen id : 1]
+(68) CometColumnarToRow [codegen id : 1]
 Input [4]: [customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (72)
-+- * ColumnarToRow (71)
++- * CometColumnarToRow (71)
    +- CometFilter (70)
       +- CometScan parquet spark_catalog.default.date_dim (69)
 
@@ -411,7 +411,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#14, d_year#15]
 Condition : ((isnotnull(d_year#15) AND (d_year#15 = 2001)) AND isnotnull(d_date_sk#14))
 
-(71) ColumnarToRow [codegen id : 1]
+(71) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#14, d_year#15]
 
 (72) BroadcastExchange
@@ -420,7 +420,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 19 Hosting Expression = ss_sold_date_sk#30 IN dynamicpruning#31
 BroadcastExchange (76)
-+- * ColumnarToRow (75)
++- * CometColumnarToRow (75)
    +- CometFilter (74)
       +- CometScan parquet spark_catalog.default.date_dim (73)
 
@@ -436,7 +436,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#32, d_year#33]
 Condition : ((isnotnull(d_year#33) AND (d_year#33 = 2002)) AND isnotnull(d_date_sk#32))
 
-(75) ColumnarToRow [codegen id : 1]
+(75) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#32, d_year#33]
 
 (76) BroadcastExchange

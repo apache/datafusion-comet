@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (68)
+* CometColumnarToRow (68)
 +- CometTakeOrderedAndProject (67)
    +- CometHashAggregate (66)
       +- CometColumnarExchange (65)
@@ -13,7 +13,7 @@
                   :           +- * BroadcastHashJoin LeftOuter BuildRight (52)
                   :              :- * Project (47)
                   :              :  +- * BroadcastHashJoin Inner BuildRight (46)
-                  :              :     :- * ColumnarToRow (41)
+                  :              :     :- * CometColumnarToRow (41)
                   :              :     :  +- CometProject (40)
                   :              :     :     +- CometBroadcastHashJoin (39)
                   :              :     :        :- CometProject (35)
@@ -55,11 +55,11 @@
                   :              :     :           +- CometFilter (37)
                   :              :     :              +- CometScan parquet spark_catalog.default.date_dim (36)
                   :              :     +- BroadcastExchange (45)
-                  :              :        +- * ColumnarToRow (44)
+                  :              :        +- * CometColumnarToRow (44)
                   :              :           +- CometFilter (43)
                   :              :              +- CometScan parquet spark_catalog.default.date_dim (42)
                   :              +- BroadcastExchange (51)
-                  :                 +- * ColumnarToRow (50)
+                  :                 +- * CometColumnarToRow (50)
                   :                    +- CometFilter (49)
                   :                       +- CometScan parquet spark_catalog.default.promotion (48)
                   +- CometSort (61)
@@ -262,7 +262,7 @@ Arguments: [d_week_seq#24, inv_date_sk#13], [d_week_seq#27, d_date_sk#26], Inner
 Input [11]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, inv_date_sk#13, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24, d_date_sk#26, d_week_seq#27]
 Arguments: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24], [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24]
 
-(41) ColumnarToRow [codegen id : 3]
+(41) CometColumnarToRow [codegen id : 3]
 Input [8]: [cs_ship_date_sk#1, cs_item_sk#4, cs_promo_sk#5, cs_order_number#6, w_warehouse_name#15, i_item_desc#17, d_date#23, d_week_seq#24]
 
 (42) Scan parquet spark_catalog.default.date_dim
@@ -276,7 +276,7 @@ ReadSchema: struct<d_date_sk:int,d_date:date>
 Input [2]: [d_date_sk#28, d_date#29]
 Condition : (isnotnull(d_date#29) AND isnotnull(d_date_sk#28))
 
-(44) ColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#28, d_date#29]
 
 (45) BroadcastExchange
@@ -304,7 +304,7 @@ ReadSchema: struct<p_promo_sk:int>
 Input [1]: [p_promo_sk#30]
 Condition : isnotnull(p_promo_sk#30)
 
-(50) ColumnarToRow [codegen id : 2]
+(50) CometColumnarToRow [codegen id : 2]
 Input [1]: [p_promo_sk#30]
 
 (51) BroadcastExchange
@@ -382,14 +382,14 @@ Functions [1]: [count(1)]
 Input [6]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, no_promo#35, promo#36, total_cnt#37]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[total_cnt#37 DESC NULLS LAST,i_item_desc#17 ASC NULLS FIRST,w_warehouse_name#15 ASC NULLS FIRST,d_week_seq#24 ASC NULLS FIRST], output=[i_item_desc#17,w_warehouse_name#15,d_week_seq#24,no_promo#35,promo#36,total_cnt#37]), [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, no_promo#35, promo#36, total_cnt#37], 100, [total_cnt#37 DESC NULLS LAST, i_item_desc#17 ASC NULLS FIRST, w_warehouse_name#15 ASC NULLS FIRST, d_week_seq#24 ASC NULLS FIRST], [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, no_promo#35, promo#36, total_cnt#37]
 
-(68) ColumnarToRow [codegen id : 4]
+(68) CometColumnarToRow [codegen id : 4]
 Input [6]: [i_item_desc#17, w_warehouse_name#15, d_week_seq#24, no_promo#35, promo#36, total_cnt#37]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (73)
-+- * ColumnarToRow (72)
++- * CometColumnarToRow (72)
    +- CometProject (71)
       +- CometFilter (70)
          +- CometScan parquet spark_catalog.default.date_dim (69)
@@ -410,7 +410,7 @@ Condition : ((((isnotnull(d_year#25) AND (d_year#25 = 2001)) AND isnotnull(d_dat
 Input [4]: [d_date_sk#22, d_date#23, d_week_seq#24, d_year#25]
 Arguments: [d_date_sk#22, d_date#23, d_week_seq#24], [d_date_sk#22, d_date#23, d_week_seq#24]
 
-(72) ColumnarToRow [codegen id : 1]
+(72) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#22, d_date#23, d_week_seq#24]
 
 (73) BroadcastExchange
