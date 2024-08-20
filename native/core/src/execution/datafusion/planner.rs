@@ -1208,17 +1208,17 @@ impl PhysicalPlanner {
         // DataFusion Join operators keep the input batch internally. We need
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
+        let left = if can_reuse_input_batch(&left) {
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
+        } else {
+            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
+        };
 
-        fn prep_join_input(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-            if can_reuse_input_batch(&plan) {
-                Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
-            } else {
-                Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
-            }
-        }
-
-        let left = prep_join_input(left);
-        let right = prep_join_input(right);
+        let right = if can_reuse_input_batch(&right) {
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
+        } else {
+            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
+        };
 
         Ok((
             JoinParameters {

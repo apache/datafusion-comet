@@ -63,5 +63,6 @@ FROM apache/spark:3.4.2
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 USER root
-# note the use of a wildcard in the file name so that this works with both snapshot and final release versions
+
+# ntoe the use of a wildcard in the file name so that this works with both snapshot and final release versions
 COPY --from=builder  /comet/spark/target/comet-spark-spark${SPARK_VERSION}_$SCALA_VERSION-0.2.0*.jar $SPARK_HOME/jars
