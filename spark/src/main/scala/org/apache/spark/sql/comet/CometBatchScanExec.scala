@@ -75,11 +75,11 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
 
   // `ReusedSubqueryExec` in Spark only call non-columnar execute.
   override def doExecute(): RDD[InternalRow] = {
-    ColumnarToRowExec(this).doExecute()
+    CometColumnarToRowExec(this).doExecute()
   }
 
   override def executeCollect(): Array[InternalRow] = {
-    ColumnarToRowExec(this).executeCollect()
+    CometColumnarToRowExec(this).executeCollect()
   }
 
   override def readerFactory: PartitionReaderFactory = wrappedScan.readerFactory
