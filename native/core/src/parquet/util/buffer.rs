@@ -87,7 +87,7 @@ impl BufferRef {
         );
 
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
             offset: self.offset + offset,
             len,
         }

@@ -158,7 +158,7 @@ impl PhysicalExpr for CheckOverflow {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(CheckOverflow::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.data_type.clone(),
             self.fail_on_error,
         )))

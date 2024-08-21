@@ -114,7 +114,7 @@ impl ExecutionPlan for ShuffleWriterExec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
             1 => Ok(Arc::new(ShuffleWriterExec::try_new(
-                children[0].clone(),
+                Arc::clone(&children[0]),
                 self.partitioning.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
@@ -128,7 +128,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, context.clone())?;
+        let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -175,7 +175,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
-            EquivalenceProperties::new(input.schema().clone()),
+            EquivalenceProperties::new(Arc::clone(&input.schema())),
             partitioning.clone(),
             ExecutionMode::Bounded,
         );
@@ -284,7 +284,7 @@ impl PartitionBuffer {
         self.num_active_rows = 0;
         mem_diff -= self.active_slots_mem_size as isize;
 
-        let frozen_batch = make_batch(self.schema.clone(), active, num_rows)?;
+        let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
 
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
@@ -634,10 +634,10 @@ impl ShuffleRepartitioner {
         Self {
             output_data_file,
             output_index_file,
-            schema: schema.clone(),
+            schema: Arc::clone(&schema),
             buffered_partitions: Mutex::new(
                 (0..num_output_partitions)
-                    .map(|_| PartitionBuffer::new(schema.clone(), batch_size))
+                    .map(|_| PartitionBuffer::new(Arc::clone(&schema), batch_size))
                     .collect::<Vec<_>>(),
             ),
             spills: Mutex::new(vec![]),
@@ -863,7 +863,7 @@ impl ShuffleRepartitioner {
         self.reservation.shrink(used);
 
         // shuffle writer always has empty output
-        Ok(Box::pin(EmptyStream::try_new(self.schema.clone())?))
+        Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
     }
 
     fn used(&self) -> usize {
@@ -973,7 +973,7 @@ async fn external_shuffle(
         partition_id,
         output_data_file,
         output_index_file,
-        schema.clone(),
+        Arc::clone(&schema),
         partitioning,
         metrics,
         context.runtime_env(),
@@ -1409,7 +1409,7 @@ impl Stream for EmptyStream {
 impl RecordBatchStream for EmptyStream {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
 
@@ -1467,7 +1467,7 @@ mod test {
             b.append_value(format!("{i}"));
         }
         let array = b.finish();
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
 
         let batches = vec![batch.clone()];
 

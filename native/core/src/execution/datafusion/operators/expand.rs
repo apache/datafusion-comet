@@ -52,7 +52,7 @@ impl CometExpandExec {
         schema: SchemaRef,
     ) -> Self {
         let cache = PlanProperties::new(
-            EquivalenceProperties::new(schema.clone()),
+            EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             ExecutionMode::Bounded,
         );
@@ -93,7 +93,7 @@ impl ExecutionPlan for CometExpandExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -106,8 +106,8 @@ impl ExecutionPlan for CometExpandExec {
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
         let new_expand = CometExpandExec::new(
             self.projections.clone(),
-            children[0].clone(),
-            self.schema.clone(),
+            Arc::clone(&children[0]),
+            Arc::clone(&self.schema),
         );
         Ok(Arc::new(new_expand))
     }
@@ -118,8 +118,11 @@ impl ExecutionPlan for CometExpandExec {
         context: Arc<TaskContext>,
     ) -> datafusion_common::Result<SendableRecordBatchStream> {
         let child_stream = self.child.execute(partition, context)?;
-        let expand_stream =
-            ExpandStream::new(self.projections.clone(), child_stream, self.schema.clone());
+        let expand_stream = ExpandStream::new(
+            self.projections.clone(),
+            child_stream,
+            Arc::clone(&self.schema),
+        );
         Ok(Box::pin(expand_stream))
     }
 
@@ -174,7 +177,7 @@ impl ExpandStream {
         })?;
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options)
+        RecordBatch::try_new_with_options(Arc::clone(&self.schema), columns, &options)
             .map_err(|e| e.into())
     }
 }
@@ -210,6 +213,6 @@ impl Stream for ExpandStream {
 
 impl RecordBatchStream for ExpandStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
