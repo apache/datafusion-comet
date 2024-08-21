@@ -282,8 +282,13 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#using-a-published-binary-release">
-   Using a Published Binary Release
+  <a class="reference internal nav-link" href="#using-a-published-docker-image">
+   Using a Published Docker Image
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#using-a-published-jar-file">
+   Using a Published JAR File
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -309,6 +314,11 @@ under the License.
    <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#enable-comet-shuffle">
      Enable Comet shuffle
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#memory-tuning">
+     Memory tuning
     </a>
    </li>
   </ul>
@@ -377,8 +387,12 @@ under the License.
 <li><p>GLIBC 2.17 (Centos 7) and up</p></li>
 </ul>
 </section>
-<section id="using-a-published-binary-release">
-<h2>Using a Published Binary Release<a class="headerlink" href="#using-a-published-binary-release" title="Link to this heading">¶</a></h2>
+<section id="using-a-published-docker-image">
+<h2>Using a Published Docker Image<a class="headerlink" href="#using-a-published-docker-image" title="Link to this heading">¶</a></h2>
+<p>Docker images are available at https://github.com/orgs/apache/packages?repo_name=datafusion-comet</p>
+</section>
+<section id="using-a-published-jar-file">
+<h2>Using a Published JAR File<a class="headerlink" href="#using-a-published-jar-file" title="Link to this heading">¶</a></h2>
 <p>There are no published binary releases yet.</p>
 </section>
 <section id="using-a-published-source-release">
@@ -419,7 +433,6 @@ use of the command <code class="docutils literal notranslate"><span class="pre">
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.all.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
@@ -476,6 +489,10 @@ components which will then fail at runtime. For example:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">mode</span><span class="o">=</span><span class="n">jvm</span>
 </pre></div>
 </div>
+</section>
+<section id="memory-tuning">
+<h3>Memory tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h3>
+<p>In addition to Apache Spark memory configuration parameters the Comet introduces own parameters to configure memory allocation for native execution. More <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Memory Tuning</span></a></p>
 </section>
 </section>
 </section>

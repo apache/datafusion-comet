@@ -277,6 +277,11 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#memory-tuning-using-cometplugin">
+   Memory Tuning using CometPlugin
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#shuffle">
    Shuffle
   </a>
@@ -366,6 +371,14 @@ Once the memory is not enough, the operator will spill to disk, which will slow 
 <p>Besides, you can also set the memory explicitly by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> to the desired value.
 Comet will allocate at least <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code> memory.</p>
 <p>If both <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> are set, the former will be used.</p>
+</section>
+<section id="memory-tuning-using-cometplugin">
+<h2>Memory Tuning using CometPlugin<a class="headerlink" href="#memory-tuning-using-cometplugin" title="Link to this heading">¶</a></h2>
+<p>Configuring memory for Spark and Comet might be a tedious task as it requires to tune Spark executor overhead memory and Comet memory overhead configs. Comet provides a Spark plugin <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> which can be set up to your Spark application to help memory settings.</p>
+<p>For users running the Comet in clusters like Kubernetes or YARN, <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> can also make the resource manager respect correctly Comet memory parameters <code class="docutils literal notranslate"><span class="pre">spark.comet.memory*</span></code>.
+it is needed to pass to the starting command line additional Spark configuration parameter <code class="docutils literal notranslate"><span class="pre">--conf</span> <span class="pre">spark.plugins=org.apache.spark.CometPlugin</span></code></p>
+<p>The resource managers respects Apache Spark memory configuration before starting the containers.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> plugin overrides <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> adding up the Comet memory configuration.</p>
 </section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h2>
