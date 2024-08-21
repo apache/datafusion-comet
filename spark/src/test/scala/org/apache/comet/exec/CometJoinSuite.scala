@@ -42,7 +42,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  /*
   test("join - self join") {
     val df1 = testData.select(testData("key")).as("df1")
     val df2 = testData.select(testData("key")).as("df2")
@@ -336,7 +335,6 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
-   */
 
   test("SortMergeJoin with join filter") {
     withSQLConf(
@@ -344,7 +342,6 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
-          /*
           val df1 = sql(
             "SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1 AND " +
               "tbl_a._1 > tbl_b._2")
@@ -369,24 +366,16 @@ class CometJoinSuite extends CometTestBase {
             "SELECT * FROM tbl_b RIGHT JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._1 > tbl_b._2")
           checkSparkAnswerAndOperator(df5)
-           */
 
           val df6 = sql(
             "SELECT * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
-              "AND tbl_a._1 > tbl_b._2 ORDER BY tbl_a._1, tbl_a._2")
-          df6.explain()
-          df6.show(100)
-          // checkSparkAnswer(df6)
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df6)
 
-          /*
           val df7 = sql(
             "SELECT * FROM tbl_b FULL JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._1 > tbl_b._2")
-          df7.explain()
           checkSparkAnswerAndOperator(df7)
-           */
-
-          /*
 
           val left = sql("SELECT * FROM tbl_a")
           val right = sql("SELECT * FROM tbl_b")
@@ -406,7 +395,6 @@ class CometJoinSuite extends CometTestBase {
           val df11 =
             right.join(left, left("_2") === right("_1") && left("_2") >= right("_1"), "leftanti")
           checkSparkAnswerAndOperator(df11)
-           */
         }
       }
     }
