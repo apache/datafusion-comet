@@ -2386,9 +2386,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .build()
           }
 
-        // datafusion's make_array only supports nullable element types
-        // https://github.com/apache/datafusion/issues/11923
-        case array @ CreateArray(children, _) =>
+        case CreateArray(children, _) =>
           val childExprs = children.map(exprToProto(_, inputs, binding))
 
           if (childExprs.forall(_.isDefined)) {
