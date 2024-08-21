@@ -38,7 +38,6 @@ public class CometDictionary implements AutoCloseable {
   }
 
   public void prefetch() {
-    System.out.println("CometDictionary prefetch");
     values.prefetch();
   }
 
