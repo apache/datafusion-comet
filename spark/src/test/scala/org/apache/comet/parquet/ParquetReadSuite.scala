@@ -659,8 +659,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     Seq(false, true).foreach { enableDictionary =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> 7.toString,
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
         // Make sure this works with Comet native execution too
         val data = (1 to 100)
           .map(_ % 5) // trigger dictionary encoding
@@ -747,7 +746,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> 7.toString,
       CometConf.COMET_EXEC_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true") {
       Seq("a", null).foreach { partValue =>
         withTempPath { dir =>
@@ -1286,7 +1284,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> cometEnabled,
       CometConf.COMET_EXEC_ENABLED.key -> cometEnabled,
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> cometEnabled,
       SQLConf.USE_V1_SOURCE_LIST.key -> v1.getOrElse("")) {
       withParquetTable(Seq((Long.MaxValue, 1), (Long.MaxValue, 2)), "tbl") {
         val df = spark.sql("select * from tbl")

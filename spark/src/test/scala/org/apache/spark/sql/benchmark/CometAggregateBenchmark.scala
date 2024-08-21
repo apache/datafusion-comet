@@ -73,8 +73,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
         benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql(query).noop()
           }
         }
@@ -121,8 +120,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
         benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql(query).noop()
           }
         }
@@ -167,7 +165,6 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
             CometConf.COMET_MEMORY_OVERHEAD.key -> "1G") {
             spark.sql(query).noop()
           }
@@ -210,8 +207,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
         benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql(query).noop()
           }
         }
