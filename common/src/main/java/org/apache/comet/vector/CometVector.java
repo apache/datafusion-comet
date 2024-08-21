@@ -64,6 +64,13 @@ public abstract class CometVector extends ColumnVector {
   }
 
   /**
+   * CometColumnarToRowExec will call this method before creating the iterator that will call getXxx
+   * methods on the vector. Implementations of CometVector may choose to bulk load some data from
+   * JNI in this method.
+   */
+  public void prefetch() {}
+
+  /**
    * Sets the number of nulls in this vector to be 'numNulls'. This is used when the vector is
    * reused across batches.
    */
