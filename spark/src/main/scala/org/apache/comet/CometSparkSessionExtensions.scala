@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -422,16 +422,13 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op @ HashAggregateExec(
-              _,
-              _,
-              _,
-              groupingExprs,
-              aggExprs,
-              _,
-              _,
-              resultExpressions,
-              child) =>
+        case op: BaseAggregateExec
+            if op.isInstanceOf[HashAggregateExec] ||
+              op.isInstanceOf[ObjectHashAggregateExec] =>
+          val groupingExprs = op.groupingExpressions
+          val aggExprs = op.aggregateExpressions
+          val resultExpressions = op.resultExpressions
+          val child = op.child
           val modes = aggExprs.map(_.mode).distinct
 
           if (!modes.isEmpty && modes.size != 1) {
@@ -499,7 +496,7 @@ class CometSparkSessionExtensions
           withInfo(op, "ShuffleHashJoin is not enabled")
           op
 
-        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative(_)) =>
+        case op: ShuffledHashJoinExec if !op.children.forall(isCometNative) =>
           withInfo(
             op,
             "ShuffleHashJoin disabled because the following children are not native " +
@@ -816,15 +813,16 @@ class CometSparkSessionExtensions
           s
 
         case op =>
-          // An operator that is not supported by Comet
           op match {
-            // Broadcast exchange exec is transformed by the parent node. We include
-            // this case specially here so we do not add a misleading 'info' message
-            case _: BroadcastExchangeExec => op
-            case _: CometExec | _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec => op
-            case o =>
-              withInfo(o, s"${o.nodeName} is not supported")
-              o
+            case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
+                _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
+              // Some execs should never be replaced. We include
+              // these cases specially here so we do not add a misleading 'info' message
+              op
+            case _ =>
+              // An operator that is not supported by Comet
+              withInfo(op, s"${op.nodeName} is not supported")
+              op
           }
       }
     }
