@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![deny(clippy::clone_on_ref_ptr)]
+
 // Include generated modules from .proto files.
 #[allow(missing_docs)]
 pub mod spark_expression {
