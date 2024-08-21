@@ -377,23 +377,24 @@ class CometJoinSuite extends CometTestBase {
               "AND tbl_a._1 > tbl_b._2")
           checkSparkAnswerAndOperator(df7)
 
-          val left = sql("SELECT * FROM tbl_a")
-          val right = sql("SELECT * FROM tbl_b")
-
-          val df8 =
-            left.join(right, left("_2") === right("_1") && left("_2") >= right("_1"), "leftsemi")
+          val df8 = sql(
+            "SELECT * FROM tbl_a LEFT SEMI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df8)
 
-          val df9 =
-            right.join(left, left("_2") === right("_1") && left("_2") >= right("_1"), "leftsemi")
+          val df9 = sql(
+            "SELECT * FROM tbl_b LEFT SEMI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df9)
 
-          val df10 =
-            left.join(right, left("_2") === right("_1") && left("_2") >= right("_1"), "leftanti")
+          val df10 = sql(
+            "SELECT * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df10)
 
-          val df11 =
-            right.join(left, left("_2") === right("_1") && left("_2") >= right("_1"), "leftanti")
+          val df11 = sql(
+            "SELECT * FROM tbl_b LEFT ANTI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df11)
         }
       }
