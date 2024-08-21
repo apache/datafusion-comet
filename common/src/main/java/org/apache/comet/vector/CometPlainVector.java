@@ -42,7 +42,7 @@ public class CometPlainVector extends CometDecodedVector {
   private int booleanByteCacheIndex = -1;
 
   /** Value buffer bytes */
-  private ByteBuffer valueBytes;
+  //  private ByteBuffer valueBytes;
 
   private byte[] valueBuffer = null;
 
@@ -69,9 +69,9 @@ public class CometPlainVector extends CometDecodedVector {
     }
 
     int rowCount = this.getValueVector().getValueCapacity();
-    System.out.println("CometPlainVector prefetch for " + rowCount + " rows");
+    //    System.out.println("CometPlainVector prefetch for " + rowCount + " rows");
 
-    if (dataType() == DataTypes.ByteType) {
+    /*if (dataType() == DataTypes.ByteType) {
       loadValueBytes(1);
     } else if (dataType() == DataTypes.ShortType) {
       loadValueBytes(2);
@@ -79,13 +79,14 @@ public class CometPlainVector extends CometDecodedVector {
       loadValueBytes(4);
     } else if (dataType() == DataTypes.LongType) {
       loadValueBytes(8);
-    } else if ((dataType() == DataTypes.StringType || dataType() == DataTypes.BinaryType)
+    } else*/
+
+    if ((dataType() == DataTypes.StringType || dataType() == DataTypes.BinaryType)
         && !isBaseFixedWidthVector) {
       if (rowCount > 0) {
         BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
         ArrowBuf offsetBuffer = varWidthVector.getOffsetBuffer();
         long offsetBufferAddress = offsetBuffer.memoryAddress();
-        // TODO offset and length buffers could also be pre-fetched
         int offset = Platform.getInt(null, offsetBufferAddress);
         int length = Platform.getInt(null, offsetBufferAddress + rowCount * 4L);
         valueBuffer = new byte[length];
@@ -95,6 +96,7 @@ public class CometPlainVector extends CometDecodedVector {
     }
   }
 
+  /*
   private void loadValueBytes(int bytesPerValue) {
     final int numBytes = numValues() * bytesPerValue;
     final byte[] buffer = new byte[numBytes];
@@ -103,6 +105,7 @@ public class CometPlainVector extends CometDecodedVector {
     final long valueBufferAddress = getValueVector().getDataBuffer().memoryAddress();
     Platform.copyMemory(null, valueBufferAddress, buffer, Platform.BYTE_ARRAY_OFFSET, numBytes);
   }
+  */
 
   @Override
   public void setNumNulls(int numNulls) {
@@ -122,36 +125,36 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public byte getByte(int rowId) {
-    if (valueBytes != null) {
-      return valueBytes.get(rowId);
-    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.get(rowId);
+    //    }
     return Platform.getByte(null, valueBufferAddress + rowId);
   }
 
   @Override
   public short getShort(int rowId) {
     final long offset = rowId * 2L;
-    if (valueBytes != null) {
-      return valueBytes.getShort((int) offset);
-    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getShort((int) offset);
+    //    }
     return Platform.getShort(null, valueBufferAddress + offset);
   }
 
   @Override
   public int getInt(int rowId) {
     final long offset = rowId * 4L;
-    if (valueBytes != null) {
-      return valueBytes.getInt((int) offset);
-    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getInt((int) offset);
+    //    }
     return Platform.getInt(null, valueBufferAddress + offset);
   }
 
   @Override
   public long getLong(int rowId) {
     final long offset = rowId * 8L;
-    if (valueBytes != null) {
-      return valueBytes.getLong((int) offset);
-    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getLong((int) offset);
+    //    }
     return Platform.getLong(null, valueBufferAddress + offset);
   }
 
