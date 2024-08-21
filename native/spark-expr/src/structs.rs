@@ -240,7 +240,7 @@ mod test {
     use datafusion_common::Result;
     use datafusion_expr::ColumnarValue;
     use datafusion_physical_expr::expressions::Column;
-    use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+    use datafusion_physical_expr::PhysicalExpr;
     use std::sync::Arc;
 
     #[test]
