@@ -377,9 +377,7 @@ class CometExecSuite extends CometTestBase {
 
   test("CometExec.executeColumnarCollectIterator can collect ColumnarBatch results") {
     assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 50).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
 
@@ -469,9 +467,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: project and filter") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
         df.collect()
@@ -498,7 +494,6 @@ class CometExecSuite extends CometTestBase {
   test("Comet native metrics: SortMergeJoin") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.join.preferSortMergeJoin" -> "true") {
@@ -1240,7 +1235,7 @@ class CometExecSuite extends CometTestBase {
         .saveAsTable("bucketed_table2")
 
       withSQLConf(
-        "spark.comet.exec.sortMergeJoin.disabled" -> "true",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
         val t1 = spark.table("bucketed_table1")
@@ -1348,9 +1343,8 @@ class CometExecSuite extends CometTestBase {
 
   test("disabled/unsupported exec with multiple children should not disappear") {
     withSQLConf(
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".project.enabled" -> "true",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".union.enabled" -> "false") {
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_UNION_ENABLED.key -> "false") {
       withParquetDataFrame((0 until 5).map(Tuple1(_))) { df =>
         val projected = df.selectExpr("_1 as x")
         val unioned = projected.union(df)
