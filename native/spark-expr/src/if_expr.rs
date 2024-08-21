@@ -102,7 +102,7 @@ impl PhysicalExpr for IfExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(IfExpr::new(
-            Arc::clone(&children[1]),
+            Arc::clone(&children[0]),
             Arc::clone(&children[1]),
             Arc::clone(&children[2]),
         )))
