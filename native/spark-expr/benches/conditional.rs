@@ -26,7 +26,7 @@ use datafusion_expr::Operator;
 use datafusion_physical_expr::expressions::Column;
 use datafusion_physical_expr::expressions::Literal;
 use datafusion_physical_expr::expressions::{BinaryExpr, CaseExpr};
-use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+use datafusion_physical_expr::PhysicalExpr;
 use std::sync::Arc;
 
 fn make_col(name: &str, index: usize) -> Arc<dyn PhysicalExpr> {
