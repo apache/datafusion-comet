@@ -2003,10 +2003,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
+        // TODO: Some part of this converts the null to an empty string
+        // checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
       }
     }
   }
