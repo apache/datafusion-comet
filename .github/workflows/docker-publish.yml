@@ -44,7 +44,7 @@ jobs:
       - name: Extract Comet version
         id: extract_version
         run: |
-          echo "COMET_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
+          echo "COMET_VERSION=${GITHUB_REF##*/}" >> $GITHUB_ENV
       - name: Echo Comet version
         run: echo "The current Comet version is ${{ env.COMET_VERSION }}"
       - name: Set up Docker Buildx
