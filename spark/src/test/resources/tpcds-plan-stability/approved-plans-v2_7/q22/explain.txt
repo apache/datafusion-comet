@@ -23,7 +23,7 @@ TakeOrderedAndProject (26)
                         :           +- CometFilter (10)
                         :              +- CometScan parquet spark_catalog.default.item (9)
                         +- BroadcastExchange (17)
-                           +- * ColumnarToRow (16)
+                           +- * CometColumnarToRow (16)
                               +- CometScan parquet spark_catalog.default.warehouse (15)
 
 
@@ -100,7 +100,7 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
 ReadSchema: struct<>
 
-(16) ColumnarToRow [codegen id : 1]
+(16) CometColumnarToRow [codegen id : 1]
 Input: []
 
 (17) BroadcastExchange

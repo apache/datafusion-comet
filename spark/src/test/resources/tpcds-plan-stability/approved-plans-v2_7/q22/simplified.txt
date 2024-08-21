@@ -36,6 +36,6 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
                         InputAdapter
                           BroadcastExchange #5
                             WholeStageCodegen (1)
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometScan parquet spark_catalog.default.warehouse
