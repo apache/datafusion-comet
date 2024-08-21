@@ -1796,7 +1796,6 @@ impl PhysicalPlanner {
                     .unwrap()
                     .equals_datatype(&to_type)
                 {
-                    println!("Casting {:?} to {:?}", expr, to_type);
                     Arc::new(CastExpr::new(
                         expr,
                         to_type,

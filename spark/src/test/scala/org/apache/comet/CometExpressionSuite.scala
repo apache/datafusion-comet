@@ -2007,7 +2007,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
-        checkSparkAnswerAndOperator(df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
+        checkSparkAnswerAndOperator(
+          df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
         // TODO: Some part of this converts the null to an empty string
         // checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
