@@ -42,7 +42,7 @@ public class CometPlainVector extends CometDecodedVector {
   private int booleanByteCacheIndex = -1;
 
   /** Value buffer bytes */
-  //private ByteBuffer valueBytes;
+  // private ByteBuffer valueBytes;
   private byte[] buffer = null;
 
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
@@ -89,39 +89,37 @@ public class CometPlainVector extends CometDecodedVector {
     // an even better approach would be making one JNI call per row to construct
     // UnsafeRow bytes in native code
 
-    if (dataType() == DataTypes.StringType || dataType() == DataTypes.BinaryType) {
+    if ((dataType() == DataTypes.StringType || dataType() == DataTypes.BinaryType)
+        && !isBaseFixedWidthVector) {
       int rowCount = this.getValueVector().getValueCapacity();
       if (rowCount > 0) {
-        long startAddress = valueBufferAddress + Platform.BYTE_ARRAY_OFFSET;
-        if (isBaseFixedWidthVector) {
-          System.out.println("pre-fetching fixed-width column");
-          BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
-          int offset = 0;
-          int length = rowCount * fixedWidthVector.getTypeWidth();
-          buffer = new byte[length];
-          System.out.println("Platform.copyMemory() offset=" + offset + ", length=" + length);
-          Platform.copyMemory(null, startAddress, buffer, offset, length);
-          System.out.println("fetched: " + bytesToHex(buffer));
-//          valueBytes = ByteBuffer.wrap(buffer);
-//          valueBytes.order(ByteOrder.LITTLE_ENDIAN);
-
-        } else {
-          System.out.println("pre-fetching variable-width column");
-          BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
-          ArrowBuf offsetBuffer = varWidthVector.getOffsetBuffer();
-          System.out.println("offset buffer capacity=" + offsetBuffer.capacity());
-          System.out.println("row count=" + rowCount);
-          long offsetBufferAddress = offsetBuffer.memoryAddress();
-          // TODO offset and length buffers could also be pre-fetched
-          int offset = Platform.getInt(null, offsetBufferAddress);
-          int length = Platform.getInt(null, offsetBufferAddress + rowCount * 4L);
-          buffer = new byte[length];
-          System.out.println("Platform.copyMemory() offset=" + offset + ", length=" + length);
-          Platform.copyMemory(null, startAddress, buffer, offset, length);
-          System.out.println("fetched: " + bytesToHex(buffer));
-//          valueBytes = ByteBuffer.wrap(buffer);
-//          valueBytes.order(ByteOrder.LITTLE_ENDIAN);
-        }
+        //        if (isBaseFixedWidthVector) {
+        //          //System.out.println("pre-fetching fixed-width column");
+        //          BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
+        //          int offset = 0;
+        //          int length = rowCount * fixedWidthVector.getTypeWidth();
+        //          buffer = new byte[length];
+        //          //System.out.println("Platform.copyMemory() offset=" + offset + ", length=" +
+        // length);
+        //          Platform.copyMemory(null, startAddress, buffer, offset, length);
+        //          //System.out.println("fetched: " + bytesToHex(buffer));
+        //
+        //        } else {
+        // System.out.println("pre-fetching variable-width column");
+        BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
+        ArrowBuf offsetBuffer = varWidthVector.getOffsetBuffer();
+        // System.out.println("offset buffer capacity=" + offsetBuffer.capacity());
+        // System.out.println("row count=" + rowCount);
+        long offsetBufferAddress = offsetBuffer.memoryAddress();
+        // TODO offset and length buffers could also be pre-fetched
+        int offset = Platform.getInt(null, offsetBufferAddress);
+        int length = Platform.getInt(null, offsetBufferAddress + rowCount * 4L);
+        buffer = new byte[length];
+        // System.out.println("Platform.copyMemory() offset=" + offset + ", length=" + length);
+        Platform.copyMemory(
+            null, valueBufferAddress + offset, buffer, Platform.BYTE_ARRAY_OFFSET, length);
+        // System.out.println("fetched: " + bytesToHex(buffer));
+        //        }
       }
     }
   }
@@ -165,36 +163,36 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public byte getByte(int rowId) {
-//    if (valueBytes != null) {
-//      return valueBytes.get(rowId);
-//    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.get(rowId);
+    //    }
     return Platform.getByte(null, valueBufferAddress + rowId);
   }
 
   @Override
   public short getShort(int rowId) {
     final long offset = rowId * 2L;
-//    if (valueBytes != null) {
-//      return valueBytes.getShort((int) offset);
-//    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getShort((int) offset);
+    //    }
     return Platform.getShort(null, valueBufferAddress + offset);
   }
 
   @Override
   public int getInt(int rowId) {
     final long offset = rowId * 4L;
-//    if (valueBytes != null) {
-//      return valueBytes.getInt((int) offset);
-//    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getInt((int) offset);
+    //    }
     return Platform.getInt(null, valueBufferAddress + offset);
   }
 
   @Override
   public long getLong(int rowId) {
     final long offset = rowId * 8L;
-//    if (valueBytes != null) {
-//      return valueBytes.getLong((int) offset);
-//    }
+    //    if (valueBytes != null) {
+    //      return valueBytes.getLong((int) offset);
+    //    }
     return Platform.getLong(null, valueBufferAddress + offset);
   }
 
@@ -216,38 +214,62 @@ public class CometPlainVector extends CometDecodedVector {
   @Override
   public UTF8String getUTF8String(int rowId) {
     if (isBaseFixedWidthVector) {
-      if (isUuid) {
-        return UTF8String.fromString(convertToUuid(getBinary(rowId)).toString());
-      } else {
-        return UTF8String.fromBytes(getBinary(rowId));
-      }
+      return _getUTF8String(rowId);
     } else {
       return UTF8String.fromBytes(getBinary(rowId));
+    }
+  }
+
+  /** This is the original version */
+  private UTF8String _getUTF8String(int rowId) {
+    // System.out.println("_getUTF8String(" + rowId + ")");
+    if (!isBaseFixedWidthVector) {
+      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
+      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+      int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      // System.out.println("UTF8String.fromAddress offset = " + offset + ", length = " + length);
+      UTF8String str = UTF8String.fromAddress(null, valueBufferAddress + offset, length);
+      // System.out.println("returning " + str);
+      return str;
+    } else {
+      BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
+      int length = fixedWidthVector.getTypeWidth();
+      int offset = rowId * length;
+      byte[] result = new byte[length];
+      Platform.copyMemory(
+          null, valueBufferAddress + offset, result, Platform.BYTE_ARRAY_OFFSET, length);
+
+      if (!isUuid) {
+        return UTF8String.fromBytes(result);
+      } else {
+        return UTF8String.fromString(convertToUuid(result).toString());
+      }
     }
   }
 
   @Override
   public byte[] getBinary(int rowId) {
     assert (buffer != null);
-    System.out.println("getBinary(" + rowId + ")");
+    // System.out.println("getBinary(" + rowId + ")");
     if (isBaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       int length = fixedWidthVector.getTypeWidth();
       int offset = rowId * length;
-//      byte[] result = new byte[length];
-      System.out.println("calling valueBytes.get(result, " + offset + "," + length + ")");
+      //      byte[] result = new byte[length];
+      // System.out.println("calling valueBytes.get(result, " + offset + "," + length + ")");
 
-//      return result;
+      //      return result;
       return Arrays.copyOfRange(buffer, offset, length);
     } else {
       BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
       long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
       // TODO could pre-fetch offset and length arrays
       int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
-//      byte[] result = new byte[length];
-      System.out.println("calling valueBytes.get(result, " + offset + "," + length + ")");
-      //valueBytes.get(result, offset, length);
+      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L);
+      //      byte[] result = new byte[length];
+      // System.out.println("calling valueBytes.get(result, " + offset + "," + length + ")");
+      // valueBytes.get(result, offset, length);
       return Arrays.copyOfRange(buffer, offset, length);
     }
   }
