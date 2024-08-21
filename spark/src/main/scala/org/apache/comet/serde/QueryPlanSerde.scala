@@ -2919,7 +2919,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          case LeftAnti => JoinType.LeftAnti
+          // TODO: DF SMJ with join condition fails TPCH q21
+          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
+          case LeftAnti =>
+            withInfo(join, "LeftAnti SMJ join with condition is not supported")
+            return None
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
