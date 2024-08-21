@@ -67,12 +67,12 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
-    extensions.injectColumnar { session => ColumnarOverrideRules(session) }
+    extensions.injectColumnar { session => CometColumnarOverrideRules(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
   }
 
-  case class ColumnarOverrideRules(session: SparkSession) extends ColumnarRule {
+  case class CometColumnarOverrideRules(session: SparkSession) extends ColumnarRule {
     override def preColumnarTransitions: Rule[SparkPlan] = CometPreColumnarTransitions()
     override def postColumnarTransitions: Rule[SparkPlan] = CometPostColumnarTransitions()
   }
@@ -87,6 +87,10 @@ class CometSparkSessionExtensions
   case class CometPostColumnarTransitions() extends Rule[SparkPlan] {
     override def apply(sparkPlan: SparkPlan): SparkPlan = {
       sparkPlan.transformUp {
+        case ColumnarToRowExec(child: CometScanExec) =>
+          CometColumnarToRowExec(child)
+        case ColumnarToRowExec(InputAdapter(child: CometScanExec)) =>
+          CometColumnarToRowExec(InputAdapter(child))
         case ColumnarToRowExec(child: CometExec) =>
           CometColumnarToRowExec(child)
         case ColumnarToRowExec(InputAdapter(child: CometExec)) =>
