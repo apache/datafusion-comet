@@ -100,13 +100,14 @@ object CometDriverPlugin {
   def registerCometSessionExtension(conf: SparkConf): Unit = {
     val extensionKey = StaticSQLConf.SPARK_SESSION_EXTENSIONS.key
     val extensionClass = classOf[CometSparkSessionExtensions].getName
-    if (conf.contains(extensionKey)) {
-      val extensions = conf.get(extensionKey)
-      if (!extensions.split(",").map(_.trim).contains(extensionClass)) {
+    val extensions = conf.get(extensionKey, "")
+    if (extensions.isEmpty) {
+      conf.set(extensionKey, extensionClass)
+    } else {
+      val currentExtensions = extensions.split(",").map(_.trim)
+      if (!currentExtensions.contains(extensionClass)) {
         conf.set(extensionKey, s"$extensions,$extensionClass")
       }
-    } else {
-      conf.set(extensionKey, extensionClass)
     }
   }
 }
