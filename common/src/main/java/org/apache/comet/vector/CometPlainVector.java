@@ -215,10 +215,10 @@ public class CometPlainVector extends CometDecodedVector {
     }
     BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
     long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
-    // TODO we could pre-fetch offset and length arrays to avoid two JNI calls per call to getBinary
+    // TODO we could pre-fetch offset array to avoid two JNI calls per call to getBinary
     int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-    int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L);
-    return Arrays.copyOfRange(valueBuffer, offset, length);
+    int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+    return Arrays.copyOfRange(valueBuffer, offset, offset + length);
   }
 
   /** This is the original version */
