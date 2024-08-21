@@ -691,7 +691,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(
             aggExpr,
             "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
+              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED.key}=true to enable it.",
             child)
           None
         }
@@ -721,7 +721,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(
             aggExpr,
             "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
+              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED.key}=true to enable it.",
             child)
           None
         }
