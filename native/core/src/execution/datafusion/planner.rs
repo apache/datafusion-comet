@@ -55,6 +55,7 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_expr_functions_aggregate::aggregate::AggregateExprBuilder;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -105,14 +106,13 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
-use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::expressions::Literal;
+use datafusion_physical_expr::window::WindowExpr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion::physical_expr_functions_aggregate::aggregate::AggregateExprBuilder;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -1312,7 +1312,8 @@ impl PhysicalPlanner {
                     .alias("count")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                    .build()
+                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1324,7 +1325,8 @@ impl PhysicalPlanner {
                     .alias("min")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                    .build()
+                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Max(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1336,7 +1338,8 @@ impl PhysicalPlanner {
                     .alias("max")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                    .build()
+                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
             AggExprStruct::Sum(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1356,7 +1359,8 @@ impl PhysicalPlanner {
                             .alias("sum")
                             .with_ignore_nulls(false)
                             .with_distinct(false)
-                            .build().map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                            .build()
+                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                 }
             }
@@ -1389,7 +1393,8 @@ impl PhysicalPlanner {
                     .alias("first")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| e.into())
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::Last(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1400,7 +1405,8 @@ impl PhysicalPlanner {
                     .alias("last")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| e.into())
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BitAndAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1410,7 +1416,8 @@ impl PhysicalPlanner {
                     .alias("bit_and")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| e.into())
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BitOrAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1420,7 +1427,8 @@ impl PhysicalPlanner {
                     .alias("bit_or")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| e.into())
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BitXorAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -1430,7 +1438,8 @@ impl PhysicalPlanner {
                     .alias("bit_xor")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
-                    .build().map_err(|e| e.into())
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::Covariance(expr) => {
                 let child1 =
