@@ -63,7 +63,8 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public void prefetch() {
-    System.out.println("CometPlainVector prefetch");
+    int rowCount = this.getValueVector().getValueCapacity();
+    System.out.println("CometPlainVector prefetch for " + rowCount + " rows");
     if (valueBuffer != null) {
       return;
     }
@@ -90,7 +91,6 @@ public class CometPlainVector extends CometDecodedVector {
 
     if ((dataType() == DataTypes.StringType || dataType() == DataTypes.BinaryType)
         && !isBaseFixedWidthVector) {
-      int rowCount = this.getValueVector().getValueCapacity();
       if (rowCount > 0) {
         BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
         ArrowBuf offsetBuffer = varWidthVector.getOffsetBuffer();
