@@ -59,6 +59,12 @@ public class CometDictionaryVector extends CometDecodedVector {
   }
 
   @Override
+  public void prefetch() {
+    System.out.println("CometDictionaryVector prefetch");
+    values.prefetch();
+  }
+
+  @Override
   public DictionaryProvider getDictionaryProvider() {
     return this.provider;
   }
