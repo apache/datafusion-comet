@@ -179,7 +179,11 @@ public class CometPlainVector extends CometDecodedVector {
       // call original Spark version
       return _getUTF8String(rowId);
     } else {
-      return UTF8String.fromBytes(getBinary(rowId));
+      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
+      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+      int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      return UTF8String.fromBytes(valueBuffer, offset, length);
     }
   }
 
