@@ -1720,33 +1720,6 @@ impl PhysicalPlanner {
         }
     }
 
-    fn infer_data_type(
-        &self,
-        fun_name: &str,
-        arg_types: &[DataType],
-    ) -> Result<DataType, ExecutionError> {
-        let fun_name = match fun_name {
-            "read_side_padding" => "rpad", // use the same return type as rpad
-            other => other,
-        };
-        Ok(self
-            .session_ctx
-            .udf(fun_name)?
-            .inner()
-            .return_type(arg_types)?)
-    }
-
-    fn coerce_types(&self, fun_name: &str, arg_types: &[DataType]) -> Option<Vec<DataType>> {
-        let fun_name = match fun_name {
-            "read_side_padding" => "rpad", // use the same return type as rpad
-            other => other,
-        };
-        self.session_ctx
-            .udf(fun_name)
-            .ok()
-            .and_then(|func| func.coerce_types(arg_types).ok())
-    }
-
     fn create_scalar_function_expr(
         &self,
         expr: &ScalarFunc,
@@ -1766,7 +1739,7 @@ impl PhysicalPlanner {
 
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
-                Some(t) => (t, input_expr_types),
+                Some(t) => (t, input_expr_types.clone()),
                 None => {
                     let fun_name = match fun_name.as_ref() {
                         "read_side_padding" => "rpad", // use the same return type as rpad
@@ -1776,7 +1749,7 @@ impl PhysicalPlanner {
 
                     let coerced_types = func
                         .coerce_types(&input_expr_types)
-                        .unwrap_or(input_expr_types);
+                        .unwrap_or_else(|_| input_expr_types.clone());
 
                     let data_type = func.inner().return_type(&coerced_types)?;
 
@@ -1789,13 +1762,9 @@ impl PhysicalPlanner {
 
         let args = args
             .into_iter()
-            .zip(coerced_input_types)
-            .map(|(expr, to_type)| {
-                if !expr
-                    .data_type(input_schema.as_ref())
-                    .unwrap()
-                    .equals_datatype(&to_type)
-                {
+            .zip(input_expr_types.into_iter().zip(coerced_input_types))
+            .map(|(expr, (from_type, to_type))| {
+                if !from_type.equals_datatype(&to_type) {
                     Arc::new(CastExpr::new(
                         expr,
                         to_type,
