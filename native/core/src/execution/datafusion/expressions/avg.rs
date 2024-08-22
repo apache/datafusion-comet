@@ -96,7 +96,7 @@ impl AggregateExpr for Avg {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr.clone()]
+        vec![Arc::clone(&self.expr)]
     }
 
     fn name(&self) -> &str {
