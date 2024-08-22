@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStag
 
 import org.apache.comet.CometExplainInfo.getActualPlan
 
-class ExtendedExplainInfo extends ExtendedExplainGenerator {
+object ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
@@ -161,5 +161,4 @@ object CometExplainInfo {
       case p => p
     }
   }
-
 }

@@ -661,7 +661,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometSparkSessionExtensions.withInfo(project, "reason 5", id)
       CometSparkSessionExtensions.withInfo(project, id)
       CometSparkSessionExtensions.withInfo(project, "reason 6")
-      val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
+      val explain = ExtendedExplainInfo.generateExtendedInfo(project)
       for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))
       }
@@ -676,7 +676,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
         val query2 = sql(s"select id from $table where name rlike name")
         val (_, cometPlan) = checkSparkAnswer(query2)
-        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        val explain = ExtendedExplainInfo.generateExtendedInfo(cometPlan)
         assert(explain.contains("Only scalar regexp patterns are supported"))
       }
     }

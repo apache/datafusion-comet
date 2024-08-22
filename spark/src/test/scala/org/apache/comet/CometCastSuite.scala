@@ -940,7 +940,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = data.withColumn("converted", col("a").cast(toType))
         df.collect()
         val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+          ExtendedExplainInfo.generateExtendedInfo(df.queryExecution.executedPlan)
         assert(str.contains(expectedMessage))
       }
     }

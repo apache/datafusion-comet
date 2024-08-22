@@ -256,7 +256,7 @@ abstract class CometTestBase
       assert(expectedInfo.forall(s => diff.contains(s)))
     }
     val extendedInfo =
-      new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
+      ExtendedExplainInfo.generateExtendedInfo(dfComet.queryExecution.executedPlan)
     val expectedStr = expectedInfo.toSeq.sorted.mkString("\n")
     if (!extendedInfo.equalsIgnoreCase(expectedStr)) {
       fail(s"$extendedInfo != $expectedStr (case-insensitive comparison)")

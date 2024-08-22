@@ -109,7 +109,7 @@ trait CometTPCQueryListBase
         }
         out.println(
           s"Query: $name$nameSuffix: ExplainInfo:\n" +
-            s"${new ExtendedExplainInfo().generateExtendedInfo(executedPlan)}\n")
+            s"${ExtendedExplainInfo.generateExtendedInfo(executedPlan)}\n")
       }
     }
   }
