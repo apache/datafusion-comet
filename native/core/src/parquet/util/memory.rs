@@ -182,7 +182,7 @@ impl<T: Clone> Buffer<T> {
         let old_data = mem::take(&mut self.data);
         let mut result = BufferPtr::new(old_data);
         if let Some(ref mc) = self.mem_tracker {
-            result = result.with_mem_tracker(mc.clone());
+            result = result.with_mem_tracker(Arc::clone(mc));
         }
         result
     }
@@ -361,7 +361,7 @@ impl<T> BufferPtr<T> {
     /// Reference counted pointer to the data is copied.
     pub fn all(&self) -> BufferPtr<T> {
         BufferPtr {
-            data: self.data.clone(),
+            data: Arc::clone(&self.data),
             start: self.start,
             len: self.len,
             mem_tracker: self.mem_tracker.as_ref().cloned(),
@@ -372,7 +372,7 @@ impl<T> BufferPtr<T> {
     pub fn start_from(&self, start: usize) -> BufferPtr<T> {
         assert!(start <= self.len);
         BufferPtr {
-            data: self.data.clone(),
+            data: Arc::clone(&self.data),
             start: self.start + start,
             len: self.len - start,
             mem_tracker: self.mem_tracker.as_ref().cloned(),
@@ -383,7 +383,7 @@ impl<T> BufferPtr<T> {
     pub fn range(&self, start: usize, len: usize) -> BufferPtr<T> {
         assert!(start + len <= self.len);
         BufferPtr {
-            data: self.data.clone(),
+            data: Arc::clone(&self.data),
             start: self.start + start,
             len,
             mem_tracker: self.mem_tracker.as_ref().cloned(),
@@ -431,7 +431,7 @@ mod tests {
     fn test_byte_buffer_mem_tracker() {
         let mem_tracker = Arc::new(MemTracker::new());
 
-        let mut buffer = ByteBuffer::new().with_mem_tracker(mem_tracker.clone());
+        let mut buffer = ByteBuffer::new().with_mem_tracker(Arc::clone(&mem_tracker));
         buffer.set_data(vec![0; 10]);
         assert_eq!(mem_tracker.memory_usage(), buffer.capacity() as i64);
         buffer.set_data(vec![0; 20]);
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(mem_tracker.memory_usage(), capacity);
 
         let max_capacity = {
-            let mut buffer2 = ByteBuffer::new().with_mem_tracker(mem_tracker.clone());
+            let mut buffer2 = ByteBuffer::new().with_mem_tracker(Arc::clone(&mem_tracker));
             buffer2.reserve(30);
             assert_eq!(
                 mem_tracker.memory_usage(),
@@ -467,7 +467,7 @@ mod tests {
     fn test_byte_ptr_mem_tracker() {
         let mem_tracker = Arc::new(MemTracker::new());
 
-        let mut buffer = ByteBuffer::new().with_mem_tracker(mem_tracker.clone());
+        let mut buffer = ByteBuffer::new().with_mem_tracker(Arc::clone(&mem_tracker));
         buffer.set_data(vec![0; 60]);
 
         {

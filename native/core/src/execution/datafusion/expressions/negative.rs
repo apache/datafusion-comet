@@ -200,7 +200,7 @@ impl PhysicalExpr for NegativeExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(NegativeExpr::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.fail_on_error,
         )))
     }
