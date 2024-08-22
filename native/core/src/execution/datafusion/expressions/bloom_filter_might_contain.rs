@@ -138,8 +138,8 @@ impl PhysicalExpr for BloomFilterMightContain {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(BloomFilterMightContain::try_new(
-            children[0].clone(),
-            children[1].clone(),
+            Arc::clone(&children[0]),
+            Arc::clone(&children[1]),
         )?))
     }
 

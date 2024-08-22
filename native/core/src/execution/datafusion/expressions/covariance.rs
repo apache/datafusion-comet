@@ -112,7 +112,7 @@ impl AggregateExpr for Covariance {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr1.clone(), self.expr2.clone()]
+        vec![Arc::clone(&self.expr1), Arc::clone(&self.expr2)]
     }
 
     fn name(&self) -> &str {
