@@ -21,11 +21,13 @@ package org.apache.spark
 
 import java.{util => ju}
 import java.util.Collections
+
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
-import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.internal.StaticSQLConf
+
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
@@ -96,17 +98,20 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
   }
 }
 
-object CometDriverPlugin {
+object CometDriverPlugin extends Logging {
   def registerCometSessionExtension(conf: SparkConf): Unit = {
     val extensionKey = StaticSQLConf.SPARK_SESSION_EXTENSIONS.key
     val extensionClass = classOf[CometSparkSessionExtensions].getName
     val extensions = conf.get(extensionKey, "")
     if (extensions.isEmpty) {
+      logInfo(s"Setting $extensionKey=$extensionClass")
       conf.set(extensionKey, extensionClass)
     } else {
       val currentExtensions = extensions.split(",").map(_.trim)
       if (!currentExtensions.contains(extensionClass)) {
-        conf.set(extensionKey, s"$extensions,$extensionClass")
+        val newValue = s"$extensions,$extensionClass"
+        logInfo(s"Setting $extensionKey=$newValue")
+        conf.set(extensionKey, newValue)
       }
     }
   }

@@ -39,28 +39,40 @@ class CometPluginsSuite extends CometTestBase {
     {
       val conf = new SparkConf()
       CometDriverPlugin.registerCometSessionExtension(conf)
-      assert("org.apache.comet.CometSparkSessionExtensions" == conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+      assert(
+        "org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
     // test case where Comet is already registered
     {
       val conf = new SparkConf()
-      conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key, "org.apache.comet.CometSparkSessionExtensions")
+      conf.set(
+        StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+        "org.apache.comet.CometSparkSessionExtensions")
       CometDriverPlugin.registerCometSessionExtension(conf)
-      assert("org.apache.comet.CometSparkSessionExtensions" == conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+      assert(
+        "org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
     // test case where other extensions are already registered
     {
       val conf = new SparkConf()
       conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key, "foo,bar")
       CometDriverPlugin.registerCometSessionExtension(conf)
-      assert("foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+      assert(
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
     // test case where other extensions, including Comet, are already registered
     {
       val conf = new SparkConf()
-      conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key, "foo,bar,org.apache.comet.CometSparkSessionExtensions")
+      conf.set(
+        StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions")
       CometDriverPlugin.registerCometSessionExtension(conf)
-      assert("foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+      assert(
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
   }
 
