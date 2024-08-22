@@ -149,6 +149,22 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test(
+    "fall back to Spark when the partition spec and order spec are not the same for window function") {
+    withTempView("test") {
+      sql("""
+          |CREATE OR REPLACE TEMPORARY VIEW test_agg AS SELECT * FROM VALUES
+          | (1, true), (1, false),
+          |(2, true), (3, false), (4, true) AS test(k, v)
+          |""".stripMargin)
+
+      val df = sql("""
+          SELECT k, v, every(v) OVER (PARTITION BY k ORDER BY v) FROM test_agg
+          |""".stripMargin)
+      checkSparkAnswer(df)
+    }
+  }
+
   test("Native window operator should be CometUnaryExec") {
     withTempView("testData") {
       sql("""
@@ -164,11 +180,11 @@ class CometExecSuite extends CometTestBase {
           |(3, 1L, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), null)
           |AS testData(val, val_long, val_double, val_date, val_timestamp, cate)
           |""".stripMargin)
-      val df = sql("""
+      val df1 = sql("""
           |SELECT val, cate, count(val) OVER(PARTITION BY cate ORDER BY val ROWS CURRENT ROW)
           |FROM testData ORDER BY cate, val
           |""".stripMargin)
-      checkSparkAnswer(df)
+      checkSparkAnswer(df1)
     }
   }
 

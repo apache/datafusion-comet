@@ -2787,6 +2787,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
+        if (partitionSpec.nonEmpty && orderSpec.nonEmpty &&
+          !validatePartitionAndSortSpecsForWindowFunc(partitionSpec, orderSpec, op)) {
+          return None
+        }
+
         val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
@@ -3287,6 +3292,43 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         true
       }
     } else {
+      true
+    }
+  }
+
+  private def validatePartitionAndSortSpecsForWindowFunc(
+      partitionSpec: Seq[Expression],
+      orderSpec: Seq[SortOrder],
+      op: SparkPlan): Boolean = {
+    if (partitionSpec.length != orderSpec.length) {
+      withInfo(op, "Partitioning and sorting specifications do not match")
+      return false
+    } else {
+      val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
+        a.name
+      }
+
+      if (partitionColumnNames.length != partitionSpec.length) {
+        withInfo(op, "Unsupported partitioning specification")
+        return false
+      }
+
+      val orderColumnNames = orderSpec.collect { case s: SortOrder =>
+        s.child match {
+          case a: AttributeReference => a.name
+        }
+      }
+
+      if (orderColumnNames.length != orderSpec.length) {
+        withInfo(op, "Unsupported SortOrder")
+        return false
+      }
+
+      if (partitionColumnNames.toSet != orderColumnNames.toSet) {
+        withInfo(op, "Partitioning and sorting specifications do not match")
+        return false
+      }
+
       true
     }
   }

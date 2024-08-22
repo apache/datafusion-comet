@@ -1692,24 +1692,32 @@ impl PhysicalPlanner {
             .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
         {
             Some(l) => match l {
-                LowerFrameBoundStruct::UnboundedPreceding(_) => {
-                    match units {
-                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
-                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+                LowerFrameBoundStruct::UnboundedPreceding(_) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Preceding(ScalarValue::UInt64(None))
                     }
-                }
+                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                        WindowFrameBound::Preceding(ScalarValue::Int64(None))
+                    }
+                },
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = offset.offset.abs() as i64;
+                    let offset_value = offset.offset.abs();
                     match units {
-                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value as u64))),
-                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value))),
+                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(
+                            Some(offset_value as u64),
+                        )),
+                        WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                            WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
+                        }
                     }
                 }
                 LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
             None => match units {
                 WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    WindowFrameBound::Preceding(ScalarValue::Int64(None))
+                }
             },
         };
 
@@ -1719,23 +1727,29 @@ impl PhysicalPlanner {
             .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
         {
             Some(u) => match u {
-                UpperFrameBoundStruct::UnboundedFollowing(_) => {
-                    match units {
-                        WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
-                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(None)),
+                UpperFrameBoundStruct::UnboundedFollowing(_) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Following(ScalarValue::UInt64(None))
                     }
-                }
-                UpperFrameBoundStruct::Following(offset) => {
-                    match units {
-                        WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64))),
-                        WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset as i64))),
+                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                        WindowFrameBound::Following(ScalarValue::Int64(None))
                     }
-                }
+                },
+                UpperFrameBoundStruct::Following(offset) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
+                    }
+                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                        WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
+                    }
+                },
                 UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
             None => match units {
                 WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range | WindowFrameUnits::Groups => WindowFrameBound::Following(ScalarValue::Int64(None)),
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    WindowFrameBound::Following(ScalarValue::Int64(None))
+                }
             },
         };
 
