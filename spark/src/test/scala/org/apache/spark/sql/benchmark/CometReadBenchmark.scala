@@ -34,8 +34,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.parquet.BatchReader
 
 /**
- * Benchmark to measure Comet read performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * Benchmark to measure Comet read performance. To run this benchmark: `make
  * benchmark-org.apache.spark.sql.benchmark.CometReadBenchmark` Results will be written to
  * "spark/benchmarks/CometReadBenchmark-**results.txt".
  */

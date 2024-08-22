@@ -34,7 +34,7 @@ import java.util.Locale
  * make benchmark-org.apache.spark.sql.GenTPCHData -- --location /tmp --scaleFactor ${scale_factor}
  *
  * // CometTPCHQueryBenchmark
- * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCHQueryBenchmark -- --data-location /tmp/tpch/sf${scale_factor}_parquet
+ * make benchmark-org.apache.spark.sql.benchmark.CometTPCHQueryBenchmark -- --data-location /tmp/tpch/sf${scale_factor}_parquet
  * }}}
  *
  * Results will be written to "spark/benchmarks/CometTPCHQueryBenchmark-**results.txt".

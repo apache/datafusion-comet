@@ -45,7 +45,7 @@ import org.apache.comet.CometConf
  * make benchmark-org.apache.spark.sql.GenTPCDSData -- --dsdgenDir /tmp/tpcds-kit/tools --location /tmp/tpcds --scaleFactor 1
  *
  * // CometTPCDSMicroBenchmark
- * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
+ * make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
  * }}}
  *
  * Results will be written to "spark/benchmarks/CometTPCDSMicroBenchmark-**results.txt".
@@ -104,15 +104,27 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       }
       val numRows = queryRelations.map(tableSizes.getOrElse(_, 0L)).sum
       val benchmark = new Benchmark(benchmarkName, numRows, 2, output = output)
-      benchmark.addCase(s"$name$nameSuffix") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Spark Scan + Spark Exec") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet Scan + Spark Exec") { _ =>
         withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet Scan + Comet Exec") { _ =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto",
+          CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
+          // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          cometSpark.sql(queryString).noop()
+        }
+      }
+      benchmark.addCase(s"$name$nameSuffix: Spark Scan + Comet Exec") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",

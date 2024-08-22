@@ -23,8 +23,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone
 import org.apache.spark.sql.internal.SQLConf
 
 /**
- * Benchmark to measure Comet execution performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * Benchmark to measure Comet execution performance. To run this benchmark: `make
  * benchmark-org.apache.spark.sql.benchmark.CometDatetimeExpressionBenchmark` Results will be
  * written to "spark/benchmarks/CometDatetimeExpressionBenchmark-**results.txt".
  */

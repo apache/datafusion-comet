@@ -38,7 +38,7 @@ import org.apache.spark.sql.types.StructType
  * make benchmark-org.apache.spark.sql.GenTPCDSData -- --dsdgenDir /tmp/tpcds-kit/tools --location /tmp/tpcds --scaleFactor 1
  *
  * // CometTPCDSQueryBenchmark
- * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCDSQueryBenchmark -- --data-location /tmp/tpcds
+ * make benchmark-org.apache.spark.sql.benchmark.CometTPCDSQueryBenchmark -- --data-location /tmp/tpcds
  * }}}
  *
  * Results will be written to "spark/benchmarks/CometTPCDSQueryBenchmark-**results.txt".
