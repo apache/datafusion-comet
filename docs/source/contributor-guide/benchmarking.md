@@ -96,7 +96,7 @@ Here is a breakdown showing relative performance of Spark, Comet, and DataFusion
 
 The following chart shows how much Comet currently accelerates each query from the benchmark. 
 
-![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_speedup.png)
+![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_speedup_rel.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
