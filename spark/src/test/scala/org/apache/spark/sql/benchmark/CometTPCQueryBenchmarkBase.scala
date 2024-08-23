@@ -62,7 +62,7 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
       }
       val numRows = queryRelations.map(tableSizes.getOrElse(_, 0L)).sum
       val benchmark = new Benchmark(benchmarkName, numRows, 2, output = output)
-      benchmark.addCase(s"$name$nameSuffix: Spark Scan + Spark Exec") { _ =>
+      benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
       benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
