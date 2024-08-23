@@ -104,15 +104,15 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       }
       val numRows = queryRelations.map(tableSizes.getOrElse(_, 0L)).sum
       val benchmark = new Benchmark(benchmarkName, numRows, 2, output = output)
-      benchmark.addCase(s"$name$nameSuffix: Spark Scan + Spark Exec") { _ =>
+      benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet Scan + Spark Exec") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
         withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet Scan + Comet Exec") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -124,7 +124,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
           cometSpark.sql(queryString).noop()
         }
       }
-      benchmark.addCase(s"$name$nameSuffix: Spark Scan + Comet Exec") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet (Exec)") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
