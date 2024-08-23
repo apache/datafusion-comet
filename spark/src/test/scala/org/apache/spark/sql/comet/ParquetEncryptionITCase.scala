@@ -140,7 +140,6 @@ class ParquetEncryptionITCase extends QueryTest with SQLTestUtils {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> cometEnabled,
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
           SQLConf.ANSI_ENABLED.key -> "true") {
           testFun
         }

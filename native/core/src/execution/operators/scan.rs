@@ -366,7 +366,7 @@ impl<'a> ScanStream<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        RecordBatch::try_new_with_options(self.schema.clone(), new_columns, &options)
+        RecordBatch::try_new_with_options(Arc::clone(&self.schema), new_columns, &options)
             .map_err(|e| arrow_datafusion_err!(e))
     }
 }
@@ -406,7 +406,7 @@ impl<'a> Stream for ScanStream<'a> {
 impl<'a> RecordBatchStream for ScanStream<'a> {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
 
