@@ -380,7 +380,7 @@ pub fn comet_filter_record_batch(
             })
             .collect();
         let options = RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows()));
-        RecordBatch::try_new_with_options(record_batch.schema().clone(), arrays, &options)
+        RecordBatch::try_new_with_options(Arc::clone(&record_batch.schema()), arrays, &options)
     } else {
         filter_record_batch(record_batch, predicate)
     }

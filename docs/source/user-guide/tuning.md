@@ -37,6 +37,17 @@ Comet will allocate at least `spark.comet.memory.overhead.min` memory.
 
 If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` are set, the former will be used.
 
+## Memory Tuning using CometPlugin
+Configuring memory for Spark and Comet might be a tedious task as it requires to tune Spark executor overhead memory and Comet memory overhead configs. Comet provides a Spark plugin `CometPlugin` which can be set up to your Spark application to help memory settings.
+
+For users running the Comet in clusters like Kubernetes or YARN, `CometPlugin` can also make the resource manager respect correctly Comet memory parameters `spark.comet.memory*`. 
+it is needed to pass to the starting command line additional Spark configuration parameter `--conf spark.plugins=org.apache.spark.CometPlugin`
+
+The resource managers respects Apache Spark memory configuration before starting the containers.
+
+The `CometPlugin` plugin overrides `spark.executor.memoryOverhead` adding up the Comet memory configuration.
+
+
 ## Shuffle
 
 Comet provides Comet shuffle features that can be used to improve the performance of your queries.

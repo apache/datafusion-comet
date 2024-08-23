@@ -45,25 +45,6 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
-  val OPERATOR_PROJECT: String = "project"
-  val OPERATOR_FILTER: String = "filter"
-  val OPERATOR_SORT: String = "sort"
-  val OPERATOR_AGGREGATE: String = "aggregate"
-  val OPERATOR_BROADCAST_EXCHANGE: String = "broadcastExchange"
-  val OPERATOR_COLLECT_LIMIT: String = "collectLimit"
-  val OPERATOR_COALESCE: String = "coalesce"
-  val OPERATOR_TAKE_ORDERED_AND_PROJECT: String = "takeOrderedAndProject"
-  val OPERATOR_HASH_JOIN: String = "hashJoin"
-  val OPERATOR_SORT_MERGE_JOIN: String = "sortMergeJoin"
-  val OPERATOR_BROADCAST_HASH_JOIN: String = "broadcastHashJoin"
-  val OPERATOR_EXPAND: String = "expand"
-  val OPERATOR_WINDOW: String = "window"
-  val OPERATOR_UNION: String = "union"
-  val OPERATOR_LOCAL_LIMIT: String = "localLimit"
-  val OPERATOR_GLOBAL_LIMIT: String = "globalLimit"
-
-  val EXPRESSION_STDDEV: String = "stddev"
-
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -120,45 +101,45 @@ object CometConf extends ShimCometConf {
         "config and this need to be turned on, in order for the operator to be executed in " +
         "native. By default, this config is false.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(true)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_PROJECT, defaultValue = false)
+    createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_FILTER, defaultValue = false)
+    createExecEnabledConfig("filter", defaultValue = true)
   val COMET_EXEC_SORT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_SORT, defaultValue = false)
+    createExecEnabledConfig("sort", defaultValue = true)
   val COMET_EXEC_LOCAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_LOCAL_LIMIT, defaultValue = false)
+    createExecEnabledConfig("localLimit", defaultValue = true)
   val COMET_EXEC_GLOBAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_GLOBAL_LIMIT, defaultValue = false)
+    createExecEnabledConfig("globalLimit", defaultValue = true)
   val COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_BROADCAST_HASH_JOIN, defaultValue = false)
+    createExecEnabledConfig("broadcastHashJoin", defaultValue = true)
   val COMET_EXEC_BROADCAST_EXCHANGE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_BROADCAST_EXCHANGE, defaultValue = false)
+    createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_HASH_JOIN, defaultValue = false)
+    createExecEnabledConfig("hashJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_SORT_MERGE_JOIN, defaultValue = false)
+    createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_AGGREGATE, defaultValue = false)
+    createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_COLLECT_LIMIT, defaultValue = false)
+    createExecEnabledConfig("collectLimit", defaultValue = true)
   val COMET_EXEC_COALESCE_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_COALESCE, defaultValue = false)
+    createExecEnabledConfig("coalesce", defaultValue = true)
   val COMET_EXEC_UNION_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_UNION, defaultValue = false)
+    createExecEnabledConfig("union", defaultValue = true)
   val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_EXPAND, defaultValue = false)
+    createExecEnabledConfig("expand", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_WINDOW, defaultValue = false)
+    createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig(OPERATOR_TAKE_ORDERED_AND_PROJECT, defaultValue = false)
+    createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
 
   val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
-      EXPRESSION_STDDEV,
-      defaultValue = false,
+      "stddev",
+      defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
@@ -189,15 +170,6 @@ object CometConf extends ShimCometConf {
       _ >= 0,
       "Ensure that Comet memory overhead min is a long greater than or equal to 0")
     .createWithDefault(384)
-
-  val COMET_EXEC_ALL_OPERATOR_ENABLED: ConfigEntry[Boolean] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.all.enabled")
-    .doc(
-      "Whether to enable all Comet operators. By default, this config is false. Note that " +
-        "this config precedes all separate config 'spark.comet.exec.<operator_name>.enabled'. " +
-        "That being said, if this config is enabled, separate configs are ignored.")
-    .booleanConf
-    .createWithDefault(false)
 
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
@@ -524,7 +496,7 @@ object CometConf extends ShimCometConf {
       notes: Option[String] = None): ConfigEntry[Boolean] = {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
       .doc(
-        s"Whether to enable $exec by default. The default value is $defaultValue." + notes
+        s"Whether to enable $exec by default." + notes
           .map(s => s" $s.")
           .getOrElse(""))
       .booleanConf

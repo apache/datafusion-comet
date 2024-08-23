@@ -1706,7 +1706,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -1731,8 +1730,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported")),
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
@@ -1740,7 +1738,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
