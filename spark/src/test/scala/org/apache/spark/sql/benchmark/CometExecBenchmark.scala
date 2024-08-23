@@ -27,7 +27,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
- * Benchmark to measure Comet execution performance. To run this benchmark: `make
+ * Benchmark to measure Comet execution performance. To run this benchmark:
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometExecBenchmark` Results will be written to
  * "spark/benchmarks/CometExecBenchmark-**results.txt".
  */

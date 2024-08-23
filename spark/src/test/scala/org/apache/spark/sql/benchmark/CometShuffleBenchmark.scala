@@ -29,7 +29,8 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
- * Benchmark to measure Comet shuffle performance. To run this benchmark: `make
+ * Benchmark to measure Comet shuffle performance. To run this benchmark:
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark` Results will be written to
  * "spark/benchmarks/CometShuffleBenchmark-**results.txt".
  */

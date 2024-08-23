@@ -45,7 +45,7 @@ import org.apache.comet.CometConf
  * make benchmark-org.apache.spark.sql.GenTPCDSData -- --dsdgenDir /tmp/tpcds-kit/tools --location /tmp/tpcds --scaleFactor 1
  *
  * // CometTPCDSMicroBenchmark
- * make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
+ * SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometTPCDSMicroBenchmark -- --data-location /tmp/tpcds
  * }}}
  *
  * Results will be written to "spark/benchmarks/CometTPCDSMicroBenchmark-**results.txt".
