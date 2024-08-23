@@ -40,7 +40,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. | true |
 | spark.comet.exec.coalesce.enabled | Whether to enable coalesce by default. | true |
 | spark.comet.exec.collectLimit.enabled | Whether to enable collectLimit by default. | true |
-| spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is false. | true |
+| spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is true. | true |
 | spark.comet.exec.expand.enabled | Whether to enable expand by default. | true |
 | spark.comet.exec.filter.enabled | Whether to enable filter by default. | true |
 | spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. | true |
