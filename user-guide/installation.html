@@ -430,7 +430,7 @@ use of the command <code class="docutils literal notranslate"><span class="pre">
 <span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span>
