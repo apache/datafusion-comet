@@ -101,7 +101,7 @@ object CometConf extends ShimCometConf {
         "config and this need to be turned on, in order for the operator to be executed in " +
         "native. By default, this config is false.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(true)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
