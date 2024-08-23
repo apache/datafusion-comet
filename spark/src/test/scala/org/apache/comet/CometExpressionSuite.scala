@@ -2010,7 +2010,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(
           df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
-        // TODO: Some part of this converts the null to an empty string
+        // This ends up returning empty strings instead of nulls for the last element
+        // Fixed by https://github.com/apache/datafusion/commit/27304239ef79b50a443320791755bf74eed4a85d
         // checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
         checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
