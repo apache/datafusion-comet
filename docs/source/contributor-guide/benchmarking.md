@@ -86,20 +86,20 @@ you to run these benchmarks in your own environments.
 
 ### TPC-H
 
-Comet currently provides a 54% speedup for TPC-H @ SF=100GB.
+Comet currently provides a 62% speedup for TPC-H @ SF=100GB.
 
-![](../../_static/images/benchmark-results/2024-07-19/tpch_allqueries.png)
+![](../../_static/images/benchmark-results/2024-08-23/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.
 
-![](../../_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png)
+![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark. 
 
-![](../../_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png)
+![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_speedup.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](./benchmark-results/2024-07-19/spark-tpch.json)
-- [Comet](./benchmark-results/2024-07-19/comet-tpch.json)
-- [DataFusion](./benchmark-results/2024-07-19/datafusion-tpch.json)
+- [Spark](./benchmark-results/2024-08-23/spark-tpch.json)
+- [Comet](./benchmark-results/2024-08-23/comet-tpch.json)
+- [DataFusion](./benchmark-results/2024-08-23/datafusion-python-tpch.json)
