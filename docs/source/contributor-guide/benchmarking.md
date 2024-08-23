@@ -61,8 +61,6 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.enabled=true \
     --conf spark.comet.cast.allowIncompatible=true \
     --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.comet.exec.shuffle.mode=auto \
