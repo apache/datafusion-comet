@@ -23,6 +23,8 @@ The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 
 data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage
 you to run these benchmarks in your own environments.
 
+Comet can not yet run all TPC-H queries natively. The tracking issue is [#391](https://github.com/apache/datafusion-comet/issues/391).
+
 Comet currently provides a 62% speedup for TPC-H @ SF=100GB.
 
 ![](../../_static/images/benchmark-results/2024-08-23/tpch_allqueries.png)
@@ -37,6 +39,6 @@ The following chart shows how much Comet currently accelerates each query from t
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](./benchmark-results/2024-08-23/spark-tpch.json)
-- [Comet](./benchmark-results/2024-08-23/comet-tpch.json)
-- [DataFusion](./benchmark-results/2024-08-23/datafusion-python-tpch.json)
+- [Spark](./2024-08-23/spark-tpch.json)
+- [Comet](./2024-08-23/comet-tpch.json)
+- [DataFusion](./2024-08-23/datafusion-python-tpch.json)
