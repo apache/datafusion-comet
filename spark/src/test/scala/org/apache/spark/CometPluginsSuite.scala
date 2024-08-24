@@ -20,6 +20,7 @@
 package org.apache.spark
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.internal.StaticSQLConf
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -31,6 +32,48 @@ class CometPluginsSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf
+  }
+
+  test("Register Comet extension") {
+    // test common case where no extensions are previously registered
+    {
+      val conf = new SparkConf()
+      CometDriverPlugin.registerCometSessionExtension(conf)
+      assert(
+        "org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+    }
+    // test case where Comet is already registered
+    {
+      val conf = new SparkConf()
+      conf.set(
+        StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+        "org.apache.comet.CometSparkSessionExtensions")
+      CometDriverPlugin.registerCometSessionExtension(conf)
+      assert(
+        "org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+    }
+    // test case where other extensions are already registered
+    {
+      val conf = new SparkConf()
+      conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key, "foo,bar")
+      CometDriverPlugin.registerCometSessionExtension(conf)
+      assert(
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+    }
+    // test case where other extensions, including Comet, are already registered
+    {
+      val conf = new SparkConf()
+      conf.set(
+        StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions")
+      CometDriverPlugin.registerCometSessionExtension(conf)
+      assert(
+        "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
+          StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+    }
   }
 
   test("Default Comet memory overhead") {

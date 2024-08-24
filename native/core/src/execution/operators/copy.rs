@@ -74,7 +74,7 @@ impl CopyExec {
         let schema = Arc::new(Schema::new(fields));
 
         let cache = PlanProperties::new(
-            EquivalenceProperties::new(schema.clone()),
+            EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             ExecutionMode::Bounded,
         );
@@ -105,7 +105,7 @@ impl ExecutionPlan for CopyExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -116,11 +116,11 @@ impl ExecutionPlan for CopyExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let input = self.input.clone();
+        let input = Arc::clone(&self.input);
         let new_input = input.with_new_children(children)?;
         Ok(Arc::new(CopyExec {
             input: new_input,
-            schema: self.schema.clone(),
+            schema: Arc::clone(&self.schema),
             cache: self.cache.clone(),
             metrics: self.metrics.clone(),
             mode: self.mode.clone(),
@@ -193,8 +193,9 @@ impl CopyStream {
             .collect::<Result<Vec<ArrayRef>, _>>()?;
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-        let maybe_batch = RecordBatch::try_new_with_options(self.schema.clone(), vectors, &options)
-            .map_err(|e| arrow_datafusion_err!(e));
+        let maybe_batch =
+            RecordBatch::try_new_with_options(Arc::clone(&self.schema), vectors, &options)
+                .map_err(|e| arrow_datafusion_err!(e));
         timer.stop();
         self.baseline_metrics.record_output(batch.num_rows());
         maybe_batch
@@ -214,7 +215,7 @@ impl Stream for CopyStream {
 
 impl RecordBatchStream for CopyStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Arc::clone(&self.schema)
     }
 }
 

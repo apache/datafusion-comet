@@ -21,6 +21,7 @@ package org.apache.comet.vector;
 
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
@@ -30,13 +31,16 @@ public class CometListVector extends CometDecodedVector {
   final ListVector listVector;
   final ValueVector dataVector;
   final ColumnVector dataColumnVector;
+  final DictionaryProvider dictionaryProvider;
 
-  public CometListVector(ValueVector vector, boolean useDecimal128) {
+  public CometListVector(
+      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
     super(vector, vector.getField(), useDecimal128);
 
     this.listVector = ((ListVector) vector);
     this.dataVector = listVector.getDataVector();
-    this.dataColumnVector = getVector(dataVector, useDecimal128);
+    this.dictionaryProvider = dictionaryProvider;
+    this.dataColumnVector = getVector(dataVector, useDecimal128, dictionaryProvider);
   }
 
   @Override
@@ -52,6 +56,6 @@ public class CometListVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometListVector(tp.getTo(), useDecimal128);
+    return new CometListVector(tp.getTo(), useDecimal128, dictionaryProvider);
   }
 }

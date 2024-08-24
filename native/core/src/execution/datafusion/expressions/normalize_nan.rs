@@ -87,7 +87,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(NormalizeNaNAndZero::new(
             self.data_type.clone(),
-            children[0].clone(),
+            Arc::clone(&children[0]),
         )))
     }
 

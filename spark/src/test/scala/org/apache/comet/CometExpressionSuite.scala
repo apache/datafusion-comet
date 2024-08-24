@@ -1706,7 +1706,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -1731,8 +1730,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported")),
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
@@ -1740,7 +1738,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
@@ -2005,12 +2002,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
         val df = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
         checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
+        checkSparkAnswerAndOperator(
+          df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
-        checkSparkAnswerAndOperator(df.select(array(col("_13"), col("_13"))))
+        // This ends up returning empty strings instead of nulls for the last element
+        // Fixed by https://github.com/apache/datafusion/commit/27304239ef79b50a443320791755bf74eed4a85d
+        // checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
+      // Fixed by https://github.com/apache/datafusion/commit/140f7cec78febd73d3db537a816badaaf567530a
+      // checkSparkAnswerAndOperator(df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
       }
     }
   }
