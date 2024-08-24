@@ -68,6 +68,8 @@ These benchmarks can be reproduced in any environment using the documentation in
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
 you to run your own benchmarks.
 
+Results for our benchmark derived from TPC-DS are available in the [benchmarking guide](https://datafusion.apache.org/comet/contributor-guide/benchmark-results/tpc-ds.html).
+
 ## Use Commodity Hardware
 
 Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or

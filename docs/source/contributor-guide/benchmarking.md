@@ -72,31 +72,10 @@ $SPARK_HOME/bin/spark-submit \
     --iterations 3
 ```
 
-## Current Performance
+## Current Benchmark Results
 
-Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup
-for many use cases.
+- [Benchmarks derived from TPC-H](benchmark-results/tpc-h)
+- [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds)
 
-The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and 
-data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage 
-you to run these benchmarks in your own environments.
 
-### TPC-H
 
-Comet currently provides a 62% speedup for TPC-H @ SF=100GB.
-
-![](../../_static/images/benchmark-results/2024-08-23/tpch_allqueries.png)
-
-Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.
-
-![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_compare.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark. 
-
-![](../../_static/images/benchmark-results/2024-08-23/tpch_queries_speedup_rel.png)
-
-The raw results of these benchmarks in JSON format is available here:
-
-- [Spark](./benchmark-results/2024-08-23/spark-tpch.json)
-- [Comet](./benchmark-results/2024-08-23/comet-tpch.json)
-- [DataFusion](./benchmark-results/2024-08-23/datafusion-python-tpch.json)
