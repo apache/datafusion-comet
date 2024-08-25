@@ -121,11 +121,30 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
     }
 }
 
+fn escape_quotes(input: &str) -> String {
+    let mut escaped_string = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\"' | '\\' => {
+                escaped_string.push('\\');
+                escaped_string.push(c);
+            }
+            _ => escaped_string.push(c),
+        }
+    }
+    escaped_string
+}
+
 fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
-    // get field names
-    let field_names: Vec<String> = array.fields().iter().map(|f| f.name().clone()).collect();
+    // get field names and escape any quotes
+    let field_names: Vec<String> = array
+        .fields()
+        .iter()
+        .map(|f| escape_quotes(f.name().as_str()))
+        .collect();
     // determine which fields need to have their values quoted
-    let quotes_needed: Vec<bool> = array
+    let is_string: Vec<bool> = array
         .fields()
         .iter()
         .map(|f| match f.data_type() {
@@ -170,12 +189,13 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                     json.push_str(&field_names[col_index]);
                     json.push_str("\":");
                     // value
-                    if quotes_needed[col_index] {
+                    let string_value = string_arrays[col_index].value(row_index);
+                    if is_string[col_index] {
                         json.push('"');
-                    }
-                    json.push_str(string_arrays[col_index].value(row_index));
-                    if quotes_needed[col_index] {
+                        json.push_str(&escape_quotes(string_value));
                         json.push('"');
+                    } else {
+                        json.push_str(string_value);
                     }
                     any_fields_written = true;
                 }
