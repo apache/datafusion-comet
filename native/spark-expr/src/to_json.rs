@@ -95,7 +95,7 @@ impl PhysicalExpr for ToJson {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         assert!(children.len() == 1);
-        Ok(Arc::new(Self::new(children[0].clone(), &self.timezone)))
+        Ok(Arc::new(Self::new(Arc::clone(&children[0]), &self.timezone)))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
