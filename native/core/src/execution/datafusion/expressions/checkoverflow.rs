@@ -23,7 +23,7 @@ use std::{
 };
 
 use arrow::{
-    array::{as_primitive_array, Array, ArrayRef, Decimal128Array, PrimitiveArray},
+    array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
     datatypes::{Decimal128Type, DecimalType},
     record_batch::RecordBatch,
 };
@@ -111,30 +111,14 @@ impl PhysicalExpr for CheckOverflow {
 
                 let casted_array = if self.fail_on_error {
                     // Returning error if overflow
-                    let iter = decimal_array
-                        .iter()
-                        .map(|v| {
-                            v.map(|v| {
-                                Decimal128Type::validate_decimal_precision(v, *precision).map(|_| v)
-                            })
-                            .map_or(Ok(None), |r| r.map(Some))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter();
-                    unsafe { PrimitiveArray::<Decimal128Type>::from_trusted_len_iter(iter) }
+                    decimal_array.validate_decimal_precision(*precision)?;
+                    decimal_array
                 } else {
                     // Overflowing gets null value
-                    let iter = decimal_array.iter().map(|v| {
-                        v.and_then(|v| {
-                            Decimal128Type::validate_decimal_precision(v, *precision)
-                                .map(|_| v)
-                                .ok()
-                        })
-                    });
-                    unsafe { PrimitiveArray::<Decimal128Type>::from_trusted_len_iter(iter) }
+                    &decimal_array.null_if_overflow_precision(*precision)
                 };
 
-                let new_array = Decimal128Array::from(casted_array.to_data())
+                let new_array = Decimal128Array::from(casted_array.into_data())
                     .with_precision_and_scale(*precision, *scale)
                     .map(|a| Arc::new(a) as ArrayRef)?;
 
@@ -174,7 +158,7 @@ impl PhysicalExpr for CheckOverflow {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(CheckOverflow::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.data_type.clone(),
             self.fail_on_error,
         )))

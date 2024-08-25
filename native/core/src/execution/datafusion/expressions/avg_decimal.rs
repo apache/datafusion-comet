@@ -107,7 +107,7 @@ impl AggregateExpr for AvgDecimal {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr.clone()]
+        vec![Arc::clone(&self.expr)]
     }
 
     fn name(&self) -> &str {
@@ -474,11 +474,6 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
 
     // return arrays for sums and counts
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        assert!(
-            matches!(emit_to, EmitTo::All),
-            "EmitTo::First is not supported"
-        );
-
         let nulls = self.is_not_null.finish();
         let nulls = Some(NullBuffer::new(nulls));
 

@@ -1706,8 +1706,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -1732,8 +1730,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Set(
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported")),
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
@@ -1741,7 +1738,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "AQEShuffleRead is not supported",
               "make_interval is not supported",
               "HashAggregate is not native because the following children are not native (AQEShuffleRead)",
               "HashAggregate is not native because the following children are not native (Exchange)",
@@ -1997,27 +1993,42 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field") {
-    withSQLConf(
-      CometConf.COMET_SPARK_TO_COLUMNAR_ENABLED.key -> "true",
-      CometConf.COMET_SPARK_TO_COLUMNAR_SUPPORTED_OPERATOR_LIST.key -> "FileSourceScan") {
-      withTempPath { dir =>
-        var df = spark
-          .range(5)
-          // Add both a null struct and null inner value
-          .select(
-            when(
-              col("id") > 1,
-              struct(
-                when(col("id") > 2, col("id")).alias("id"),
-                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
-                  .as("nested2")))
-              .alias("nested1"))
+    Seq("", "parquet").foreach { v1List =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          var df = spark
+            .range(5)
+            // Add both a null struct and null inner value
+            .select(
+              when(
+                col("id") > 1,
+                struct(
+                  when(col("id") > 2, col("id")).alias("id"),
+                  when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                    .as("nested2")))
+                .alias("nested1"))
 
-        df.write.parquet(dir.toString())
+          df.write.parquet(dir.toString())
 
-        df = spark.read.parquet(dir.toString())
-        checkSparkAnswerAndOperator(df.select("nested1.id"))
-        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
+          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        }
+      }
+    }
+  }
+
+  test("CreateArray") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        val df = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
+        checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
       }
     }
   }
