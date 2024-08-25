@@ -201,7 +201,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                 }
             }
             json.push('}');
-            builder.append_value(json.clone());
+            builder.append_value(&json);
         }
     }
     Ok(Arc::new(builder.finish()))
