@@ -1976,6 +1976,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("to_json escaped quotes") {
+    val gen = new DataGenerator(new Random(42))
+    val chars = "\\'\"abc"
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(_ => {
+          val str1 = gen.generateString(chars, 8)
+          val str2 = gen.generateString(chars, 8)
+          (str1, str2)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 3)
+          .map(n => {
+            val columnName = s"""column "$n""""
+            s"'$columnName', _$n"
+          })
+          .mkString(", ")
+
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
+        checkSparkAnswerAndOperator(
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+      }
+    }
+  }
+
   test("struct and named_struct with dictionary") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
