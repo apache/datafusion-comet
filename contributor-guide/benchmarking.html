@@ -282,16 +282,9 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#current-performance">
-   Current Performance
+  <a class="reference internal nav-link" href="#current-benchmark-results">
+   Current Benchmark Results
   </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#tpc-h">
-     TPC-H
-    </a>
-   </li>
-  </ul>
  </li>
 </ul>
 
@@ -378,8 +371,6 @@ repository.</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.cast.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.mode<span class="o">=</span>auto<span class="w"> </span><span class="se">\</span>
@@ -392,28 +383,12 @@ repository.</p>
 </pre></div>
 </div>
 </section>
-<section id="current-performance">
-<h2>Current Performance<a class="headerlink" href="#current-performance" title="Link to this heading">¶</a></h2>
-<p>Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup
-for many use cases.</p>
-<p>The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage
-you to run these benchmarks in your own environments.</p>
-<section id="tpc-h">
-<h3>TPC-H<a class="headerlink" href="#tpc-h" title="Link to this heading">¶</a></h3>
-<p>Comet currently provides a 54% speedup for TPC-H &#64; SF=100GB.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_allqueries.png" /></p>
-<p>Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
-<p><img alt="" src="../_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png" /></p>
-<p>The raw results of these benchmarks in JSON format is available here:</p>
+<section id="current-benchmark-results">
+<h2>Current Benchmark Results<a class="headerlink" href="#current-benchmark-results" title="Link to this heading">¶</a></h2>
 <ul class="simple">
-<li><p><a class="reference download internal" download="" href="../_downloads/cf9c5bb25d85b58a8819b238030b4f78/spark-tpch.json"><span class="xref download myst">Spark</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../_downloads/602feffd4a86681ffa9b850569d222ab/comet-tpch.json"><span class="xref download myst">Comet</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../_downloads/bd84be8370c8f3c4c875a08e0d26b2f3/datafusion-tpch.json"><span class="xref download myst">DataFusion</span></a></p></li>
+<li><p><a class="reference internal" href="benchmark-results/tpc-h.html"><span class="doc std std-doc">Benchmarks derived from TPC-H</span></a></p></li>
+<li><p><a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="doc std std-doc">Benchmarks derived from TPC-DS</span></a></p></li>
 </ul>
-</section>
 </section>
 </section>
 

@@ -392,8 +392,8 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.exec.enabled</p></td>
-<td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of ‘spark.comet.exec.&lt;operator_name&gt;.enabled’ at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is false.</p></td>
-<td><p>false</p></td>
+<td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of ‘spark.comet.exec.&lt;operator_name&gt;.enabled’ at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is true.</p></td>
+<td><p>true</p></td>
 </tr>
 <tr class="row-even"><td><p>spark.comet.exec.expand.enabled</p></td>
 <td><p>Whether to enable expand by default.</p></td>
