@@ -1275,6 +1275,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 case DataTypes.DateType | DataTypes.TimestampType =>
                   // TODO implement these types with tests for formatting options and timezone
                   false
+                case _: MapType | _: ArrayType =>
+                  // Spark supports map and array in StructsToJson but this is not yet
+                  // implemented in Comet
+                  false
                 case _ => false
               }
             }
@@ -1282,6 +1286,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             val isSupported = child.dataType match {
               case s: StructType =>
                 s.fields.forall(f => isSupportedType(f.dataType))
+              case _: MapType | _: ArrayType =>
+                // Spark supports map and array in StructsToJson but this is not yet
+                // implemented in Comet
+                false
               case _ =>
                 false
             }

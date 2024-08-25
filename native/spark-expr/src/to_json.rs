@@ -95,7 +95,10 @@ impl PhysicalExpr for ToJson {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         assert!(children.len() == 1);
-        Ok(Arc::new(Self::new(Arc::clone(&children[0]), &self.timezone)))
+        Ok(Arc::new(Self::new(
+            Arc::clone(&children[0]),
+            &self.timezone,
+        )))
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
@@ -121,7 +124,7 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
     }
 }
 
-fn escape_quotes(input: &str) -> String {
+fn escape_string(input: &str) -> String {
     let mut escaped_string = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -141,7 +144,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
     let field_names: Vec<String> = array
         .fields()
         .iter()
-        .map(|f| escape_quotes(f.name().as_str()))
+        .map(|f| escape_string(f.name().as_str()))
         .collect();
     // determine which fields need to have their values quoted
     let is_string: Vec<bool> = array
@@ -192,7 +195,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                     let string_value = string_arrays[col_index].value(row_index);
                     if is_string[col_index] {
                         json.push('"');
-                        json.push_str(&escape_quotes(string_value));
+                        json.push_str(&escape_string(string_value));
                         json.push('"');
                     } else {
                         json.push_str(string_value);
@@ -201,7 +204,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                 }
             }
             json.push('}');
-            builder.append_value(json.clone());
+            builder.append_value(&json);
         }
     }
     Ok(Arc::new(builder.finish()))
