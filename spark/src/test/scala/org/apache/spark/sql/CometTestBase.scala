@@ -146,8 +146,6 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
-    // scalastyle:off println
-    println(dfComet.queryExecution.executedPlan)
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }
 
