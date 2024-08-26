@@ -143,6 +143,7 @@ pub struct Cast {
     /// session local timezone by an analyzer in Spark.
     pub timezone: String,
 
+    /// Whether to allow casts that are known to be incompatible with Spark
     pub allow_incompat: bool,
 }
 
