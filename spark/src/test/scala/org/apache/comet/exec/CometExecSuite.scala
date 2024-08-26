@@ -1665,7 +1665,7 @@ class CometExecSuite extends CometTestBase {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
         spark.read
-          .csv("spark/src/test/resources/test-data/csv-test-1.csv")
+          .csv("src/test/resources/test-data/csv-test-1.csv")
           .createOrReplaceTempView("tbl")
         // use a projection with an expression otherwise we end up with
         // just the file scan
