@@ -136,7 +136,23 @@ fn escape_string(input: &str) -> String {
                 is_escaped = false;
             }
             '\t' => {
-                escaped_string.push_str("\\t");
+                escaped_string.push('\\');
+                escaped_string.push('t');
+                is_escaped = false;
+            }
+            '\r' => {
+                escaped_string.push('\\');
+                escaped_string.push('r');
+                is_escaped = false;
+            }
+            '\n' => {
+                escaped_string.push('\\');
+                escaped_string.push('n');
+                is_escaped = false;
+            }
+            '\x0C' => {
+                escaped_string.push('\\');
+                escaped_string.push('f');
                 is_escaped = false;
             }
             '\\' => {

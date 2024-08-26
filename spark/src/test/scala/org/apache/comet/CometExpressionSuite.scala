@@ -1978,7 +1978,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("to_json escaping of field names and string values") {
     val gen = new DataGenerator(new Random(42))
-    val chars = "\\'\"abc\t"
+    val chars = "\\'\"abc\t\r\n\f"
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 100).map(i => {
