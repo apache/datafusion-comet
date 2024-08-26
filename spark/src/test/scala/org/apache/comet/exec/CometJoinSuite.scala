@@ -23,6 +23,8 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.Decimal
@@ -402,6 +404,48 @@ class CometJoinSuite extends CometTestBase {
            */
         }
       }
+    }
+  }
+
+  test("full outer join") {
+    withTempView("`left`", "`right`", "allNulls") {
+      allNulls.createOrReplaceTempView("allNulls")
+
+      upperCaseData.where($"N" <= 4).createOrReplaceTempView("`left`")
+      upperCaseData.where($"N" >= 3).createOrReplaceTempView("`right`")
+
+      val left = UnresolvedRelation(TableIdentifier("left"))
+      val right = UnresolvedRelation(TableIdentifier("right"))
+
+      checkSparkAnswer(left.join(right, $"left.N" === $"right.N", "full"))
+
+      checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"left.N" =!= 3), "full"))
+
+      checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"right.N" =!= 3), "full"))
+
+      checkSparkAnswer(sql("""
+            |SELECT l.a, count(*)
+            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+            |GROUP BY l.a
+        """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT r.N, count(*)
+            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+            |GROUP BY r.N
+          """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT l.N, count(*)
+            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+            |GROUP BY l.N
+          """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT r.a, count(*)
+            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+            |GROUP BY r.a
+        """.stripMargin))
     }
   }
 }
