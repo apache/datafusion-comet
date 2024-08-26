@@ -79,7 +79,7 @@ make release-nogit PROFILES="-Pspark-3.4"
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```console
-export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.3.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -147,7 +147,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark3.4_2.12-0.3.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
