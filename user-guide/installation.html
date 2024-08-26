@@ -382,7 +382,7 @@ under the License.
 <section id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading">¶</a></h2>
 <ul class="simple">
-<li><p>Apache Spark 3.3, or 3.4</p></li>
+<li><p>Apache Spark 3.3, 3.4, or 3.5</p></li>
 <li><p>JDK 8 and up</p></li>
 <li><p>GLIBC 2.17 (Centos 7) and up</p></li>
 </ul>
@@ -424,7 +424,7 @@ use of the command <code class="docutils literal notranslate"><span class="pre">
 <section id="run-spark-shell-with-comet-enabled">
 <h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">¶</a></h2>
 <p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar</span>
 
 <span class="gp">$</span>SPARK_HOME/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
@@ -433,7 +433,9 @@ use of the command <code class="docutils literal notranslate"><span class="pre">
 <span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.driver.memory<span class="o">=</span>1g<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>1g
 </pre></div>
 </div>
 <section id="verify-comet-enabled-for-spark-sql-query">
@@ -481,7 +483,7 @@ Comet native shuffle doesn’t support complex types yet.</p>
 Spark application. Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
 explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
 components which will then fail at runtime. For example:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">driver</span><span class="o">-</span><span class="n">class</span><span class="o">-</span><span class="n">path</span> <span class="n">spark</span><span class="o">/</span><span class="n">target</span><span class="o">/</span><span class="n">comet</span><span class="o">-</span><span class="n">spark</span><span class="o">-</span><span class="n">spark3</span><span class="mf">.4_2.12</span><span class="o">-</span><span class="mf">0.1.0</span><span class="o">-</span><span class="n">SNAPSHOT</span><span class="o">.</span><span class="n">jar</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">driver</span><span class="o">-</span><span class="n">class</span><span class="o">-</span><span class="n">path</span> <span class="n">spark</span><span class="o">/</span><span class="n">target</span><span class="o">/</span><span class="n">comet</span><span class="o">-</span><span class="n">spark</span><span class="o">-</span><span class="n">spark3</span><span class="mf">.4_2.12</span><span class="o">-</span><span class="mf">0.2.0</span><span class="o">-</span><span class="n">SNAPSHOT</span><span class="o">.</span><span class="n">jar</span>
 </pre></div>
 </div>
 <p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
