@@ -155,6 +155,11 @@ fn escape_string(input: &str) -> String {
                 escaped_string.push('f');
                 is_escaped = false;
             }
+            '\x08' => {
+                escaped_string.push('\\');
+                escaped_string.push('b');
+                is_escaped = false;
+            }
             '\\' => {
                 escaped_string.push('\\');
                 is_escaped = true;

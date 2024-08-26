@@ -1978,13 +1978,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("to_json escaping of field names and string values") {
     val gen = new DataGenerator(new Random(42))
-    val chars = "\\'\"abc\t\r\n\f"
+    val chars = "\\'\"abc\t\r\n\f\b"
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 100).map(i => {
           val str1 = gen.generateString(chars, 8)
           val str2 = gen.generateString(chars, 8)
           (i.toString, str1, str2)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 3)
+          .map(n => {
+            val columnName = s"""column "$n""""
+            s"'$columnName', _$n"
+          })
+          .mkString(", ")
+
+        checkSparkAnswerAndOperator(
+          """SELECT 'column "1"' x, """ +
+            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+      }
+    }
+  }
+
+  test("to_json unicode") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          (i.toString, "\uD83E\uDD11", "\u018F")
         }),
         "tbl",
         withDictionary = dictionaryEnabled) {
