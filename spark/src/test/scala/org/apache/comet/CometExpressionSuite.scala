@@ -1969,9 +1969,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
 
-        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl ORDER BY 1")
         checkSparkAnswerAndOperator(
-          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl ORDER BY 1")
       }
     }
   }
@@ -1981,10 +1981,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val chars = "\\'\"abc\t"
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
-        (0 until 100).map(_ => {
+        (0 until 100).map(i => {
           val str1 = gen.generateString(chars, 8)
           val str2 = gen.generateString(chars, 8)
-          (str1, str2)
+          (i.toString, str1, str2)
         }),
         "tbl",
         withDictionary = dictionaryEnabled) {
@@ -1996,9 +1996,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           })
           .mkString(", ")
 
-        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
         checkSparkAnswerAndOperator(
-          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+          """SELECT 'column "1"' x, """ +
+            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
       }
     }
   }
