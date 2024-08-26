@@ -126,9 +126,8 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
 
 fn escape_string(input: &str) -> String {
     let mut escaped_string = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
     let mut is_escaped = false;
-    while let Some(c) = chars.next() {
+    for c in input.chars() {
         match c {
             '\"' | '\\' if !is_escaped => {
                 escaped_string.push('\\');
