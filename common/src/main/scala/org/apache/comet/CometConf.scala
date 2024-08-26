@@ -99,9 +99,9 @@ object CometConf extends ShimCometConf {
         "native space. Note: each operator is associated with a separate config in the " +
         "format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the " +
         "config and this need to be turned on, in order for the operator to be executed in " +
-        "native. By default, this config is false.")
+        "native. By default, this config is true.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(true)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)

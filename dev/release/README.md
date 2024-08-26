@@ -75,7 +75,7 @@ example generates a change log of all changes between the previous version and t
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 branch-0.1 0.0.0 > ../changelog/0.1.0.md
+python3 generate-changelog.py 0.0.0 HEAD 0.1.0 > ../changelog/0.1.0.md
 ```
 
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
