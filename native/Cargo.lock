@@ -811,7 +811,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -842,7 +842,7 @@ dependencies = [
  "half",
  "hashbrown",
  "indexmap",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "num_cpus",
  "object_store",
@@ -860,7 +860,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow-schema",
  "async-trait",
@@ -956,7 +956,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -972,20 +972,22 @@ dependencies = [
  "object_store",
  "paste",
  "sqlparser",
+ "tokio",
 ]
 
 [[package]]
 name = "datafusion-common-runtime"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
+ "log",
  "tokio",
 ]
 
 [[package]]
 name = "datafusion-execution"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "chrono",
@@ -1005,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1026,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1036,7 +1038,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -1049,7 +1051,7 @@ dependencies = [
  "datafusion-expr",
  "hashbrown",
  "hex",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "md-5",
  "rand",
@@ -1062,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1082,7 +1084,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1095,7 +1097,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -1107,7 +1109,8 @@ dependencies = [
  "datafusion-expr",
  "datafusion-functions",
  "datafusion-functions-aggregate",
- "itertools 0.12.1",
+ "datafusion-physical-expr-common",
+ "itertools 0.13.0",
  "log",
  "paste",
  "rand",
@@ -1116,7 +1119,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "datafusion-common",
  "datafusion-expr",
@@ -1127,7 +1130,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1137,7 +1140,7 @@ dependencies = [
  "datafusion-physical-expr",
  "hashbrown",
  "indexmap",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "paste",
  "regex-syntax",
@@ -1146,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1167,7 +1170,7 @@ dependencies = [
  "hashbrown",
  "hex",
  "indexmap",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "paste",
  "petgraph",
@@ -1177,7 +1180,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1190,7 +1193,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-functions-aggregate"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1205,19 +1208,19 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "datafusion-common",
  "datafusion-execution",
  "datafusion-physical-expr",
  "datafusion-physical-plan",
- "itertools 0.12.1",
+ "itertools 0.13.0",
 ]
 
 [[package]]
 name = "datafusion-physical-plan"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1240,7 +1243,7 @@ dependencies = [
  "half",
  "hashbrown",
  "indexmap",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "once_cell",
  "parking_lot",
@@ -1252,7 +1255,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "41.0.0"
-source = "git+https://github.com/viirya/arrow-datafusion.git?rev=f98693e#f98693e16fa7494f2521096ee3c35aae7dac98fc"
+source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
 dependencies = [
  "arrow",
  "arrow-array",
