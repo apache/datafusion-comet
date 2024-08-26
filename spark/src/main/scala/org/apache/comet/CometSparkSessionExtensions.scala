@@ -38,7 +38,6 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.text.TextFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
@@ -1114,8 +1113,7 @@ object CometSparkSessionExtensions extends Logging {
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {
-            case _: TextFileFormat | _: CSVFileFormat =>
-              CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
+            case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
             case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
             case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
