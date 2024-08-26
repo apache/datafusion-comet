@@ -1658,17 +1658,27 @@ class CometExecSuite extends CometTestBase {
       })
   }
 
-  test("read CSV file") {
-    Seq("", "csv").foreach { v1List =>
-      withSQLConf(
-        SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
-        CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
-        spark.read
-          .json("src/test/resources/test-data/csv-test-1.csv")
-          .createOrReplaceTempView("tbl")
-        checkSparkAnswerAndOperator("SELECT * FROM tbl")
-      }
+  test("read CSV v1 reader") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "csv",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
+      spark.read
+        .csv("spark/src/test/resources/test-data/csv-test-1.csv")
+        .createOrReplaceTempView("tbl")
+      checkSparkAnswerAndOperator("SELECT _c0, _c1, _c2 FROM tbl")
+    }
+  }
+
+  test("read CSV v2 reader") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
+      spark.read
+        .csv("spark/src/test/resources/test-data/csv-test-1.csv")
+        .createOrReplaceTempView("tbl")
+      checkSparkAnswerAndOperator("SELECT _c0, _c1, _c2 FROM tbl")
     }
   }
 
