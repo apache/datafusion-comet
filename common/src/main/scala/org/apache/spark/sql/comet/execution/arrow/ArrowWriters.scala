@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.ColumnarArray
 
 /**
  * This file is mostly copied from Spark SQL's
@@ -103,6 +104,11 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count += 1
   }
 
+  def writeCol(input: ColumnarArray, columnIndex : Int): Unit = {
+    fields(columnIndex).writeCol(input)
+    count = input.numElements()
+  }
+
   def finish(): Unit = {
     root.setRowCount(count)
     fields.foreach(_.finish())
@@ -135,6 +141,17 @@ private[arrow] abstract class ArrowFieldWriter {
       setValue(input, ordinal)
     }
     count += 1
+  }
+
+  def writeCol(input: ColumnarArray): Unit = {
+    while (count < input.numElements()) {
+      if (input.isNullAt(count)) {
+        setNull()
+      } else {
+        setValue(input, count)
+      }
+      count += 1
+    }
   }
 
   def finish(): Unit = {

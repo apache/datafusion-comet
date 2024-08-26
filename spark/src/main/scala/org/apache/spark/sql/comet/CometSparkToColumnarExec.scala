@@ -65,31 +65,44 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val timeZoneId = conf.sessionLocalTimeZone
     val schema = child.schema
 
-    val rdd: RDD[InternalRow] = if (child.supportsColumnar) {
-      child
-        .executeColumnar()
+    if (child.supportsColumnar) {
+      child.executeColumnar()
         .mapPartitionsInternal { iter =>
-          iter.flatMap(_.rowIterator().asScala)
+          iter.flatMap {
+            col_batch =>
+              val context = TaskContext.get()
+              CometArrowConverters.toArrowBatchIteratorFromColumnBatch(
+                col_batch,
+                schema,
+                maxRecordsPerBatch,
+                timeZoneId,
+                context)
+          }
+        }
+        .map { batch =>
+          numInputRows += batch.numRows()
+          numOutputBatches += 1
+          batch
         }
     } else {
       child.execute()
+        .mapPartitionsInternal { iter =>
+          val context = TaskContext.get()
+          CometArrowConverters.toArrowBatchIteratorFromInternalRow(
+            iter,
+            schema,
+            maxRecordsPerBatch,
+            timeZoneId,
+            context)
+        }
+        .map { batch =>
+          numInputRows += batch.numRows()
+          numOutputBatches += 1
+          batch
+        }
     }
 
-    rdd
-      .mapPartitionsInternal { iter =>
-        val context = TaskContext.get()
-        CometArrowConverters.toArrowBatchIterator(
-          iter,
-          schema,
-          maxRecordsPerBatch,
-          timeZoneId,
-          context)
-      }
-      .map { batch =>
-        numInputRows += batch.numRows()
-        numOutputBatches += 1
-        batch
-      }
+
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometSparkToColumnarExec =

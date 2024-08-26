@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
 import org.apache.comet.vector.NativeUtil
 
@@ -44,13 +44,13 @@ object CometArrowConverters extends Logging {
   // exported process increases the reference count of the Arrow vectors. The reference count is
   // only decreased when the native plan is done with the vectors, which is usually longer than
   // all the ColumnarBatches are consumed.
-  private[sql] class ArrowBatchIterator(
-      rowIter: Iterator[InternalRow],
-      schema: StructType,
-      maxRecordsPerBatch: Long,
-      timeZoneId: String,
-      context: TaskContext)
-      extends Iterator[ColumnarBatch]
+  private[sql] class ArrowBatchIteratorFromInternalRow(
+                                                        rowIter: Iterator[InternalRow],
+                                                        schema: StructType,
+                                                        maxRecordsPerBatch: Long,
+                                                        timeZoneId: String,
+                                                        context: TaskContext)
+    extends Iterator[ColumnarBatch]
       with AutoCloseable {
 
     private val arrowSchema = Utils.toArrowSchema(schema, timeZoneId)
@@ -120,12 +120,102 @@ object CometArrowConverters extends Logging {
     }
   }
 
-  def toArrowBatchIterator(
-      rowIter: Iterator[InternalRow],
-      schema: StructType,
-      maxRecordsPerBatch: Long,
-      timeZoneId: String,
-      context: TaskContext): Iterator[ColumnarBatch] = {
-    new ArrowBatchIterator(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
+  def toArrowBatchIteratorFromInternalRow(
+                                           rowIter: Iterator[InternalRow],
+                                           schema: StructType,
+                                           maxRecordsPerBatch: Long,
+                                           timeZoneId: String,
+                                           context: TaskContext): Iterator[ColumnarBatch] = {
+    new ArrowBatchIteratorFromInternalRow(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
+  }
+
+  private[sql] class ArrowBatchIteratorFromColumnBatch(
+                                                        colBatch: ColumnarBatch,
+                                                        schema: StructType,
+                                                        maxRecordsPerBatch: Int,
+                                                        timeZoneId: String,
+                                                        context: TaskContext)
+    extends Iterator[ColumnarBatch]
+      with AutoCloseable {
+
+    private val arrowSchema = Utils.toArrowSchema(schema, timeZoneId)
+    // Reuse the same root allocator here.
+    private val allocator =
+      rootAllocator.newChildAllocator(s"to${this.getClass.getSimpleName}", 0, Long.MaxValue)
+    private val root = VectorSchemaRoot.create(arrowSchema, allocator)
+    private val arrowWriter = ArrowWriter.create(root)
+
+    private var currentBatch: ColumnarBatch = null
+    private var closed: Boolean = false
+    private var rows_produced: Int = 0
+
+    Option(context).foreach {
+      _.addTaskCompletionListener[Unit] { _ =>
+        close(true)
+      }
+    }
+
+    override def hasNext: Boolean = rows_produced < colBatch.numRows() || {
+      close(false)
+      false
+    }
+
+    override def next(): ColumnarBatch = {
+      currentBatch = nextBatch()
+      currentBatch
+    }
+
+    override def close(): Unit = {
+      close(false)
+    }
+
+    private def nextBatch(): ColumnarBatch = {
+      if (rows_produced < colBatch.numRows()) {
+        // the arrow writer shall be reset before writing the next batch
+        arrowWriter.reset()
+        val rows_to_produce = if (maxRecordsPerBatch <= 0) colBatch.numRows() - rows_produced else Math.min(maxRecordsPerBatch, colBatch.numRows() - rows_produced)
+
+        for (colIndex <- 0 until colBatch.numCols()) {
+          val col = colBatch.column(colIndex)
+          val col_array = new ColumnarArray(col, rows_produced, rows_to_produce)
+          arrowWriter.writeCol(col_array, colIndex)
+        }
+
+        rows_produced += rows_to_produce
+
+        arrowWriter.finish()
+        NativeUtil.rootAsBatch(root)
+      } else {
+        null
+      }
+    }
+
+    private def close(closeAllocator: Boolean): Unit = {
+      try {
+        if (!closed) {
+          if (currentBatch != null) {
+            arrowWriter.reset()
+            currentBatch.close()
+            currentBatch = null
+          }
+          root.close()
+          closed = true
+        }
+      } finally {
+        // the allocator shall be closed when the task is finished
+        if (closeAllocator) {
+          allocator.close()
+        }
+      }
+    }
+  }
+
+  def toArrowBatchIteratorFromColumnBatch(
+                                           colBatch: ColumnarBatch,
+                                           schema: StructType,
+                                           maxRecordsPerBatch: Int,
+                                           timeZoneId: String,
+                                           context: TaskContext): Iterator[ColumnarBatch] = {
+    new ArrowBatchIteratorFromColumnBatch(colBatch, schema, maxRecordsPerBatch, timeZoneId, context)
   }
 }
