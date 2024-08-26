@@ -146,11 +146,7 @@ impl AggregateExpr for AvgDecimal {
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
         match &self.result_data_type {
             Decimal128(target_precision, target_scale) => {
-                Ok(make_decimal128(
-                    None,
-                    *target_precision,
-                    *target_scale,
-                ))
+                Ok(make_decimal128(None, *target_precision, *target_scale))
             }
             _ => not_impl_err!(
                 "The result_data_type of AvgDecimal should be Decimal128 but got{}",
