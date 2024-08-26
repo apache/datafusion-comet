@@ -28,7 +28,7 @@ Make sure the following requirements are met and software installed on your mach
 
 ## Requirements
 
-- Apache Spark 3.3, or 3.4
+- Apache Spark 3.3, 3.4, or 3.5
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
@@ -79,7 +79,7 @@ make release-nogit PROFILES="-Pspark-3.4"
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```console
-export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -88,7 +88,9 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.explainFallback.enabled=true
+    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.driver.memory=1g \
+    --conf spark.executor.memory=1g
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -145,7 +147,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.4_2.12-0.1.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
