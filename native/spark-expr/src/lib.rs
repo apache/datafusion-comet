@@ -23,6 +23,7 @@ mod cast;
 mod error;
 mod if_expr;
 
+mod array;
 mod kernels;
 mod regexp;
 pub mod scalar_funcs;
@@ -33,6 +34,7 @@ pub mod timezone;
 pub mod utils;
 mod xxhash64;
 
+pub use array::ArrayExtract;
 pub use cast::{spark_cast, Cast};
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;

@@ -59,7 +59,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
 
-  def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
+  def supportedDataType(
+      dt: DataType,
+      allowStruct: Boolean = false,
+      allowArray: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
@@ -67,6 +70,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case dt if isTimestampNTZType(dt) => true
     case s: StructType if allowStruct =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
+    case a: ArrayType if allowArray =>
+      supportedDataType(a.elementType, allowStruct, allowArray)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2399,33 +2404,52 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case get @ GetArrayItem(child, ordinal, _) =>
+        case GetArrayItem(child, ordinal, failOnError) =>
           val childExpr = exprToProto(child, inputs, binding)
-
-          // DataFusion expects the indices to be int64
-          val ordinalExpr =
-            exprToProto(Add(Cast(ordinal, LongType), Literal(1L)), inputs, binding)
-          // scalastyle:off println
-          println(ordinal.dataType)
+          val ordinalExpr = exprToProto(ordinal, inputs, binding)
 
           if (childExpr.isDefined && ordinalExpr.isDefined) {
-            scalarExprToProtoWithReturnType("array_element", get.dataType, childExpr, ordinalExpr)
+            val arrayExtractBuilder = ExprOuterClass.ArrayExtract
+              .newBuilder()
+              .setChild(childExpr.get)
+              .setOrdinal(ordinalExpr.get)
+              .setOneBased(false)
+              .setFailOnError(failOnError)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setArrayExtract(arrayExtractBuilder)
+                .build())
           } else {
             withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
             None
           }
 
-        case get @ ElementAt(child, ordinal, _, _) =>
+        case ElementAt(child, ordinal, defaultValue, failOnError)
+            if child.dataType.isInstanceOf[ArrayType] =>
           val childExpr = exprToProto(child, inputs, binding)
+          val ordinalExpr = exprToProto(ordinal, inputs, binding)
+          val defaultExpr = defaultValue.flatMap(exprToProto(_, inputs, binding))
 
-          // DataFusion expects the indices to be int64
-          val ordinalExpr =
-            exprToProto(Cast(ordinal, LongType), inputs, binding)
+          if (childExpr.isDefined && ordinalExpr.isDefined &&
+            defaultExpr.isDefined == defaultValue.isDefined) {
+            val arrayExtractBuilder = ExprOuterClass.ArrayExtract
+              .newBuilder()
+              .setChild(childExpr.get)
+              .setOrdinal(ordinalExpr.get)
+              .setOneBased(true)
+              .setFailOnError(failOnError)
 
-          if (childExpr.isDefined && ordinalExpr.isDefined) {
-            scalarExprToProtoWithReturnType("array_element", get.dataType, childExpr, ordinalExpr)
+            defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setArrayExtract(arrayExtractBuilder)
+                .build())
           } else {
-            withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
+            withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
             None
           }
 
@@ -2933,7 +2957,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
+      case op
+          if isCometSink(op) && op.output.forall(a =>
+            supportedDataType(a.dataType, true, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         scanBuilder.setSource(op.simpleStringWithNodeId())

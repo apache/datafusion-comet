@@ -27,6 +27,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -2021,55 +2022,70 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("GetArrayItem") {
+  test("ArrayExtract") {
+    def assertBothThrow(df: DataFrame): Unit = {
+      checkSparkMaybeThrows(df) match {
+          case (Some(_), Some(_)) => ()
+          case (spark, comet) => fail(s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
+        }
+    }
+
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
 
-        Seq(false).foreach { ansiEnabled =>
-          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString()) {
-            val df = spark.read
-              .parquet(path.toString)
+        Seq(true, false).foreach { ansiEnabled =>
+          withSQLConf(
+            CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+            SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
+            // Prevent the optimizer from collapsing an extract value of a create array
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+            val df = spark.read.parquet(path.toString)
 
-            val stringArray = df.select(array(col("_8"), col("_13")).alias("arr"))
-            stringArray.show()
+            val stringArray = df.select(array(col("_8"), col("_8")).alias("arr"))
             checkSparkAnswerAndOperator(
               stringArray.select(
-                col("arr").getItem(-3),
-                col("arr").getItem(-4),
+                col("arr").getItem(0),
+                col("arr").getItem(1)))
+
+            checkSparkAnswerAndOperator(
+              stringArray.select(
+                element_at(col("arr"), -2),
+                element_at(col("arr"), -1),
+                element_at(col("arr"), 1),
+                element_at(col("arr"), 2)))
+
+            // 0 is an invalid index for element_at
+            assertBothThrow(stringArray.select(element_at(col("arr"), 0)))
+
+            if (ansiEnabled) {
+              assertBothThrow(stringArray.select(col("arr").getItem(-1)))
+              assertBothThrow(stringArray.select(col("arr").getItem(2)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), -3)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), 3)))
+            } else {
+              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(-1)))
+              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(2)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), -3)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), 3)))
+            }
+
+            val intArray = df.select(array(col("_4"), col("_4"), col("_4")).alias("arr"))
+            checkSparkAnswerAndOperator(
+              intArray.select(
+                col("arr").getItem(0),
                 col("arr").getItem(1),
                 col("arr").getItem(2)))
 
-            // stringArray.select(
-            //     col("arr").getItem(-1),
-            //     col("arr").getItem(-2),
-            //     col("arr").getItem(1),
-            //     col("arr").getItem(2))
-            //     .show()
-
-            stringArray.select(
-                // element_at(col("arr"), -2),
-                // element_at(col("arr"), -1),
-                // element_at(col("arr"), 1),
-                element_at(col("arr"), lit(2)))
-                .show()
-
-            // val intArray = df.select(array(col("_2"), col("_3"), col("_4")).alias("arr"))
-            // checkSparkAnswerAndOperator(
-            //   intArray
-            //     .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(-1)))
-
-            // intArray
-            //   .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(-1))
-            //   .explain()
-
-            // checkSparkAnswerAndOperator(
-            //   intArray.select(
-            //     element_at(col("arr"), 1),
-            //     element_at(col("arr"), 3),
-            //     element_at(col("arr"), 4),
-            //     element_at(col("arr"), -1)))
+            checkSparkAnswerAndOperator(
+              intArray.select(
+                element_at(col("arr"), 1),
+                element_at(col("arr"), 2),
+                element_at(col("arr"), 3),
+                element_at(col("arr"), -1),
+                element_at(col("arr"), -2),
+                element_at(col("arr"), -3)))
           }
         }
       }
