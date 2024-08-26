@@ -2025,9 +2025,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ArrayExtract") {
     def assertBothThrow(df: DataFrame): Unit = {
       checkSparkMaybeThrows(df) match {
-          case (Some(_), Some(_)) => ()
-          case (spark, comet) => fail(s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
-        }
+        case (Some(_), Some(_)) => ()
+        case (spark, comet) =>
+          fail(
+            s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
+      }
     }
 
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -2045,9 +2047,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             val stringArray = df.select(array(col("_8"), col("_8")).alias("arr"))
             checkSparkAnswerAndOperator(
-              stringArray.select(
-                col("arr").getItem(0),
-                col("arr").getItem(1)))
+              stringArray.select(col("arr").getItem(0), col("arr").getItem(1)))
 
             checkSparkAnswerAndOperator(
               stringArray.select(
@@ -2073,10 +2073,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             val intArray = df.select(array(col("_4"), col("_4"), col("_4")).alias("arr"))
             checkSparkAnswerAndOperator(
-              intArray.select(
-                col("arr").getItem(0),
-                col("arr").getItem(1),
-                col("arr").getItem(2)))
+              intArray
+                .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
 
             checkSparkAnswerAndOperator(
               intArray.select(
