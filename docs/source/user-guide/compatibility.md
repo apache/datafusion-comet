@@ -136,6 +136,8 @@ The following cast operations are not compatible with Spark for all inputs and a
 |-|-|-|
 | integer | decimal  | No overflow check |
 | long | decimal  | No overflow check |
+| string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. |
+| string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. |
 | string | timestamp  | Not all valid formats are supported |
 | binary | string  | Only works for binary data representing valid UTF-8 strings |
 
