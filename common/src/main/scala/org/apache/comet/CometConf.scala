@@ -201,7 +201,7 @@ object CometConf extends ShimCometConf {
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
-    .createWithDefault("jvm")
+    .createWithDefault("auto")
 
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
