@@ -32,6 +32,7 @@ use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
 use crc32fast::Hasher;
+use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     arrow::{
         array::*,
@@ -53,7 +54,6 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
-use datafusion::physical_plan::metrics::Time;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
@@ -247,7 +247,12 @@ impl PartitionBuffer {
     }
 
     /// Appends rows of specified indices from columns into active array builders.
-    fn append_rows(&mut self, columns: &[ArrayRef], indices: &[usize], time_metric: &Time) -> Result<isize> {
+    fn append_rows(
+        &mut self,
+        columns: &[ArrayRef],
+        indices: &[usize],
+        time_metric: &Time,
+    ) -> Result<isize> {
         let mut mem_diff = 0;
         let mut start = 0;
 
@@ -758,8 +763,11 @@ impl ShuffleRepartitioner {
 
                     // If the range of indices is not big enough, just appending the rows into
                     // active array builders instead of directly adding them as a record batch.
-                    mem_diff +=
-                        output.append_rows(input.columns(), &shuffled_partition_ids[start..end], time_metric)?;
+                    mem_diff += output.append_rows(
+                        input.columns(),
+                        &shuffled_partition_ids[start..end],
+                        time_metric,
+                    )?;
                 }
 
                 if mem_diff > 0 {
