@@ -65,7 +65,7 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: spark:3.4.2
+  image: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.2.0-rc1
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
@@ -96,6 +96,8 @@ spec:
     coreLimit: 1200m
     memory: 512m
 ```
+Refer to [Comet builds](#comet-docker-images)
+
 Run Apache Spark application with Comet enabled
 ```bash
 kubectl apply -f spark-pi.yaml
