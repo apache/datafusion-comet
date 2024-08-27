@@ -601,6 +601,9 @@ struct ShuffleRepartitionerMetrics {
 
     /// total spilled bytes during the execution of the operator
     spilled_bytes: Count,
+
+    /// The original size of spilled data. Different to `spilled_bytes` because of compression.
+    data_size: Count,
 }
 
 impl ShuffleRepartitionerMetrics {
@@ -609,6 +612,7 @@ impl ShuffleRepartitionerMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
+            data_size: MetricBuilder::new(metrics).counter("data_size", partition),
         }
     }
 }
@@ -691,6 +695,9 @@ impl ShuffleRepartitioner {
                     .to_string(),
             ));
         }
+
+        // Update data size metric
+        self.metrics.data_size.add(input.get_array_memory_size());
 
         let time_metric = self.metrics.baseline.elapsed_compute();
 
@@ -905,6 +912,10 @@ impl ShuffleRepartitioner {
         self.metrics.spill_count.value()
     }
 
+    fn data_size(&self) -> usize {
+        self.metrics.data_size.value()
+    }
+
     async fn spill(&self) -> Result<usize> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
@@ -986,6 +997,7 @@ impl Debug for ShuffleRepartitioner {
             .field("memory_used", &self.used())
             .field("spilled_bytes", &self.spilled_bytes())
             .field("spilled_count", &self.spill_count())
+            .field("data_size", &self.data_size())
             .finish()
     }
 }
