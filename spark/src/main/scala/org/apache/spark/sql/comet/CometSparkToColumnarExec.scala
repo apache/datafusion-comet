@@ -69,10 +69,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       child
         .executeColumnar()
         .mapPartitionsInternal { iter =>
-          iter.flatMap { col_batch =>
+          iter.flatMap { columnBatch =>
             val context = TaskContext.get()
             CometArrowConverters.toArrowBatchIteratorFromColumnBatch(
-              col_batch,
+              columnBatch,
               schema,
               maxRecordsPerBatch,
               timeZoneId,
