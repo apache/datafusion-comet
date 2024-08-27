@@ -104,8 +104,13 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count += 1
   }
 
-  def writeCol(input: ColumnarArray, columnIndex : Int): Unit = {
+  def writeCol(input: ColumnarArray, columnIndex: Int): Unit = {
     fields(columnIndex).writeCol(input)
+    count = input.numElements()
+  }
+
+  def writeColNoNull(input: ColumnarArray, columnIndex: Int): Unit = {
+    fields(columnIndex).writeColNoNull(input)
     count = input.numElements()
   }
 
@@ -144,12 +149,23 @@ private[arrow] abstract class ArrowFieldWriter {
   }
 
   def writeCol(input: ColumnarArray): Unit = {
-    while (count < input.numElements()) {
+    val inputNumElements = input.numElements()
+    valueVector.setInitialCapacity(inputNumElements)
+    while (count < inputNumElements) {
       if (input.isNullAt(count)) {
         setNull()
       } else {
         setValue(input, count)
       }
+      count += 1
+    }
+  }
+
+  def writeColNoNull(input: ColumnarArray): Unit = {
+    val inputNumElements = input.numElements()
+    valueVector.setInitialCapacity(inputNumElements)
+    while (count < inputNumElements) {
+      setValue(input, count)
       count += 1
     }
   }

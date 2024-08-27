@@ -45,12 +45,12 @@ object CometArrowConverters extends Logging {
   // only decreased when the native plan is done with the vectors, which is usually longer than
   // all the ColumnarBatches are consumed.
   private[sql] class ArrowBatchIteratorFromInternalRow(
-                                                        rowIter: Iterator[InternalRow],
-                                                        schema: StructType,
-                                                        maxRecordsPerBatch: Long,
-                                                        timeZoneId: String,
-                                                        context: TaskContext)
-    extends Iterator[ColumnarBatch]
+      rowIter: Iterator[InternalRow],
+      schema: StructType,
+      maxRecordsPerBatch: Long,
+      timeZoneId: String,
+      context: TaskContext)
+      extends Iterator[ColumnarBatch]
       with AutoCloseable {
 
     private val arrowSchema = Utils.toArrowSchema(schema, timeZoneId)
@@ -121,21 +121,26 @@ object CometArrowConverters extends Logging {
   }
 
   def toArrowBatchIteratorFromInternalRow(
-                                           rowIter: Iterator[InternalRow],
-                                           schema: StructType,
-                                           maxRecordsPerBatch: Long,
-                                           timeZoneId: String,
-                                           context: TaskContext): Iterator[ColumnarBatch] = {
-    new ArrowBatchIteratorFromInternalRow(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
+      rowIter: Iterator[InternalRow],
+      schema: StructType,
+      maxRecordsPerBatch: Long,
+      timeZoneId: String,
+      context: TaskContext): Iterator[ColumnarBatch] = {
+    new ArrowBatchIteratorFromInternalRow(
+      rowIter,
+      schema,
+      maxRecordsPerBatch,
+      timeZoneId,
+      context)
   }
 
   private[sql] class ArrowBatchIteratorFromColumnBatch(
-                                                        colBatch: ColumnarBatch,
-                                                        schema: StructType,
-                                                        maxRecordsPerBatch: Int,
-                                                        timeZoneId: String,
-                                                        context: TaskContext)
-    extends Iterator[ColumnarBatch]
+      colBatch: ColumnarBatch,
+      schema: StructType,
+      maxRecordsPerBatch: Int,
+      timeZoneId: String,
+      context: TaskContext)
+      extends Iterator[ColumnarBatch]
       with AutoCloseable {
 
     private val arrowSchema = Utils.toArrowSchema(schema, timeZoneId)
@@ -147,7 +152,7 @@ object CometArrowConverters extends Logging {
 
     private var currentBatch: ColumnarBatch = null
     private var closed: Boolean = false
-    private var rows_produced: Int = 0
+    private var rowsProduced: Int = 0
 
     Option(context).foreach {
       _.addTaskCompletionListener[Unit] { _ =>
@@ -155,7 +160,7 @@ object CometArrowConverters extends Logging {
       }
     }
 
-    override def hasNext: Boolean = rows_produced < colBatch.numRows() || {
+    override def hasNext: Boolean = rowsProduced < colBatch.numRows() || {
       close(false)
       false
     }
@@ -170,18 +175,25 @@ object CometArrowConverters extends Logging {
     }
 
     private def nextBatch(): ColumnarBatch = {
-      if (rows_produced < colBatch.numRows()) {
+      val rowsInBatch = colBatch.numRows()
+      if (rowsProduced < rowsInBatch) {
         // the arrow writer shall be reset before writing the next batch
         arrowWriter.reset()
-        val rows_to_produce = if (maxRecordsPerBatch <= 0) colBatch.numRows() - rows_produced else Math.min(maxRecordsPerBatch, colBatch.numRows() - rows_produced)
+        val rowsToProduce =
+          if (maxRecordsPerBatch <= 0) rowsInBatch - rowsProduced
+          else Math.min(maxRecordsPerBatch, rowsInBatch - rowsProduced)
 
-        for (colIndex <- 0 until colBatch.numCols()) {
-          val col = colBatch.column(colIndex)
-          val col_array = new ColumnarArray(col, rows_produced, rows_to_produce)
-          arrowWriter.writeCol(col_array, colIndex)
+        for (columnIndex <- 0 until colBatch.numCols()) {
+          val column = colBatch.column(columnIndex)
+          val columnArray = new ColumnarArray(column, rowsProduced, rowsToProduce)
+          if (column.hasNull) {
+            arrowWriter.writeCol(columnArray, columnIndex)
+          } else {
+            arrowWriter.writeColNoNull(columnArray, columnIndex)
+          }
         }
 
-        rows_produced += rows_to_produce
+        rowsProduced += rowsToProduce
 
         arrowWriter.finish()
         NativeUtil.rootAsBatch(root)
@@ -211,11 +223,16 @@ object CometArrowConverters extends Logging {
   }
 
   def toArrowBatchIteratorFromColumnBatch(
-                                           colBatch: ColumnarBatch,
-                                           schema: StructType,
-                                           maxRecordsPerBatch: Int,
-                                           timeZoneId: String,
-                                           context: TaskContext): Iterator[ColumnarBatch] = {
-    new ArrowBatchIteratorFromColumnBatch(colBatch, schema, maxRecordsPerBatch, timeZoneId, context)
+      colBatch: ColumnarBatch,
+      schema: StructType,
+      maxRecordsPerBatch: Int,
+      timeZoneId: String,
+      context: TaskContext): Iterator[ColumnarBatch] = {
+    new ArrowBatchIteratorFromColumnBatch(
+      colBatch,
+      schema,
+      maxRecordsPerBatch,
+      timeZoneId,
+      context)
   }
 }
