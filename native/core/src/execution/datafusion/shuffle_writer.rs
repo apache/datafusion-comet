@@ -53,6 +53,7 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
+use datafusion::physical_plan::metrics::Time;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
@@ -239,14 +240,14 @@ impl PartitionBuffer {
     }
 
     /// Appends all rows of given batch into active array builders.
-    fn append_batch(&mut self, batch: &RecordBatch) -> Result<isize> {
+    fn append_batch(&mut self, batch: &RecordBatch, time_metric: &Time) -> Result<isize> {
         let columns = batch.columns();
         let indices = (0..batch.num_rows()).collect::<Vec<usize>>();
-        self.append_rows(columns, &indices)
+        self.append_rows(columns, &indices, time_metric)
     }
 
     /// Appends rows of specified indices from columns into active array builders.
-    fn append_rows(&mut self, columns: &[ArrayRef], indices: &[usize]) -> Result<isize> {
+    fn append_rows(&mut self, columns: &[ArrayRef], indices: &[usize], time_metric: &Time) -> Result<isize> {
         let mut mem_diff = 0;
         let mut start = 0;
 
@@ -263,7 +264,10 @@ impl PartitionBuffer {
                 });
             self.num_active_rows += end - start;
             if self.num_active_rows >= self.batch_size {
+                let mut timer = time_metric.timer();
                 mem_diff += self.flush()?;
+                timer.stop();
+
                 mem_diff += self.init_active_if_necessary()?;
             }
             start = end;
@@ -683,7 +687,7 @@ impl ShuffleRepartitioner {
             ));
         }
 
-        let _timer = self.metrics.baseline.elapsed_compute().timer();
+        let time_metric = self.metrics.baseline.elapsed_compute();
 
         // NOTE: in shuffle writer exec, the output_rows metrics represents the
         // number of rows those are written to output data file.
@@ -755,7 +759,7 @@ impl ShuffleRepartitioner {
                     // If the range of indices is not big enough, just appending the rows into
                     // active array builders instead of directly adding them as a record batch.
                     mem_diff +=
-                        output.append_rows(input.columns(), &shuffled_partition_ids[start..end])?;
+                        output.append_rows(input.columns(), &shuffled_partition_ids[start..end], time_metric)?;
                 }
 
                 if mem_diff > 0 {
@@ -782,7 +786,7 @@ impl ShuffleRepartitioner {
                 );
 
                 let output = &mut buffered_partitions[0];
-                output.append_batch(&input)?;
+                output.append_batch(&input, time_metric)?;
             }
             other => {
                 // this should be unreachable as long as the validation logic
@@ -798,7 +802,6 @@ impl ShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
-        let _timer = self.metrics.baseline.elapsed_compute().timer();
         let num_output_partitions = self.num_output_partitions;
         let mut buffered_partitions = self.buffered_partitions.lock().await;
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
@@ -823,14 +826,21 @@ impl ShuffleRepartitioner {
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
         for i in 0..num_output_partitions {
+            let mut timer = self.metrics.baseline.elapsed_compute().timer();
+
             offsets[i] = output_data.stream_position()?;
             output_data.write_all(&output_batches[i])?;
+
+            timer.stop();
+
             output_batches[i].clear();
 
             // append partition in each spills
             for spill in &output_spills {
                 let length = spill.offsets[i + 1] - spill.offsets[i];
                 if length > 0 {
+                    let mut timer = self.metrics.baseline.elapsed_compute().timer();
+
                     let mut spill_file =
                         BufReader::new(File::open(spill.file.path()).map_err(|e| {
                             DataFusionError::Execution(format!("shuffle write error: {:?}", e))
@@ -839,15 +849,22 @@ impl ShuffleRepartitioner {
                     std::io::copy(&mut spill_file.take(length), &mut output_data).map_err(|e| {
                         DataFusionError::Execution(format!("shuffle write error: {:?}", e))
                     })?;
+
+                    timer.stop();
                 }
             }
         }
+        let mut timer = self.metrics.baseline.elapsed_compute().timer();
         output_data.flush()?;
+        timer.stop();
 
         // add one extra offset at last to ease partition length computation
         offsets[num_output_partitions] = output_data
             .stream_position()
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+
+        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+
         let mut output_index =
             BufWriter::new(File::create(index_file).map_err(|e| {
                 DataFusionError::Execution(format!("shuffle write error: {:?}", e))
@@ -858,6 +875,8 @@ impl ShuffleRepartitioner {
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
         }
         output_index.flush()?;
+
+        timer.stop();
 
         let used = self.reservation.size();
         self.reservation.shrink(used);
@@ -891,6 +910,8 @@ impl ShuffleRepartitioner {
             return Ok(0);
         }
 
+        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+
         let spillfile = self
             .runtime
             .disk_manager
@@ -901,6 +922,8 @@ impl ShuffleRepartitioner {
             self.num_output_partitions,
         )
         .await?;
+
+        timer.stop();
 
         let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
