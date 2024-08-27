@@ -21,7 +21,8 @@ package org.apache.comet.vector
 
 import scala.collection.mutable
 
-import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
+import org.apache.arrow.c.CometArrayExporter.exportVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -29,6 +30,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount};
 
 class NativeUtil {
   import Utils._
@@ -64,12 +66,14 @@ class NativeUtil {
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
-          Data.exportVector(
+          exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
-            arrowSchema)
+            arrowSchema,
+            a.numNulls(),
+            a.dictValNumNulls())
 
           exportedVectors += arrowArray.memoryAddress()
           exportedVectors += arrowSchema.memoryAddress()
@@ -98,13 +102,17 @@ class NativeUtil {
     for (i <- arrayAddress.indices by 2) {
       val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
       val arrowArray = ArrowArray.wrap(arrayAddress(i))
+      val nullCount = getNullCount(arrowArray)
+      val dictValNullCount = getDictValNullCount(arrowArray)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
       arrayVectors += CometVector.getVector(
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
-        dictionaryProvider)
+        dictionaryProvider,
+        nullCount,
+        dictValNullCount)
 
       arrowArray.close()
       arrowSchema.close()

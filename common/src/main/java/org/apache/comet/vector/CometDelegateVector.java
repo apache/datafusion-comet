@@ -78,6 +78,11 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
+  public int dictValNumNulls() {
+    return delegate.dictValNumNulls();
+  }
+
+  @Override
   public boolean isNullAt(int rowId) {
     return delegate.isNullAt(rowId);
   }

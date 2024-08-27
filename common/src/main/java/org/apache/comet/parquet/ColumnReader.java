@@ -48,6 +48,9 @@ import org.apache.comet.vector.CometDictionaryVector;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
+import static org.apache.comet.parquet.Utils.getDictValNullCount;
+import static org.apache.comet.parquet.Utils.getNullCount;
+
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
 
@@ -205,11 +208,13 @@ public class ColumnReader extends AbstractColumnReader {
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
         ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
+      int nullCount = getNullCount(array);
+      int dictValNullCount = getDictValNullCount(array);
       FieldVector vector = importer.importVector(array, schema);
 
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, false, nullCount);
 
       // Update whether the current vector contains any null values. This is used in the following
       // batch(s) to determine whether we can skip loading the native vector.
@@ -233,7 +238,8 @@ public class ColumnReader extends AbstractColumnReader {
       // release the previous dictionary vector and create a new one.
       Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
       CometPlainVector dictionaryVector =
-          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
+          new CometPlainVector(
+              arrowDictionary.getVector(), useDecimal128, isUuid, dictValNullCount);
       if (dictionary != null) {
         dictionary.setDictionaryVector(dictionaryVector);
       } else {
@@ -243,9 +249,6 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector =
           new CometDictionaryVector(
               cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
-
-      currentVector =
-          new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
       return currentVector;
     }
   }
@@ -255,7 +258,7 @@ public class ColumnReader extends AbstractColumnReader {
     if (page == null) {
       throw new RuntimeException("overreading: returned DataPage is null");
     }
-    ;
+
     int pageValueCount = page.getValueCount();
     page.accept(
         new DataPage.Visitor<Void>() {
