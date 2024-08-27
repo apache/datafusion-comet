@@ -65,10 +65,10 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: spark:3.5.0
+  image: spark:3.4.2
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
-  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.5.0.jar
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
   sparkConf:
     "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar"
     "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar"
