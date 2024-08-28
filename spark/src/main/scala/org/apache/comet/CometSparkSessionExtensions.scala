@@ -35,9 +35,11 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -1111,6 +1113,7 @@ object CometSparkSessionExtensions extends Logging {
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {
+            case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
             case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
             case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
@@ -1118,6 +1121,7 @@ object CometSparkSessionExtensions extends Logging {
         // Convert Spark DS v2 scan to Arrow format
         case scan: BatchScanExec =>
           scan.scan match {
+            case _: CSVScan => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
             case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _ => isSparkToArrowEnabled(conf, op)
