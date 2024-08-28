@@ -119,6 +119,7 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
             &DataType::Utf8,
             EvalMode::Legacy,
             timezone,
+            false
         )?
         .into_array(arr.len())
     }

@@ -26,6 +26,11 @@ in the schema are supported. When this option is not enabled, the scan will fall
 enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native 
 execution to happen after that, but the process may not be efficient.
 
+## CSV
+
+Comet does not provide native CSV scan, but when `spark.comet.convert.csv.enabled` is enabled, data is immediately
+converted into Arrow format, allowing native execution to happen after that.
+
 ## JSON
 
 Comet does not provide native JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately

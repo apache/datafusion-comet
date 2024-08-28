@@ -49,11 +49,12 @@ git checkout -b branch-0.1
 git push apache branch-0.1
 ```
 
-Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
+Create and merge a PR against the release branch to update the Maven version from `0.3.0-SNAPSHOT` to `0.1.0`
 
 ### Update Version in main
 
 Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPSHOT`.
+The Spark diffs also need updating.
 
 ### Generate the Change Log
 

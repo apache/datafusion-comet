@@ -92,6 +92,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.csv.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(
       "Whether to enable Comet native vectorized execution for Spark. This controls whether " +
