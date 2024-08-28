@@ -697,10 +697,22 @@ Spark.</p></li>
 <td><p>No overflow check</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
+<td><p>float</p></td>
+<td><p>Does not support inputs ending with ‘d’ or ‘f’. Does not support ‘inf’. Does not support ANSI mode.</p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
+<td><p>double</p></td>
+<td><p>Does not support inputs ending with ‘d’ or ‘f’. Does not support ‘inf’. Does not support ANSI mode.</p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>decimal</p></td>
+<td><p>Does not support inputs ending with ‘d’ or ‘f’. Does not support ‘inf’. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits</p></td>
+</tr>
+<tr class="row-odd"><td><p>string</p></td>
 <td><p>timestamp</p></td>
 <td><p>Not all valid formats are supported</p></td>
 </tr>
-<tr class="row-odd"><td><p>binary</p></td>
+<tr class="row-even"><td><p>binary</p></td>
 <td><p>string</p></td>
 <td><p>Only works for binary data representing valid UTF-8 strings</p></td>
 </tr>
