@@ -1532,7 +1532,18 @@ class CometExecSuite extends CometTestBase {
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
     Seq("", "parquet").foreach { v1List =>
       Seq("true", "false").foreach { parquetVectorized =>
-        Seq("tinyint", "smallint", "integer", "bigint", "float", "double").foreach { castType =>
+        Seq(
+          "cast(id as tinyint)",
+          "cast(id as smallint)",
+          "cast(id as integer)",
+          "cast(id as bigint)",
+          "cast(id as float)",
+          "cast(id as double)",
+          "cast(id as decimal)",
+          "cast(id as timestamp)",
+          "cast(id as string)",
+          "cast(id as binary)",
+          "struct(id)").foreach { valueType =>
           {
             withSQLConf(
               SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
@@ -1542,7 +1553,7 @@ class CometExecSuite extends CometTestBase {
               withTempPath { dir =>
                 var df = spark
                   .range(10000)
-                  .selectExpr("id as key", s"cast(id % 8 as $castType) as value")
+                  .selectExpr("id as key", s"$valueType as value")
                   .toDF("key", "value")
 
                 df.write.parquet(dir.toString())
@@ -1552,8 +1563,8 @@ class CometExecSuite extends CometTestBase {
                   df.select("*").groupBy("key", "value").count(),
                   includeClasses = Seq(classOf[CometSparkToColumnarExec]))
 
+                // Verify that the BatchScanExec nodes supported columnar output when requested.
                 val leaves = df.queryExecution.executedPlan.collectLeaves()
-
                 if (parquetVectorized == "true") {
                   assert(leaves.forall(_.supportsColumnar))
                 } else {
