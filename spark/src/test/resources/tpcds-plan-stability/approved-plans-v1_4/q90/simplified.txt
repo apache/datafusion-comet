@@ -4,7 +4,7 @@ WholeStageCodegen (2)
       ColumnarToRow
         InputAdapter
           CometHashAggregate [amc,count,count(1)]
-            CometColumnarExchange #1
+            CometExchange #1
               CometHashAggregate [count]
                 CometProject
                   CometBroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
@@ -33,7 +33,7 @@ WholeStageCodegen (2)
             ColumnarToRow
               InputAdapter
                 CometHashAggregate [pmc,count,count(1)]
-                  CometColumnarExchange #6
+                  CometExchange #6
                     CometHashAggregate [count]
                       CometProject
                         CometBroadcastHashJoin [ws_web_page_sk,wp_web_page_sk]
