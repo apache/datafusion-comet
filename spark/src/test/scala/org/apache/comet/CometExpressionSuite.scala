@@ -1969,9 +1969,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
 
-        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl ORDER BY 1")
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
         checkSparkAnswerAndOperator(
-          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl ORDER BY 1")
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
       }
     }
   }
