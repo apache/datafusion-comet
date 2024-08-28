@@ -792,7 +792,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-
+        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
 
@@ -1506,6 +1506,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
                     .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+                    .setAllowIncompat(false)
                     .build())
                 .build()
             })

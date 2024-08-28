@@ -254,8 +254,8 @@ message Cast {
   Expr child = 1;
   DataType datatype = 2;
   string timezone = 3;
-  EvalMode eval_mode = 4; 
-  
+  EvalMode eval_mode = 4;
+  bool allow_incompat = 5;
 }
 
 message Equal {

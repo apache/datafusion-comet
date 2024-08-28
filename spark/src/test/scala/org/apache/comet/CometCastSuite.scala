@@ -555,15 +555,49 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
   }
 
+  test("cast StringType to FloatType (partial support)") {
+    withSQLConf(
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      castTest(
+        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
+        DataTypes.FloatType,
+        testAnsi = false)
+    }
+  }
+
   ignore("cast StringType to DoubleType") {
     // https://github.com/apache/datafusion-comet/issues/326
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
+  }
+
+  test("cast StringType to DoubleType (partial support)") {
+    withSQLConf(
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      castTest(
+        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
+        DataTypes.DoubleType,
+        testAnsi = false)
+    }
   }
 
   ignore("cast StringType to DecimalType(10,2)") {
     // https://github.com/apache/datafusion-comet/issues/325
     val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast StringType to DecimalType(10,2) (partial support)") {
+    withSQLConf(
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      val values = gen
+        .generateStrings(dataSize, "0123456789.", 8)
+        .filter(_.exists(_.isDigit))
+        .toDF("a")
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+    }
   }
 
   test("cast StringType to BinaryType") {
@@ -963,7 +997,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def castTest(input: DataFrame, toType: DataType): Unit = {
+  private def castTest(input: DataFrame, toType: DataType, testAnsi: Boolean = true): Unit = {
 
     // we now support the TryCast expression in Spark 3.3
     withTempPath { dir =>
@@ -981,60 +1015,62 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df2)
       }
 
-      // with ANSI enabled, we should produce the same exception as Spark
-      withSQLConf(
-        (SQLConf.ANSI_ENABLED.key, "true"),
-        (CometConf.COMET_ANSI_MODE_ENABLED.key, "true")) {
+      if (testAnsi) {
+        // with ANSI enabled, we should produce the same exception as Spark
+        withSQLConf(
+          (SQLConf.ANSI_ENABLED.key, "true"),
+          (CometConf.COMET_ANSI_MODE_ENABLED.key, "true")) {
 
-        // cast() should throw exception on invalid inputs when ansi mode is enabled
-        val df = data.withColumn("converted", col("a").cast(toType))
-        checkSparkMaybeThrows(df) match {
-          case (None, None) =>
-          // neither system threw an exception
-          case (None, Some(e)) =>
-            // Spark succeeded but Comet failed
-            throw e
-          case (Some(e), None) =>
-            // Spark failed but Comet succeeded
-            fail(s"Comet should have failed with ${e.getCause.getMessage}")
-          case (Some(sparkException), Some(cometException)) =>
-            // both systems threw an exception so we make sure they are the same
-            val sparkMessage =
-              if (sparkException.getCause != null) sparkException.getCause.getMessage
-              else sparkException.getMessage
-            val cometMessage =
-              if (cometException.getCause != null) cometException.getCause.getMessage
-              else cometException.getMessage
-            if (CometSparkSessionExtensions.isSpark40Plus) {
-              // for Spark 4 we expect to sparkException carries the message
-              assert(
-                sparkException.getMessage
-                  .replace(".WITH_SUGGESTION] ", "]")
-                  .startsWith(cometMessage))
-            } else if (CometSparkSessionExtensions.isSpark34Plus) {
-              // for Spark 3.4 we expect to reproduce the error message exactly
-              assert(cometMessage == sparkMessage)
-            } else {
-              // for Spark 3.3 we just need to strip the prefix from the Comet message
-              // before comparing
-              val cometMessageModified = cometMessage
-                .replace("[CAST_INVALID_INPUT] ", "")
-                .replace("[CAST_OVERFLOW] ", "")
-                .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
-
-              if (sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("cannot be represented as"))
+          // cast() should throw exception on invalid inputs when ansi mode is enabled
+          val df = data.withColumn("converted", col("a").cast(toType))
+          checkSparkMaybeThrows(df) match {
+            case (None, None) =>
+            // neither system threw an exception
+            case (None, Some(e)) =>
+              // Spark succeeded but Comet failed
+              throw e
+            case (Some(e), None) =>
+              // Spark failed but Comet succeeded
+              fail(s"Comet should have failed with ${e.getCause.getMessage}")
+            case (Some(sparkException), Some(cometException)) =>
+              // both systems threw an exception so we make sure they are the same
+              val sparkMessage =
+                if (sparkException.getCause != null) sparkException.getCause.getMessage
+                else sparkException.getMessage
+              val cometMessage =
+                if (cometException.getCause != null) cometException.getCause.getMessage
+                else cometException.getMessage
+              if (CometSparkSessionExtensions.isSpark40Plus) {
+                // for Spark 4 we expect to sparkException carries the message
+                assert(
+                  sparkException.getMessage
+                    .replace(".WITH_SUGGESTION] ", "]")
+                    .startsWith(cometMessage))
+              } else if (CometSparkSessionExtensions.isSpark34Plus) {
+                // for Spark 3.4 we expect to reproduce the error message exactly
+                assert(cometMessage == sparkMessage)
               } else {
-                assert(cometMessageModified == sparkMessage)
+                // for Spark 3.3 we just need to strip the prefix from the Comet message
+                // before comparing
+                val cometMessageModified = cometMessage
+                  .replace("[CAST_INVALID_INPUT] ", "")
+                  .replace("[CAST_OVERFLOW] ", "")
+                  .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
+
+                if (sparkMessage.contains("cannot be represented as")) {
+                  assert(cometMessage.contains("cannot be represented as"))
+                } else {
+                  assert(cometMessageModified == sparkMessage)
+                }
               }
-            }
+          }
+
+          // try_cast() should always return null for invalid inputs
+          val df2 =
+            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          checkSparkAnswerAndOperator(df2)
+
         }
-
-        // try_cast() should always return null for invalid inputs
-        val df2 =
-          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswerAndOperator(df2)
-
       }
     }
   }
