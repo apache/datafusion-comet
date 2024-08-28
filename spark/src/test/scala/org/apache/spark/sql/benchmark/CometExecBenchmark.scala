@@ -96,16 +96,6 @@ object CometExecBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Scan disabled, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
-            spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
-          }
-        }
-
         benchmark.run()
       }
     }
@@ -223,13 +213,13 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-//    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
-//      subqueryExecBenchmark(v)
-//    }
-//
-//    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
-//      expandExecBenchmark(v)
-//    }
+    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
+      subqueryExecBenchmark(v)
+    }
+
+    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
+      expandExecBenchmark(v)
+    }
 
     runBenchmarkWithTable("Project + Filter", 1024 * 1024 * 10) { v =>
       for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
@@ -237,8 +227,8 @@ object CometExecBenchmark extends CometBenchmarkBase {
       }
     }
 
-//    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
-//      sortExecBenchmark(v)
-//    }
+    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
+      sortExecBenchmark(v)
+    }
   }
 }
