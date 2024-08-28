@@ -1,7 +1,7 @@
 == Physical Plan ==
 * ColumnarToRow (30)
 +- CometHashAggregate (29)
-   +- CometExchange (28)
+   +- CometColumnarExchange (28)
       +- CometHashAggregate (27)
          +- CometProject (26)
             +- CometBroadcastHashJoin (25)
@@ -18,7 +18,7 @@
                :     +- CometBroadcastExchange (21)
                :        +- CometFilter (20)
                :           +- CometHashAggregate (19)
-               :              +- CometExchange (18)
+               :              +- CometColumnarExchange (18)
                :                 +- CometHashAggregate (17)
                :                    +- CometProject (16)
                :                       +- CometBroadcastHashJoin (15)
@@ -116,9 +116,9 @@ Input [2]: [ws_item_sk#7, ws_ext_discount_amt#8]
 Keys [1]: [ws_item_sk#7]
 Functions [1]: [partial_avg(UnscaledValue(ws_ext_discount_amt#8))]
 
-(18) CometExchange
+(18) CometColumnarExchange
 Input [3]: [ws_item_sk#7, sum#13, count#14]
-Arguments: hashpartitioning(ws_item_sk#7, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ws_item_sk#7, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (19) CometHashAggregate
 Input [3]: [ws_item_sk#7, sum#13, count#14]
@@ -159,9 +159,9 @@ Input [1]: [ws_ext_discount_amt#2]
 Keys: []
 Functions [1]: [partial_sum(UnscaledValue(ws_ext_discount_amt#2))]
 
-(28) CometExchange
+(28) CometColumnarExchange
 Input [1]: [sum#17]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (29) CometHashAggregate
 Input [1]: [sum#17]

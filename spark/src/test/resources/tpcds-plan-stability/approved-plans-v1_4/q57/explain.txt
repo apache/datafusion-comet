@@ -11,9 +11,9 @@ TakeOrderedAndProject (45)
       :     :           +- Window (24)
       :     :              +- * ColumnarToRow (23)
       :     :                 +- CometSort (22)
-      :     :                    +- CometExchange (21)
+      :     :                    +- CometColumnarExchange (21)
       :     :                       +- CometHashAggregate (20)
-      :     :                          +- CometExchange (19)
+      :     :                          +- CometColumnarExchange (19)
       :     :                             +- CometHashAggregate (18)
       :     :                                +- CometProject (17)
       :     :                                   +- CometBroadcastHashJoin (16)
@@ -135,18 +135,18 @@ Input [6]: [i_brand#2, i_category#3, cs_sales_price#6, d_year#10, d_moy#11, cc_n
 Keys [5]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11]
 Functions [1]: [partial_sum(UnscaledValue(cs_sales_price#6))]
 
-(19) CometExchange
+(19) CometColumnarExchange
 Input [6]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, sum#14]
-Arguments: hashpartitioning(i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (20) CometHashAggregate
 Input [6]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, sum#14]
 Keys [5]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11]
 Functions [1]: [sum(UnscaledValue(cs_sales_price#6))]
 
-(21) CometExchange
+(21) CometColumnarExchange
 Input [7]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, sum_sales#15, _w0#16]
-Arguments: hashpartitioning(i_category#3, i_brand#2, cc_name#13, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_category#3, i_brand#2, cc_name#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (22) CometSort
 Input [7]: [i_category#3, i_brand#2, cc_name#13, d_year#10, d_moy#11, sum_sales#15, _w0#16]

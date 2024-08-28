@@ -8,7 +8,7 @@
          :     :- CometBroadcastHashJoin (33)
          :     :  :- CometFilter (16)
          :     :  :  +- CometHashAggregate (15)
-         :     :  :     +- CometExchange (14)
+         :     :  :     +- CometColumnarExchange (14)
          :     :  :        +- CometHashAggregate (13)
          :     :  :           +- CometProject (12)
          :     :  :              +- CometBroadcastHashJoin (11)
@@ -24,7 +24,7 @@
          :     :  :                       +- CometScan parquet spark_catalog.default.date_dim (8)
          :     :  +- CometBroadcastExchange (32)
          :     :     +- CometHashAggregate (31)
-         :     :        +- CometExchange (30)
+         :     :        +- CometColumnarExchange (30)
          :     :           +- CometHashAggregate (29)
          :     :              +- CometProject (28)
          :     :                 +- CometBroadcastHashJoin (27)
@@ -41,7 +41,7 @@
          :     +- CometBroadcastExchange (48)
          :        +- CometFilter (47)
          :           +- CometHashAggregate (46)
-         :              +- CometExchange (45)
+         :              +- CometColumnarExchange (45)
          :                 +- CometHashAggregate (44)
          :                    +- CometProject (43)
          :                       +- CometBroadcastHashJoin (42)
@@ -55,7 +55,7 @@
          :                          +- ReusedExchange (41)
          +- CometBroadcastExchange (64)
             +- CometHashAggregate (63)
-               +- CometExchange (62)
+               +- CometColumnarExchange (62)
                   +- CometHashAggregate (61)
                      +- CometProject (60)
                         +- CometBroadcastHashJoin (59)
@@ -134,9 +134,9 @@ Input [10]: [c_customer_id#2, c_first_name#3, c_last_name#4, c_preferred_cust_fl
 Keys [8]: [c_customer_id#2, c_first_name#3, c_last_name#4, d_year#15, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8]
 Functions [1]: [partial_sum(UnscaledValue((ss_ext_list_price#11 - ss_ext_discount_amt#10)))]
 
-(14) CometExchange
+(14) CometColumnarExchange
 Input [9]: [c_customer_id#2, c_first_name#3, c_last_name#4, d_year#15, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8, sum#16]
-Arguments: hashpartitioning(c_customer_id#2, c_first_name#3, c_last_name#4, d_year#15, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(c_customer_id#2, c_first_name#3, c_last_name#4, d_year#15, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (15) CometHashAggregate
 Input [9]: [c_customer_id#2, c_first_name#3, c_last_name#4, d_year#15, c_preferred_cust_flag#5, c_birth_country#6, c_login#7, c_email_address#8, sum#16]
@@ -212,9 +212,9 @@ Input [10]: [c_customer_id#20, c_first_name#21, c_last_name#22, c_preferred_cust
 Keys [8]: [c_customer_id#20, c_first_name#21, c_last_name#22, d_year#33, c_preferred_cust_flag#23, c_birth_country#24, c_login#25, c_email_address#26]
 Functions [1]: [partial_sum(UnscaledValue((ss_ext_list_price#29 - ss_ext_discount_amt#28)))]
 
-(30) CometExchange
+(30) CometColumnarExchange
 Input [9]: [c_customer_id#20, c_first_name#21, c_last_name#22, d_year#33, c_preferred_cust_flag#23, c_birth_country#24, c_login#25, c_email_address#26, sum#34]
-Arguments: hashpartitioning(c_customer_id#20, c_first_name#21, c_last_name#22, d_year#33, c_preferred_cust_flag#23, c_birth_country#24, c_login#25, c_email_address#26, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(c_customer_id#20, c_first_name#21, c_last_name#22, d_year#33, c_preferred_cust_flag#23, c_birth_country#24, c_login#25, c_email_address#26, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (31) CometHashAggregate
 Input [9]: [c_customer_id#20, c_first_name#21, c_last_name#22, d_year#33, c_preferred_cust_flag#23, c_birth_country#24, c_login#25, c_email_address#26, sum#34]
@@ -283,9 +283,9 @@ Input [10]: [c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust
 Keys [8]: [c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47, d_year#54]
 Functions [1]: [partial_sum(UnscaledValue((ws_ext_list_price#50 - ws_ext_discount_amt#49)))]
 
-(45) CometExchange
+(45) CometColumnarExchange
 Input [9]: [c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47, d_year#54, sum#55]
-Arguments: hashpartitioning(c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47, d_year#54, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47, d_year#54, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (46) CometHashAggregate
 Input [9]: [c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47, d_year#54, sum#55]
@@ -362,9 +362,9 @@ Input [10]: [c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust
 Keys [8]: [c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust_flag#62, c_birth_country#63, c_login#64, c_email_address#65, d_year#72]
 Functions [1]: [partial_sum(UnscaledValue((ws_ext_list_price#68 - ws_ext_discount_amt#67)))]
 
-(62) CometExchange
+(62) CometColumnarExchange
 Input [9]: [c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust_flag#62, c_birth_country#63, c_login#64, c_email_address#65, d_year#72, sum#73]
-Arguments: hashpartitioning(c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust_flag#62, c_birth_country#63, c_login#64, c_email_address#65, d_year#72, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust_flag#62, c_birth_country#63, c_login#64, c_email_address#65, d_year#72, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (63) CometHashAggregate
 Input [9]: [c_customer_id#59, c_first_name#60, c_last_name#61, c_preferred_cust_flag#62, c_birth_country#63, c_login#64, c_email_address#65, d_year#72, sum#73]

@@ -9,7 +9,7 @@
          :     :  +- CometBroadcastHashJoin (26)
          :     :     :- CometFilter (12)
          :     :     :  +- CometHashAggregate (11)
-         :     :     :     +- CometExchange (10)
+         :     :     :     +- CometColumnarExchange (10)
          :     :     :        +- CometHashAggregate (9)
          :     :     :           +- CometProject (8)
          :     :     :              +- CometBroadcastHashJoin (7)
@@ -22,10 +22,10 @@
          :     :     +- CometBroadcastExchange (25)
          :     :        +- CometFilter (24)
          :     :           +- CometHashAggregate (23)
-         :     :              +- CometExchange (22)
+         :     :              +- CometColumnarExchange (22)
          :     :                 +- CometHashAggregate (21)
          :     :                    +- CometHashAggregate (20)
-         :     :                       +- CometExchange (19)
+         :     :                       +- CometColumnarExchange (19)
          :     :                          +- CometHashAggregate (18)
          :     :                             +- CometProject (17)
          :     :                                +- CometBroadcastHashJoin (16)
@@ -86,9 +86,9 @@ Input [3]: [sr_customer_sk#1, sr_store_sk#2, sr_return_amt#3]
 Keys [2]: [sr_customer_sk#1, sr_store_sk#2]
 Functions [1]: [partial_sum(UnscaledValue(sr_return_amt#3))]
 
-(10) CometExchange
+(10) CometColumnarExchange
 Input [3]: [sr_customer_sk#1, sr_store_sk#2, sum#8]
-Arguments: hashpartitioning(sr_customer_sk#1, sr_store_sk#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(sr_customer_sk#1, sr_store_sk#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (11) CometHashAggregate
 Input [3]: [sr_customer_sk#1, sr_store_sk#2, sum#8]
@@ -128,9 +128,9 @@ Input [3]: [sr_customer_sk#1, sr_store_sk#2, sr_return_amt#3]
 Keys [2]: [sr_customer_sk#1, sr_store_sk#2]
 Functions [1]: [partial_sum(UnscaledValue(sr_return_amt#3))]
 
-(19) CometExchange
+(19) CometColumnarExchange
 Input [3]: [sr_customer_sk#1, sr_store_sk#2, sum#13]
-Arguments: hashpartitioning(sr_customer_sk#1, sr_store_sk#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(sr_customer_sk#1, sr_store_sk#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (20) CometHashAggregate
 Input [3]: [sr_customer_sk#1, sr_store_sk#2, sum#13]
@@ -142,9 +142,9 @@ Input [2]: [ctr_store_sk#10, ctr_total_return#11]
 Keys [1]: [ctr_store_sk#10]
 Functions [1]: [partial_avg(ctr_total_return#11)]
 
-(22) CometExchange
+(22) CometColumnarExchange
 Input [3]: [ctr_store_sk#10, sum#14, count#15]
-Arguments: hashpartitioning(ctr_store_sk#10, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(ctr_store_sk#10, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (23) CometHashAggregate
 Input [3]: [ctr_store_sk#10, sum#14, count#15]

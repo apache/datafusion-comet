@@ -2,7 +2,7 @@
 * ColumnarToRow (24)
 +- CometTakeOrderedAndProject (23)
    +- CometHashAggregate (22)
-      +- CometExchange (21)
+      +- CometColumnarExchange (21)
          +- CometHashAggregate (20)
             +- CometExpand (19)
                +- CometProject (18)
@@ -122,9 +122,9 @@ Input [6]: [inv_quantity_on_hand#3, i_product_name#14, i_brand#15, i_class#16, i
 Keys [5]: [i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18]
 Functions [1]: [partial_avg(inv_quantity_on_hand#3)]
 
-(21) CometExchange
+(21) CometColumnarExchange
 Input [7]: [i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18, sum#19, count#20]
-Arguments: hashpartitioning(i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (22) CometHashAggregate
 Input [7]: [i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18, sum#19, count#20]

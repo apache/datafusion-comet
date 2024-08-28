@@ -1,7 +1,7 @@
 == Physical Plan ==
 * ColumnarToRow (33)
 +- CometHashAggregate (32)
-   +- CometExchange (31)
+   +- CometColumnarExchange (31)
       +- CometHashAggregate (30)
          +- CometProject (29)
             +- CometBroadcastHashJoin (28)
@@ -179,9 +179,9 @@ Input [3]: [ss_quantity#5, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 Keys: []
 Functions [4]: [partial_avg(ss_quantity#5), partial_avg(UnscaledValue(ss_ext_sales_price#7)), partial_avg(UnscaledValue(ss_ext_wholesale_cost#8)), partial_sum(UnscaledValue(ss_ext_wholesale_cost#8))]
 
-(31) CometExchange
+(31) CometColumnarExchange
 Input [7]: [sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (32) CometHashAggregate
 Input [7]: [sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29]

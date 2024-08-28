@@ -10,7 +10,7 @@ WholeStageCodegen (1)
                   CometBroadcastHashJoin [ctr_customer_sk,ctr_state,ctr_total_return,(avg(ctr_total_return) * 1.2),ctr_state]
                     CometFilter [ctr_customer_sk,ctr_state,ctr_total_return]
                       CometHashAggregate [ctr_customer_sk,ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(cr_return_amt_inc_tax))]
-                        CometExchange [cr_returning_customer_sk,ca_state] #1
+                        CometColumnarExchange [cr_returning_customer_sk,ca_state] #1
                           CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
                             CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                               CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
@@ -36,10 +36,10 @@ WholeStageCodegen (1)
                     CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_state] #5
                       CometFilter [(avg(ctr_total_return) * 1.2),ctr_state]
                         CometHashAggregate [(avg(ctr_total_return) * 1.2),ctr_state,ctr_state,sum,count,avg(ctr_total_return)]
-                          CometExchange [ctr_state] #6
+                          CometColumnarExchange [ctr_state] #6
                             CometHashAggregate [ctr_state,sum,count,ctr_total_return]
                               CometHashAggregate [ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(cr_return_amt_inc_tax))]
-                                CometExchange [cr_returning_customer_sk,ca_state] #7
+                                CometColumnarExchange [cr_returning_customer_sk,ca_state] #7
                                   CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
                                     CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                                       CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]

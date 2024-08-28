@@ -17,20 +17,20 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                                 ColumnarToRow
                                   InputAdapter
                                     CometSort [item_sk,rank_col]
-                                      CometExchange #1
+                                      CometColumnarExchange #1
                                         CometFilter [item_sk,rank_col]
                                           Subquery #1
                                             WholeStageCodegen (1)
                                               ColumnarToRow
                                                 InputAdapter
                                                   CometHashAggregate [rank_col,ss_store_sk,sum,count,avg(UnscaledValue(ss_net_profit))]
-                                                    CometExchange [ss_store_sk] #3
+                                                    CometColumnarExchange [ss_store_sk] #3
                                                       CometHashAggregate [ss_store_sk,sum,count,ss_net_profit]
                                                         CometProject [ss_store_sk,ss_net_profit]
                                                           CometFilter [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                             CometScan parquet spark_catalog.default.store_sales [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                           CometHashAggregate [item_sk,rank_col,ss_item_sk,sum,count,avg(UnscaledValue(ss_net_profit))]
-                                            CometExchange [ss_item_sk] #2
+                                            CometColumnarExchange [ss_item_sk] #2
                                               CometHashAggregate [ss_item_sk,sum,count,ss_net_profit]
                                                 CometProject [ss_item_sk,ss_net_profit]
                                                   CometFilter [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]

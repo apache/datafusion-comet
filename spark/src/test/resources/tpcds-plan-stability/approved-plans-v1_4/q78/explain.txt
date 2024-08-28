@@ -7,7 +7,7 @@ TakeOrderedAndProject (67)
          :  +- CometSortMergeJoin (42)
          :     :- CometSort (21)
          :     :  +- CometHashAggregate (20)
-         :     :     +- CometExchange (19)
+         :     :     +- CometColumnarExchange (19)
          :     :        +- CometHashAggregate (18)
          :     :           +- CometProject (17)
          :     :              +- CometBroadcastHashJoin (16)
@@ -15,11 +15,11 @@ TakeOrderedAndProject (67)
          :     :                 :  +- CometFilter (11)
          :     :                 :     +- CometSortMergeJoin (10)
          :     :                 :        :- CometSort (4)
-         :     :                 :        :  +- CometExchange (3)
+         :     :                 :        :  +- CometColumnarExchange (3)
          :     :                 :        :     +- CometFilter (2)
          :     :                 :        :        +- CometScan parquet spark_catalog.default.store_sales (1)
          :     :                 :        +- CometSort (9)
-         :     :                 :           +- CometExchange (8)
+         :     :                 :           +- CometColumnarExchange (8)
          :     :                 :              +- CometProject (7)
          :     :                 :                 +- CometFilter (6)
          :     :                 :                    +- CometScan parquet spark_catalog.default.store_returns (5)
@@ -29,7 +29,7 @@ TakeOrderedAndProject (67)
          :     +- CometSort (41)
          :        +- CometFilter (40)
          :           +- CometHashAggregate (39)
-         :              +- CometExchange (38)
+         :              +- CometColumnarExchange (38)
          :                 +- CometHashAggregate (37)
          :                    +- CometProject (36)
          :                       +- CometBroadcastHashJoin (35)
@@ -37,11 +37,11 @@ TakeOrderedAndProject (67)
          :                          :  +- CometFilter (32)
          :                          :     +- CometSortMergeJoin (31)
          :                          :        :- CometSort (25)
-         :                          :        :  +- CometExchange (24)
+         :                          :        :  +- CometColumnarExchange (24)
          :                          :        :     +- CometFilter (23)
          :                          :        :        +- CometScan parquet spark_catalog.default.web_sales (22)
          :                          :        +- CometSort (30)
-         :                          :           +- CometExchange (29)
+         :                          :           +- CometColumnarExchange (29)
          :                          :              +- CometProject (28)
          :                          :                 +- CometFilter (27)
          :                          :                    +- CometScan parquet spark_catalog.default.web_returns (26)
@@ -49,7 +49,7 @@ TakeOrderedAndProject (67)
          +- CometSort (63)
             +- CometFilter (62)
                +- CometHashAggregate (61)
-                  +- CometExchange (60)
+                  +- CometColumnarExchange (60)
                      +- CometHashAggregate (59)
                         +- CometProject (58)
                            +- CometBroadcastHashJoin (57)
@@ -57,11 +57,11 @@ TakeOrderedAndProject (67)
                               :  +- CometFilter (54)
                               :     +- CometSortMergeJoin (53)
                               :        :- CometSort (47)
-                              :        :  +- CometExchange (46)
+                              :        :  +- CometColumnarExchange (46)
                               :        :     +- CometFilter (45)
                               :        :        +- CometScan parquet spark_catalog.default.catalog_sales (44)
                               :        +- CometSort (52)
-                              :           +- CometExchange (51)
+                              :           +- CometColumnarExchange (51)
                               :              +- CometProject (50)
                               :                 +- CometFilter (49)
                               :                    +- CometScan parquet spark_catalog.default.catalog_returns (48)
@@ -80,9 +80,9 @@ ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int,ss_ticket_number:int,ss_qua
 Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7]
 Condition : (isnotnull(ss_item_sk#1) AND isnotnull(ss_customer_sk#2))
 
-(3) CometExchange
+(3) CometColumnarExchange
 Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7]
-Arguments: hashpartitioning(ss_ticket_number#3, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_ticket_number#3, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (4) CometSort
 Input [7]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7]
@@ -103,9 +103,9 @@ Condition : (isnotnull(sr_ticket_number#10) AND isnotnull(sr_item_sk#9))
 Input [3]: [sr_item_sk#9, sr_ticket_number#10, sr_returned_date_sk#11]
 Arguments: [sr_item_sk#9, sr_ticket_number#10], [sr_item_sk#9, sr_ticket_number#10]
 
-(8) CometExchange
+(8) CometColumnarExchange
 Input [2]: [sr_item_sk#9, sr_ticket_number#10]
-Arguments: hashpartitioning(sr_ticket_number#10, sr_item_sk#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(sr_ticket_number#10, sr_item_sk#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (9) CometSort
 Input [2]: [sr_item_sk#9, sr_ticket_number#10]
@@ -153,9 +153,9 @@ Input [6]: [ss_item_sk#1, ss_customer_sk#2, ss_quantity#4, ss_wholesale_cost#5, 
 Keys [3]: [d_year#13, ss_item_sk#1, ss_customer_sk#2]
 Functions [3]: [partial_sum(ss_quantity#4), partial_sum(UnscaledValue(ss_wholesale_cost#5)), partial_sum(UnscaledValue(ss_sales_price#6))]
 
-(19) CometExchange
+(19) CometColumnarExchange
 Input [6]: [d_year#13, ss_item_sk#1, ss_customer_sk#2, sum#14, sum#15, sum#16]
-Arguments: hashpartitioning(d_year#13, ss_item_sk#1, ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(d_year#13, ss_item_sk#1, ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (20) CometHashAggregate
 Input [6]: [d_year#13, ss_item_sk#1, ss_customer_sk#2, sum#14, sum#15, sum#16]
@@ -178,9 +178,9 @@ ReadSchema: struct<ws_item_sk:int,ws_bill_customer_sk:int,ws_order_number:int,ws
 Input [7]: [ws_item_sk#21, ws_bill_customer_sk#22, ws_order_number#23, ws_quantity#24, ws_wholesale_cost#25, ws_sales_price#26, ws_sold_date_sk#27]
 Condition : (isnotnull(ws_item_sk#21) AND isnotnull(ws_bill_customer_sk#22))
 
-(24) CometExchange
+(24) CometColumnarExchange
 Input [7]: [ws_item_sk#21, ws_bill_customer_sk#22, ws_order_number#23, ws_quantity#24, ws_wholesale_cost#25, ws_sales_price#26, ws_sold_date_sk#27]
-Arguments: hashpartitioning(ws_order_number#23, ws_item_sk#21, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(ws_order_number#23, ws_item_sk#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (25) CometSort
 Input [7]: [ws_item_sk#21, ws_bill_customer_sk#22, ws_order_number#23, ws_quantity#24, ws_wholesale_cost#25, ws_sales_price#26, ws_sold_date_sk#27]
@@ -201,9 +201,9 @@ Condition : (isnotnull(wr_order_number#30) AND isnotnull(wr_item_sk#29))
 Input [3]: [wr_item_sk#29, wr_order_number#30, wr_returned_date_sk#31]
 Arguments: [wr_item_sk#29, wr_order_number#30], [wr_item_sk#29, wr_order_number#30]
 
-(29) CometExchange
+(29) CometColumnarExchange
 Input [2]: [wr_item_sk#29, wr_order_number#30]
-Arguments: hashpartitioning(wr_order_number#30, wr_item_sk#29, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+Arguments: hashpartitioning(wr_order_number#30, wr_item_sk#29, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
 (30) CometSort
 Input [2]: [wr_item_sk#29, wr_order_number#30]
@@ -239,9 +239,9 @@ Input [6]: [ws_item_sk#21, ws_bill_customer_sk#22, ws_quantity#24, ws_wholesale_
 Keys [3]: [d_year#33, ws_item_sk#21, ws_bill_customer_sk#22]
 Functions [3]: [partial_sum(ws_quantity#24), partial_sum(UnscaledValue(ws_wholesale_cost#25)), partial_sum(UnscaledValue(ws_sales_price#26))]
 
-(38) CometExchange
+(38) CometColumnarExchange
 Input [6]: [d_year#33, ws_item_sk#21, ws_bill_customer_sk#22, sum#34, sum#35, sum#36]
-Arguments: hashpartitioning(d_year#33, ws_item_sk#21, ws_bill_customer_sk#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+Arguments: hashpartitioning(d_year#33, ws_item_sk#21, ws_bill_customer_sk#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
 (39) CometHashAggregate
 Input [6]: [d_year#33, ws_item_sk#21, ws_bill_customer_sk#22, sum#34, sum#35, sum#36]
@@ -277,9 +277,9 @@ ReadSchema: struct<cs_bill_customer_sk:int,cs_item_sk:int,cs_order_number:int,cs
 Input [7]: [cs_bill_customer_sk#42, cs_item_sk#43, cs_order_number#44, cs_quantity#45, cs_wholesale_cost#46, cs_sales_price#47, cs_sold_date_sk#48]
 Condition : (isnotnull(cs_item_sk#43) AND isnotnull(cs_bill_customer_sk#42))
 
-(46) CometExchange
+(46) CometColumnarExchange
 Input [7]: [cs_bill_customer_sk#42, cs_item_sk#43, cs_order_number#44, cs_quantity#45, cs_wholesale_cost#46, cs_sales_price#47, cs_sold_date_sk#48]
-Arguments: hashpartitioning(cs_order_number#44, cs_item_sk#43, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning(cs_order_number#44, cs_item_sk#43, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
 (47) CometSort
 Input [7]: [cs_bill_customer_sk#42, cs_item_sk#43, cs_order_number#44, cs_quantity#45, cs_wholesale_cost#46, cs_sales_price#47, cs_sold_date_sk#48]
@@ -300,9 +300,9 @@ Condition : (isnotnull(cr_order_number#51) AND isnotnull(cr_item_sk#50))
 Input [3]: [cr_item_sk#50, cr_order_number#51, cr_returned_date_sk#52]
 Arguments: [cr_item_sk#50, cr_order_number#51], [cr_item_sk#50, cr_order_number#51]
 
-(51) CometExchange
+(51) CometColumnarExchange
 Input [2]: [cr_item_sk#50, cr_order_number#51]
-Arguments: hashpartitioning(cr_order_number#51, cr_item_sk#50, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+Arguments: hashpartitioning(cr_order_number#51, cr_item_sk#50, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=8]
 
 (52) CometSort
 Input [2]: [cr_item_sk#50, cr_order_number#51]
@@ -338,9 +338,9 @@ Input [6]: [cs_bill_customer_sk#42, cs_item_sk#43, cs_quantity#45, cs_wholesale_
 Keys [3]: [d_year#54, cs_item_sk#43, cs_bill_customer_sk#42]
 Functions [3]: [partial_sum(cs_quantity#45), partial_sum(UnscaledValue(cs_wholesale_cost#46)), partial_sum(UnscaledValue(cs_sales_price#47))]
 
-(60) CometExchange
+(60) CometColumnarExchange
 Input [6]: [d_year#54, cs_item_sk#43, cs_bill_customer_sk#42, sum#55, sum#56, sum#57]
-Arguments: hashpartitioning(d_year#54, cs_item_sk#43, cs_bill_customer_sk#42, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=9]
+Arguments: hashpartitioning(d_year#54, cs_item_sk#43, cs_bill_customer_sk#42, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=9]
 
 (61) CometHashAggregate
 Input [6]: [d_year#54, cs_item_sk#43, cs_bill_customer_sk#42, sum#55, sum#56, sum#57]

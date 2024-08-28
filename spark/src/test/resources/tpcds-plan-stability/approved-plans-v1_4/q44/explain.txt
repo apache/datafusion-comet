@@ -12,10 +12,10 @@ TakeOrderedAndProject (33)
       :     :     :        +- Window (11)
       :     :     :           +- * ColumnarToRow (10)
       :     :     :              +- CometSort (9)
-      :     :     :                 +- CometExchange (8)
+      :     :     :                 +- CometColumnarExchange (8)
       :     :     :                    +- CometFilter (7)
       :     :     :                       +- CometHashAggregate (6)
-      :     :     :                          +- CometExchange (5)
+      :     :     :                          +- CometColumnarExchange (5)
       :     :     :                             +- CometHashAggregate (4)
       :     :     :                                +- CometProject (3)
       :     :     :                                   +- CometFilter (2)
@@ -54,9 +54,9 @@ Input [2]: [ss_item_sk#1, ss_net_profit#3]
 Keys [1]: [ss_item_sk#1]
 Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#3))]
 
-(5) CometExchange
+(5) CometColumnarExchange
 Input [3]: [ss_item_sk#1, sum#5, count#6]
-Arguments: hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (6) CometHashAggregate
 Input [3]: [ss_item_sk#1, sum#5, count#6]
@@ -67,9 +67,9 @@ Functions [1]: [avg(UnscaledValue(ss_net_profit#3))]
 Input [2]: [item_sk#7, rank_col#8]
 Condition : (isnotnull(rank_col#8) AND (cast(rank_col#8 as decimal(13,7)) > (0.9 * Subquery scalar-subquery#9, [id=#10])))
 
-(8) CometExchange
+(8) CometColumnarExchange
 Input [2]: [item_sk#7, rank_col#8]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (9) CometSort
 Input [2]: [item_sk#7, rank_col#8]
@@ -180,7 +180,7 @@ Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#19, worst_per
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
 * ColumnarToRow (40)
 +- CometHashAggregate (39)
-   +- CometExchange (38)
+   +- CometColumnarExchange (38)
       +- CometHashAggregate (37)
          +- CometProject (36)
             +- CometFilter (35)
@@ -207,9 +207,9 @@ Input [2]: [ss_store_sk#22, ss_net_profit#23]
 Keys [1]: [ss_store_sk#22]
 Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#23))]
 
-(38) CometExchange
+(38) CometColumnarExchange
 Input [3]: [ss_store_sk#22, sum#25, count#26]
-Arguments: hashpartitioning(ss_store_sk#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(ss_store_sk#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (39) CometHashAggregate
 Input [3]: [ss_store_sk#22, sum#25, count#26]

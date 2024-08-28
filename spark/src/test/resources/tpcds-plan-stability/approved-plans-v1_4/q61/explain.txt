@@ -3,7 +3,7 @@
 +- * BroadcastNestedLoopJoin Inner BuildRight (64)
    :- * ColumnarToRow (41)
    :  +- CometHashAggregate (40)
-   :     +- CometExchange (39)
+   :     +- CometColumnarExchange (39)
    :        +- CometHashAggregate (38)
    :           +- CometProject (37)
    :              +- CometBroadcastHashJoin (36)
@@ -45,7 +45,7 @@
    +- BroadcastExchange (63)
       +- * ColumnarToRow (62)
          +- CometHashAggregate (61)
-            +- CometExchange (60)
+            +- CometColumnarExchange (60)
                +- CometHashAggregate (59)
                   +- CometProject (58)
                      +- CometBroadcastHashJoin (57)
@@ -247,9 +247,9 @@ Input [1]: [ss_ext_sales_price#5]
 Keys: []
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
 
-(39) CometExchange
+(39) CometColumnarExchange
 Input [1]: [sum#23]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (40) CometHashAggregate
 Input [1]: [sum#23]
@@ -336,9 +336,9 @@ Input [1]: [ss_ext_sales_price#28]
 Keys: []
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#28))]
 
-(60) CometExchange
+(60) CometColumnarExchange
 Input [1]: [sum#37]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (61) CometHashAggregate
 Input [1]: [sum#37]

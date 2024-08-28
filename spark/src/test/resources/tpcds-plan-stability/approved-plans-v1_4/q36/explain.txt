@@ -4,9 +4,9 @@ TakeOrderedAndProject (29)
    +- Window (27)
       +- * ColumnarToRow (26)
          +- CometSort (25)
-            +- CometExchange (24)
+            +- CometColumnarExchange (24)
                +- CometHashAggregate (23)
-                  +- CometExchange (22)
+                  +- CometColumnarExchange (22)
                      +- CometHashAggregate (21)
                         +- CometExpand (20)
                            +- CometProject (19)
@@ -131,18 +131,18 @@ Input [5]: [ss_ext_sales_price#3, ss_net_profit#4, i_category#14, i_class#15, sp
 Keys [3]: [i_category#14, i_class#15, spark_grouping_id#16]
 Functions [2]: [partial_sum(UnscaledValue(ss_net_profit#4)), partial_sum(UnscaledValue(ss_ext_sales_price#3))]
 
-(22) CometExchange
+(22) CometColumnarExchange
 Input [5]: [i_category#14, i_class#15, spark_grouping_id#16, sum#17, sum#18]
-Arguments: hashpartitioning(i_category#14, i_class#15, spark_grouping_id#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#14, i_class#15, spark_grouping_id#16, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (23) CometHashAggregate
 Input [5]: [i_category#14, i_class#15, spark_grouping_id#16, sum#17, sum#18]
 Keys [3]: [i_category#14, i_class#15, spark_grouping_id#16]
 Functions [2]: [sum(UnscaledValue(ss_net_profit#4)), sum(UnscaledValue(ss_ext_sales_price#3))]
 
-(24) CometExchange
+(24) CometColumnarExchange
 Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
-Arguments: hashpartitioning(_w1#22, _w2#23, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(_w1#22, _w2#23, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (25) CometSort
 Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]

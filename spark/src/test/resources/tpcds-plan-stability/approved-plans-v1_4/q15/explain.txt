@@ -2,7 +2,7 @@
 * ColumnarToRow (23)
 +- CometTakeOrderedAndProject (22)
    +- CometHashAggregate (21)
-      +- CometExchange (20)
+      +- CometColumnarExchange (20)
          +- CometHashAggregate (19)
             +- CometProject (18)
                +- CometBroadcastHashJoin (17)
@@ -117,9 +117,9 @@ Input [2]: [cs_sales_price#2, ca_zip#9]
 Keys [1]: [ca_zip#9]
 Functions [1]: [partial_sum(UnscaledValue(cs_sales_price#2))]
 
-(20) CometExchange
+(20) CometColumnarExchange
 Input [2]: [ca_zip#9, sum#13]
-Arguments: hashpartitioning(ca_zip#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ca_zip#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (21) CometHashAggregate
 Input [2]: [ca_zip#9, sum#13]

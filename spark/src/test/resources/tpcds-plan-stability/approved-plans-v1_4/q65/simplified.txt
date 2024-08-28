@@ -13,7 +13,7 @@ WholeStageCodegen (1)
                     CometBroadcastExchange [ss_store_sk,ss_item_sk,revenue] #1
                       CometFilter [ss_store_sk,ss_item_sk,revenue]
                         CometHashAggregate [ss_store_sk,ss_item_sk,revenue,sum,sum(UnscaledValue(ss_sales_price))]
-                          CometExchange [ss_store_sk,ss_item_sk] #2
+                          CometColumnarExchange [ss_store_sk,ss_item_sk] #2
                             CometHashAggregate [ss_store_sk,ss_item_sk,sum,ss_sales_price]
                               CometProject [ss_item_sk,ss_store_sk,ss_sales_price]
                                 CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk]
@@ -37,10 +37,10 @@ WholeStageCodegen (1)
             CometBroadcastExchange [ss_store_sk,ave] #6
               CometFilter [ss_store_sk,ave]
                 CometHashAggregate [ss_store_sk,ave,sum,count,avg(revenue)]
-                  CometExchange [ss_store_sk] #7
+                  CometColumnarExchange [ss_store_sk] #7
                     CometHashAggregate [ss_store_sk,sum,count,revenue]
                       CometHashAggregate [ss_store_sk,revenue,ss_item_sk,sum,sum(UnscaledValue(ss_sales_price))]
-                        CometExchange [ss_store_sk,ss_item_sk] #8
+                        CometColumnarExchange [ss_store_sk,ss_item_sk] #8
                           CometHashAggregate [ss_store_sk,ss_item_sk,sum,ss_sales_price]
                             CometProject [ss_item_sk,ss_store_sk,ss_sales_price]
                               CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk]

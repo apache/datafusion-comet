@@ -3,7 +3,7 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
         CometHashAggregate [s_store_name,sum(ss_net_profit),sum,sum(UnscaledValue(ss_net_profit))]
-          CometExchange [s_store_name] #1
+          CometColumnarExchange [s_store_name] #1
             CometHashAggregate [s_store_name,sum,ss_net_profit]
               CometProject [ss_net_profit,s_store_name]
                 CometBroadcastHashJoin [ss_net_profit,s_store_name,s_zip,ca_zip]
@@ -30,7 +30,7 @@ WholeStageCodegen (1)
                           CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                   CometBroadcastExchange [ca_zip] #5
                     CometHashAggregate [ca_zip]
-                      CometExchange [ca_zip] #6
+                      CometColumnarExchange [ca_zip] #6
                         CometHashAggregate [ca_zip]
                           CometBroadcastHashJoin [ca_zip,ca_zip]
                             CometProject [ca_zip] [ca_zip]
@@ -40,7 +40,7 @@ WholeStageCodegen (1)
                               CometProject [ca_zip]
                                 CometFilter [ca_zip,cnt]
                                   CometHashAggregate [ca_zip,cnt,ca_zip,count,count(1)]
-                                    CometExchange [ca_zip] #8
+                                    CometColumnarExchange [ca_zip] #8
                                       CometHashAggregate [ca_zip,count]
                                         CometProject [ca_zip]
                                           CometBroadcastHashJoin [ca_address_sk,ca_zip,c_current_addr_sk]

@@ -2,7 +2,7 @@
 * ColumnarToRow (30)
 +- CometTakeOrderedAndProject (29)
    +- CometHashAggregate (28)
-      +- CometExchange (27)
+      +- CometColumnarExchange (27)
          +- CometHashAggregate (26)
             +- CometExpand (25)
                +- CometProject (24)
@@ -156,9 +156,9 @@ Input [7]: [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i
 Keys [3]: [i_item_id#20, s_state#21, spark_grouping_id#22]
 Functions [4]: [partial_avg(ss_quantity#4), partial_avg(UnscaledValue(ss_list_price#5)), partial_avg(UnscaledValue(ss_coupon_amt#7)), partial_avg(UnscaledValue(ss_sales_price#6))]
 
-(27) CometExchange
+(27) CometColumnarExchange
 Input [11]: [i_item_id#20, s_state#21, spark_grouping_id#22, sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29, count#30]
-Arguments: hashpartitioning(i_item_id#20, s_state#21, spark_grouping_id#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_item_id#20, s_state#21, spark_grouping_id#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (28) CometHashAggregate
 Input [11]: [i_item_id#20, s_state#21, spark_grouping_id#22, sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29, count#30]

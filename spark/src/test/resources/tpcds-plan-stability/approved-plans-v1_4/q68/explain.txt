@@ -6,7 +6,7 @@
          :- CometProject (33)
          :  +- CometBroadcastHashJoin (32)
          :     :- CometHashAggregate (28)
-         :     :  +- CometExchange (27)
+         :     :  +- CometColumnarExchange (27)
          :     :     +- CometHashAggregate (26)
          :     :        +- CometProject (25)
          :     :           +- CometBroadcastHashJoin (24)
@@ -164,9 +164,9 @@ Input [7]: [ss_customer_sk#1, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_pri
 Keys [4]: [ss_ticket_number#5, ss_customer_sk#1, ss_addr_sk#3, ca_city#20]
 Functions [3]: [partial_sum(UnscaledValue(ss_ext_sales_price#6)), partial_sum(UnscaledValue(ss_ext_list_price#7)), partial_sum(UnscaledValue(ss_ext_tax#8))]
 
-(27) CometExchange
+(27) CometColumnarExchange
 Input [7]: [ss_ticket_number#5, ss_customer_sk#1, ss_addr_sk#3, ca_city#20, sum#21, sum#22, sum#23]
-Arguments: hashpartitioning(ss_ticket_number#5, ss_customer_sk#1, ss_addr_sk#3, ca_city#20, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_ticket_number#5, ss_customer_sk#1, ss_addr_sk#3, ca_city#20, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (28) CometHashAggregate
 Input [7]: [ss_ticket_number#5, ss_customer_sk#1, ss_addr_sk#3, ca_city#20, sum#21, sum#22, sum#23]

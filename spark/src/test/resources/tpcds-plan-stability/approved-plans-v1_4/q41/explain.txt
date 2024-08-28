@@ -2,7 +2,7 @@
 * ColumnarToRow (19)
 +- CometTakeOrderedAndProject (18)
    +- CometHashAggregate (17)
-      +- CometExchange (16)
+      +- CometColumnarExchange (16)
          +- CometHashAggregate (15)
             +- CometProject (14)
                +- CometBroadcastHashJoin (13)
@@ -13,7 +13,7 @@
                      +- CometProject (11)
                         +- CometFilter (10)
                            +- CometHashAggregate (9)
-                              +- CometExchange (8)
+                              +- CometColumnarExchange (8)
                                  +- CometHashAggregate (7)
                                     +- CometProject (6)
                                        +- CometFilter (5)
@@ -55,9 +55,9 @@ Input [1]: [i_manufact#5]
 Keys [1]: [i_manufact#5]
 Functions [1]: [partial_count(1)]
 
-(8) CometExchange
+(8) CometColumnarExchange
 Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (9) CometHashAggregate
 Input [2]: [i_manufact#5, count#9]
@@ -90,9 +90,9 @@ Input [1]: [i_product_name#3]
 Keys [1]: [i_product_name#3]
 Functions: []
 
-(16) CometExchange
+(16) CometColumnarExchange
 Input [1]: [i_product_name#3]
-Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (17) CometHashAggregate
 Input [1]: [i_product_name#3]

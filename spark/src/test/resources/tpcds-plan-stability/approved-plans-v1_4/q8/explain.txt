@@ -2,7 +2,7 @@
 * ColumnarToRow (42)
 +- CometTakeOrderedAndProject (41)
    +- CometHashAggregate (40)
-      +- CometExchange (39)
+      +- CometColumnarExchange (39)
          +- CometHashAggregate (38)
             +- CometProject (37)
                +- CometBroadcastHashJoin (36)
@@ -21,7 +21,7 @@
                   :           +- CometScan parquet spark_catalog.default.store (9)
                   +- CometBroadcastExchange (35)
                      +- CometHashAggregate (34)
-                        +- CometExchange (33)
+                        +- CometColumnarExchange (33)
                            +- CometHashAggregate (32)
                               +- CometBroadcastHashJoin (31)
                                  :- CometProject (16)
@@ -31,7 +31,7 @@
                                     +- CometProject (29)
                                        +- CometFilter (28)
                                           +- CometHashAggregate (27)
-                                             +- CometExchange (26)
+                                             +- CometColumnarExchange (26)
                                                 +- CometHashAggregate (25)
                                                    +- CometProject (24)
                                                       +- CometBroadcastHashJoin (23)
@@ -165,9 +165,9 @@ Input [1]: [ca_zip#14]
 Keys [1]: [ca_zip#14]
 Functions [1]: [partial_count(1)]
 
-(26) CometExchange
+(26) CometColumnarExchange
 Input [2]: [ca_zip#14, count#17]
-Arguments: hashpartitioning(ca_zip#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(ca_zip#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (27) CometHashAggregate
 Input [2]: [ca_zip#14, count#17]
@@ -196,9 +196,9 @@ Input [1]: [ca_zip#12]
 Keys [1]: [ca_zip#12]
 Functions: []
 
-(33) CometExchange
+(33) CometColumnarExchange
 Input [1]: [ca_zip#12]
-Arguments: hashpartitioning(ca_zip#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(ca_zip#12, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (34) CometHashAggregate
 Input [1]: [ca_zip#12]
@@ -223,9 +223,9 @@ Input [2]: [ss_net_profit#2, s_store_name#9]
 Keys [1]: [s_store_name#9]
 Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#2))]
 
-(39) CometExchange
+(39) CometColumnarExchange
 Input [2]: [s_store_name#9, sum#20]
-Arguments: hashpartitioning(s_store_name#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(s_store_name#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (40) CometHashAggregate
 Input [2]: [s_store_name#9, sum#20]

@@ -3,7 +3,7 @@
 +- CometTakeOrderedAndProject (23)
    +- CometFilter (22)
       +- CometHashAggregate (21)
-         +- CometExchange (20)
+         +- CometColumnarExchange (20)
             +- CometHashAggregate (19)
                +- CometProject (18)
                   +- CometBroadcastHashJoin (17)
@@ -118,9 +118,9 @@ Input [4]: [inv_quantity_on_hand#3, w_warehouse_name#7, i_item_id#9, d_date#12]
 Keys [2]: [w_warehouse_name#7, i_item_id#9]
 Functions [2]: [partial_sum(CASE WHEN (d_date#12 < 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END), partial_sum(CASE WHEN (d_date#12 >= 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)]
 
-(20) CometExchange
+(20) CometColumnarExchange
 Input [4]: [w_warehouse_name#7, i_item_id#9, sum#13, sum#14]
-Arguments: hashpartitioning(w_warehouse_name#7, i_item_id#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(w_warehouse_name#7, i_item_id#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (21) CometHashAggregate
 Input [4]: [w_warehouse_name#7, i_item_id#9, sum#13, sum#14]

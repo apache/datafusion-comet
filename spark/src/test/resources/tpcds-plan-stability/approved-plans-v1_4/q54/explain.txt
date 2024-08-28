@@ -2,10 +2,10 @@
 * ColumnarToRow (56)
 +- CometTakeOrderedAndProject (55)
    +- CometHashAggregate (54)
-      +- CometExchange (53)
+      +- CometColumnarExchange (53)
          +- CometHashAggregate (52)
             +- CometHashAggregate (51)
-               +- CometExchange (50)
+               +- CometColumnarExchange (50)
                   +- CometHashAggregate (49)
                      +- CometProject (48)
                         +- CometBroadcastHashJoin (47)
@@ -16,7 +16,7 @@
                            :     :     :- CometProject (32)
                            :     :     :  +- CometBroadcastHashJoin (31)
                            :     :     :     :- CometHashAggregate (27)
-                           :     :     :     :  +- CometExchange (26)
+                           :     :     :     :  +- CometColumnarExchange (26)
                            :     :     :     :     +- CometHashAggregate (25)
                            :     :     :     :        +- CometProject (24)
                            :     :     :     :           +- CometBroadcastHashJoin (23)
@@ -178,9 +178,9 @@ Input [2]: [c_customer_sk#20, c_current_addr_sk#21]
 Keys [2]: [c_customer_sk#20, c_current_addr_sk#21]
 Functions: []
 
-(26) CometExchange
+(26) CometColumnarExchange
 Input [2]: [c_customer_sk#20, c_current_addr_sk#21]
-Arguments: hashpartitioning(c_customer_sk#20, c_current_addr_sk#21, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(c_customer_sk#20, c_current_addr_sk#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (27) CometHashAggregate
 Input [2]: [c_customer_sk#20, c_current_addr_sk#21]
@@ -293,9 +293,9 @@ Input [2]: [c_customer_sk#20, ss_ext_sales_price#23]
 Keys [1]: [c_customer_sk#20]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#23))]
 
-(50) CometExchange
+(50) CometColumnarExchange
 Input [2]: [c_customer_sk#20, sum#37]
-Arguments: hashpartitioning(c_customer_sk#20, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(c_customer_sk#20, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (51) CometHashAggregate
 Input [2]: [c_customer_sk#20, sum#37]
@@ -307,9 +307,9 @@ Input [1]: [segment#38]
 Keys [1]: [segment#38]
 Functions [1]: [partial_count(1)]
 
-(53) CometExchange
+(53) CometColumnarExchange
 Input [2]: [segment#38, count#39]
-Arguments: hashpartitioning(segment#38, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(segment#38, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (54) CometHashAggregate
 Input [2]: [segment#38, count#39]
@@ -390,7 +390,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:4 Hosting operator id = 63 Hosting Expression = Subquery scalar-subquery#33, [id=#34]
 * ColumnarToRow (73)
 +- CometHashAggregate (72)
-   +- CometExchange (71)
+   +- CometColumnarExchange (71)
       +- CometHashAggregate (70)
          +- CometProject (69)
             +- CometFilter (68)
@@ -417,9 +417,9 @@ Input [1]: [(d_month_seq + 1)#45]
 Keys [1]: [(d_month_seq + 1)#45]
 Functions: []
 
-(71) CometExchange
+(71) CometColumnarExchange
 Input [1]: [(d_month_seq + 1)#45]
-Arguments: hashpartitioning((d_month_seq + 1)#45, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+Arguments: hashpartitioning((d_month_seq + 1)#45, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
 (72) CometHashAggregate
 Input [1]: [(d_month_seq + 1)#45]
@@ -432,7 +432,7 @@ Input [1]: [(d_month_seq + 1)#45]
 Subquery:5 Hosting operator id = 63 Hosting Expression = Subquery scalar-subquery#35, [id=#36]
 * ColumnarToRow (80)
 +- CometHashAggregate (79)
-   +- CometExchange (78)
+   +- CometColumnarExchange (78)
       +- CometHashAggregate (77)
          +- CometProject (76)
             +- CometFilter (75)
@@ -459,9 +459,9 @@ Input [1]: [(d_month_seq + 3)#49]
 Keys [1]: [(d_month_seq + 3)#49]
 Functions: []
 
-(78) CometExchange
+(78) CometColumnarExchange
 Input [1]: [(d_month_seq + 3)#49]
-Arguments: hashpartitioning((d_month_seq + 3)#49, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning((d_month_seq + 3)#49, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
 (79) CometHashAggregate
 Input [1]: [(d_month_seq + 3)#49]

@@ -5,9 +5,9 @@ TakeOrderedAndProject (28)
       +- Window (25)
          +- * ColumnarToRow (24)
             +- CometSort (23)
-               +- CometExchange (22)
+               +- CometColumnarExchange (22)
                   +- CometHashAggregate (21)
-                     +- CometExchange (20)
+                     +- CometColumnarExchange (20)
                         +- CometHashAggregate (19)
                            +- CometProject (18)
                               +- CometBroadcastHashJoin (17)
@@ -122,18 +122,18 @@ Input [7]: [i_brand#2, i_class#3, i_category#4, ss_sales_price#7, d_moy#12, s_st
 Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12]
 Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#7))]
 
-(20) CometExchange
+(20) CometColumnarExchange
 Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum#16]
-Arguments: hashpartitioning(i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (21) CometHashAggregate
 Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum#16]
 Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12]
 Functions [1]: [sum(UnscaledValue(ss_sales_price#7))]
 
-(22) CometExchange
+(22) CometColumnarExchange
 Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]
-Arguments: hashpartitioning(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (23) CometSort
 Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]

@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   ColumnarToRow
     InputAdapter
       CometHashAggregate [count(1),count,count(1)]
-        CometExchange #1
+        CometColumnarExchange #1
           CometHashAggregate [count]
             CometProject
               CometBroadcastHashJoin [ss_store_sk,s_store_sk]

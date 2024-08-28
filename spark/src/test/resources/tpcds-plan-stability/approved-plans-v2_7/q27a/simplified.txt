@@ -4,7 +4,7 @@ WholeStageCodegen (1)
       CometTakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
         CometUnion [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
           CometHashAggregate [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count,avg(agg1),avg(UnscaledValue(agg2)),avg(UnscaledValue(agg3)),avg(UnscaledValue(agg4))]
-            CometExchange [i_item_id,s_state] #1
+            CometColumnarExchange [i_item_id,s_state] #1
               CometHashAggregate [i_item_id,s_state,sum,count,sum,count,sum,count,sum,count,agg1,agg2,agg3,agg4]
                 CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [i_item_id,s_state,agg1,agg2,agg3,agg4]
                   CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,s_state,i_item_sk,i_item_id]
@@ -39,7 +39,7 @@ WholeStageCodegen (1)
                       CometFilter [i_item_sk,i_item_id]
                         CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
           CometHashAggregate [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count,avg(agg1),avg(UnscaledValue(agg2)),avg(UnscaledValue(agg3)),avg(UnscaledValue(agg4))]
-            CometExchange [i_item_id] #7
+            CometColumnarExchange [i_item_id] #7
               CometHashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count,agg1,agg2,agg3,agg4]
                 CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [i_item_id,agg1,agg2,agg3,agg4]
                   CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk,i_item_id]
@@ -60,7 +60,7 @@ WholeStageCodegen (1)
                               CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
                     ReusedExchange [i_item_sk,i_item_id] #6
           CometHashAggregate [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count,avg(agg1),avg(UnscaledValue(agg2)),avg(UnscaledValue(agg3)),avg(UnscaledValue(agg4))]
-            CometExchange #9
+            CometColumnarExchange #9
               CometHashAggregate [sum,count,sum,count,sum,count,sum,count,agg1,agg2,agg3,agg4]
                 CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [agg1,agg2,agg3,agg4]
                   CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk]

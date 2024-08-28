@@ -3,7 +3,7 @@
 +- CometTakeOrderedAndProject (142)
    +- CometUnion (141)
       :- CometHashAggregate (38)
-      :  +- CometExchange (37)
+      :  +- CometColumnarExchange (37)
       :     +- CometHashAggregate (36)
       :        +- CometProject (35)
       :           +- CometBroadcastHashJoin (34)
@@ -41,7 +41,7 @@
       :                 +- CometFilter (32)
       :                    +- CometScan parquet spark_catalog.default.item (31)
       :- CometHashAggregate (63)
-      :  +- CometExchange (62)
+      :  +- CometColumnarExchange (62)
       :     +- CometHashAggregate (61)
       :        +- CometProject (60)
       :           +- CometBroadcastHashJoin (59)
@@ -66,7 +66,7 @@
       :              :     +- ReusedExchange (55)
       :              +- ReusedExchange (58)
       :- CometHashAggregate (89)
-      :  +- CometExchange (88)
+      :  +- CometColumnarExchange (88)
       :     +- CometHashAggregate (87)
       :        +- CometProject (86)
       :           +- CometBroadcastHashJoin (85)
@@ -92,7 +92,7 @@
       :              :     +- ReusedExchange (81)
       :              +- ReusedExchange (84)
       :- CometHashAggregate (115)
-      :  +- CometExchange (114)
+      :  +- CometColumnarExchange (114)
       :     +- CometHashAggregate (113)
       :        +- CometProject (112)
       :           +- CometBroadcastHashJoin (111)
@@ -118,7 +118,7 @@
       :              :     +- ReusedExchange (107)
       :              +- ReusedExchange (110)
       +- CometHashAggregate (140)
-         +- CometExchange (139)
+         +- CometColumnarExchange (139)
             +- CometHashAggregate (138)
                +- CometProject (137)
                   +- CometBroadcastHashJoin (136)
@@ -317,9 +317,9 @@ Input [11]: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, agg1#29, ag
 Keys [4]: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22]
 Functions [7]: [partial_avg(agg1#29), partial_avg(agg2#30), partial_avg(agg3#31), partial_avg(agg4#32), partial_avg(agg5#33), partial_avg(agg6#34), partial_avg(agg7#35)]
 
-(37) CometExchange
+(37) CometColumnarExchange
 Input [18]: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, sum#36, count#37, sum#38, count#39, sum#40, count#41, sum#42, count#43, sum#44, count#45, sum#46, count#47, sum#48, count#49]
-Arguments: hashpartitioning(i_item_id#28, ca_country#24, ca_state#23, ca_county#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_item_id#28, ca_country#24, ca_state#23, ca_county#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (38) CometHashAggregate
 Input [18]: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, sum#36, count#37, sum#38, count#39, sum#40, count#41, sum#42, count#43, sum#44, count#45, sum#46, count#47, sum#48, count#49]
@@ -427,9 +427,9 @@ Input [10]: [i_item_id#28, ca_country#24, ca_state#23, agg1#29, agg2#30, agg3#31
 Keys [3]: [i_item_id#28, ca_country#24, ca_state#23]
 Functions [7]: [partial_avg(agg1#29), partial_avg(agg2#30), partial_avg(agg3#31), partial_avg(agg4#32), partial_avg(agg5#33), partial_avg(agg6#34), partial_avg(agg7#35)]
 
-(62) CometExchange
+(62) CometColumnarExchange
 Input [17]: [i_item_id#28, ca_country#24, ca_state#23, sum#51, count#52, sum#53, count#54, sum#55, count#56, sum#57, count#58, sum#59, count#60, sum#61, count#62, sum#63, count#64]
-Arguments: hashpartitioning(i_item_id#28, ca_country#24, ca_state#23, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_item_id#28, ca_country#24, ca_state#23, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (63) CometHashAggregate
 Input [17]: [i_item_id#28, ca_country#24, ca_state#23, sum#51, count#52, sum#53, count#54, sum#55, count#56, sum#57, count#58, sum#59, count#60, sum#61, count#62, sum#63, count#64]
@@ -541,9 +541,9 @@ Input [9]: [i_item_id#28, ca_country#24, agg1#29, agg2#30, agg3#31, agg4#32, agg
 Keys [2]: [i_item_id#28, ca_country#24]
 Functions [7]: [partial_avg(agg1#29), partial_avg(agg2#30), partial_avg(agg3#31), partial_avg(agg4#32), partial_avg(agg5#33), partial_avg(agg6#34), partial_avg(agg7#35)]
 
-(88) CometExchange
+(88) CometColumnarExchange
 Input [16]: [i_item_id#28, ca_country#24, sum#66, count#67, sum#68, count#69, sum#70, count#71, sum#72, count#73, sum#74, count#75, sum#76, count#77, sum#78, count#79]
-Arguments: hashpartitioning(i_item_id#28, ca_country#24, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+Arguments: hashpartitioning(i_item_id#28, ca_country#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
 (89) CometHashAggregate
 Input [16]: [i_item_id#28, ca_country#24, sum#66, count#67, sum#68, count#69, sum#70, count#71, sum#72, count#73, sum#74, count#75, sum#76, count#77, sum#78, count#79]
@@ -655,9 +655,9 @@ Input [8]: [i_item_id#28, agg1#29, agg2#30, agg3#31, agg4#32, agg5#33, agg6#34, 
 Keys [1]: [i_item_id#28]
 Functions [7]: [partial_avg(agg1#29), partial_avg(agg2#30), partial_avg(agg3#31), partial_avg(agg4#32), partial_avg(agg5#33), partial_avg(agg6#34), partial_avg(agg7#35)]
 
-(114) CometExchange
+(114) CometColumnarExchange
 Input [15]: [i_item_id#28, sum#81, count#82, sum#83, count#84, sum#85, count#86, sum#87, count#88, sum#89, count#90, sum#91, count#92, sum#93, count#94]
-Arguments: hashpartitioning(i_item_id#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Arguments: hashpartitioning(i_item_id#28, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (115) CometHashAggregate
 Input [15]: [i_item_id#28, sum#81, count#82, sum#83, count#84, sum#85, count#86, sum#87, count#88, sum#89, count#90, sum#91, count#92, sum#93, count#94]
@@ -765,9 +765,9 @@ Input [7]: [agg1#29, agg2#30, agg3#31, agg4#32, agg5#33, agg6#34, agg7#35]
 Keys: []
 Functions [7]: [partial_avg(agg1#29), partial_avg(agg2#30), partial_avg(agg3#31), partial_avg(agg4#32), partial_avg(agg5#33), partial_avg(agg6#34), partial_avg(agg7#35)]
 
-(139) CometExchange
+(139) CometColumnarExchange
 Input [14]: [sum#96, count#97, sum#98, count#99, sum#100, count#101, sum#102, count#103, sum#104, count#105, sum#106, count#107, sum#108, count#109]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
 (140) CometHashAggregate
 Input [14]: [sum#96, count#97, sum#98, count#99, sum#100, count#101, sum#102, count#103, sum#104, count#105, sum#106, count#107, sum#108, count#109]
