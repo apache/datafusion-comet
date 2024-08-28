@@ -2,7 +2,7 @@
 * ColumnarToRow (28)
 +- CometTakeOrderedAndProject (27)
    +- CometHashAggregate (26)
-      +- CometColumnarExchange (25)
+      +- CometExchange (25)
          +- CometHashAggregate (24)
             +- CometProject (23)
                +- CometBroadcastHashJoin (22)
@@ -145,9 +145,9 @@ Input [5]: [cs_ship_date_sk#1, cs_sold_date_sk#5, sm_type#9, cc_name#11, _groupi
 Keys [3]: [_groupingexpression#14, sm_type#9, cc_name#11]
 Functions [5]: [partial_sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 30) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 60) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 90) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)]
 
-(25) CometColumnarExchange
+(25) CometExchange
 Input [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#15, sum#16, sum#17, sum#18, sum#19]
-Arguments: hashpartitioning(_groupingexpression#14, sm_type#9, cc_name#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(_groupingexpression#14, sm_type#9, cc_name#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (26) CometHashAggregate
 Input [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#15, sum#16, sum#17, sum#18, sum#19]

@@ -6,7 +6,7 @@
          :- CometProject (23)
          :  +- CometFilter (22)
          :     +- CometHashAggregate (21)
-         :        +- CometColumnarExchange (20)
+         :        +- CometExchange (20)
          :           +- CometHashAggregate (19)
          :              +- CometProject (18)
          :                 +- CometBroadcastHashJoin (17)
@@ -30,7 +30,7 @@
             +- CometProject (42)
                +- CometFilter (41)
                   +- CometHashAggregate (40)
-                     +- CometColumnarExchange (39)
+                     +- CometExchange (39)
                         +- CometHashAggregate (38)
                            +- CometProject (37)
                               +- CometBroadcastHashJoin (36)
@@ -141,9 +141,9 @@ Input [5]: [inv_quantity_on_hand#3, i_item_sk#6, w_warehouse_sk#7, w_warehouse_n
 Keys [4]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#11]
 Functions [2]: [partial_stddev_samp(cast(inv_quantity_on_hand#3 as double)), partial_avg(inv_quantity_on_hand#3)]
 
-(20) CometColumnarExchange
+(20) CometExchange
 Input [9]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#11, n#12, avg#13, m2#14, sum#15, count#16]
-Arguments: hashpartitioning(w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (21) CometHashAggregate
 Input [9]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#11, n#12, avg#13, m2#14, sum#15, count#16]
@@ -227,9 +227,9 @@ Input [5]: [inv_quantity_on_hand#22, i_item_sk#25, w_warehouse_sk#26, w_warehous
 Keys [4]: [w_warehouse_name#27, w_warehouse_sk#26, i_item_sk#25, d_moy#30]
 Functions [2]: [partial_stddev_samp(cast(inv_quantity_on_hand#22 as double)), partial_avg(inv_quantity_on_hand#22)]
 
-(39) CometColumnarExchange
+(39) CometExchange
 Input [9]: [w_warehouse_name#27, w_warehouse_sk#26, i_item_sk#25, d_moy#30, n#31, avg#32, m2#33, sum#34, count#35]
-Arguments: hashpartitioning(w_warehouse_name#27, w_warehouse_sk#26, i_item_sk#25, d_moy#30, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(w_warehouse_name#27, w_warehouse_sk#26, i_item_sk#25, d_moy#30, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (40) CometHashAggregate
 Input [9]: [w_warehouse_name#27, w_warehouse_sk#26, i_item_sk#25, d_moy#30, n#31, avg#32, m2#33, sum#34, count#35]
