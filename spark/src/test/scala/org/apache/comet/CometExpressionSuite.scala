@@ -1953,6 +1953,79 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("to_json") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          val str = if (i % 2 == 0) {
+            "even"
+          } else {
+            "odd"
+          }
+          (i.toByte, i.toShort, i, i.toLong, i * 1.2f, -i * 1.2d, str, i.toString)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
+
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
+        checkSparkAnswerAndOperator(
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+      }
+    }
+  }
+
+  test("to_json escaping of field names and string values") {
+    val gen = new DataGenerator(new Random(42))
+    val chars = "\\'\"abc\t\r\n\f\b"
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          val str1 = gen.generateString(chars, 8)
+          val str2 = gen.generateString(chars, 8)
+          (i.toString, str1, str2)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 3)
+          .map(n => {
+            val columnName = s"""column "$n""""
+            s"'$columnName', _$n"
+          })
+          .mkString(", ")
+
+        checkSparkAnswerAndOperator(
+          """SELECT 'column "1"' x, """ +
+            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+      }
+    }
+  }
+
+  test("to_json unicode") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          (i.toString, "\uD83E\uDD11", "\u018F")
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 3)
+          .map(n => {
+            val columnName = s"""column "$n""""
+            s"'$columnName', _$n"
+          })
+          .mkString(", ")
+
+        checkSparkAnswerAndOperator(
+          """SELECT 'column "1"' x, """ +
+            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+      }
+    }
+  }
+
   test("struct and named_struct with dictionary") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(

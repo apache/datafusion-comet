@@ -95,7 +95,7 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, MinuteExpr, RLike,
-    SecondExpr, TimestampTruncExpr,
+    SecondExpr, TimestampTruncExpr, ToJson,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -654,6 +654,10 @@ impl PhysicalPlanner {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
+            }
+            ExprStruct::ToJson(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
