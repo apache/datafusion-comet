@@ -169,6 +169,15 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
       assert(metrics.contains("shuffleRecordsWritten"))
       assert(metrics("shuffleRecordsWritten").value == 5L)
+
+      assert(metrics.contains("shuffleBytesWritten"))
+      assert(metrics("shuffleBytesWritten").value > 0)
+
+      assert(metrics.contains("dataSize"))
+      assert(metrics("dataSize").value > 0L)
+
+      assert(metrics.contains("shuffleWriteTime"))
+      assert(metrics("shuffleWriteTime").value > 0L)
     }
   }
 
