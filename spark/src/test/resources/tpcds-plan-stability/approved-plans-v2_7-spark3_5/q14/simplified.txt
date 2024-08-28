@@ -9,7 +9,7 @@ WholeStageCodegen (1)
                 ColumnarToRow
                   InputAdapter
                     CometHashAggregate [average_sales,sum,count,avg((cast(quantity as decimal(10,0)) * list_price))]
-                      CometColumnarExchange #14
+                      CometExchange #14
                         CometHashAggregate [sum,count,quantity,list_price]
                           CometUnion [quantity,list_price]
                             CometProject [ss_quantity,ss_list_price] [quantity,list_price]
@@ -28,7 +28,7 @@ WholeStageCodegen (1)
                                   ReusedSubquery [d_date_sk] #3
                                 ReusedExchange [d_date_sk] #10
             CometHashAggregate [channel,i_brand_id,i_class_id,i_category_id,sales,number_sales,sum,isEmpty,count,sum((cast(ss_quantity as decimal(10,0)) * ss_list_price)),count(1)]
-              CometColumnarExchange [i_brand_id,i_class_id,i_category_id] #1
+              CometExchange [i_brand_id,i_class_id,i_category_id] #1
                 CometHashAggregate [i_brand_id,i_class_id,i_category_id,sum,isEmpty,count,ss_quantity,ss_list_price]
                   CometProject [ss_quantity,ss_list_price,i_brand_id,i_class_id,i_category_id]
                     CometBroadcastHashJoin [ss_quantity,ss_list_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]
@@ -60,7 +60,7 @@ WholeStageCodegen (1)
                                   CometBroadcastExchange [brand_id,class_id,category_id] #4
                                     CometBroadcastHashJoin [brand_id,class_id,category_id,i_brand_id,i_class_id,i_category_id]
                                       CometHashAggregate [brand_id,class_id,category_id]
-                                        CometColumnarExchange [brand_id,class_id,category_id] #5
+                                        CometExchange [brand_id,class_id,category_id] #5
                                           CometHashAggregate [brand_id,class_id,category_id]
                                             CometProject [i_brand_id,i_class_id,i_category_id] [brand_id,class_id,category_id]
                                               CometBroadcastHashJoin [ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]
@@ -120,7 +120,7 @@ WholeStageCodegen (1)
             CometFilter [channel,i_brand_id,i_class_id,i_category_id,sales,number_sales]
               ReusedSubquery [average_sales] #4
               CometHashAggregate [channel,i_brand_id,i_class_id,i_category_id,sales,number_sales,sum,isEmpty,count,sum((cast(ss_quantity as decimal(10,0)) * ss_list_price)),count(1)]
-                CometColumnarExchange [i_brand_id,i_class_id,i_category_id] #16
+                CometExchange [i_brand_id,i_class_id,i_category_id] #16
                   CometHashAggregate [i_brand_id,i_class_id,i_category_id,sum,isEmpty,count,ss_quantity,ss_list_price]
                     CometProject [ss_quantity,ss_list_price,i_brand_id,i_class_id,i_category_id]
                       CometBroadcastHashJoin [ss_quantity,ss_list_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]

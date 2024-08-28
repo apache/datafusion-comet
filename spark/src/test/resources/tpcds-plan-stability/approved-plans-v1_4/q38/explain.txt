@@ -1,13 +1,13 @@
 == Physical Plan ==
 * ColumnarToRow (47)
 +- CometHashAggregate (46)
-   +- CometColumnarExchange (45)
+   +- CometExchange (45)
       +- CometHashAggregate (44)
          +- CometProject (43)
             +- CometBroadcastHashJoin (42)
                :- CometBroadcastHashJoin (29)
                :  :- CometHashAggregate (16)
-               :  :  +- CometColumnarExchange (15)
+               :  :  +- CometExchange (15)
                :  :     +- CometHashAggregate (14)
                :  :        +- CometProject (13)
                :  :           +- CometBroadcastHashJoin (12)
@@ -24,7 +24,7 @@
                :  :                    +- CometScan parquet spark_catalog.default.customer (9)
                :  +- CometBroadcastExchange (28)
                :     +- CometHashAggregate (27)
-               :        +- CometColumnarExchange (26)
+               :        +- CometExchange (26)
                :           +- CometHashAggregate (25)
                :              +- CometProject (24)
                :                 +- CometBroadcastHashJoin (23)
@@ -36,7 +36,7 @@
                :                    +- ReusedExchange (22)
                +- CometBroadcastExchange (41)
                   +- CometHashAggregate (40)
-                     +- CometColumnarExchange (39)
+                     +- CometExchange (39)
                         +- CometHashAggregate (38)
                            +- CometProject (37)
                               +- CometBroadcastHashJoin (36)
@@ -117,9 +117,9 @@ Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Keys [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Functions: []
 
-(15) CometColumnarExchange
+(15) CometExchange
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
-Arguments: hashpartitioning(c_last_name#9, c_first_name#8, d_date#5, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(c_last_name#9, c_first_name#8, d_date#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (16) CometHashAggregate
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
@@ -167,9 +167,9 @@ Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Keys [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Functions: []
 
-(26) CometColumnarExchange
+(26) CometExchange
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
-Arguments: hashpartitioning(c_last_name#17, c_first_name#16, d_date#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(c_last_name#17, c_first_name#16, d_date#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (27) CometHashAggregate
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
@@ -226,9 +226,9 @@ Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Keys [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Functions: []
 
-(39) CometColumnarExchange
+(39) CometExchange
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
-Arguments: hashpartitioning(c_last_name#25, c_first_name#24, d_date#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: hashpartitioning(c_last_name#25, c_first_name#24, d_date#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (40) CometHashAggregate
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
@@ -252,9 +252,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(45) CometColumnarExchange
+(45) CometExchange
 Input [1]: [count#26]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (46) CometHashAggregate
 Input [1]: [count#26]

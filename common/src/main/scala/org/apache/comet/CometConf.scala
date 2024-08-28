@@ -197,11 +197,11 @@ object CometConf extends ShimCometConf {
       "'native' is for native shuffle which has best performance in general. " +
       "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
       "'auto' is for Comet to choose the best shuffle mode based on the query plan. " +
-      "By default, this config is 'jvm'.")
+      "By default, this config is 'auto'.")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
-    .createWithDefault("jvm")
+    .createWithDefault("auto")
 
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")

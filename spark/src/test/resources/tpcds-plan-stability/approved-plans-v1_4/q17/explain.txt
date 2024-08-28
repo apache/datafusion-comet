@@ -2,7 +2,7 @@
 * ColumnarToRow (42)
 +- CometTakeOrderedAndProject (41)
    +- CometHashAggregate (40)
-      +- CometColumnarExchange (39)
+      +- CometExchange (39)
          +- CometHashAggregate (38)
             +- CometProject (37)
                +- CometBroadcastHashJoin (36)
@@ -226,9 +226,9 @@ Input [6]: [ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_state#25, i_
 Keys [3]: [i_item_id#27, i_item_desc#28, s_state#25]
 Functions [9]: [partial_count(ss_quantity#5), partial_avg(ss_quantity#5), partial_stddev_samp(cast(ss_quantity#5 as double)), partial_count(sr_return_quantity#11), partial_avg(sr_return_quantity#11), partial_stddev_samp(cast(sr_return_quantity#11 as double)), partial_count(cs_quantity#16), partial_avg(cs_quantity#16), partial_stddev_samp(cast(cs_quantity#16 as double))]
 
-(39) CometColumnarExchange
+(39) CometExchange
 Input [21]: [i_item_id#27, i_item_desc#28, s_state#25, count#29, sum#30, count#31, n#32, avg#33, m2#34, count#35, sum#36, count#37, n#38, avg#39, m2#40, count#41, sum#42, count#43, n#44, avg#45, m2#46]
-Arguments: hashpartitioning(i_item_id#27, i_item_desc#28, s_state#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_item_id#27, i_item_desc#28, s_state#25, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (40) CometHashAggregate
 Input [21]: [i_item_id#27, i_item_desc#28, s_state#25, count#29, sum#30, count#31, n#32, avg#33, m2#34, count#35, sum#36, count#37, n#38, avg#39, m2#40, count#41, sum#42, count#43, n#44, avg#45, m2#46]

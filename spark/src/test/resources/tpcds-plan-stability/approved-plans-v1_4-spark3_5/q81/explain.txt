@@ -9,7 +9,7 @@
          :     :  +- CometBroadcastHashJoin (34)
          :     :     :- CometFilter (17)
          :     :     :  +- CometHashAggregate (16)
-         :     :     :     +- CometColumnarExchange (15)
+         :     :     :     +- CometExchange (15)
          :     :     :        +- CometHashAggregate (14)
          :     :     :           +- CometProject (13)
          :     :     :              +- CometBroadcastHashJoin (12)
@@ -27,10 +27,10 @@
          :     :     +- CometBroadcastExchange (33)
          :     :        +- CometFilter (32)
          :     :           +- CometHashAggregate (31)
-         :     :              +- CometColumnarExchange (30)
+         :     :              +- CometExchange (30)
          :     :                 +- CometHashAggregate (29)
          :     :                    +- CometHashAggregate (28)
-         :     :                       +- CometColumnarExchange (27)
+         :     :                       +- CometExchange (27)
          :     :                          +- CometHashAggregate (26)
          :     :                             +- CometProject (25)
          :     :                                +- CometBroadcastHashJoin (24)
@@ -117,9 +117,9 @@ Input [3]: [cr_returning_customer_sk#1, cr_return_amt_inc_tax#3, ca_state#9]
 Keys [2]: [cr_returning_customer_sk#1, ca_state#9]
 Functions [1]: [partial_sum(UnscaledValue(cr_return_amt_inc_tax#3))]
 
-(15) CometColumnarExchange
+(15) CometExchange
 Input [3]: [cr_returning_customer_sk#1, ca_state#9, sum#10]
-Arguments: hashpartitioning(cr_returning_customer_sk#1, ca_state#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(cr_returning_customer_sk#1, ca_state#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (16) CometHashAggregate
 Input [3]: [cr_returning_customer_sk#1, ca_state#9, sum#10]
@@ -171,9 +171,9 @@ Input [3]: [cr_returning_customer_sk#14, cr_return_amt_inc_tax#16, ca_state#21]
 Keys [2]: [cr_returning_customer_sk#14, ca_state#21]
 Functions [1]: [partial_sum(UnscaledValue(cr_return_amt_inc_tax#16))]
 
-(27) CometColumnarExchange
+(27) CometExchange
 Input [3]: [cr_returning_customer_sk#14, ca_state#21, sum#22]
-Arguments: hashpartitioning(cr_returning_customer_sk#14, ca_state#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(cr_returning_customer_sk#14, ca_state#21, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (28) CometHashAggregate
 Input [3]: [cr_returning_customer_sk#14, ca_state#21, sum#22]
@@ -185,9 +185,9 @@ Input [2]: [ctr_state#23, ctr_total_return#24]
 Keys [1]: [ctr_state#23]
 Functions [1]: [partial_avg(ctr_total_return#24)]
 
-(30) CometColumnarExchange
+(30) CometExchange
 Input [3]: [ctr_state#23, sum#25, count#26]
-Arguments: hashpartitioning(ctr_state#23, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: hashpartitioning(ctr_state#23, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (31) CometHashAggregate
 Input [3]: [ctr_state#23, sum#25, count#26]

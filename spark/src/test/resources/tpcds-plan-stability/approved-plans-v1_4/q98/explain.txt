@@ -8,9 +8,9 @@
                +- Window (20)
                   +- * ColumnarToRow (19)
                      +- CometSort (18)
-                        +- CometColumnarExchange (17)
+                        +- CometExchange (17)
                            +- CometHashAggregate (16)
-                              +- CometColumnarExchange (15)
+                              +- CometExchange (15)
                                  +- CometHashAggregate (14)
                                     +- CometProject (13)
                                        +- CometBroadcastHashJoin (12)
@@ -96,18 +96,18 @@ Input [6]: [ss_ext_sales_price#2, i_item_id#6, i_item_desc#7, i_current_price#8,
 Keys [5]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#2))]
 
-(15) CometColumnarExchange
+(15) CometExchange
 Input [6]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, sum#13]
-Arguments: hashpartitioning(i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (16) CometHashAggregate
 Input [6]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8, sum#13]
 Keys [5]: [i_item_id#6, i_item_desc#7, i_category#10, i_class#9, i_current_price#8]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#2))]
 
-(17) CometColumnarExchange
+(17) CometExchange
 Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]
-Arguments: hashpartitioning(i_class#9, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_class#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (18) CometSort
 Input [7]: [i_item_desc#7, i_category#10, i_class#9, i_current_price#8, itemrevenue#14, _w0#15, i_item_id#6]

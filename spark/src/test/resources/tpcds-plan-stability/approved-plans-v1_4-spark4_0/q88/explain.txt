@@ -8,7 +8,7 @@
 :  :  :  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (46)
 :  :  :  :  :  :  :- * ColumnarToRow (25)
 :  :  :  :  :  :  :  +- CometHashAggregate (24)
-:  :  :  :  :  :  :     +- CometColumnarExchange (23)
+:  :  :  :  :  :  :     +- CometExchange (23)
 :  :  :  :  :  :  :        +- CometHashAggregate (22)
 :  :  :  :  :  :  :           +- CometProject (21)
 :  :  :  :  :  :  :              +- CometBroadcastHashJoin (20)
@@ -34,7 +34,7 @@
 :  :  :  :  :  :  +- BroadcastExchange (45)
 :  :  :  :  :  :     +- * ColumnarToRow (44)
 :  :  :  :  :  :        +- CometHashAggregate (43)
-:  :  :  :  :  :           +- CometColumnarExchange (42)
+:  :  :  :  :  :           +- CometExchange (42)
 :  :  :  :  :  :              +- CometHashAggregate (41)
 :  :  :  :  :  :                 +- CometProject (40)
 :  :  :  :  :  :                    +- CometBroadcastHashJoin (39)
@@ -54,7 +54,7 @@
 :  :  :  :  :  +- BroadcastExchange (66)
 :  :  :  :  :     +- * ColumnarToRow (65)
 :  :  :  :  :        +- CometHashAggregate (64)
-:  :  :  :  :           +- CometColumnarExchange (63)
+:  :  :  :  :           +- CometExchange (63)
 :  :  :  :  :              +- CometHashAggregate (62)
 :  :  :  :  :                 +- CometProject (61)
 :  :  :  :  :                    +- CometBroadcastHashJoin (60)
@@ -74,7 +74,7 @@
 :  :  :  :  +- BroadcastExchange (87)
 :  :  :  :     +- * ColumnarToRow (86)
 :  :  :  :        +- CometHashAggregate (85)
-:  :  :  :           +- CometColumnarExchange (84)
+:  :  :  :           +- CometExchange (84)
 :  :  :  :              +- CometHashAggregate (83)
 :  :  :  :                 +- CometProject (82)
 :  :  :  :                    +- CometBroadcastHashJoin (81)
@@ -94,7 +94,7 @@
 :  :  :  +- BroadcastExchange (108)
 :  :  :     +- * ColumnarToRow (107)
 :  :  :        +- CometHashAggregate (106)
-:  :  :           +- CometColumnarExchange (105)
+:  :  :           +- CometExchange (105)
 :  :  :              +- CometHashAggregate (104)
 :  :  :                 +- CometProject (103)
 :  :  :                    +- CometBroadcastHashJoin (102)
@@ -114,7 +114,7 @@
 :  :  +- BroadcastExchange (129)
 :  :     +- * ColumnarToRow (128)
 :  :        +- CometHashAggregate (127)
-:  :           +- CometColumnarExchange (126)
+:  :           +- CometExchange (126)
 :  :              +- CometHashAggregate (125)
 :  :                 +- CometProject (124)
 :  :                    +- CometBroadcastHashJoin (123)
@@ -134,7 +134,7 @@
 :  +- BroadcastExchange (150)
 :     +- * ColumnarToRow (149)
 :        +- CometHashAggregate (148)
-:           +- CometColumnarExchange (147)
+:           +- CometExchange (147)
 :              +- CometHashAggregate (146)
 :                 +- CometProject (145)
 :                    +- CometBroadcastHashJoin (144)
@@ -154,7 +154,7 @@
 +- BroadcastExchange (171)
    +- * ColumnarToRow (170)
       +- CometHashAggregate (169)
-         +- CometColumnarExchange (168)
+         +- CometExchange (168)
             +- CometHashAggregate (167)
                +- CometProject (166)
                   +- CometBroadcastHashJoin (165)
@@ -276,9 +276,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(23) CometColumnarExchange
+(23) CometExchange
 Input [1]: [count#13]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (24) CometHashAggregate
 Input [1]: [count#13]
@@ -359,9 +359,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(42) CometColumnarExchange
+(42) CometExchange
 Input [1]: [count#24]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (43) CometHashAggregate
 Input [1]: [count#24]
@@ -450,9 +450,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(63) CometColumnarExchange
+(63) CometExchange
 Input [1]: [count#35]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (64) CometHashAggregate
 Input [1]: [count#35]
@@ -541,9 +541,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(84) CometColumnarExchange
+(84) CometExchange
 Input [1]: [count#46]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
 (85) CometHashAggregate
 Input [1]: [count#46]
@@ -632,9 +632,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(105) CometColumnarExchange
+(105) CometExchange
 Input [1]: [count#57]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=8]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
 
 (106) CometHashAggregate
 Input [1]: [count#57]
@@ -723,9 +723,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(126) CometColumnarExchange
+(126) CometExchange
 Input [1]: [count#68]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=10]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=10]
 
 (127) CometHashAggregate
 Input [1]: [count#68]
@@ -814,9 +814,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(147) CometColumnarExchange
+(147) CometExchange
 Input [1]: [count#79]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=12]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
 (148) CometHashAggregate
 Input [1]: [count#79]
@@ -905,9 +905,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(168) CometColumnarExchange
+(168) CometExchange
 Input [1]: [count#90]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=14]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=14]
 
 (169) CometHashAggregate
 Input [1]: [count#90]
