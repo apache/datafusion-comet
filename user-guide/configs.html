@@ -436,8 +436,8 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p>spark.comet.exec.shuffle.mode</p></td>
-<td><p>The mode of Comet shuffle. This config is only effective if Comet shuffle is enabled. Available modes are ‘native’, ‘jvm’, and ‘auto’. ‘native’ is for native shuffle which has best performance in general. ‘jvm’ is for jvm-based columnar shuffle which has higher coverage than native shuffle. ‘auto’ is for Comet to choose the best shuffle mode based on the query plan. By default, this config is ‘jvm’.</p></td>
-<td><p>jvm</p></td>
+<td><p>The mode of Comet shuffle. This config is only effective if Comet shuffle is enabled. Available modes are ‘native’, ‘jvm’, and ‘auto’. ‘native’ is for native shuffle which has best performance in general. ‘jvm’ is for jvm-based columnar shuffle which has higher coverage than native shuffle. ‘auto’ is for Comet to choose the best shuffle mode based on the query plan. By default, this config is ‘auto’.</p></td>
+<td><p>auto</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.exec.sort.enabled</p></td>
 <td><p>Whether to enable sort by default.</p></td>
