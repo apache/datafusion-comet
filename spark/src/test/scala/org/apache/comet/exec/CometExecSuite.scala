@@ -1529,6 +1529,44 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
+  test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
+    Seq("", "parquet").foreach { v1List =>
+      Seq("true", "false").foreach { parquetVectorized =>
+        Seq("tinyint", "smallint", "integer", "bigint", "float", "double").foreach { castType =>
+          {
+            withSQLConf(
+              SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+              CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+              CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> parquetVectorized) {
+              withTempPath { dir =>
+                var df = spark
+                  .range(10000)
+                  .selectExpr("id as key", s"cast(id % 8 as $castType) as value")
+                  .toDF("key", "value")
+
+                df.write.parquet(dir.toString())
+
+                df = spark.read.parquet(dir.toString())
+                checkSparkAnswerAndOperator(
+                  df.select("*").groupBy("key", "value").count(),
+                  includeClasses = Seq(classOf[CometSparkToColumnarExec]))
+
+                val leaves = df.queryExecution.executedPlan.collectLeaves()
+
+                if (parquetVectorized == "true") {
+                  assert(leaves.forall(_.supportsColumnar))
+                } else {
+                  assert(!leaves.forall(_.supportsColumnar))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over InMemoryTableScanExec") {
     Seq("true", "false").foreach(aqe => {
       Seq("true", "false").foreach(cacheVectorized => {
