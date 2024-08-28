@@ -4,13 +4,13 @@ TakeOrderedAndProject (36)
    +- Window (34)
       +- * ColumnarToRow (33)
          +- CometSort (32)
-            +- CometColumnarExchange (31)
+            +- CometExchange (31)
                +- CometHashAggregate (30)
-                  +- CometColumnarExchange (29)
+                  +- CometExchange (29)
                      +- CometHashAggregate (28)
                         +- CometUnion (27)
                            :- CometHashAggregate (16)
-                           :  +- CometColumnarExchange (15)
+                           :  +- CometExchange (15)
                            :     +- CometHashAggregate (14)
                            :        +- CometProject (13)
                            :           +- CometBroadcastHashJoin (12)
@@ -26,12 +26,12 @@ TakeOrderedAndProject (36)
                            :                 +- CometFilter (10)
                            :                    +- CometScan parquet spark_catalog.default.item (9)
                            :- CometHashAggregate (21)
-                           :  +- CometColumnarExchange (20)
+                           :  +- CometExchange (20)
                            :     +- CometHashAggregate (19)
                            :        +- CometHashAggregate (18)
                            :           +- ReusedExchange (17)
                            +- CometHashAggregate (26)
-                              +- CometColumnarExchange (25)
+                              +- CometExchange (25)
                                  +- CometHashAggregate (24)
                                     +- CometHashAggregate (23)
                                        +- ReusedExchange (22)
@@ -106,9 +106,9 @@ Input [3]: [ws_net_paid#2, i_class#8, i_category#9]
 Keys [2]: [i_category#9, i_class#8]
 Functions [1]: [partial_sum(UnscaledValue(ws_net_paid#2))]
 
-(15) CometColumnarExchange
+(15) CometExchange
 Input [3]: [i_category#9, i_class#8, sum#10]
-Arguments: hashpartitioning(i_category#9, i_class#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#9, i_class#8, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (16) CometHashAggregate
 Input [3]: [i_category#9, i_class#8, sum#10]
@@ -128,9 +128,9 @@ Input [2]: [total_sum#15, i_category#11]
 Keys [1]: [i_category#11]
 Functions [1]: [partial_sum(total_sum#15)]
 
-(20) CometColumnarExchange
+(20) CometExchange
 Input [3]: [i_category#11, sum#16, isEmpty#17]
-Arguments: hashpartitioning(i_category#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_category#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (21) CometHashAggregate
 Input [3]: [i_category#11, sum#16, isEmpty#17]
@@ -150,9 +150,9 @@ Input [1]: [total_sum#22]
 Keys: []
 Functions [1]: [partial_sum(total_sum#22)]
 
-(25) CometColumnarExchange
+(25) CometExchange
 Input [2]: [sum#23, isEmpty#24]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (26) CometHashAggregate
 Input [2]: [sum#23, isEmpty#24]
@@ -169,18 +169,18 @@ Input [6]: [total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lo
 Keys [6]: [total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28]
 Functions: []
 
-(29) CometColumnarExchange
+(29) CometExchange
 Input [6]: [total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28]
-Arguments: hashpartitioning(total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Arguments: hashpartitioning(total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (30) CometHashAggregate
 Input [6]: [total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28]
 Keys [6]: [total_sum#25, i_category#9, i_class#8, g_category#26, g_class#27, lochierarchy#28]
 Functions: []
 
-(31) CometColumnarExchange
+(31) CometExchange
 Input [5]: [total_sum#25, i_category#9, i_class#8, lochierarchy#28, _w0#40]
-Arguments: hashpartitioning(lochierarchy#28, _w0#40, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
+Arguments: hashpartitioning(lochierarchy#28, _w0#40, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (32) CometSort
 Input [5]: [total_sum#25, i_category#9, i_class#8, lochierarchy#28, _w0#40]

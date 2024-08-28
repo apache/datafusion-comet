@@ -2,7 +2,7 @@
 * ColumnarToRow (45)
 +- CometTakeOrderedAndProject (44)
    +- CometHashAggregate (43)
-      +- CometColumnarExchange (42)
+      +- CometExchange (42)
          +- CometHashAggregate (41)
             +- CometProject (40)
                +- CometBroadcastHashJoin (39)
@@ -243,9 +243,9 @@ Input [4]: [ws_quantity#4, wr_fee#15, wr_refunded_cash#16, r_reason_desc#31]
 Keys [1]: [r_reason_desc#31]
 Functions [3]: [partial_avg(ws_quantity#4), partial_avg(UnscaledValue(wr_refunded_cash#16)), partial_avg(UnscaledValue(wr_fee#15))]
 
-(42) CometColumnarExchange
+(42) CometExchange
 Input [7]: [r_reason_desc#31, sum#32, count#33, sum#34, count#35, sum#36, count#37]
-Arguments: hashpartitioning(r_reason_desc#31, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(r_reason_desc#31, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (43) CometHashAggregate
 Input [7]: [r_reason_desc#31, sum#32, count#33, sum#34, count#35, sum#36, count#37]

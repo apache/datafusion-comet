@@ -3,7 +3,7 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [i_product_name]
         CometHashAggregate [i_product_name]
-          CometColumnarExchange [i_product_name] #1
+          CometExchange [i_product_name] #1
             CometHashAggregate [i_product_name]
               CometProject [i_product_name]
                 CometBroadcastHashJoin [i_manufact,i_product_name,i_manufact]
@@ -14,7 +14,7 @@ WholeStageCodegen (1)
                     CometProject [i_manufact]
                       CometFilter [item_cnt,i_manufact]
                         CometHashAggregate [item_cnt,i_manufact,count,count(1)]
-                          CometColumnarExchange [i_manufact] #3
+                          CometExchange [i_manufact] #3
                             CometHashAggregate [i_manufact,count]
                               CometProject [i_manufact]
                                 CometFilter [i_category,i_manufact,i_size,i_color,i_units]

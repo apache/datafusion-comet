@@ -10,7 +10,7 @@ WholeStageCodegen (1)
                   CometBroadcastHashJoin [ctr_customer_sk,ctr_state,ctr_total_return,(avg(ctr_total_return) * 1.2),ctr_state]
                     CometFilter [ctr_customer_sk,ctr_state,ctr_total_return]
                       CometHashAggregate [ctr_customer_sk,ctr_state,ctr_total_return,wr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(wr_return_amt))]
-                        CometColumnarExchange [wr_returning_customer_sk,ca_state] #1
+                        CometExchange [wr_returning_customer_sk,ca_state] #1
                           CometHashAggregate [wr_returning_customer_sk,ca_state,sum,wr_return_amt]
                             CometProject [wr_returning_customer_sk,wr_return_amt,ca_state]
                               CometBroadcastHashJoin [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt,ca_address_sk,ca_state]
@@ -36,10 +36,10 @@ WholeStageCodegen (1)
                     CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_state] #5
                       CometFilter [(avg(ctr_total_return) * 1.2),ctr_state]
                         CometHashAggregate [(avg(ctr_total_return) * 1.2),ctr_state,sum,count,avg(ctr_total_return)]
-                          CometColumnarExchange [ctr_state] #6
+                          CometExchange [ctr_state] #6
                             CometHashAggregate [ctr_state,sum,count,ctr_total_return]
                               CometHashAggregate [ctr_state,ctr_total_return,wr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(wr_return_amt))]
-                                CometColumnarExchange [wr_returning_customer_sk,ca_state] #7
+                                CometExchange [wr_returning_customer_sk,ca_state] #7
                                   CometHashAggregate [wr_returning_customer_sk,ca_state,sum,wr_return_amt]
                                     CometProject [wr_returning_customer_sk,wr_return_amt,ca_state]
                                       CometBroadcastHashJoin [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt,ca_address_sk,ca_state]
