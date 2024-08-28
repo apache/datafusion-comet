@@ -519,6 +519,8 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("peak_mem_used").value > 1L)
           assert(metrics.contains("join_time"))
           assert(metrics("join_time").value > 1L)
+          assert(metrics.contains("spill_count"))
+          assert(metrics("spill_count").value == 0)
         }
       }
     }
