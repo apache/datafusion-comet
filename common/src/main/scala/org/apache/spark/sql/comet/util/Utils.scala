@@ -27,7 +27,6 @@ import scala.collection.JavaConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
-import org.apache.arrow.vector.complex.ListVector
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.DictionaryProvider
