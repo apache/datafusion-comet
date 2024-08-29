@@ -666,7 +666,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           expectedNumOfCometAggregates)
         checkSparkAnswerAndNumOfAggregates(
           "SELECT _2, COUNT(_1), SUM(_1) FROM tbl GROUP BY _2",
-          2)
+          expectedNumOfCometAggregates)
         checkSparkAnswerAndNumOfAggregates(
           "SELECT COUNT(_1), COUNT(_2) FROM tbl",
           expectedNumOfCometAggregates)
@@ -681,7 +681,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndNumOfAggregates(
           "SELECT _2, MIN(_1), MAX(_1), COUNT(_1) FROM tbl GROUP BY _2",
           expectedNumOfCometAggregates)
-        checkSparkAnswerAndNumOfAggregates("SELECT MIN(_1), MAX(_1), COUNT(_1) FROM tbl", 2)
+        checkSparkAnswerAndNumOfAggregates(
+          "SELECT MIN(_1), MAX(_1), COUNT(_1) FROM tbl",
+          expectedNumOfCometAggregates)
         checkSparkAnswerAndNumOfAggregates(
           "SELECT _2, MIN(_1), MAX(_1), COUNT(_1), SUM(_1) FROM tbl GROUP BY _2",
           expectedNumOfCometAggregates)
@@ -695,7 +697,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test final min/max/count with result expressions") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
-        val expectedNumOfCometAggregates = if (isShuffleEnabled) 2 else 1
+        val expectedNumOfCometAggregates = 1
         checkSparkAnswerAndNumOfAggregates(
           "SELECT _2, MIN(_1) + 2, COUNT(_1) FROM tbl GROUP BY _2",
           expectedNumOfCometAggregates)
@@ -855,7 +857,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
-              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 1 else 2
+              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
