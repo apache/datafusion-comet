@@ -35,6 +35,8 @@ import org.apache.spark.sql.vectorized.ColumnarArray
  * org.apache.spark.sql.execution.arrow.ArrowWriter.scala. Comet shadows Arrow classes to avoid
  * potential conflicts with Spark's Arrow dependencies, hence we cannot reuse Spark's ArrowWriter
  * directly.
+ *
+ * Performance enhancement: https://github.com/apache/datafusion-comet/issues/888
  */
 private[arrow] object ArrowWriter {
   def create(root: VectorSchemaRoot): ArrowWriter = {
