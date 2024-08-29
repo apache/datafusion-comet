@@ -59,10 +59,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
 
-  def supportedDataType(
-      dt: DataType,
-      allowStruct: Boolean = false,
-      allowArray: Boolean = false): Boolean = dt match {
+  def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
         _: DateType | _: BooleanType | _: NullType =>
@@ -70,8 +67,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case dt if isTimestampNTZType(dt) => true
     case s: StructType if allowStruct =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
-    case a: ArrayType if allowArray =>
-      supportedDataType(a.elementType, allowStruct, allowArray)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2957,9 +2952,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op
-          if isCometSink(op) && op.output.forall(a =>
-            supportedDataType(a.dataType, true, true)) =>
+      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         scanBuilder.setSource(op.simpleStringWithNodeId())

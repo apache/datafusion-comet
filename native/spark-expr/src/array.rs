@@ -68,8 +68,6 @@ impl ArrayExtract {
             ))),
         }
     }
-
-    // fn one_based_index(&self, index: i32, len: )
 }
 
 impl PhysicalExpr for ArrayExtract {
