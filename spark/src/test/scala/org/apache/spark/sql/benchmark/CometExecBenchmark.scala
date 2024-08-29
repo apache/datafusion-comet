@@ -96,6 +96,16 @@ object CometExecBenchmark extends CometBenchmarkBase {
           }
         }
 
+        benchmark.addCase("SQL Parquet - Spark (Scan), Comet (Exec)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+            spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
+          }
+        }
+
         benchmark.run()
       }
     }
