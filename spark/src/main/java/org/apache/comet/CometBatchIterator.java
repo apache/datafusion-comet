@@ -23,6 +23,7 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
+import org.apache.comet.vector.ExportedBatch;
 import org.apache.comet.vector.NativeUtil;
 
 /**
@@ -34,9 +35,12 @@ public class CometBatchIterator {
   final Iterator<ColumnarBatch> input;
   final NativeUtil nativeUtil;
 
+  private ExportedBatch lastBatch;
+
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
     this.input = input;
     this.nativeUtil = nativeUtil;
+    this.lastBatch = null;
   }
 
   /**
@@ -45,12 +49,27 @@ public class CometBatchIterator {
    * indicating the end of the iterator.
    */
   public long[] next() {
+    // The native executor should have moved the previous batch, it is safe for us to deallocate
+    // the ArrowSchema and ArrowArray base structures.
+    if (lastBatch != null) {
+      lastBatch.close();
+      lastBatch = null;
+    }
+
     boolean hasBatch = input.hasNext();
 
     if (!hasBatch) {
       return new long[] {-1};
     }
 
-    return nativeUtil.exportBatch(input.next());
+    lastBatch = nativeUtil.exportBatch(input.next());
+    return lastBatch.batch();
+  }
+
+  public void close() {
+    if (lastBatch != null) {
+      lastBatch.close();
+      lastBatch = null;
+    }
   }
 }
