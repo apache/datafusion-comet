@@ -79,11 +79,7 @@ abstract class CometTestBase
     conf.set(SQLConf.COALESCE_PARTITIONS_ENABLED.key, "false")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    // TODO need to set COMET_EXEC_SHUFFLE_ENABLED=true
-    // to match default config, but we also need to run
-    // many tests with shuffle enabled + disabled for
-    // better coverage
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf
