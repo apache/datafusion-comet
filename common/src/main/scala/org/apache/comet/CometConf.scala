@@ -92,6 +92,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.csv.enabled")
+      .doc(
+        "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
+          "Arrow format. Note that to enable native vectorized execution, both this config and " +
+          "'spark.comet.exec.enabled' need to be enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .doc(
       "Whether to enable Comet native vectorized execution for Spark. This controls whether " +
@@ -99,9 +108,9 @@ object CometConf extends ShimCometConf {
         "native space. Note: each operator is associated with a separate config in the " +
         "format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the " +
         "config and this need to be turned on, in order for the operator to be executed in " +
-        "native. By default, this config is false.")
+        "native. By default, this config is true.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(true)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
@@ -174,13 +183,13 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .doc(
-        "Whether to enable Comet native shuffle. By default, this config is false. " +
+        "Whether to enable Comet native shuffle. " +
           "Note that this requires setting 'spark.shuffle.manager' to " +
           "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
           "'spark.shuffle.manager' must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
@@ -188,11 +197,12 @@ object CometConf extends ShimCometConf {
       "'native' is for native shuffle which has best performance in general. " +
       "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
       "'auto' is for Comet to choose the best shuffle mode based on the query plan. " +
-      "By default, this config is 'jvm'.")
+      "By default, this config is 'auto'.")
+    .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
-    .createWithDefault("jvm")
+    .createWithDefault("auto")
 
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")

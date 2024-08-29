@@ -11,9 +11,9 @@ TakeOrderedAndProject (45)
       :     :           +- Window (24)
       :     :              +- * ColumnarToRow (23)
       :     :                 +- CometSort (22)
-      :     :                    +- CometColumnarExchange (21)
+      :     :                    +- CometExchange (21)
       :     :                       +- CometHashAggregate (20)
-      :     :                          +- CometColumnarExchange (19)
+      :     :                          +- CometExchange (19)
       :     :                             +- CometHashAggregate (18)
       :     :                                +- CometProject (17)
       :     :                                   +- CometBroadcastHashJoin (16)
@@ -135,18 +135,18 @@ Input [7]: [i_brand#2, i_category#3, ss_sales_price#6, d_year#10, d_moy#11, s_st
 Keys [6]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11]
 Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#6))]
 
-(19) CometColumnarExchange
+(19) CometExchange
 Input [7]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum#15]
-Arguments: hashpartitioning(i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (20) CometHashAggregate
 Input [7]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum#15]
 Keys [6]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11]
 Functions [1]: [sum(UnscaledValue(ss_sales_price#6))]
 
-(21) CometColumnarExchange
+(21) CometExchange
 Input [8]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum_sales#16, _w0#17]
-Arguments: hashpartitioning(i_category#3, i_brand#2, s_store_name#13, s_company_name#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_category#3, i_brand#2, s_store_name#13, s_company_name#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (22) CometSort
 Input [8]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, d_year#10, d_moy#11, sum_sales#16, _w0#17]

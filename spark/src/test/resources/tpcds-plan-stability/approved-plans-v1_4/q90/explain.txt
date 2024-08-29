@@ -3,7 +3,7 @@
 +- * BroadcastNestedLoopJoin Inner BuildRight (46)
    :- * ColumnarToRow (25)
    :  +- CometHashAggregate (24)
-   :     +- CometColumnarExchange (23)
+   :     +- CometExchange (23)
    :        +- CometHashAggregate (22)
    :           +- CometProject (21)
    :              +- CometBroadcastHashJoin (20)
@@ -29,7 +29,7 @@
    +- BroadcastExchange (45)
       +- * ColumnarToRow (44)
          +- CometHashAggregate (43)
-            +- CometColumnarExchange (42)
+            +- CometExchange (42)
                +- CometHashAggregate (41)
                   +- CometProject (40)
                      +- CometBroadcastHashJoin (39)
@@ -151,9 +151,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(23) CometColumnarExchange
+(23) CometExchange
 Input [1]: [count#11]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (24) CometHashAggregate
 Input [1]: [count#11]
@@ -234,9 +234,9 @@ Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
 
-(42) CometColumnarExchange
+(42) CometExchange
 Input [1]: [count#21]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (43) CometHashAggregate
 Input [1]: [count#21]

@@ -64,6 +64,22 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
+    val table = "src"
+    withTable(table) {
+      withView("lv_noalias") {
+        sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
+        sql(s"INSERT INTO $table VALUES(238, 'val_238')")
+
+        sql(
+          "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
+            "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
+        val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key");
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("Sort on single struct should fallback to Spark") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -519,6 +535,8 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("peak_mem_used").value > 1L)
           assert(metrics.contains("join_time"))
           assert(metrics("join_time").value > 1L)
+          assert(metrics.contains("spill_count"))
+          assert(metrics("spill_count").value == 0)
         }
       }
     }
@@ -1656,6 +1674,22 @@ class CometExecSuite extends CometTestBase {
           }
         }
       })
+  }
+
+  test("read CSV file") {
+    Seq("", "csv").foreach { v1List =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
+        spark.read
+          .csv("src/test/resources/test-data/csv-test-1.csv")
+          .createOrReplaceTempView("tbl")
+        // use a projection with an expression otherwise we end up with
+        // just the file scan
+        checkSparkAnswerAndOperator("SELECT cast(_c0 as int), _c1, _c2 FROM tbl")
+      }
+    }
   }
 
   test("read JSON file") {

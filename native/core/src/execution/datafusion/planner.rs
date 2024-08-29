@@ -96,7 +96,7 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayExtract, Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr,
-    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr,
+    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -383,8 +383,13 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let timezone = expr.timezone.clone();
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-
-                Ok(Arc::new(Cast::new(child, datatype, eval_mode, timezone)))
+                Ok(Arc::new(Cast::new(
+                    child,
+                    datatype,
+                    eval_mode,
+                    timezone,
+                    expr.allow_incompat,
+                )))
             }
             ExprStruct::Hour(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -651,6 +656,10 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
             }
+            ExprStruct::ToJson(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+            }
             ExprStruct::ArrayExtract(expr) => {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -742,17 +751,20 @@ impl PhysicalPlanner {
                     left,
                     DataType::Decimal256(p1, s1),
                     EvalMode::Legacy,
+                    false,
                 ));
                 let right = Arc::new(Cast::new_without_timezone(
                     right,
                     DataType::Decimal256(p2, s2),
                     EvalMode::Legacy,
+                    false,
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
                 Ok(Arc::new(Cast::new_without_timezone(
                     child,
                     data_type,
                     EvalMode::Legacy,
+                    false,
                 )))
             }
             (

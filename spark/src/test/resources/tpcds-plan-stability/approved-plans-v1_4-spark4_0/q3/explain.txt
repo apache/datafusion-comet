@@ -1,25 +1,23 @@
 == Physical Plan ==
-TakeOrderedAndProject (21)
-+- * HashAggregate (20)
-   +- * ColumnarToRow (19)
-      +- CometColumnarExchange (18)
-         +- RowToColumnar (17)
-            +- * HashAggregate (16)
-               +- * ColumnarToRow (15)
-                  +- CometProject (14)
-                     +- CometBroadcastHashJoin (13)
-                        :- CometProject (8)
-                        :  +- CometBroadcastHashJoin (7)
-                        :     :- CometProject (3)
-                        :     :  +- CometFilter (2)
-                        :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
-                        :     +- CometBroadcastExchange (6)
-                        :        +- CometFilter (5)
-                        :           +- CometScan parquet spark_catalog.default.store_sales (4)
-                        +- CometBroadcastExchange (12)
-                           +- CometProject (11)
-                              +- CometFilter (10)
-                                 +- CometScan parquet spark_catalog.default.item (9)
+TakeOrderedAndProject (19)
++- * HashAggregate (18)
+   +- Exchange (17)
+      +- * HashAggregate (16)
+         +- * ColumnarToRow (15)
+            +- CometProject (14)
+               +- CometBroadcastHashJoin (13)
+                  :- CometProject (8)
+                  :  +- CometBroadcastHashJoin (7)
+                  :     :- CometProject (3)
+                  :     :  +- CometFilter (2)
+                  :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
+                  :     +- CometBroadcastExchange (6)
+                  :        +- CometFilter (5)
+                  :           +- CometScan parquet spark_catalog.default.store_sales (4)
+                  +- CometBroadcastExchange (12)
+                     +- CometProject (11)
+                        +- CometFilter (10)
+                           +- CometScan parquet spark_catalog.default.item (9)
 
 
 (1) Scan parquet spark_catalog.default.date_dim
@@ -100,24 +98,18 @@ Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
 Aggregate Attributes [1]: [sum#11]
 Results [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
 
-(17) RowToColumnar
+(17) Exchange
 Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
+Arguments: hashpartitioning(d_year#2, i_brand#9, i_brand_id#8, 5), ENSURE_REQUIREMENTS, [plan_id=1]
 
-(18) CometColumnarExchange
-Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
-Arguments: hashpartitioning(d_year#2, i_brand#9, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
-
-(19) ColumnarToRow [codegen id : 2]
-Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
-
-(20) HashAggregate [codegen id : 2]
+(18) HashAggregate [codegen id : 2]
 Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
 Keys [3]: [d_year#2, i_brand#9, i_brand_id#8]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#13]
 Results [4]: [d_year#2, i_brand_id#8 AS brand_id#14, i_brand#9 AS brand#15, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#13,17,2) AS sum_agg#16]
 
-(21) TakeOrderedAndProject
+(19) TakeOrderedAndProject
 Input [4]: [d_year#2, brand_id#14, brand#15, sum_agg#16]
 Arguments: 100, [d_year#2 ASC NULLS FIRST, sum_agg#16 DESC NULLS LAST, brand_id#14 ASC NULLS FIRST], [d_year#2, brand_id#14, brand#15, sum_agg#16]
 

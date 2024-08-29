@@ -182,6 +182,14 @@ The following Spark expressions are currently available. Any known compatibility
 | VariancePop   |       |
 | VarianceSamp  |       |
 
+## Complex Types
+
+| Expression        | Notes |
+| ----------------- | ----- |
+| CreateNamedStruct |       |
+| GetElementAt      |       |
+| StructsToJson     |       |
+
 ## Other
 
 | Expression              | Notes                                                                           |
@@ -191,4 +199,3 @@ The following Spark expressions are currently available. Any known compatibility
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
-| CreateNamedStruct       |                                                                                 |

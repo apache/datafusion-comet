@@ -30,7 +30,11 @@ class RowPartition(initialSize: Int) {
     rowSizes += size
   }
 
-  def getNumRows: Int = rowAddresses.size
+  def getNumRows: Int = if (rowAddresses == null) {
+    0
+  } else {
+    rowAddresses.size
+  }
 
   def getRowAddresses: Array[Long] = {
     val array = rowAddresses.toArray

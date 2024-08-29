@@ -6,7 +6,7 @@
          +- CometBroadcastHashJoin (28)
             :- CometFilter (24)
             :  +- CometHashAggregate (23)
-            :     +- CometColumnarExchange (22)
+            :     +- CometExchange (22)
             :        +- CometHashAggregate (21)
             :           +- CometProject (20)
             :              +- CometBroadcastHashJoin (19)
@@ -134,9 +134,9 @@ Input [2]: [ss_customer_sk#1, ss_ticket_number#4]
 Keys [2]: [ss_ticket_number#4, ss_customer_sk#1]
 Functions [1]: [partial_count(1)]
 
-(22) CometColumnarExchange
+(22) CometExchange
 Input [3]: [ss_ticket_number#4, ss_customer_sk#1, count#16]
-Arguments: hashpartitioning(ss_ticket_number#4, ss_customer_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_ticket_number#4, ss_customer_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (23) CometHashAggregate
 Input [3]: [ss_ticket_number#4, ss_customer_sk#1, count#16]

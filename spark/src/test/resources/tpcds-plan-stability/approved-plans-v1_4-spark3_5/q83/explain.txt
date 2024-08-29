@@ -6,7 +6,7 @@
          :- CometProject (32)
          :  +- CometBroadcastHashJoin (31)
          :     :- CometHashAggregate (18)
-         :     :  +- CometColumnarExchange (17)
+         :     :  +- CometExchange (17)
          :     :     +- CometHashAggregate (16)
          :     :        +- CometProject (15)
          :     :           +- CometBroadcastHashJoin (14)
@@ -25,7 +25,7 @@
          :     :                       +- ReusedExchange (10)
          :     +- CometBroadcastExchange (30)
          :        +- CometHashAggregate (29)
-         :           +- CometColumnarExchange (28)
+         :           +- CometExchange (28)
          :              +- CometHashAggregate (27)
          :                 +- CometProject (26)
          :                    +- CometBroadcastHashJoin (25)
@@ -37,7 +37,7 @@
          :                       +- ReusedExchange (24)
          +- CometBroadcastExchange (44)
             +- CometHashAggregate (43)
-               +- CometColumnarExchange (42)
+               +- CometExchange (42)
                   +- CometHashAggregate (41)
                      +- CometProject (40)
                         +- CometBroadcastHashJoin (39)
@@ -126,9 +126,9 @@ Input [2]: [sr_return_quantity#2, i_item_id#6]
 Keys [1]: [i_item_id#6]
 Functions [1]: [partial_sum(sr_return_quantity#2)]
 
-(17) CometColumnarExchange
+(17) CometExchange
 Input [2]: [i_item_id#6, sum#10]
-Arguments: hashpartitioning(i_item_id#6, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_item_id#6, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (18) CometHashAggregate
 Input [2]: [i_item_id#6, sum#10]
@@ -176,9 +176,9 @@ Input [2]: [cr_return_quantity#12, i_item_id#16]
 Keys [1]: [i_item_id#16]
 Functions [1]: [partial_sum(cr_return_quantity#12)]
 
-(28) CometColumnarExchange
+(28) CometExchange
 Input [2]: [i_item_id#16, sum#18]
-Arguments: hashpartitioning(i_item_id#16, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(i_item_id#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (29) CometHashAggregate
 Input [2]: [i_item_id#16, sum#18]
@@ -239,9 +239,9 @@ Input [2]: [wr_return_quantity#24, i_item_id#28]
 Keys [1]: [i_item_id#28]
 Functions [1]: [partial_sum(wr_return_quantity#24)]
 
-(42) CometColumnarExchange
+(42) CometExchange
 Input [2]: [i_item_id#28, sum#30]
-Arguments: hashpartitioning(i_item_id#28, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: hashpartitioning(i_item_id#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (43) CometHashAggregate
 Input [2]: [i_item_id#28, sum#30]

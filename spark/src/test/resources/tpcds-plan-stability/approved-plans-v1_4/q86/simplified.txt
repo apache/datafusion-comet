@@ -7,9 +7,9 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
             ColumnarToRow
               InputAdapter
                 CometSort [total_sum,i_category,i_class,lochierarchy,_w0,_w1,_w2]
-                  CometColumnarExchange [_w1,_w2] #1
+                  CometExchange [_w1,_w2] #1
                     CometHashAggregate [total_sum,i_category,i_class,lochierarchy,_w0,_w1,_w2,spark_grouping_id,sum,sum(UnscaledValue(ws_net_paid))]
-                      CometColumnarExchange [i_category,i_class,spark_grouping_id] #2
+                      CometExchange [i_category,i_class,spark_grouping_id] #2
                         CometHashAggregate [i_category,i_class,spark_grouping_id,sum,ws_net_paid]
                           CometExpand [i_category,i_class] [ws_net_paid,i_category,i_class,spark_grouping_id]
                             CometProject [ws_net_paid,i_category,i_class]

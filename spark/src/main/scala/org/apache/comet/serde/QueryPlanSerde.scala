@@ -792,7 +792,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-
+        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
 
@@ -1258,6 +1258,66 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case StructsToJson(options, child, timezoneId) =>
+          if (options.nonEmpty) {
+            withInfo(expr, "StructsToJson with options is not supported")
+            None
+          } else {
+
+            def isSupportedType(dt: DataType): Boolean = {
+              dt match {
+                case StructType(fields) =>
+                  fields.forall(f => isSupportedType(f.dataType))
+                case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+                    DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+                    DataTypes.DoubleType | DataTypes.StringType =>
+                  true
+                case DataTypes.DateType | DataTypes.TimestampType =>
+                  // TODO implement these types with tests for formatting options and timezone
+                  false
+                case _: MapType | _: ArrayType =>
+                  // Spark supports map and array in StructsToJson but this is not yet
+                  // implemented in Comet
+                  false
+                case _ => false
+              }
+            }
+
+            val isSupported = child.dataType match {
+              case s: StructType =>
+                s.fields.forall(f => isSupportedType(f.dataType))
+              case _: MapType | _: ArrayType =>
+                // Spark supports map and array in StructsToJson but this is not yet
+                // implemented in Comet
+                false
+              case _ =>
+                false
+            }
+
+            if (isSupported) {
+              exprToProto(child, input, binding) match {
+                case Some(p) =>
+                  val toJson = ExprOuterClass.ToJson
+                    .newBuilder()
+                    .setChild(p)
+                    .setTimezone(timezoneId.getOrElse("UTC"))
+                    .setIgnoreNullFields(true)
+                    .build()
+                  Some(
+                    ExprOuterClass.Expr
+                      .newBuilder()
+                      .setToJson(toJson)
+                      .build())
+                case _ =>
+                  withInfo(expr, child)
+                  None
+              }
+            } else {
+              withInfo(expr, "Unsupported data type", child)
+              None
+            }
+          }
+
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
             val leftExpr = exprToProtoInternal(left, inputs)
@@ -1506,6 +1566,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
                     .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+                    .setAllowIncompat(false)
                     .build())
                 .build()
             })

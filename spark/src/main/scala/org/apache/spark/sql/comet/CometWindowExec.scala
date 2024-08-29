@@ -21,9 +21,8 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec.{METRIC_NATIVE_TIME_DESCRIPTION, METRIC_NATIVE_TIME_NAME}
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 import com.google.common.base.Objects
 
@@ -49,17 +48,9 @@ case class CometWindowExec(
 
   override def nodeName: String = "CometWindowExec"
 
-  private lazy val writeMetrics =
-    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
-  private lazy val readMetrics =
-    SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    METRIC_NATIVE_TIME_NAME ->
-      SQLMetrics.createNanoTimingMetric(sparkContext, METRIC_NATIVE_TIME_DESCRIPTION),
-    "numPartitions" -> SQLMetrics.createMetric(
-      sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+    "numPartitions" -> SQLMetrics.createMetric(sparkContext, "number of partitions"))
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 

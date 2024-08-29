@@ -2,7 +2,7 @@
 * ColumnarToRow (39)
 +- CometTakeOrderedAndProject (38)
    +- CometHashAggregate (37)
-      +- CometColumnarExchange (36)
+      +- CometExchange (36)
          +- CometHashAggregate (35)
             +- CometProject (34)
                +- CometBroadcastHashJoin (33)
@@ -207,9 +207,9 @@ Input [8]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purch
 Keys [8]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 Functions [1]: [partial_count(1)]
 
-(36) CometColumnarExchange
+(36) CometExchange
 Input [9]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#31]
-Arguments: hashpartitioning(cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (37) CometHashAggregate
 Input [9]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#31]

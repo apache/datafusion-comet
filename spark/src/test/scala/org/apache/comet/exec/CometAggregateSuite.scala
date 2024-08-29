@@ -427,11 +427,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (-0.0.asInstanceOf[Float], 2),
         (0.0.asInstanceOf[Float], 3),
         (Float.NaN, 4))
-      withParquetTable(data, "tbl", dictionaryEnabled) {
-        checkSparkAnswer("SELECT SUM(_2), MIN(_2), MAX(_2), _1 FROM tbl GROUP BY _1")
-        checkSparkAnswer("SELECT MIN(_1), MAX(_1), MIN(_2), MAX(_2) FROM tbl")
-        checkSparkAnswer("SELECT AVG(_2), _1 FROM tbl GROUP BY _1")
-        checkSparkAnswer("SELECT AVG(_1), AVG(_2) FROM tbl")
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl", dictionaryEnabled) {
+          checkSparkAnswer("SELECT SUM(_2), MIN(_2), MAX(_2), _1 FROM tbl GROUP BY _1")
+          checkSparkAnswer("SELECT MIN(_1), MAX(_1), MIN(_2), MAX(_2) FROM tbl")
+          checkSparkAnswer("SELECT AVG(_2), _1 FROM tbl GROUP BY _1")
+          checkSparkAnswer("SELECT AVG(_1), AVG(_2) FROM tbl")
+        }
       }
     }
   }
@@ -582,15 +584,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g1, _g2, _3 FROM tbl ORDER BY _3")
-                  checkSparkAnswer("SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2")
-                  checkSparkAnswer("SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                 }
-                checkSparkAnswer("SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, COUNT(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, MIN(_3), MAX(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, AVG(_3) FROM tbl GROUP BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, COUNT(DISTINCT _3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, MIN(_3), MAX(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, AVG(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
               }
             }
           }
@@ -603,7 +613,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t(v VARCHAR(3), i INT) USING PARQUET")
       sql("INSERT INTO t VALUES ('c', 1)")
-      checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
+      }
     }
   }
 
@@ -623,19 +635,22 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g3, _g4, _3, _4 FROM tbl ORDER BY _3, _4")
                   checkSparkAnswer(
-                    "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4")
-                  checkSparkAnswer("SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4")
+                    "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                  checkSparkAnswer(
+                    "SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 }
-                checkSparkAnswer("SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, COUNT(DISTINCT _3), COUNT(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4")
-                checkSparkAnswer("SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, COUNT(DISTINCT _3), COUNT(DISTINCT _4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                checkSparkAnswer(
+                  "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                checkSparkAnswer(
+                  "SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
               }
             }
           }
@@ -654,7 +669,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
             Seq(128, numValues + 100).foreach { batchSize =>
-              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
@@ -662,13 +679,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
                       "FROM tbl ORDER BY _1, _2, _3, _4")
                     checkSparkAnswer(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
-                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol")
+                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
                   }
                   checkSparkAnswer(s"SELECT _g$gCol, SUM(_1), SUM(_2), COUNT(_3), COUNT(_4), " +
-                    s"MIN(_1), MAX(_4), AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol")
-                  checkSparkAnswer(s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol")
+                    s"MIN(_1), MAX(_4), AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
                   checkSparkAnswer(
-                    s"SELECT _g$gCol, COUNT(DISTINCT _1) FROM tbl GROUP BY _g$gCol")
+                    s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
+                  checkSparkAnswer(
+                    s"SELECT _g$gCol, COUNT(DISTINCT _1) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
                 }
               }
             }
@@ -837,7 +855,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
         "tbl",
         dictionaryEnabled) {
-        checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+        withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+        }
       }
     }
   }
