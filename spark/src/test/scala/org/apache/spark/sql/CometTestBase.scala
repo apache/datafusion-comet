@@ -21,6 +21,7 @@ package org.apache.spark.sql
 
 import java.io.{File, FilenameFilter}
 
+import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -392,12 +393,10 @@ abstract class CometTestBase
           HadoopInputFile.fromPath(new Path(files.head.getCanonicalPath()), new Configuration()))
         val blocks = reader.getFooter.getBlocks
         var hasDict = false
-        import scala.collection.JavaConversions._
-        for (block <- blocks) {
-          for (column <- block.getColumns) {
+        for (block <- blocks.asScala) {
+          for (column <- block.getColumns.asScala) {
             val encodings = column.getEncodings
-            if (encodings.contains(Encoding.PLAIN_DICTIONARY) || encodings.contains(
-                Encoding.RLE_DICTIONARY)) {
+            if (encodings.contains(Encoding.RLE_DICTIONARY)) {
               hasDict = true
             }
           }
