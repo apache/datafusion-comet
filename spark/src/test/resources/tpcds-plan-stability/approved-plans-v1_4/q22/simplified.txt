@@ -3,7 +3,7 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [i_product_name,i_brand,i_class,i_category,qoh]
         CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,spark_grouping_id,sum,count,avg(inv_quantity_on_hand)]
-          CometColumnarExchange [i_product_name,i_brand,i_class,i_category,spark_grouping_id] #1
+          CometExchange [i_product_name,i_brand,i_class,i_category,spark_grouping_id] #1
             CometHashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,sum,count,inv_quantity_on_hand]
               CometExpand [i_product_name,i_brand,i_class,i_category] [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category,spark_grouping_id]
                 CometProject [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]

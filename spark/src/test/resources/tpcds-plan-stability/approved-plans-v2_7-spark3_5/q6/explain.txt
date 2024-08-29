@@ -3,7 +3,7 @@
 +- CometTakeOrderedAndProject (37)
    +- CometFilter (36)
       +- CometHashAggregate (35)
-         +- CometColumnarExchange (34)
+         +- CometExchange (34)
             +- CometHashAggregate (33)
                +- CometProject (32)
                   +- CometBroadcastHashJoin (31)
@@ -33,7 +33,7 @@
                               +- CometBroadcastExchange (27)
                                  +- CometFilter (26)
                                     +- CometHashAggregate (25)
-                                       +- CometColumnarExchange (24)
+                                       +- CometExchange (24)
                                           +- CometHashAggregate (23)
                                              +- CometFilter (22)
                                                 +- CometScan parquet spark_catalog.default.item (21)
@@ -154,9 +154,9 @@ Input [2]: [i_current_price#16, i_category#17]
 Keys [1]: [i_category#17]
 Functions [1]: [partial_avg(UnscaledValue(i_current_price#16))]
 
-(24) CometColumnarExchange
+(24) CometExchange
 Input [3]: [i_category#17, sum#18, count#19]
-Arguments: hashpartitioning(i_category#17, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(i_category#17, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (25) CometHashAggregate
 Input [3]: [i_category#17, sum#18, count#19]
@@ -198,9 +198,9 @@ Input [1]: [ca_state#2]
 Keys [1]: [ca_state#2]
 Functions [1]: [partial_count(1)]
 
-(34) CometColumnarExchange
+(34) CometExchange
 Input [2]: [ca_state#2, count#21]
-Arguments: hashpartitioning(ca_state#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(ca_state#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (35) CometHashAggregate
 Input [2]: [ca_state#2, count#21]
@@ -253,7 +253,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:2 Hosting operator id = 40 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
 * ColumnarToRow (50)
 +- CometHashAggregate (49)
-   +- CometColumnarExchange (48)
+   +- CometExchange (48)
       +- CometHashAggregate (47)
          +- CometProject (46)
             +- CometFilter (45)
@@ -280,9 +280,9 @@ Input [1]: [d_month_seq#24]
 Keys [1]: [d_month_seq#24]
 Functions: []
 
-(48) CometColumnarExchange
+(48) CometExchange
 Input [1]: [d_month_seq#24]
-Arguments: hashpartitioning(d_month_seq#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Arguments: hashpartitioning(d_month_seq#24, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (49) CometHashAggregate
 Input [1]: [d_month_seq#24]

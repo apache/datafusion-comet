@@ -8,7 +8,7 @@
          :     :- CometProject (15)
          :     :  +- CometBroadcastHashJoin (14)
          :     :     :- CometHashAggregate (10)
-         :     :     :  +- CometColumnarExchange (9)
+         :     :     :  +- CometExchange (9)
          :     :     :     +- CometHashAggregate (8)
          :     :     :        +- CometProject (7)
          :     :     :           +- CometBroadcastHashJoin (6)
@@ -81,9 +81,9 @@ Input [4]: [ss_store_sk#1, ss_sales_price#2, d_week_seq#5, d_day_name#6]
 Keys [2]: [d_week_seq#5, ss_store_sk#1]
 Functions [7]: [partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Sunday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Monday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Tuesday  ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Wednesday) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Thursday ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Friday   ) THEN ss_sales_price#2 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#6 = Saturday ) THEN ss_sales_price#2 END))]
 
-(9) CometColumnarExchange
+(9) CometExchange
 Input [9]: [d_week_seq#5, ss_store_sk#1, sum#7, sum#8, sum#9, sum#10, sum#11, sum#12, sum#13]
-Arguments: hashpartitioning(d_week_seq#5, ss_store_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(d_week_seq#5, ss_store_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [9]: [d_week_seq#5, ss_store_sk#1, sum#7, sum#8, sum#9, sum#10, sum#11, sum#12, sum#13]

@@ -79,6 +79,7 @@ message Expr {
     BloomFilterMightContain bloom_filter_might_contain = 52;
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
+    ToJson to_json = 55;
   }
 }
 
@@ -341,6 +342,15 @@ message Substring {
 
 message StringSpace {
   Expr child = 1;
+}
+
+message ToJson {
+  Expr child = 1;
+  string timezone = 2;
+  string date_format = 3;
+  string timestamp_format = 4;
+  string timestamp_ntz_format = 5;
+  bool ignore_null_fields = 6;
 }
 
 message Hour {
