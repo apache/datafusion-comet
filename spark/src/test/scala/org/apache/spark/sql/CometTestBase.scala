@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import java.io.{File, FilenameFilter}
+
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -27,12 +29,14 @@ import scala.util.Try
 import org.scalatest.BeforeAndAfterEach
 
 import org.apache.commons.lang3.StringUtils
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.column.ParquetProperties
+import org.apache.parquet.column.{Encoding, ParquetProperties}
 import org.apache.parquet.example.data.Group
 import org.apache.parquet.example.data.simple.SimpleGroup
-import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetWriter}
 import org.apache.parquet.hadoop.example.ExampleParquetWriter
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
@@ -343,7 +347,7 @@ abstract class CometTestBase
 
   protected def withParquetDataFrame[T <: Product: ClassTag: TypeTag](
       data: Seq[T],
-      withDictionary: Boolean = true,
+      withDictionary: Boolean = false,
       schema: Option[StructType] = None)(f: DataFrame => Unit): Unit = {
     withParquetFile(data, withDictionary)(path => readParquetFile(path, schema)(f))
   }
@@ -351,7 +355,7 @@ abstract class CometTestBase
   protected def withParquetTable[T <: Product: ClassTag: TypeTag](
       data: Seq[T],
       tableName: String,
-      withDictionary: Boolean = true)(f: => Unit): Unit = {
+      withDictionary: Boolean = false)(f: => Unit): Unit = {
     withParquetDataFrame(data, withDictionary) { df =>
       df.createOrReplaceTempView(tableName)
       withTempView(tableName)(f)
@@ -377,6 +381,33 @@ abstract class CometTestBase
         .write
         .option("parquet.enable.dictionary", withDictionary.toString)
         .parquet(file.getCanonicalPath)
+
+      if (withDictionary) {
+        // if the test specified to write dictionary-encoded data, we should check that we actually wrote some
+        // dictionary-encoded data
+        val files = file.listFiles(new FilenameFilter {
+          override def accept(file: File, s: String): Boolean = s.endsWith(".parquet")
+        })
+        val reader = ParquetFileReader.open(
+          HadoopInputFile.fromPath(new Path(files.head.getCanonicalPath()), new Configuration()))
+        val blocks = reader.getFooter.getBlocks
+        var hasDict = false
+        import scala.collection.JavaConversions._
+        for (block <- blocks) {
+          for (column <- block.getColumns) {
+            val encodings = column.getEncodings
+            if (encodings.contains(Encoding.PLAIN_DICTIONARY) || encodings.contains(
+                Encoding.RLE_DICTIONARY)) {
+              hasDict = true
+            }
+          }
+        }
+        reader.close()
+        if (!hasDict) {
+          logWarning(
+            "withParquetFile was called with withDictionary=true but did not write any dictionary-encoded columns")
+        }
+      }
       f(file.getCanonicalPath)
     }
   }
