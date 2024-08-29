@@ -183,13 +183,13 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .doc(
-        "Whether to enable Comet native shuffle. By default, this config is false. " +
+        "Whether to enable Comet native shuffle. " +
           "Note that this requires setting 'spark.shuffle.manager' to " +
           "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
           "'spark.shuffle.manager' must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
@@ -198,6 +198,7 @@ object CometConf extends ShimCometConf {
       "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
       "'auto' is for Comet to choose the best shuffle mode based on the query plan. " +
       "By default, this config is 'auto'.")
+    .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
