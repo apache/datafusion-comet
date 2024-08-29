@@ -49,6 +49,7 @@ use crate::{
         serde::to_arrow_datatype,
     },
 };
+use arrow::compute::CastOptions;
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -1777,22 +1778,47 @@ impl PhysicalPlanner {
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let data_type = match expr.return_type.as_ref().map(to_arrow_datatype) {
-            Some(t) => t,
-            None => {
-                let fun_name = match fun_name.as_str() {
-                    "read_side_padding" => "rpad", // use the same return type as rpad
-                    other => other,
-                };
-                self.session_ctx
-                    .udf(fun_name)?
-                    .inner()
-                    .return_type(&input_expr_types)?
-            }
-        };
+        let (data_type, coerced_input_types) =
+            match expr.return_type.as_ref().map(to_arrow_datatype) {
+                Some(t) => (t, input_expr_types.clone()),
+                None => {
+                    let fun_name = match fun_name.as_ref() {
+                        "read_side_padding" => "rpad", // use the same return type as rpad
+                        other => other,
+                    };
+                    let func = self.session_ctx.udf(fun_name)?;
+
+                    let coerced_types = func
+                        .coerce_types(&input_expr_types)
+                        .unwrap_or_else(|_| input_expr_types.clone());
+
+                    let data_type = func.inner().return_type(&coerced_types)?;
+
+                    (data_type, coerced_types)
+                }
+            };
 
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+
+        let args = args
+            .into_iter()
+            .zip(input_expr_types.into_iter().zip(coerced_input_types))
+            .map(|(expr, (from_type, to_type))| {
+                if !from_type.equals_datatype(&to_type) {
+                    Arc::new(CastExpr::new(
+                        expr,
+                        to_type,
+                        Some(CastOptions {
+                            safe: false,
+                            ..Default::default()
+                        }),
+                    ))
+                } else {
+                    expr
+                }
+            })
+            .collect::<Vec<_>>();
 
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,
