@@ -159,8 +159,8 @@ impl PhysicalExpr for ArrayExtract {
         let mut s = state;
         self.child.hash(&mut s);
         self.ordinal.hash(&mut s);
-        self.one_based.hash(&mut s);
         self.default_value.hash(&mut s);
+        self.one_based.hash(&mut s);
         self.fail_on_error.hash(&mut s);
         self.hash(&mut s);
     }
@@ -176,7 +176,7 @@ fn one_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
     let abs_index = index.abs().as_usize();
     if abs_index <= len {
         if index > 0 {
-            Ok(Some(index.as_usize() - 1))
+            Ok(Some(abs_index - 1))
         } else {
             Ok(Some(len - abs_index))
         }
@@ -237,8 +237,8 @@ impl Display for ArrayExtract {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ArrayExtract [child: {:?}, ordinal: {:?}, one_based: {:?}, default_value: {:?}, fail_on_error: {:?}]",
-            self.child, self.ordinal, self.one_based, self.default_value, self.fail_on_error
+            "ArrayExtract [child: {:?}, ordinal: {:?}, default_value: {:?}, one_based: {:?}, fail_on_error: {:?}]",
+            self.child, self.ordinal,  self.default_value, self.one_based, self.fail_on_error
         )
     }
 }

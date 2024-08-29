@@ -512,8 +512,8 @@ message GetStructField {
 message ArrayExtract {
   Expr child = 1;
   Expr ordinal = 2;
-  bool one_based = 3;
-  Expr default_value = 4;
+  Expr default_value = 3;
+  bool one_based = 4;
   bool fail_on_error = 5;
 }
 
