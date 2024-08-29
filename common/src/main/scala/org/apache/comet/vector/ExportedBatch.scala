@@ -38,15 +38,7 @@ case class ExportedBatch(
     arrowSchemas: Array[ArrowSchema],
     arrowArrays: Array[ArrowArray]) {
   def close(): Unit = {
-    arrowSchemas.foreach { schema =>
-      val snapshot = schema.snapshot
-      if (snapshot.release != 0) schema.release()
-      schema.close()
-    }
-    arrowArrays.foreach { array =>
-      val snapshot = array.snapshot
-      if (snapshot.release != 0) array.release()
-      array.close()
-    }
+    arrowSchemas.foreach(_.close())
+    arrowArrays.foreach(_.close())
   }
 }
