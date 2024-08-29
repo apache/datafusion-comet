@@ -96,7 +96,7 @@ import org.apache.comet.vector.CometVector;
  */
 public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
-  protected static final BufferAllocator ALLOCATOR = new RootAllocator();
+  public static final BufferAllocator ALLOCATOR = new RootAllocator();
 
   private Configuration conf;
   private int capacity;
@@ -229,6 +229,10 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.footer = footer;
     this.metrics = metrics;
     this.taskContext = TaskContext$.MODULE$.get();
+  }
+
+  public CometSchemaImporter getImporter() {
+    return importer;
   }
 
   /**
