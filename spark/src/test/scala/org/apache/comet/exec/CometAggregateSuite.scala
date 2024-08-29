@@ -669,7 +669,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
             Seq(128, numValues + 100).foreach { batchSize =>
-              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
                 CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
 
                 // Test all combinations of different aggregation & group-by types
