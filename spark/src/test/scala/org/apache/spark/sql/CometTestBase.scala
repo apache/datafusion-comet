@@ -78,6 +78,7 @@ abstract class CometTestBase
     conf.set(SQLConf.COALESCE_PARTITIONS_ENABLED.key, "false")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false") // TODO need to set to true to match default
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf
