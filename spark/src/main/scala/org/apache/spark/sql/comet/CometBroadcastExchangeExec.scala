@@ -129,9 +129,14 @@ case class CometBroadcastExchangeExec(
           case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
               if s.plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
+          case s: ShuffleQueryStageExec if s.plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
           case ReusedExchangeExec(_, plan) if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
           case AQEShuffleReadExec(ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _), _)
+              if plan.isInstanceOf[CometPlan] =>
+            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
+          case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
           case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
