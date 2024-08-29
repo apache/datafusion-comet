@@ -183,7 +183,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .doc(
-        "Whether to enable Comet native shuffle. By default, this config is false. " +
+        "Whether to enable Comet native shuffle. " +
           "Note that this requires setting 'spark.shuffle.manager' to " +
           "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
           "'spark.shuffle.manager' must be set before starting the Spark application and " +
