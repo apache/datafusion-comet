@@ -75,12 +75,12 @@ case class CometTakeOrderedAndProjectExec(
         childRDD
       } else {
         val localTopK = if (orderingSatisfies) {
-          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(childRDD, child.output, limit)
         } else {
           childRDD.mapPartitionsInternal { iter =>
             val topK =
               CometExecUtils
-                .getTopKNativePlan(output, sortOrder, child, limit)
+                .getTopKNativePlan(child.output, sortOrder, child, limit)
                 .get
             CometExec.getCometIterator(Seq(iter), topK)
           }
@@ -100,7 +100,7 @@ case class CometTakeOrderedAndProjectExec(
 
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val topKAndProjection = CometExecUtils
-          .getProjectionNativePlan(projectList, output, sortOrder, child, limit)
+          .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit)
           .get
         val it = CometExec.getCometIterator(Seq(iter), topKAndProjection)
         setSubqueries(it.id, this)
