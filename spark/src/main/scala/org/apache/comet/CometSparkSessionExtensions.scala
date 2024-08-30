@@ -95,6 +95,10 @@ class CometSparkSessionExtensions
         plan
       } else {
         plan.transform {
+          case scanExec: FileSourceScanExec if scanExec.partitionFilters.nonEmpty =>
+            withInfo(scanExec, "DPP not supported")
+            scanExec
+
           // data source V2
           case scanExec: BatchScanExec
               if scanExec.scan.isInstanceOf[ParquetScan] &&

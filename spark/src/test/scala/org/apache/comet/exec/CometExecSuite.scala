@@ -64,6 +64,36 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("DPP fallback") {
+    withTempDir { path =>
+      // create test data
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("fact_id", "fact_date", "fact_str")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("dim_id", "dim_date", "dim_str")
+        dim.write.parquet(dimPath)
+      }
+
+      spark.read.parquet(factPath).createOrReplaceTempView("fact")
+      spark.read.parquet(dimPath).createOrReplaceTempView("dim")
+      val df = spark.sql("select * from fact join dim on fact_date = dim_date where dim_id > 7")
+
+      val expectedFallbackReasons = Set(
+        "BroadcastHashJoin is not enabled because the following children are not native (Scan parquet , BroadcastExchange)",
+        "DPP not supported",
+        "Scan parquet  is not supported")
+      checkSparkAnswerAndCompareExplainPlan(df, expectedFallbackReasons)
+
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     val table = "src"
     withTable(table) {
