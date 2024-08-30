@@ -49,8 +49,8 @@ public class CometBatchIterator {
    * indicating the end of the iterator.
    */
   public long[] next() {
-    // The native executor should have moved the previous batch, it is safe for us to deallocate
-    // the ArrowSchema and ArrowArray base structures.
+    // Native side already copied the content of ArrowSchema and ArrowArray. We should deallocate
+    // the ArrowSchema and ArrowArray base structures allocated in JVM.
     if (lastBatch != null) {
       lastBatch.close();
       lastBatch = null;
