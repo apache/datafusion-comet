@@ -112,6 +112,13 @@ impl AggregateExpr for SumDecimal {
             self.scale,
         )))
     }
+
+    fn default_value(&self, _data_type: &DataType) -> DFResult<ScalarValue> {
+        ScalarValue::new_primitive::<Decimal128Type>(
+            None,
+            &DataType::Decimal128(self.precision, self.scale),
+        )
+    }
 }
 
 impl PartialEq<dyn Any> for SumDecimal {

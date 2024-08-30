@@ -108,6 +108,7 @@ message SortMergeJoin {
   repeated spark.spark_expression.Expr right_join_keys = 2;
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
+  optional spark.spark_expression.Expr condition = 5;
 }
 
 enum JoinType {
