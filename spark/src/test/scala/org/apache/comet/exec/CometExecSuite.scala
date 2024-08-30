@@ -1549,7 +1549,7 @@ class CometExecSuite extends CometTestBase {
 
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
     Seq("", "parquet").foreach { v1List =>
-      Seq("true", "false").foreach { parquetVectorized =>
+      Seq(true, false).foreach { parquetVectorized =>
         Seq(
           "cast(id as tinyint)",
           "cast(id as smallint)",
@@ -1567,26 +1567,29 @@ class CometExecSuite extends CometTestBase {
               SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
               CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
               CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> parquetVectorized) {
+              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> parquetVectorized.toString) {
               withTempPath { dir =>
                 var df = spark
                   .range(10000)
                   .selectExpr("id as key", s"$valueType as value")
                   .toDF("key", "value")
 
-                df.write.parquet(dir.toString())
+                df.write.parquet(dir.toString)
 
-                df = spark.read.parquet(dir.toString())
+                df = spark.read.parquet(dir.toString)
                 checkSparkAnswerAndOperator(
                   df.select("*").groupBy("key", "value").count(),
                   includeClasses = Seq(classOf[CometSparkToColumnarExec]))
 
-                // Verify that the BatchScanExec nodes supported columnar output when requested.
-                val leaves = df.queryExecution.executedPlan.collectLeaves()
-                if (parquetVectorized == "true") {
-                  assert(leaves.forall(_.supportsColumnar))
-                } else {
-                  assert(!leaves.forall(_.supportsColumnar))
+                // Verify that the BatchScanExec nodes supported columnar output when requested for Spark 3.4+.
+                // Earlier versions support columnar output for fewer type.
+                if (isSpark34Plus) {
+                  val leaves = df.queryExecution.executedPlan.collectLeaves()
+                  if (parquetVectorized && isSpark34Plus) {
+                    assert(leaves.forall(_.supportsColumnar))
+                  } else {
+                    assert(!leaves.forall(_.supportsColumnar))
+                  }
                 }
               }
             }
