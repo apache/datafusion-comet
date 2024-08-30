@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters._
-
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
