@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use futures::Stream;
+use itertools::Itertools;
+use std::rc::Rc;
 use std::{
     any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
-
-use futures::Stream;
-use itertools::Itertools;
 
 use crate::{
     errors::CometError,
@@ -185,11 +185,11 @@ impl ScanExec {
         let mut schema_addrs = Vec::with_capacity(num_cols);
 
         for _ in 0..num_cols {
-            let arrow_array = Arc::new(FFI_ArrowArray::empty());
-            let arrow_schema = Arc::new(FFI_ArrowSchema::empty());
+            let arrow_array = Rc::new(FFI_ArrowArray::empty());
+            let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
             let (array_ptr, schema_ptr) = (
-                Arc::into_raw(arrow_array) as i64,
-                Arc::into_raw(arrow_schema) as i64,
+                Rc::into_raw(arrow_array) as i64,
+                Rc::into_raw(arrow_schema) as i64,
             );
 
             array_addrs.push(array_ptr);
@@ -231,8 +231,8 @@ impl ScanExec {
 
             // Drop the Arcs to avoid memory leak
             unsafe {
-                Arc::from_raw(array_ptr as *const FFI_ArrowArray);
-                Arc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
+                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
 
