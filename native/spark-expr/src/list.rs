@@ -119,7 +119,7 @@ impl PhysicalExpr for ListExtract {
                 let list_array = as_list_array(&child_value)?;
                 let index_array = as_int32_array(&ordinal_value)?;
 
-                array_extract(
+                list_extract(
                     list_array,
                     index_array,
                     &default_value,
@@ -131,7 +131,7 @@ impl PhysicalExpr for ListExtract {
                 let list_array = as_large_list_array(&child_value)?;
                 let index_array = as_int32_array(&ordinal_value)?;
 
-                array_extract(
+                list_extract(
                     list_array,
                     index_array,
                     &default_value,
@@ -206,7 +206,7 @@ fn zero_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
     }
 }
 
-fn array_extract<O: OffsetSizeTrait>(
+fn list_extract<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     index_array: &Int32Array,
     default_value: &ScalarValue,
@@ -274,48 +274,49 @@ impl PartialEq<dyn Any> for ListExtract {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::CreateNamedStruct;
-//     use arrow_array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
-//     use arrow_schema::{DataType, Field, Schema};
-//     use datafusion_common::Result;
-//     use datafusion_expr::ColumnarValue;
-//     use datafusion_physical_expr_common::expressions::column::Column;
-//     use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
-//     use std::sync::Arc;
+#[cfg(test)]
+mod test {
+    use crate::list::{list_extract, zero_based_index};
 
-//     #[test]
-//     fn test_create_struct_from_dict_encoded_i32() -> Result<()> {
-//         let keys = Int32Array::from(vec![0, 1, 2]);
-//         let values = Int32Array::from(vec![0, 111, 233]);
-//         let dict = DictionaryArray::try_new(keys, Arc::new(values))?;
-//         let data_type = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32));
-//         let schema = Schema::new(vec![Field::new("a", data_type, false)]);
-//         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)])?;
-//         let field_names = vec!["a".to_string()];
-//         let x = CreateNamedStruct::new(vec![Arc::new(Column::new("a", 0))], field_names);
-//         let ColumnarValue::Array(x) = x.evaluate(&batch)? else {
-//             unreachable!()
-//         };
-//         assert_eq!(3, x.len());
-//         Ok(())
-//     }
+    use arrow::datatypes::Int32Type;
+    use arrow_array::{Array, Int32Array, ListArray};
+    use datafusion_common::{Result, ScalarValue};
+    use datafusion_expr::ColumnarValue;
 
-//     #[test]
-//     fn test_create_struct_from_dict_encoded_string() -> Result<()> {
-//         let keys = Int32Array::from(vec![0, 1, 2]);
-//         let values = StringArray::from(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
-//         let dict = DictionaryArray::try_new(keys, Arc::new(values))?;
-//         let data_type = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
-//         let schema = Schema::new(vec![Field::new("a", data_type, false)]);
-//         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)])?;
-//         let field_names = vec!["a".to_string()];
-//         let x = CreateNamedStruct::new(vec![Arc::new(Column::new("a", 0))], field_names);
-//         let ColumnarValue::Array(x) = x.evaluate(&batch)? else {
-//             unreachable!()
-//         };
-//         assert_eq!(3, x.len());
-//         Ok(())
-//     }
-// }
+    #[test]
+    fn test_list_extract_default_value() -> Result<()> {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1)]),
+            None,
+            Some(vec![]),
+        ]);
+        let indices = Int32Array::from(vec![0, 0, 0]);
+
+        let null_default = ScalarValue::Int32(None);
+
+        let ColumnarValue::Array(result) =
+            list_extract(&list, &indices, &null_default, false, zero_based_index).unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            &result.to_data(),
+            &Int32Array::from(vec![Some(1), None, None]).to_data()
+        );
+
+        let zero_default = ScalarValue::Int32(Some(0));
+
+        let ColumnarValue::Array(result) =
+            list_extract(&list, &indices, &zero_default, false, zero_based_index).unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            &result.to_data(),
+            &Int32Array::from(vec![Some(1), None, Some(0)]).to_data()
+        );
+        Ok(())
+    }
+}
