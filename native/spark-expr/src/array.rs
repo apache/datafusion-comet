@@ -93,11 +93,19 @@ impl PhysicalExpr for ArrayExtract {
             .as_ref()
             .map(|d| {
                 d.evaluate(batch).map(|value| match value {
-                    // TODO: Handle converting this to dictionary
-                    ColumnarValue::Scalar(scalar) => scalar,
-                    _ => todo!(),
+                    ColumnarValue::Scalar(scalar)
+                        if !scalar.data_type().equals_datatype(child_value.data_type()) =>
+                    {
+                        scalar.cast_to(child_value.data_type())
+                    }
+                    ColumnarValue::Scalar(scalar) => Ok(scalar),
+                    v => Err(DataFusionError::Execution(format!(
+                        "Expected scalar default value for ArrayExtract, got {:?}",
+                        v
+                    ))),
                 })
             })
+            .transpose()?
             .unwrap_or(self.data_type(&batch.schema())?.try_into())?;
 
         let adjust_index = if self.one_based {
@@ -212,7 +220,7 @@ fn array_extract<O: OffsetSizeTrait>(
 
     let default_data = default_value.to_array()?.to_data();
 
-    let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
+    let mut mutable = MutableArrayData::new(vec![&data, &default_data], false, index_array.len());
 
     for (offset_window, index) in offsets.windows(2).zip(index_array.values()) {
         let start = offset_window[0].as_usize();
