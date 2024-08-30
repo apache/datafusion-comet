@@ -295,7 +295,7 @@ mod test {
         let null_default = ScalarValue::Int32(None);
 
         let ColumnarValue::Array(result) =
-            list_extract(&list, &indices, &null_default, false, zero_based_index).unwrap()
+            list_extract(&list, &indices, &null_default, false, zero_based_index)?
         else {
             unreachable!()
         };
@@ -308,7 +308,7 @@ mod test {
         let zero_default = ScalarValue::Int32(Some(0));
 
         let ColumnarValue::Array(result) =
-            list_extract(&list, &indices, &zero_default, false, zero_based_index).unwrap()
+            list_extract(&list, &indices, &zero_default, false, zero_based_index)?
         else {
             unreachable!()
         };
