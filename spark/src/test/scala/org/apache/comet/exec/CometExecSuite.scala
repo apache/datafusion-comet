@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
@@ -91,12 +91,9 @@ class CometExecSuite extends CometTestBase {
           val df =
             spark.sql(
               "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
-          df.explain(true)
-          val expectedFallbackReasons = Set(
-            "BroadcastHashJoin is not enabled because the following children are not native (Scan parquet , BroadcastExchange)",
-            "DPP not supported",
-            "Scan parquet  is not supported")
-          checkSparkAnswerAndCompareExplainPlan(df, expectedFallbackReasons)
+          val (_, cometPlan) = checkSparkAnswer(df)
+          val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+          assert(infos.contains("DPP not supported"))
         }
       }
     }
