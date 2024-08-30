@@ -2121,7 +2121,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             val stringArray = df.select(array(col("_8"), col("_8"), lit(null)).alias("arr"))
             checkSparkAnswerAndOperator(
-              stringArray.select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
+              stringArray
+                .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
 
             checkSparkAnswerAndOperator(
               stringArray.select(
@@ -2147,7 +2148,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), 4)))
             }
 
-            val intArray = df.select(when(col("_4").isNotNull, array(col("_4"), col("_4"))).alias("arr"))
+            val intArray =
+              df.select(when(col("_4").isNotNull, array(col("_4"), col("_4"))).alias("arr"))
             checkSparkAnswerAndOperator(
               intArray
                 .select(col("arr").getItem(0), col("arr").getItem(1)))
