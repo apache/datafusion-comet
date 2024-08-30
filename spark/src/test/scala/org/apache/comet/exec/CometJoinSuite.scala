@@ -23,6 +23,8 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.Decimal
@@ -290,7 +292,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // TODO: Add a test for SortMergeJoin with join filter after new DataFusion release
   test("SortMergeJoin without join filter") {
     withSQLConf(
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -334,6 +335,117 @@ class CometJoinSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df11)
         }
       }
+    }
+  }
+
+  test("SortMergeJoin with join filter") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          val df1 = sql(
+            "SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1 AND " +
+              "tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df1)
+
+          val df2 = sql(
+            "SELECT * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df2)
+
+          val df3 = sql(
+            "SELECT * FROM tbl_b LEFT JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df3)
+
+          val df4 = sql(
+            "SELECT * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df4)
+
+          val df5 = sql(
+            "SELECT * FROM tbl_b RIGHT JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df5)
+
+          val df6 = sql(
+            "SELECT * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df6)
+
+          val df7 = sql(
+            "SELECT * FROM tbl_b FULL JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._1 > tbl_b._2")
+          checkSparkAnswerAndOperator(df7)
+
+          val df8 = sql(
+            "SELECT * FROM tbl_a LEFT SEMI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
+          checkSparkAnswerAndOperator(df8)
+
+          val df9 = sql(
+            "SELECT * FROM tbl_b LEFT SEMI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
+          checkSparkAnswerAndOperator(df9)
+
+          // TODO: Enable these tests after fixing the issue:
+          // https://github.com/apache/datafusion-comet/issues/861
+          /*
+          val df10 = sql(
+            "SELECT * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
+          checkSparkAnswerAndOperator(df10)
+
+          val df11 = sql(
+            "SELECT * FROM tbl_b LEFT ANTI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
+              "AND tbl_a._2 >= tbl_b._1")
+          checkSparkAnswerAndOperator(df11)
+           */
+        }
+      }
+    }
+  }
+
+  test("full outer join") {
+    withTempView("`left`", "`right`", "allNulls") {
+      allNulls.createOrReplaceTempView("allNulls")
+
+      upperCaseData.where($"N" <= 4).createOrReplaceTempView("`left`")
+      upperCaseData.where($"N" >= 3).createOrReplaceTempView("`right`")
+
+      val left = UnresolvedRelation(TableIdentifier("left"))
+      val right = UnresolvedRelation(TableIdentifier("right"))
+
+      checkSparkAnswer(left.join(right, $"left.N" === $"right.N", "full"))
+
+      checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"left.N" =!= 3), "full"))
+
+      checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"right.N" =!= 3), "full"))
+
+      checkSparkAnswer(sql("""
+            |SELECT l.a, count(*)
+            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+            |GROUP BY l.a
+        """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT r.N, count(*)
+            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+            |GROUP BY r.N
+          """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT l.N, count(*)
+            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+            |GROUP BY l.N
+          """.stripMargin))
+
+      checkSparkAnswer(sql("""
+            |SELECT r.a, count(*)
+            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+            |GROUP BY r.a
+        """.stripMargin))
     }
   }
 }
