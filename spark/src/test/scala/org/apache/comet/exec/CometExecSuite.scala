@@ -82,12 +82,15 @@ class CometExecSuite extends CometTestBase {
       }
 
       // note that this test does not trigger DPP with v2 data source
-      Seq("" /*, "parquet"*/ ).foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          spark.read.parquet(factPath).createOrReplaceTempView("fact")
-          spark.read.parquet(dimPath).createOrReplaceTempView("dim")
+      Seq("parquet").foreach { v1List =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+          spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
+          spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
           val df =
-            spark.sql("select * from fact join dim on fact_date = dim_date where dim_id > 7")
+            spark.sql(
+              "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
           df.explain(true)
           val expectedFallbackReasons = Set(
             "BroadcastHashJoin is not enabled because the following children are not native (Scan parquet , BroadcastExchange)",
