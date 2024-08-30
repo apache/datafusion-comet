@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..47382e29b5a 100644
+index d3544881af1..bf0e2b53c70 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -679,7 +679,7 @@ index 1792b4c32eb..1616e6f39bd 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 7f062bfb899..3acf697df9a 100644
+index 7f062bfb899..b347ef905d2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -30,7 +30,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
@@ -863,7 +863,18 @@ index 7f062bfb899..3acf697df9a 100644
              }.size == 1)
            }
        }
-@@ -1489,7 +1517,10 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1482,14 +1510,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+ 
+   test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SMJ)") {
+     def check(plan: SparkPlan): Unit = {
+-      assert(collect(plan) { case _: SortMergeJoinExec => true }.size === 1)
++      assert(collect(plan) {
++        case _: SortMergeJoinExec => true
++        case _: CometSortMergeJoinExec => true
++      }.size === 1)
+     }
+     dupStreamSideColTest("MERGE", check)
+   }
  
    test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SHJ)") {
      def check(plan: SparkPlan): Unit = {
@@ -875,7 +886,7 @@ index 7f062bfb899..3acf697df9a 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
-@@ -1605,7 +1636,8 @@ class ThreadLeakInSortMergeJoinSuite
+@@ -1605,7 +1639,8 @@ class ThreadLeakInSortMergeJoinSuite
        sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
    }
  

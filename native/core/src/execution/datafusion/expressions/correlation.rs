@@ -121,6 +121,10 @@ impl AggregateExpr for Correlation {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
+    }
 }
 
 impl PartialEq<dyn Any> for Correlation {
