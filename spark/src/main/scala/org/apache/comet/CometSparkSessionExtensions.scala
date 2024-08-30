@@ -101,7 +101,8 @@ class CometSparkSessionExtensions
 
         plan.transform {
           case scanExec: FileSourceScanExec
-              if scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
+              if COMET_DPP_FALLBACK_ENABLED.get() &&
+                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
             withInfo(scanExec, "DPP not supported")
             scanExec
 
