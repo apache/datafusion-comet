@@ -2096,7 +2096,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ArrayExtract") {
+  test("ListExtract") {
     def assertBothThrow(df: DataFrame): Unit = {
       checkSparkMaybeThrows(df) match {
         case (Some(_), Some(_)) => ()
@@ -2119,45 +2119,45 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
             val df = spark.read.parquet(path.toString)
 
-            val stringArray = df.select(array(col("_8"), col("_8")).alias("arr"))
+            val stringArray = df.select(array(col("_8"), col("_8"), lit(null)).alias("arr"))
             checkSparkAnswerAndOperator(
-              stringArray.select(col("arr").getItem(0), col("arr").getItem(1)))
+              stringArray.select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
 
             checkSparkAnswerAndOperator(
               stringArray.select(
+                element_at(col("arr"), -3),
                 element_at(col("arr"), -2),
                 element_at(col("arr"), -1),
                 element_at(col("arr"), 1),
-                element_at(col("arr"), 2)))
+                element_at(col("arr"), 2),
+                element_at(col("arr"), 3)))
 
             // 0 is an invalid index for element_at
             assertBothThrow(stringArray.select(element_at(col("arr"), 0)))
 
             if (ansiEnabled) {
               assertBothThrow(stringArray.select(col("arr").getItem(-1)))
-              assertBothThrow(stringArray.select(col("arr").getItem(2)))
-              assertBothThrow(stringArray.select(element_at(col("arr"), -3)))
-              assertBothThrow(stringArray.select(element_at(col("arr"), 3)))
+              assertBothThrow(stringArray.select(col("arr").getItem(3)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), -4)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), 4)))
             } else {
               checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(-1)))
-              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(2)))
-              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), -3)))
-              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), 3)))
+              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(3)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), -4)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), 4)))
             }
 
-            val intArray = df.select(array(col("_4"), col("_4"), col("_4")).alias("arr"))
+            val intArray = df.select(when(col("_4").isNotNull, array(col("_4"), col("_4"))).alias("arr"))
             checkSparkAnswerAndOperator(
               intArray
-                .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
+                .select(col("arr").getItem(0), col("arr").getItem(1)))
 
             checkSparkAnswerAndOperator(
               intArray.select(
                 element_at(col("arr"), 1),
                 element_at(col("arr"), 2),
-                element_at(col("arr"), 3),
                 element_at(col("arr"), -1),
-                element_at(col("arr"), -2),
-                element_at(col("arr"), -3)))
+                element_at(col("arr"), -2)))
           }
         }
       }

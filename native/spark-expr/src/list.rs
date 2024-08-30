@@ -34,7 +34,7 @@ use std::{
 use crate::utils::down_cast_any_ref;
 
 #[derive(Debug, Hash)]
-pub struct ArrayExtract {
+pub struct ListExtract {
     child: Arc<dyn PhysicalExpr>,
     ordinal: Arc<dyn PhysicalExpr>,
     default_value: Option<Arc<dyn PhysicalExpr>>,
@@ -42,7 +42,7 @@ pub struct ArrayExtract {
     fail_on_error: bool,
 }
 
-impl ArrayExtract {
+impl ListExtract {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
         ordinal: Arc<dyn PhysicalExpr>,
@@ -63,14 +63,14 @@ impl ArrayExtract {
         match self.child.data_type(input_schema)? {
             DataType::List(field) | DataType::LargeList(field) => Ok(field),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in ArrayExtract: {:?}",
+                "Unexpected data type in ListExtract: {:?}",
                 data_type
             ))),
         }
     }
 }
 
-impl PhysicalExpr for ArrayExtract {
+impl PhysicalExpr for ListExtract {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -100,7 +100,7 @@ impl PhysicalExpr for ArrayExtract {
                     }
                     ColumnarValue::Scalar(scalar) => Ok(scalar),
                     v => Err(DataFusionError::Execution(format!(
-                        "Expected scalar default value for ArrayExtract, got {:?}",
+                        "Expected scalar default value for ListExtract, got {:?}",
                         v
                     ))),
                 })
@@ -140,7 +140,7 @@ impl PhysicalExpr for ArrayExtract {
                 )
             }
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected child type for ArrayExtract: {:?}",
+                "Unexpected child type for ListExtract: {:?}",
                 data_type
             ))),
         }
@@ -154,7 +154,7 @@ impl PhysicalExpr for ArrayExtract {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(ArrayExtract::new(
+        Ok(Arc::new(ListExtract::new(
             Arc::clone(&children[0]),
             Arc::clone(&children[1]),
             self.default_value.clone(),
@@ -177,7 +177,7 @@ impl PhysicalExpr for ArrayExtract {
 fn one_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
     if index == 0 {
         return Err(DataFusionError::Execution(
-            "Invalid index of 0 for one-based ArrayExtract".to_string(),
+            "Invalid index of 0 for one-based ListExtract".to_string(),
         ));
     }
 
@@ -220,14 +220,16 @@ fn array_extract<O: OffsetSizeTrait>(
 
     let default_data = default_value.to_array()?.to_data();
 
-    let mut mutable = MutableArrayData::new(vec![&data, &default_data], false, index_array.len());
+    let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
 
-    for (offset_window, index) in offsets.windows(2).zip(index_array.values()) {
+    for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.values()).enumerate() {
         let start = offset_window[0].as_usize();
         let len = offset_window[1].as_usize() - start;
 
         if let Some(i) = adjust_index(*index, len)? {
             mutable.extend(0, start + i, start + i + 1);
+        } else if list_array.is_null(row) {
+            mutable.extend_nulls(1);
         } else if fail_on_error {
             return Err(DataFusionError::Execution(
                 "Index out of bounds for array".to_string(),
@@ -241,17 +243,17 @@ fn array_extract<O: OffsetSizeTrait>(
     Ok(ColumnarValue::Array(arrow::array::make_array(data)))
 }
 
-impl Display for ArrayExtract {
+impl Display for ListExtract {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ArrayExtract [child: {:?}, ordinal: {:?}, default_value: {:?}, one_based: {:?}, fail_on_error: {:?}]",
+            "ListExtract [child: {:?}, ordinal: {:?}, default_value: {:?}, one_based: {:?}, fail_on_error: {:?}]",
             self.child, self.ordinal,  self.default_value, self.one_based, self.fail_on_error
         )
     }
 }
 
-impl PartialEq<dyn Any> for ArrayExtract {
+impl PartialEq<dyn Any> for ListExtract {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()

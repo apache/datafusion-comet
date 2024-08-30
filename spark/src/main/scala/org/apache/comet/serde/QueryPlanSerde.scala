@@ -2465,7 +2465,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val ordinalExpr = exprToProto(ordinal, inputs, binding)
 
           if (childExpr.isDefined && ordinalExpr.isDefined) {
-            val arrayExtractBuilder = ExprOuterClass.ArrayExtract
+            val listExtractBuilder = ExprOuterClass.ListExtract
               .newBuilder()
               .setChild(childExpr.get)
               .setOrdinal(ordinalExpr.get)
@@ -2475,7 +2475,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
-                .setArrayExtract(arrayExtractBuilder)
+                .setListExtract(listExtractBuilder)
                 .build())
           } else {
             withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
@@ -2490,7 +2490,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           if (childExpr.isDefined && ordinalExpr.isDefined &&
             defaultExpr.isDefined == defaultValue.isDefined) {
-            val arrayExtractBuilder = ExprOuterClass.ArrayExtract
+            val arrayExtractBuilder = ExprOuterClass.ListExtract
               .newBuilder()
               .setChild(childExpr.get)
               .setOrdinal(ordinalExpr.get)
@@ -2502,7 +2502,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             Some(
               ExprOuterClass.Expr
                 .newBuilder()
-                .setArrayExtract(arrayExtractBuilder)
+                .setListExtract(arrayExtractBuilder)
                 .build())
           } else {
             withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)

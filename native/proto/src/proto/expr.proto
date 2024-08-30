@@ -80,7 +80,7 @@ message Expr {
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
-    ArrayExtract array_extract = 56;
+    ListExtract list_extract = 56;
   }
 }
 
@@ -509,7 +509,7 @@ message GetStructField {
   int32 ordinal = 2;
 }
 
-message ArrayExtract {
+message ListExtract {
   Expr child = 1;
   Expr ordinal = 2;
   Expr default_value = 3;
