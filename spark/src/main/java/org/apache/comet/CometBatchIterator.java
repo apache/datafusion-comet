@@ -23,7 +23,6 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
-import org.apache.comet.vector.ExportedBatch;
 import org.apache.comet.vector.NativeUtil;
 
 /**
