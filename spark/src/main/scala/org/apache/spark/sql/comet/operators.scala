@@ -428,6 +428,7 @@ case class CometProjectExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometProjectExec =>
+        this.output == other.output &&
         this.projectList == other.projectList &&
         this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
@@ -436,7 +437,7 @@ case class CometProjectExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(projectList, child)
+  override def hashCode(): Int = Objects.hashCode(output, projectList, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = projectList
 }
@@ -462,6 +463,7 @@ case class CometFilterExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometFilterExec =>
+        this.output == other.output &&
         this.condition == other.condition && this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -469,7 +471,7 @@ case class CometFilterExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(condition, child)
+  override def hashCode(): Int = Objects.hashCode(output, condition, child)
 
   override def verboseStringWithOperatorId(): String = {
     s"""
@@ -501,6 +503,7 @@ case class CometSortExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometSortExec =>
+        this.output == other.output &&
         this.sortOrder == other.sortOrder && this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -508,7 +511,7 @@ case class CometSortExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(sortOrder, child)
+  override def hashCode(): Int = Objects.hashCode(output, sortOrder, child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -539,6 +542,7 @@ case class CometLocalLimitExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometLocalLimitExec =>
+        this.output == other.output &&
         this.limit == other.limit && this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -546,7 +550,7 @@ case class CometLocalLimitExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(limit: java.lang.Integer, child)
+  override def hashCode(): Int = Objects.hashCode(output, limit: java.lang.Integer, child)
 }
 
 case class CometGlobalLimitExec(
@@ -569,6 +573,7 @@ case class CometGlobalLimitExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometGlobalLimitExec =>
+        this.output == other.output &&
         this.limit == other.limit && this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -576,7 +581,7 @@ case class CometGlobalLimitExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(limit: java.lang.Integer, child)
+  override def hashCode(): Int = Objects.hashCode(output, limit: java.lang.Integer, child)
 }
 
 case class CometExpandExec(
@@ -599,6 +604,7 @@ case class CometExpandExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometExpandExec =>
+        this.output == other.output &&
         this.projections == other.projections && this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -606,7 +612,7 @@ case class CometExpandExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(projections, child)
+  override def hashCode(): Int = Objects.hashCode(output, projections, child)
 
   // TODO: support native Expand metrics
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
@@ -638,12 +644,14 @@ case class CometUnionExec(
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case other: CometUnionExec => this.children == other.children
+      case other: CometUnionExec =>
+        this.output == other.output &&
+        this.children == other.children
       case _ => false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(children)
+  override def hashCode(): Int = Objects.hashCode(output, children)
 }
 
 case class CometHashAggregateExec(
@@ -677,6 +685,7 @@ case class CometHashAggregateExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometHashAggregateExec =>
+        this.output == other.output &&
         this.groupingExpressions == other.groupingExpressions &&
         this.aggregateExpressions == other.aggregateExpressions &&
         this.input == other.input &&
@@ -689,7 +698,7 @@ case class CometHashAggregateExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(groupingExpressions, aggregateExpressions, input, mode, child)
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, mode, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
@@ -729,6 +738,7 @@ case class CometHashJoinExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometHashJoinExec =>
+        this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
         this.condition == other.condition &&
@@ -742,7 +752,7 @@ case class CometHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.hashJoinMetrics(sparkContext)
@@ -865,6 +875,7 @@ case class CometBroadcastHashJoinExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometBroadcastHashJoinExec =>
+        this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
         this.condition == other.condition &&
@@ -878,7 +889,7 @@ case class CometBroadcastHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.hashJoinMetrics(sparkContext)
@@ -918,6 +929,7 @@ case class CometSortMergeJoinExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometSortMergeJoinExec =>
+        this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
         this.condition == other.condition &&
@@ -930,7 +942,7 @@ case class CometSortMergeJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(leftKeys, rightKeys, condition, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, condition, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.sortMergeJoinMetrics(sparkContext)
