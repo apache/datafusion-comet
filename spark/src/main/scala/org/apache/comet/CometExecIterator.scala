@@ -47,7 +47,7 @@ class CometExecIterator(
     nativeMetrics: CometMetricNode)
     extends Iterator[ColumnarBatch] {
 
-  private val nativeLib = new Native()
+  private val nativeLib = CometExecIterator.nativeLib
   private val nativeUtil = new NativeUtil
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
@@ -183,4 +183,8 @@ class CometExecIterator(
       closed = true
     }
   }
+}
+
+object CometExecIterator {
+  private lazy val nativeLib = new Native()
 }
