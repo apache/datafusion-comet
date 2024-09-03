@@ -145,6 +145,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("date_add") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT _4 FROM tbl WHERE " +
+              "_20 + 5 > CAST('2020-01-01' AS DATE)")
+        }
+      }
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
