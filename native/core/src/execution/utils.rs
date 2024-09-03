@@ -55,6 +55,9 @@ pub trait SparkArrowConvert {
     /// Convert Arrow Arrays to C data interface.
     /// It returns a tuple (ArrowArray address, ArrowSchema address).
     fn to_spark(&self) -> Result<(i64, i64), ExecutionError>;
+
+    /// Move Arrow Arrays to C data interface.
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
 
 impl SparkArrowConvert for ArrayData {
@@ -95,6 +98,19 @@ impl SparkArrowConvert for ArrayData {
         let (array, schema) = (Arc::into_raw(arrow_array), Arc::into_raw(arrow_schema));
 
         Ok((array as i64, schema as i64))
+    }
+
+    /// Move this ArrowData to pointers of Arrow C data interface.
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
+        unsafe { std::ptr::replace(array as *mut FFI_ArrowArray, FFI_ArrowArray::new(self)) };
+        unsafe {
+            std::ptr::replace(
+                schema as *mut FFI_ArrowSchema,
+                FFI_ArrowSchema::try_from(self.data_type())?,
+            )
+        };
+
+        Ok(())
     }
 }
 

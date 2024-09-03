@@ -56,6 +56,28 @@ class NativeUtil {
    */
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
+ /**
+   * Allocates Arrow structs for the given number of columns.
+   *
+   * @param numCols
+   *   the number of columns
+   * @return
+   *   a pair of arrays containing memory addresses of Arrow arrays and Arrow schemas
+   */
+  def allocateArrowStructs(numCols: Int): (Array[Long], Array[Long]) = {
+    val arrayAddrs = new Array[Long](numCols)
+    val schemaAddrs = new Array[Long](numCols)
+
+    (0 until numCols).foreach { index =>
+      val arrowSchema = ArrowSchema.allocateNew(allocator)
+      val arrowArray = ArrowArray.allocateNew(allocator)
+      arrayAddrs(index) = arrowArray.memoryAddress()
+      schemaAddrs(index) = arrowSchema.memoryAddress()
+    }
+
+    (arrayAddrs, schemaAddrs)
+  }
+
   /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
    * native execution.
@@ -110,12 +132,12 @@ class NativeUtil {
    * @return
    *   a list of Comet vectors
    */
-  def importVector(arrayAddress: Array[Long]): Seq[CometVector] = {
+  def importVector(arrayAddrs: Array[Long], schemaAddrs: Array[Long]): Seq[CometVector] = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
 
-    for (i <- arrayAddress.indices by 2) {
-      val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
-      val arrowArray = ArrowArray.wrap(arrayAddress(i))
+    (0 until arrayAddrs.length).foreach { i =>
+      val arrowSchema = ArrowSchema.wrap(schemaAddrs(i))
+      val arrowArray = ArrowArray.wrap(arrayAddrs(i))
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
