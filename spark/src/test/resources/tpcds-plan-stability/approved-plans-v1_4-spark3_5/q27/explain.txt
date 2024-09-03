@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (30)
-+- * HashAggregate (29)
-   +- Exchange (28)
-      +- * ColumnarToRow (27)
+* ColumnarToRow (30)
++- CometTakeOrderedAndProject (29)
+   +- CometHashAggregate (28)
+      +- CometExchange (27)
          +- CometHashAggregate (26)
             +- CometExpand (25)
                +- CometProject (24)
@@ -156,23 +156,21 @@ Input [7]: [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i
 Keys [3]: [i_item_id#20, s_state#21, spark_grouping_id#22]
 Functions [4]: [partial_avg(ss_quantity#4), partial_avg(UnscaledValue(ss_list_price#5)), partial_avg(UnscaledValue(ss_coupon_amt#7)), partial_avg(UnscaledValue(ss_sales_price#6))]
 
-(27) ColumnarToRow [codegen id : 1]
+(27) CometExchange
 Input [11]: [i_item_id#20, s_state#21, spark_grouping_id#22, sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29, count#30]
+Arguments: hashpartitioning(i_item_id#20, s_state#21, spark_grouping_id#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(28) Exchange
-Input [11]: [i_item_id#20, s_state#21, spark_grouping_id#22, sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29, count#30]
-Arguments: hashpartitioning(i_item_id#20, s_state#21, spark_grouping_id#22, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(29) HashAggregate [codegen id : 2]
+(28) CometHashAggregate
 Input [11]: [i_item_id#20, s_state#21, spark_grouping_id#22, sum#23, count#24, sum#25, count#26, sum#27, count#28, sum#29, count#30]
 Keys [3]: [i_item_id#20, s_state#21, spark_grouping_id#22]
 Functions [4]: [avg(ss_quantity#4), avg(UnscaledValue(ss_list_price#5)), avg(UnscaledValue(ss_coupon_amt#7)), avg(UnscaledValue(ss_sales_price#6))]
-Aggregate Attributes [4]: [avg(ss_quantity#4)#31, avg(UnscaledValue(ss_list_price#5))#32, avg(UnscaledValue(ss_coupon_amt#7))#33, avg(UnscaledValue(ss_sales_price#6))#34]
-Results [7]: [i_item_id#20, s_state#21, cast((shiftright(spark_grouping_id#22, 0) & 1) as tinyint) AS g_state#35, avg(ss_quantity#4)#31 AS agg1#36, cast((avg(UnscaledValue(ss_list_price#5))#32 / 100.0) as decimal(11,6)) AS agg2#37, cast((avg(UnscaledValue(ss_coupon_amt#7))#33 / 100.0) as decimal(11,6)) AS agg3#38, cast((avg(UnscaledValue(ss_sales_price#6))#34 / 100.0) as decimal(11,6)) AS agg4#39]
 
-(30) TakeOrderedAndProject
-Input [7]: [i_item_id#20, s_state#21, g_state#35, agg1#36, agg2#37, agg3#38, agg4#39]
-Arguments: 100, [i_item_id#20 ASC NULLS FIRST, s_state#21 ASC NULLS FIRST], [i_item_id#20, s_state#21, g_state#35, agg1#36, agg2#37, agg3#38, agg4#39]
+(29) CometTakeOrderedAndProject
+Input [7]: [i_item_id#20, s_state#21, g_state#31, agg1#32, agg2#33, agg3#34, agg4#35]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#20 ASC NULLS FIRST,s_state#21 ASC NULLS FIRST], output=[i_item_id#20,s_state#21,g_state#31,agg1#32,agg2#33,agg3#34,agg4#35]), [i_item_id#20, s_state#21, g_state#31, agg1#32, agg2#33, agg3#34, agg4#35], 100, [i_item_id#20 ASC NULLS FIRST, s_state#21 ASC NULLS FIRST], [i_item_id#20, s_state#21, g_state#31, agg1#32, agg2#33, agg3#34, agg4#35]
+
+(30) ColumnarToRow [codegen id : 1]
+Input [7]: [i_item_id#20, s_state#21, g_state#31, agg1#32, agg2#33, agg3#34, agg4#35]
 
 ===== Subqueries =====
 

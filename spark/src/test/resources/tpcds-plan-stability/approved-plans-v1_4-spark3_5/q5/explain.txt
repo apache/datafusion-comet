@@ -6,8 +6,8 @@ TakeOrderedAndProject (70)
          +- * Expand (66)
             +- Union (65)
                :- * HashAggregate (22)
-               :  +- Exchange (21)
-               :     +- * ColumnarToRow (20)
+               :  +- * ColumnarToRow (21)
+               :     +- CometExchange (20)
                :        +- CometHashAggregate (19)
                :           +- CometProject (18)
                :              +- CometBroadcastHashJoin (17)
@@ -28,8 +28,8 @@ TakeOrderedAndProject (70)
                :                    +- CometFilter (15)
                :                       +- CometScan parquet spark_catalog.default.store (14)
                :- * HashAggregate (41)
-               :  +- Exchange (40)
-               :     +- * ColumnarToRow (39)
+               :  +- * ColumnarToRow (40)
+               :     +- CometExchange (39)
                :        +- CometHashAggregate (38)
                :           +- CometProject (37)
                :              +- CometBroadcastHashJoin (36)
@@ -47,8 +47,8 @@ TakeOrderedAndProject (70)
                :                    +- CometFilter (34)
                :                       +- CometScan parquet spark_catalog.default.catalog_page (33)
                +- * HashAggregate (64)
-                  +- Exchange (63)
-                     +- * ColumnarToRow (62)
+                  +- * ColumnarToRow (63)
+                     +- CometExchange (62)
                         +- CometHashAggregate (61)
                            +- CometProject (60)
                               +- CometBroadcastHashJoin (59)
@@ -164,14 +164,14 @@ Input [5]: [sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_id#25]
 Keys [1]: [s_store_id#25]
 Functions [4]: [partial_sum(UnscaledValue(sales_price#8)), partial_sum(UnscaledValue(return_amt#10)), partial_sum(UnscaledValue(profit#9)), partial_sum(UnscaledValue(net_loss#11))]
 
-(20) ColumnarToRow [codegen id : 1]
+(20) CometExchange
+Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
+Arguments: hashpartitioning(s_store_id#25, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(21) ColumnarToRow [codegen id : 1]
 Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
 
-(21) Exchange
-Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
-Arguments: hashpartitioning(s_store_id#25, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(22) HashAggregate [codegen id : 2]
+(22) HashAggregate [codegen id : 1]
 Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
 Keys [1]: [s_store_id#25]
 Functions [4]: [sum(UnscaledValue(sales_price#8)), sum(UnscaledValue(return_amt#10)), sum(UnscaledValue(profit#9)), sum(UnscaledValue(net_loss#11))]
@@ -255,14 +255,14 @@ Input [5]: [sales_price#46, profit#47, return_amt#48, net_loss#49, cp_catalog_pa
 Keys [1]: [cp_catalog_page_id#62]
 Functions [4]: [partial_sum(UnscaledValue(sales_price#46)), partial_sum(UnscaledValue(return_amt#48)), partial_sum(UnscaledValue(profit#47)), partial_sum(UnscaledValue(net_loss#49))]
 
-(39) ColumnarToRow [codegen id : 3]
+(39) CometExchange
+Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
+Arguments: hashpartitioning(cp_catalog_page_id#62, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+
+(40) ColumnarToRow [codegen id : 2]
 Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
 
-(40) Exchange
-Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
-Arguments: hashpartitioning(cp_catalog_page_id#62, 5), ENSURE_REQUIREMENTS, [plan_id=2]
-
-(41) HashAggregate [codegen id : 4]
+(41) HashAggregate [codegen id : 2]
 Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
 Keys [1]: [cp_catalog_page_id#62]
 Functions [4]: [sum(UnscaledValue(sales_price#46)), sum(UnscaledValue(return_amt#48)), sum(UnscaledValue(profit#47)), sum(UnscaledValue(net_loss#49))]
@@ -365,14 +365,14 @@ Input [5]: [sales_price#83, profit#84, return_amt#85, net_loss#86, web_site_id#1
 Keys [1]: [web_site_id#104]
 Functions [4]: [partial_sum(UnscaledValue(sales_price#83)), partial_sum(UnscaledValue(return_amt#85)), partial_sum(UnscaledValue(profit#84)), partial_sum(UnscaledValue(net_loss#86))]
 
-(62) ColumnarToRow [codegen id : 5]
+(62) CometExchange
+Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
+Arguments: hashpartitioning(web_site_id#104, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+
+(63) ColumnarToRow [codegen id : 3]
 Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
 
-(63) Exchange
-Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
-Arguments: hashpartitioning(web_site_id#104, 5), ENSURE_REQUIREMENTS, [plan_id=3]
-
-(64) HashAggregate [codegen id : 6]
+(64) HashAggregate [codegen id : 3]
 Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
 Keys [1]: [web_site_id#104]
 Functions [4]: [sum(UnscaledValue(sales_price#83)), sum(UnscaledValue(return_amt#85)), sum(UnscaledValue(profit#84)), sum(UnscaledValue(net_loss#86))]
@@ -381,11 +381,11 @@ Results [5]: [MakeDecimal(sum(UnscaledValue(sales_price#83))#109,17,2) AS sales#
 
 (65) Union
 
-(66) Expand [codegen id : 7]
+(66) Expand [codegen id : 4]
 Input [5]: [sales#34, returns#35, profit#36, channel#37, id#38]
 Arguments: [[sales#34, returns#35, profit#36, channel#37, id#38, 0], [sales#34, returns#35, profit#36, channel#37, null, 1], [sales#34, returns#35, profit#36, null, null, 3]], [sales#34, returns#35, profit#36, channel#118, id#119, spark_grouping_id#120]
 
-(67) HashAggregate [codegen id : 7]
+(67) HashAggregate [codegen id : 4]
 Input [6]: [sales#34, returns#35, profit#36, channel#118, id#119, spark_grouping_id#120]
 Keys [3]: [channel#118, id#119, spark_grouping_id#120]
 Functions [3]: [partial_sum(sales#34), partial_sum(returns#35), partial_sum(profit#36)]
@@ -396,7 +396,7 @@ Results [9]: [channel#118, id#119, spark_grouping_id#120, sum#127, isEmpty#128, 
 Input [9]: [channel#118, id#119, spark_grouping_id#120, sum#127, isEmpty#128, sum#129, isEmpty#130, sum#131, isEmpty#132]
 Arguments: hashpartitioning(channel#118, id#119, spark_grouping_id#120, 5), ENSURE_REQUIREMENTS, [plan_id=4]
 
-(69) HashAggregate [codegen id : 8]
+(69) HashAggregate [codegen id : 5]
 Input [9]: [channel#118, id#119, spark_grouping_id#120, sum#127, isEmpty#128, sum#129, isEmpty#130, sum#131, isEmpty#132]
 Keys [3]: [channel#118, id#119, spark_grouping_id#120]
 Functions [3]: [sum(sales#34), sum(returns#35), sum(profit#36)]

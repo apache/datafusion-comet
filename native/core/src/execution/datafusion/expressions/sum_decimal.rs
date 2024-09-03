@@ -94,7 +94,7 @@ impl AggregateExpr for SumDecimal {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr.clone()]
+        vec![Arc::clone(&self.expr)]
     }
 
     fn name(&self) -> &str {
@@ -111,6 +111,13 @@ impl AggregateExpr for SumDecimal {
             self.precision,
             self.scale,
         )))
+    }
+
+    fn default_value(&self, _data_type: &DataType) -> DFResult<ScalarValue> {
+        ScalarValue::new_primitive::<Decimal128Type>(
+            None,
+            &DataType::Decimal128(self.precision, self.scale),
+        )
     }
 }
 

@@ -64,12 +64,27 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
+    val table = "src"
+    withTable(table) {
+      withView("lv_noalias") {
+        sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
+        sql(s"INSERT INTO $table VALUES(238, 'val_238')")
+
+        sql(
+          "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
+            "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
+        val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key");
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("Sort on single struct should fallback to Spark") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
@@ -378,9 +393,7 @@ class CometExecSuite extends CometTestBase {
 
   test("CometExec.executeColumnarCollectIterator can collect ColumnarBatch results") {
     assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 50).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
 
@@ -470,9 +483,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: project and filter") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
         df.collect()
@@ -499,7 +510,6 @@ class CometExecSuite extends CometTestBase {
   test("Comet native metrics: SortMergeJoin") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
       "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.join.preferSortMergeJoin" -> "true") {
@@ -514,17 +524,19 @@ class CometExecSuite extends CometTestBase {
           }.map(_.metrics).get
 
           assert(metrics.contains("input_batches"))
-          assert(metrics("input_batches").value == 8L)
+          assert(metrics("input_batches").value == 2L)
           assert(metrics.contains("input_rows"))
           assert(metrics("input_rows").value == 10L)
           assert(metrics.contains("output_batches"))
-          assert(metrics("output_batches").value == 4L)
+          assert(metrics("output_batches").value == 1L)
           assert(metrics.contains("output_rows"))
           assert(metrics("output_rows").value == 5L)
           assert(metrics.contains("peak_mem_used"))
           assert(metrics("peak_mem_used").value > 1L)
           assert(metrics.contains("join_time"))
           assert(metrics("join_time").value > 1L)
+          assert(metrics.contains("spill_count"))
+          assert(metrics("spill_count").value == 0)
         }
       }
     }
@@ -1241,7 +1253,7 @@ class CometExecSuite extends CometTestBase {
         .saveAsTable("bucketed_table2")
 
       withSQLConf(
-        "spark.comet.exec.sortMergeJoin.disabled" -> "true",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
         val t1 = spark.table("bucketed_table1")
@@ -1349,9 +1361,8 @@ class CometExecSuite extends CometTestBase {
 
   test("disabled/unsupported exec with multiple children should not disappear") {
     withSQLConf(
-      CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".project.enabled" -> "true",
-      CometConf.COMET_EXEC_CONFIG_PREFIX + ".union.enabled" -> "false") {
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_UNION_ENABLED.key -> "false") {
       withParquetDataFrame((0 until 5).map(Tuple1(_))) { df =>
         val projected = df.selectExpr("_1 as x")
         val unioned = projected.union(df)
@@ -1536,6 +1547,58 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
+  test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
+    Seq("", "parquet").foreach { v1List =>
+      Seq(true, false).foreach { parquetVectorized =>
+        Seq(
+          "cast(id as tinyint)",
+          "cast(id as smallint)",
+          "cast(id as integer)",
+          "cast(id as bigint)",
+          "cast(id as float)",
+          "cast(id as double)",
+          "cast(id as decimal)",
+          "cast(id as timestamp)",
+          "cast(id as string)",
+          "cast(id as binary)",
+          "struct(id)").foreach { valueType =>
+          {
+            withSQLConf(
+              SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+              CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+              CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> parquetVectorized.toString) {
+              withTempPath { dir =>
+                var df = spark
+                  .range(10000)
+                  .selectExpr("id as key", s"$valueType as value")
+                  .toDF("key", "value")
+
+                df.write.parquet(dir.toString)
+
+                df = spark.read.parquet(dir.toString)
+                checkSparkAnswerAndOperator(
+                  df.select("*").groupBy("key", "value").count(),
+                  includeClasses = Seq(classOf[CometSparkToColumnarExec]))
+
+                // Verify that the BatchScanExec nodes supported columnar output when requested for Spark 3.4+.
+                // Earlier versions support columnar output for fewer type.
+                if (isSpark34Plus) {
+                  val leaves = df.queryExecution.executedPlan.collectLeaves()
+                  if (parquetVectorized && isSpark34Plus) {
+                    assert(leaves.forall(_.supportsColumnar))
+                  } else {
+                    assert(!leaves.forall(_.supportsColumnar))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over InMemoryTableScanExec") {
     Seq("true", "false").foreach(aqe => {
       Seq("true", "false").foreach(cacheVectorized => {
@@ -1579,6 +1642,58 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("aggregate window function for all types") {
+    val numValues = 2048
+
+    Seq(1, 100, numValues).foreach { numGroups =>
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempPath { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            Seq(128, numValues + 100).foreach { batchSize =>
+              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+                (1 to 11).foreach { col =>
+                  val aggregateFunctions =
+                    List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
+                  aggregateFunctions.foreach { function =>
+                    val df1 = sql(s"SELECT $function OVER() FROM tbl")
+                    checkSparkAnswerWithTol(df1, 1e-6)
+
+                    val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
+                    checkSparkAnswerWithTol(df2, 1e-6)
+
+                    val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
+                    checkSparkAnswerWithTol(df3, 1e-6)
+
+                    val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
+                    checkSparkAnswerWithTol(df4, 1e-6)
+                  }
+                }
+
+                // SUM doesn't work for Date type. org.apache.spark.sql.AnalysisException will be thrown.
+                val aggregateFunctionsWithoutSum = List("COUNT(_12)", "MAX(_12)", "MIN(_12)")
+                aggregateFunctionsWithoutSum.foreach { function =>
+                  val df1 = sql(s"SELECT $function OVER() FROM tbl")
+                  checkSparkAnswerWithTol(df1, 1e-6)
+
+                  val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
+                  checkSparkAnswerWithTol(df2, 1e-6)
+
+                  val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
+                  checkSparkAnswerWithTol(df3, 1e-6)
+
+                  val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
+                  checkSparkAnswerWithTol(df4, 1e-6)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
@@ -1586,7 +1701,13 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
           val aggregateFunctions =
-            List("COUNT(_1)", "COUNT(*)", "MAX(_1)", "MIN(_1)") // TODO: Test all the aggregates
+            List(
+              "COUNT(_1)",
+              "COUNT(*)",
+              "MAX(_1)",
+              "MIN(_1)",
+              "SUM(_1)"
+            ) // TODO: Test all the aggregates
 
           aggregateFunctions.foreach { function =>
             val queries = Seq(
@@ -1605,6 +1726,22 @@ class CometExecSuite extends CometTestBase {
           }
         }
       })
+  }
+
+  test("read CSV file") {
+    Seq("", "csv").foreach { v1List =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true") {
+        spark.read
+          .csv("src/test/resources/test-data/csv-test-1.csv")
+          .createOrReplaceTempView("tbl")
+        // use a projection with an expression otherwise we end up with
+        // just the file scan
+        checkSparkAnswerAndOperator("SELECT cast(_c0 as int), _c1, _c2 FROM tbl")
+      }
+    }
   }
 
   test("read JSON file") {

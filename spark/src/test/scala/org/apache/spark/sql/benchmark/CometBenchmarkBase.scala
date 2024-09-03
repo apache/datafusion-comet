@@ -97,7 +97,6 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
         SQLConf.ANSI_ENABLED.key -> "false") {
         f
       }

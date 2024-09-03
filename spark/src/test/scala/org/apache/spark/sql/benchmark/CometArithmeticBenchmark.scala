@@ -61,8 +61,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
         benchmark.addCase(s"$op ($dataType) - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
           }
         }
@@ -101,8 +100,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
         benchmark.addCase(s"$op ($dataType) - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
           }
         }

@@ -19,7 +19,11 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 #![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::derive_partial_eq_without_eq)] // For prost generated struct
+// For prost generated struct
+#![allow(clippy::derive_partial_eq_without_eq)]
+// The clippy throws an error if the reference clone not wrapped into `Arc::clone`
+// The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
+#![deny(clippy::clone_on_ref_ptr)]
 
 use jni::{
     objects::{JClass, JString},
@@ -82,7 +86,8 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         let java_vm = env.get_java_vm()?;
         JAVA_VM.get_or_init(|| java_vm);
 
-        info!("Comet native library initialized");
+        let comet_version = env!("CARGO_PKG_VERSION");
+        info!("Comet native library version {} initialized", comet_version);
         Ok(())
     })
 }

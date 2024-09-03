@@ -74,9 +74,18 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+          cometSpark.sql(queryString).noop()
+        }
+      }
+      benchmark.addCase(s"$name$nameSuffix: Comet (Exec)") { _ =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
           cometSpark.sql(queryString).noop()
         }

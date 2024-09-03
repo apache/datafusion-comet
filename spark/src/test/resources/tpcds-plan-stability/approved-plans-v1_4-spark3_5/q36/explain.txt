@@ -2,11 +2,11 @@
 TakeOrderedAndProject (29)
 +- * Project (28)
    +- Window (27)
-      +- * Sort (26)
-         +- Exchange (25)
-            +- * HashAggregate (24)
-               +- Exchange (23)
-                  +- * ColumnarToRow (22)
+      +- * ColumnarToRow (26)
+         +- CometSort (25)
+            +- CometExchange (24)
+               +- CometHashAggregate (23)
+                  +- CometExchange (22)
                      +- CometHashAggregate (21)
                         +- CometExpand (20)
                            +- CometProject (19)
@@ -131,39 +131,37 @@ Input [5]: [ss_ext_sales_price#3, ss_net_profit#4, i_category#14, i_class#15, sp
 Keys [3]: [i_category#14, i_class#15, spark_grouping_id#16]
 Functions [2]: [partial_sum(UnscaledValue(ss_net_profit#4)), partial_sum(UnscaledValue(ss_ext_sales_price#3))]
 
-(22) ColumnarToRow [codegen id : 1]
+(22) CometExchange
 Input [5]: [i_category#14, i_class#15, spark_grouping_id#16, sum#17, sum#18]
+Arguments: hashpartitioning(i_category#14, i_class#15, spark_grouping_id#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(23) Exchange
-Input [5]: [i_category#14, i_class#15, spark_grouping_id#16, sum#17, sum#18]
-Arguments: hashpartitioning(i_category#14, i_class#15, spark_grouping_id#16, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(24) HashAggregate [codegen id : 2]
+(23) CometHashAggregate
 Input [5]: [i_category#14, i_class#15, spark_grouping_id#16, sum#17, sum#18]
 Keys [3]: [i_category#14, i_class#15, spark_grouping_id#16]
 Functions [2]: [sum(UnscaledValue(ss_net_profit#4)), sum(UnscaledValue(ss_ext_sales_price#3))]
-Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#4))#19, sum(UnscaledValue(ss_ext_sales_price#3))#20]
-Results [7]: [(MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#19,17,2) / MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#20,17,2)) AS gross_margin#21, i_category#14, i_class#15, (cast((shiftright(spark_grouping_id#16, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#16, 0) & 1) as tinyint)) AS lochierarchy#22, (MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#19,17,2) / MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#3))#20,17,2)) AS _w0#23, (cast((shiftright(spark_grouping_id#16, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#16, 0) & 1) as tinyint)) AS _w1#24, CASE WHEN (cast((shiftright(spark_grouping_id#16, 0) & 1) as tinyint) = 0) THEN i_category#14 END AS _w2#25]
 
-(25) Exchange
-Input [7]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, _w0#23, _w1#24, _w2#25]
-Arguments: hashpartitioning(_w1#24, _w2#25, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(24) CometExchange
+Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
+Arguments: hashpartitioning(_w1#22, _w2#23, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(26) Sort [codegen id : 3]
-Input [7]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, _w0#23, _w1#24, _w2#25]
-Arguments: [_w1#24 ASC NULLS FIRST, _w2#25 ASC NULLS FIRST, _w0#23 ASC NULLS FIRST], false, 0
+(25) CometSort
+Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
+Arguments: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23], [_w1#22 ASC NULLS FIRST, _w2#23 ASC NULLS FIRST, _w0#21 ASC NULLS FIRST]
+
+(26) ColumnarToRow [codegen id : 1]
+Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
 
 (27) Window
-Input [7]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, _w0#23, _w1#24, _w2#25]
-Arguments: [rank(_w0#23) windowspecdefinition(_w1#24, _w2#25, _w0#23 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#26], [_w1#24, _w2#25], [_w0#23 ASC NULLS FIRST]
+Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
+Arguments: [rank(_w0#21) windowspecdefinition(_w1#22, _w2#23, _w0#21 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#24], [_w1#22, _w2#23], [_w0#21 ASC NULLS FIRST]
 
-(28) Project [codegen id : 4]
-Output [5]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, rank_within_parent#26]
-Input [8]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, _w0#23, _w1#24, _w2#25, rank_within_parent#26]
+(28) Project [codegen id : 2]
+Output [5]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, rank_within_parent#24]
+Input [8]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23, rank_within_parent#24]
 
 (29) TakeOrderedAndProject
-Input [5]: [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, rank_within_parent#26]
-Arguments: 100, [lochierarchy#22 DESC NULLS LAST, CASE WHEN (lochierarchy#22 = 0) THEN i_category#14 END ASC NULLS FIRST, rank_within_parent#26 ASC NULLS FIRST], [gross_margin#21, i_category#14, i_class#15, lochierarchy#22, rank_within_parent#26]
+Input [5]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, rank_within_parent#24]
+Arguments: 100, [lochierarchy#20 DESC NULLS LAST, CASE WHEN (lochierarchy#20 = 0) THEN i_category#14 END ASC NULLS FIRST, rank_within_parent#24 ASC NULLS FIRST], [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, rank_within_parent#24]
 
 ===== Subqueries =====
 

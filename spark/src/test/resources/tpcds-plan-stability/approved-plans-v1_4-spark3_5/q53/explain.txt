@@ -3,11 +3,11 @@ TakeOrderedAndProject (29)
 +- * Project (28)
    +- * Filter (27)
       +- Window (26)
-         +- * Sort (25)
-            +- Exchange (24)
-               +- * HashAggregate (23)
-                  +- Exchange (22)
-                     +- * ColumnarToRow (21)
+         +- * ColumnarToRow (25)
+            +- CometSort (24)
+               +- CometExchange (23)
+                  +- CometHashAggregate (22)
+                     +- CometExchange (21)
                         +- CometHashAggregate (20)
                            +- CometProject (19)
                               +- CometBroadcastHashJoin (18)
@@ -127,43 +127,41 @@ Input [3]: [i_manufact_id#5, ss_sales_price#12, d_qoy#17]
 Keys [2]: [i_manufact_id#5, d_qoy#17]
 Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#12))]
 
-(21) ColumnarToRow [codegen id : 1]
+(21) CometExchange
 Input [3]: [i_manufact_id#5, d_qoy#17, sum#19]
+Arguments: hashpartitioning(i_manufact_id#5, d_qoy#17, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(22) Exchange
-Input [3]: [i_manufact_id#5, d_qoy#17, sum#19]
-Arguments: hashpartitioning(i_manufact_id#5, d_qoy#17, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(23) HashAggregate [codegen id : 2]
+(22) CometHashAggregate
 Input [3]: [i_manufact_id#5, d_qoy#17, sum#19]
 Keys [2]: [i_manufact_id#5, d_qoy#17]
 Functions [1]: [sum(UnscaledValue(ss_sales_price#12))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_sales_price#12))#20]
-Results [3]: [i_manufact_id#5, MakeDecimal(sum(UnscaledValue(ss_sales_price#12))#20,17,2) AS sum_sales#21, MakeDecimal(sum(UnscaledValue(ss_sales_price#12))#20,17,2) AS _w0#22]
 
-(24) Exchange
-Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
-Arguments: hashpartitioning(i_manufact_id#5, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(23) CometExchange
+Input [3]: [i_manufact_id#5, sum_sales#20, _w0#21]
+Arguments: hashpartitioning(i_manufact_id#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(25) Sort [codegen id : 3]
-Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
-Arguments: [i_manufact_id#5 ASC NULLS FIRST], false, 0
+(24) CometSort
+Input [3]: [i_manufact_id#5, sum_sales#20, _w0#21]
+Arguments: [i_manufact_id#5, sum_sales#20, _w0#21], [i_manufact_id#5 ASC NULLS FIRST]
+
+(25) ColumnarToRow [codegen id : 1]
+Input [3]: [i_manufact_id#5, sum_sales#20, _w0#21]
 
 (26) Window
-Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
-Arguments: [avg(_w0#22) windowspecdefinition(i_manufact_id#5, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_quarterly_sales#23], [i_manufact_id#5]
+Input [3]: [i_manufact_id#5, sum_sales#20, _w0#21]
+Arguments: [avg(_w0#21) windowspecdefinition(i_manufact_id#5, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_quarterly_sales#22], [i_manufact_id#5]
 
-(27) Filter [codegen id : 4]
-Input [4]: [i_manufact_id#5, sum_sales#21, _w0#22, avg_quarterly_sales#23]
-Condition : CASE WHEN (avg_quarterly_sales#23 > 0.000000) THEN ((abs((sum_sales#21 - avg_quarterly_sales#23)) / avg_quarterly_sales#23) > 0.1000000000000000) ELSE false END
+(27) Filter [codegen id : 2]
+Input [4]: [i_manufact_id#5, sum_sales#20, _w0#21, avg_quarterly_sales#22]
+Condition : CASE WHEN (avg_quarterly_sales#22 > 0.000000) THEN ((abs((sum_sales#20 - avg_quarterly_sales#22)) / avg_quarterly_sales#22) > 0.1000000000000000) ELSE false END
 
-(28) Project [codegen id : 4]
-Output [3]: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
-Input [4]: [i_manufact_id#5, sum_sales#21, _w0#22, avg_quarterly_sales#23]
+(28) Project [codegen id : 2]
+Output [3]: [i_manufact_id#5, sum_sales#20, avg_quarterly_sales#22]
+Input [4]: [i_manufact_id#5, sum_sales#20, _w0#21, avg_quarterly_sales#22]
 
 (29) TakeOrderedAndProject
-Input [3]: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
-Arguments: 100, [avg_quarterly_sales#23 ASC NULLS FIRST, sum_sales#21 ASC NULLS FIRST, i_manufact_id#5 ASC NULLS FIRST], [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
+Input [3]: [i_manufact_id#5, sum_sales#20, avg_quarterly_sales#22]
+Arguments: 100, [avg_quarterly_sales#22 ASC NULLS FIRST, sum_sales#20 ASC NULLS FIRST, i_manufact_id#5 ASC NULLS FIRST], [i_manufact_id#5, sum_sales#20, avg_quarterly_sales#22]
 
 ===== Subqueries =====
 

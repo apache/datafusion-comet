@@ -8,8 +8,8 @@
 :  :  :  :  :  +- Exchange (9)
 :  :  :  :  :     +- * HashAggregate (8)
 :  :  :  :  :        +- * HashAggregate (7)
-:  :  :  :  :           +- Exchange (6)
-:  :  :  :  :              +- * ColumnarToRow (5)
+:  :  :  :  :           +- * ColumnarToRow (6)
+:  :  :  :  :              +- CometExchange (5)
 :  :  :  :  :                 +- CometHashAggregate (4)
 :  :  :  :  :                    +- CometProject (3)
 :  :  :  :  :                       +- CometFilter (2)
@@ -19,8 +19,8 @@
 :  :  :  :        +- Exchange (19)
 :  :  :  :           +- * HashAggregate (18)
 :  :  :  :              +- * HashAggregate (17)
-:  :  :  :                 +- Exchange (16)
-:  :  :  :                    +- * ColumnarToRow (15)
+:  :  :  :                 +- * ColumnarToRow (16)
+:  :  :  :                    +- CometExchange (15)
 :  :  :  :                       +- CometHashAggregate (14)
 :  :  :  :                          +- CometProject (13)
 :  :  :  :                             +- CometFilter (12)
@@ -30,8 +30,8 @@
 :  :  :        +- Exchange (31)
 :  :  :           +- * HashAggregate (30)
 :  :  :              +- * HashAggregate (29)
-:  :  :                 +- Exchange (28)
-:  :  :                    +- * ColumnarToRow (27)
+:  :  :                 +- * ColumnarToRow (28)
+:  :  :                    +- CometExchange (27)
 :  :  :                       +- CometHashAggregate (26)
 :  :  :                          +- CometProject (25)
 :  :  :                             +- CometFilter (24)
@@ -41,8 +41,8 @@
 :  :        +- Exchange (43)
 :  :           +- * HashAggregate (42)
 :  :              +- * HashAggregate (41)
-:  :                 +- Exchange (40)
-:  :                    +- * ColumnarToRow (39)
+:  :                 +- * ColumnarToRow (40)
+:  :                    +- CometExchange (39)
 :  :                       +- CometHashAggregate (38)
 :  :                          +- CometProject (37)
 :  :                             +- CometFilter (36)
@@ -52,8 +52,8 @@
 :        +- Exchange (55)
 :           +- * HashAggregate (54)
 :              +- * HashAggregate (53)
-:                 +- Exchange (52)
-:                    +- * ColumnarToRow (51)
+:                 +- * ColumnarToRow (52)
+:                    +- CometExchange (51)
 :                       +- CometHashAggregate (50)
 :                          +- CometProject (49)
 :                             +- CometFilter (48)
@@ -63,8 +63,8 @@
       +- Exchange (67)
          +- * HashAggregate (66)
             +- * HashAggregate (65)
-               +- Exchange (64)
-                  +- * ColumnarToRow (63)
+               +- * ColumnarToRow (64)
+                  +- CometExchange (63)
                      +- CometHashAggregate (62)
                         +- CometProject (61)
                            +- CometFilter (60)
@@ -91,21 +91,21 @@ Input [1]: [ss_list_price#3]
 Keys [1]: [ss_list_price#3]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#3)), partial_count(ss_list_price#3)]
 
-(5) ColumnarToRow [codegen id : 1]
+(5) CometExchange
+Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
+Arguments: hashpartitioning(ss_list_price#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(6) ColumnarToRow [codegen id : 1]
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 
-(6) Exchange
-Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
-Arguments: hashpartitioning(ss_list_price#3, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(7) HashAggregate [codegen id : 2]
+(7) HashAggregate [codegen id : 1]
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 Keys [1]: [ss_list_price#3]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#3)), merge_count(ss_list_price#3)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#3))#9, count(ss_list_price#3)#10]
 Results [4]: [ss_list_price#3, sum#6, count#7, count#8]
 
-(8) HashAggregate [codegen id : 2]
+(8) HashAggregate [codegen id : 1]
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#3)), merge_count(ss_list_price#3), partial_count(distinct ss_list_price#3)]
@@ -116,7 +116,7 @@ Results [4]: [sum#6, count#7, count#8, count#12]
 Input [4]: [sum#6, count#7, count#8, count#12]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=2]
 
-(10) HashAggregate [codegen id : 18]
+(10) HashAggregate [codegen id : 12]
 Input [4]: [sum#6, count#7, count#8, count#12]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#3)), count(ss_list_price#3), count(distinct ss_list_price#3)]
@@ -143,21 +143,21 @@ Input [1]: [ss_list_price#18]
 Keys [1]: [ss_list_price#18]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#18)), partial_count(ss_list_price#18)]
 
-(15) ColumnarToRow [codegen id : 3]
+(15) CometExchange
+Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
+Arguments: hashpartitioning(ss_list_price#18, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+
+(16) ColumnarToRow [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 
-(16) Exchange
-Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
-Arguments: hashpartitioning(ss_list_price#18, 5), ENSURE_REQUIREMENTS, [plan_id=3]
-
-(17) HashAggregate [codegen id : 4]
+(17) HashAggregate [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Keys [1]: [ss_list_price#18]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#18)), merge_count(ss_list_price#18)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#18))#24, count(ss_list_price#18)#25]
 Results [4]: [ss_list_price#18, sum#21, count#22, count#23]
 
-(18) HashAggregate [codegen id : 4]
+(18) HashAggregate [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#18)), merge_count(ss_list_price#18), partial_count(distinct ss_list_price#18)]
@@ -168,7 +168,7 @@ Results [4]: [sum#21, count#22, count#23, count#27]
 Input [4]: [sum#21, count#22, count#23, count#27]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=4]
 
-(20) HashAggregate [codegen id : 5]
+(20) HashAggregate [codegen id : 3]
 Input [4]: [sum#21, count#22, count#23, count#27]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#18)), count(ss_list_price#18), count(distinct ss_list_price#18)]
@@ -179,7 +179,7 @@ Results [3]: [cast((avg(UnscaledValue(ss_list_price#18))#24 / 100.0) as decimal(
 Input [3]: [B2_LP#28, B2_CNT#29, B2_CNTD#30]
 Arguments: IdentityBroadcastMode, [plan_id=5]
 
-(22) BroadcastNestedLoopJoin [codegen id : 18]
+(22) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
@@ -203,21 +203,21 @@ Input [1]: [ss_list_price#33]
 Keys [1]: [ss_list_price#33]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#33)), partial_count(ss_list_price#33)]
 
-(27) ColumnarToRow [codegen id : 6]
+(27) CometExchange
+Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
+Arguments: hashpartitioning(ss_list_price#33, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+
+(28) ColumnarToRow [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 
-(28) Exchange
-Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
-Arguments: hashpartitioning(ss_list_price#33, 5), ENSURE_REQUIREMENTS, [plan_id=6]
-
-(29) HashAggregate [codegen id : 7]
+(29) HashAggregate [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Keys [1]: [ss_list_price#33]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#33)), merge_count(ss_list_price#33)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#33))#39, count(ss_list_price#33)#40]
 Results [4]: [ss_list_price#33, sum#36, count#37, count#38]
 
-(30) HashAggregate [codegen id : 7]
+(30) HashAggregate [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#33)), merge_count(ss_list_price#33), partial_count(distinct ss_list_price#33)]
@@ -228,7 +228,7 @@ Results [4]: [sum#36, count#37, count#38, count#42]
 Input [4]: [sum#36, count#37, count#38, count#42]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=7]
 
-(32) HashAggregate [codegen id : 8]
+(32) HashAggregate [codegen id : 5]
 Input [4]: [sum#36, count#37, count#38, count#42]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#33)), count(ss_list_price#33), count(distinct ss_list_price#33)]
@@ -239,7 +239,7 @@ Results [3]: [cast((avg(UnscaledValue(ss_list_price#33))#39 / 100.0) as decimal(
 Input [3]: [B3_LP#43, B3_CNT#44, B3_CNTD#45]
 Arguments: IdentityBroadcastMode, [plan_id=8]
 
-(34) BroadcastNestedLoopJoin [codegen id : 18]
+(34) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
@@ -263,21 +263,21 @@ Input [1]: [ss_list_price#48]
 Keys [1]: [ss_list_price#48]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#48)), partial_count(ss_list_price#48)]
 
-(39) ColumnarToRow [codegen id : 9]
+(39) CometExchange
+Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
+Arguments: hashpartitioning(ss_list_price#48, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=9]
+
+(40) ColumnarToRow [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 
-(40) Exchange
-Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
-Arguments: hashpartitioning(ss_list_price#48, 5), ENSURE_REQUIREMENTS, [plan_id=9]
-
-(41) HashAggregate [codegen id : 10]
+(41) HashAggregate [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Keys [1]: [ss_list_price#48]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#48)), merge_count(ss_list_price#48)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#48))#54, count(ss_list_price#48)#55]
 Results [4]: [ss_list_price#48, sum#51, count#52, count#53]
 
-(42) HashAggregate [codegen id : 10]
+(42) HashAggregate [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#48)), merge_count(ss_list_price#48), partial_count(distinct ss_list_price#48)]
@@ -288,7 +288,7 @@ Results [4]: [sum#51, count#52, count#53, count#57]
 Input [4]: [sum#51, count#52, count#53, count#57]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=10]
 
-(44) HashAggregate [codegen id : 11]
+(44) HashAggregate [codegen id : 7]
 Input [4]: [sum#51, count#52, count#53, count#57]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#48)), count(ss_list_price#48), count(distinct ss_list_price#48)]
@@ -299,7 +299,7 @@ Results [3]: [cast((avg(UnscaledValue(ss_list_price#48))#54 / 100.0) as decimal(
 Input [3]: [B4_LP#58, B4_CNT#59, B4_CNTD#60]
 Arguments: IdentityBroadcastMode, [plan_id=11]
 
-(46) BroadcastNestedLoopJoin [codegen id : 18]
+(46) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
@@ -323,21 +323,21 @@ Input [1]: [ss_list_price#63]
 Keys [1]: [ss_list_price#63]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#63)), partial_count(ss_list_price#63)]
 
-(51) ColumnarToRow [codegen id : 12]
+(51) CometExchange
+Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
+Arguments: hashpartitioning(ss_list_price#63, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
+
+(52) ColumnarToRow [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 
-(52) Exchange
-Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
-Arguments: hashpartitioning(ss_list_price#63, 5), ENSURE_REQUIREMENTS, [plan_id=12]
-
-(53) HashAggregate [codegen id : 13]
+(53) HashAggregate [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Keys [1]: [ss_list_price#63]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#63)), merge_count(ss_list_price#63)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#63))#69, count(ss_list_price#63)#70]
 Results [4]: [ss_list_price#63, sum#66, count#67, count#68]
 
-(54) HashAggregate [codegen id : 13]
+(54) HashAggregate [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#63)), merge_count(ss_list_price#63), partial_count(distinct ss_list_price#63)]
@@ -348,7 +348,7 @@ Results [4]: [sum#66, count#67, count#68, count#72]
 Input [4]: [sum#66, count#67, count#68, count#72]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=13]
 
-(56) HashAggregate [codegen id : 14]
+(56) HashAggregate [codegen id : 9]
 Input [4]: [sum#66, count#67, count#68, count#72]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#63)), count(ss_list_price#63), count(distinct ss_list_price#63)]
@@ -359,7 +359,7 @@ Results [3]: [cast((avg(UnscaledValue(ss_list_price#63))#69 / 100.0) as decimal(
 Input [3]: [B5_LP#73, B5_CNT#74, B5_CNTD#75]
 Arguments: IdentityBroadcastMode, [plan_id=14]
 
-(58) BroadcastNestedLoopJoin [codegen id : 18]
+(58) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
@@ -383,21 +383,21 @@ Input [1]: [ss_list_price#78]
 Keys [1]: [ss_list_price#78]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#78)), partial_count(ss_list_price#78)]
 
-(63) ColumnarToRow [codegen id : 15]
+(63) CometExchange
+Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
+Arguments: hashpartitioning(ss_list_price#78, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=15]
+
+(64) ColumnarToRow [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 
-(64) Exchange
-Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
-Arguments: hashpartitioning(ss_list_price#78, 5), ENSURE_REQUIREMENTS, [plan_id=15]
-
-(65) HashAggregate [codegen id : 16]
+(65) HashAggregate [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Keys [1]: [ss_list_price#78]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#78)), merge_count(ss_list_price#78)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#78))#84, count(ss_list_price#78)#85]
 Results [4]: [ss_list_price#78, sum#81, count#82, count#83]
 
-(66) HashAggregate [codegen id : 16]
+(66) HashAggregate [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#78)), merge_count(ss_list_price#78), partial_count(distinct ss_list_price#78)]
@@ -408,7 +408,7 @@ Results [4]: [sum#81, count#82, count#83, count#87]
 Input [4]: [sum#81, count#82, count#83, count#87]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=16]
 
-(68) HashAggregate [codegen id : 17]
+(68) HashAggregate [codegen id : 11]
 Input [4]: [sum#81, count#82, count#83, count#87]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#78)), count(ss_list_price#78), count(distinct ss_list_price#78)]
@@ -419,7 +419,7 @@ Results [3]: [cast((avg(UnscaledValue(ss_list_price#78))#84 / 100.0) as decimal(
 Input [3]: [B6_LP#88, B6_CNT#89, B6_CNTD#90]
 Arguments: IdentityBroadcastMode, [plan_id=17]
 
-(70) BroadcastNestedLoopJoin [codegen id : 18]
+(70) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 

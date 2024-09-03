@@ -43,7 +43,7 @@ jobs:
   spark-sql-catalyst:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.1'}]
         module:
@@ -71,12 +71,12 @@ jobs:
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.2.0-SNAPSHOT' # TODO: get this from pom.xml
+          comet-version: '0.3.0-SNAPSHOT' # TODO: get this from pom.xml
       - name: Run Spark tests
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          ENABLE_COMET=true ENABLE_COMET_SHUFFLE=${{ matrix.module.name == 'sql/core-1' && 'false' || 'true' }} build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
         env:
           LC_ALL: "C.UTF-8"
 

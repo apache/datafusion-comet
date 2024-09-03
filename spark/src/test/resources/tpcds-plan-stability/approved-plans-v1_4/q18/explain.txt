@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (41)
-+- * HashAggregate (40)
-   +- Exchange (39)
-      +- * ColumnarToRow (38)
+* ColumnarToRow (41)
++- CometTakeOrderedAndProject (40)
+   +- CometHashAggregate (39)
+      +- CometExchange (38)
          +- CometHashAggregate (37)
             +- CometExpand (36)
                +- CometProject (35)
@@ -219,23 +219,21 @@ Input [12]: [cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, 
 Keys [5]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33]
 Functions [7]: [partial_avg(cast(cs_quantity#4 as decimal(12,2))), partial_avg(cast(cs_list_price#5 as decimal(12,2))), partial_avg(cast(cs_coupon_amt#7 as decimal(12,2))), partial_avg(cast(cs_sales_price#6 as decimal(12,2))), partial_avg(cast(cs_net_profit#8 as decimal(12,2))), partial_avg(cast(c_birth_year#19 as decimal(12,2))), partial_avg(cast(cd_dep_count#14 as decimal(12,2)))]
 
-(38) ColumnarToRow [codegen id : 1]
+(38) CometExchange
 Input [19]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33, sum#34, count#35, sum#36, count#37, sum#38, count#39, sum#40, count#41, sum#42, count#43, sum#44, count#45, sum#46, count#47]
+Arguments: hashpartitioning(i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(39) Exchange
-Input [19]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33, sum#34, count#35, sum#36, count#37, sum#38, count#39, sum#40, count#41, sum#42, count#43, sum#44, count#45, sum#46, count#47]
-Arguments: hashpartitioning(i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(40) HashAggregate [codegen id : 2]
+(39) CometHashAggregate
 Input [19]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33, sum#34, count#35, sum#36, count#37, sum#38, count#39, sum#40, count#41, sum#42, count#43, sum#44, count#45, sum#46, count#47]
 Keys [5]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, spark_grouping_id#33]
 Functions [7]: [avg(cast(cs_quantity#4 as decimal(12,2))), avg(cast(cs_list_price#5 as decimal(12,2))), avg(cast(cs_coupon_amt#7 as decimal(12,2))), avg(cast(cs_sales_price#6 as decimal(12,2))), avg(cast(cs_net_profit#8 as decimal(12,2))), avg(cast(c_birth_year#19 as decimal(12,2))), avg(cast(cd_dep_count#14 as decimal(12,2)))]
-Aggregate Attributes [7]: [avg(cast(cs_quantity#4 as decimal(12,2)))#48, avg(cast(cs_list_price#5 as decimal(12,2)))#49, avg(cast(cs_coupon_amt#7 as decimal(12,2)))#50, avg(cast(cs_sales_price#6 as decimal(12,2)))#51, avg(cast(cs_net_profit#8 as decimal(12,2)))#52, avg(cast(c_birth_year#19 as decimal(12,2)))#53, avg(cast(cd_dep_count#14 as decimal(12,2)))#54]
-Results [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, avg(cast(cs_quantity#4 as decimal(12,2)))#48 AS agg1#55, avg(cast(cs_list_price#5 as decimal(12,2)))#49 AS agg2#56, avg(cast(cs_coupon_amt#7 as decimal(12,2)))#50 AS agg3#57, avg(cast(cs_sales_price#6 as decimal(12,2)))#51 AS agg4#58, avg(cast(cs_net_profit#8 as decimal(12,2)))#52 AS agg5#59, avg(cast(c_birth_year#19 as decimal(12,2)))#53 AS agg6#60, avg(cast(cd_dep_count#14 as decimal(12,2)))#54 AS agg7#61]
 
-(41) TakeOrderedAndProject
-Input [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#55, agg2#56, agg3#57, agg4#58, agg5#59, agg6#60, agg7#61]
-Arguments: 100, [ca_country#30 ASC NULLS FIRST, ca_state#31 ASC NULLS FIRST, ca_county#32 ASC NULLS FIRST, i_item_id#29 ASC NULLS FIRST], [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#55, agg2#56, agg3#57, agg4#58, agg5#59, agg6#60, agg7#61]
+(40) CometTakeOrderedAndProject
+Input [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_country#30 ASC NULLS FIRST,ca_state#31 ASC NULLS FIRST,ca_county#32 ASC NULLS FIRST,i_item_id#29 ASC NULLS FIRST], output=[i_item_id#29,ca_country#30,ca_state#31,ca_county#32,agg1#48,agg2#49,agg3#50,agg4#51,agg5#52,agg6#53,agg7#54]), [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54], 100, [ca_country#30 ASC NULLS FIRST, ca_state#31 ASC NULLS FIRST, ca_county#32 ASC NULLS FIRST, i_item_id#29 ASC NULLS FIRST], [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
+
+(41) ColumnarToRow [codegen id : 1]
+Input [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
 
 ===== Subqueries =====
 

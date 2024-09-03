@@ -34,17 +34,15 @@ TakeOrderedAndProject [cnt,state]
                                                     ReusedSubquery [d_month_seq] #2
                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                       Subquery #2
-                                                        WholeStageCodegen (2)
-                                                          HashAggregate [d_month_seq]
+                                                        WholeStageCodegen (1)
+                                                          ColumnarToRow
                                                             InputAdapter
-                                                              Exchange [d_month_seq] #5
-                                                                WholeStageCodegen (1)
-                                                                  ColumnarToRow
-                                                                    InputAdapter
-                                                                      CometHashAggregate [d_month_seq]
-                                                                        CometProject [d_month_seq]
-                                                                          CometFilter [d_month_seq,d_year,d_moy]
-                                                                            CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
+                                                              CometHashAggregate [d_month_seq]
+                                                                CometExchange [d_month_seq] #5
+                                                                  CometHashAggregate [d_month_seq]
+                                                                    CometProject [d_month_seq]
+                                                                      CometFilter [d_month_seq,d_year,d_moy]
+                                                                        CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
                             CometBroadcastExchange [d_date_sk] #6
                               CometProject [d_date_sk]
                                 CometFilter [d_date_sk,d_month_seq]

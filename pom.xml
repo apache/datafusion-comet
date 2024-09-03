@@ -25,7 +25,7 @@ under the License.
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.comet</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.2.0-SNAPSHOT</version>
+  <version>0.3.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -589,6 +589,10 @@ under the License.
     </profile>
 
     <profile>
+      <id>scala-2.12</id>
+    </profile>
+
+    <profile>
       <id>scala-2.13</id>
       <properties>
         <scala.version>2.13.14</scala.version>
@@ -938,6 +942,7 @@ under the License.
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
             <exclude>**/apache-spark/**</exclude>
+            <exclude>.dockerignore</exclude>
             <exclude>.git/**</exclude>
             <exclude>.github/**</exclude>
             <exclude>.gitignore</exclude>
@@ -963,7 +968,7 @@ under the License.
             <exclude>docs/source/_static/images/**</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
-            <exclude>native/core/src/execution/generated/**</exclude>
+            <exclude>native/proto/src/generated/**</exclude>
           </excludes>
         </configuration>
       </plugin>

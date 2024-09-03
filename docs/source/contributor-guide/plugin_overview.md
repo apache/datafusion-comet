@@ -19,10 +19,10 @@ under the License.
 
 # Comet Plugin Overview
 
-The entry point to Comet is the `org.apache.comet.CometSparkSessionExtensions` class, which can be registered with Spark by adding the following setting to the Spark configuration when launching `spark-shell` or `spark-submit`:
+The entry point to Comet is the `org.apache.spark.CometPlugin` class, which can be registered with Spark by adding the following setting to the Spark configuration when launching `spark-shell` or `spark-submit`:
 
 ```
---conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions
+--conf spark.plugins=org.apache.spark.CometPlugin
 ```
 
 On initialization, this class registers two physical plan optimization rules with Spark: `CometScanRule` and `CometExecRule`. These rules run whenever a query stage is being planned.

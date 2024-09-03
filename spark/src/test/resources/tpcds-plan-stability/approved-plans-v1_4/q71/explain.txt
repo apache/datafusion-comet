@@ -1,9 +1,9 @@
 == Physical Plan ==
-* Sort (37)
-+- Exchange (36)
-   +- * HashAggregate (35)
-      +- Exchange (34)
-         +- * ColumnarToRow (33)
+* ColumnarToRow (37)
++- CometSort (36)
+   +- CometColumnarExchange (35)
+      +- CometHashAggregate (34)
+         +- CometExchange (33)
             +- CometHashAggregate (32)
                +- CometProject (31)
                   +- CometBroadcastHashJoin (30)
@@ -192,27 +192,25 @@ Input [5]: [i_brand_id#2, i_brand#3, ext_price#13, t_hour#35, t_minute#36]
 Keys [4]: [i_brand#3, i_brand_id#2, t_hour#35, t_minute#36]
 Functions [1]: [partial_sum(UnscaledValue(ext_price#13))]
 
-(33) ColumnarToRow [codegen id : 1]
+(33) CometExchange
 Input [5]: [i_brand#3, i_brand_id#2, t_hour#35, t_minute#36, sum#38]
+Arguments: hashpartitioning(i_brand#3, i_brand_id#2, t_hour#35, t_minute#36, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(34) Exchange
-Input [5]: [i_brand#3, i_brand_id#2, t_hour#35, t_minute#36, sum#38]
-Arguments: hashpartitioning(i_brand#3, i_brand_id#2, t_hour#35, t_minute#36, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(35) HashAggregate [codegen id : 2]
+(34) CometHashAggregate
 Input [5]: [i_brand#3, i_brand_id#2, t_hour#35, t_minute#36, sum#38]
 Keys [4]: [i_brand#3, i_brand_id#2, t_hour#35, t_minute#36]
 Functions [1]: [sum(UnscaledValue(ext_price#13))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ext_price#13))#39]
-Results [5]: [i_brand_id#2 AS brand_id#40, i_brand#3 AS brand#41, t_hour#35, t_minute#36, MakeDecimal(sum(UnscaledValue(ext_price#13))#39,17,2) AS ext_price#42]
 
-(36) Exchange
-Input [5]: [brand_id#40, brand#41, t_hour#35, t_minute#36, ext_price#42]
-Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(35) CometColumnarExchange
+Input [5]: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41]
+Arguments: rangepartitioning(ext_price#41 DESC NULLS LAST, brand_id#39 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(37) Sort [codegen id : 3]
-Input [5]: [brand_id#40, brand#41, t_hour#35, t_minute#36, ext_price#42]
-Arguments: [ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST], true, 0
+(36) CometSort
+Input [5]: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41]
+Arguments: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41], [ext_price#41 DESC NULLS LAST, brand_id#39 ASC NULLS FIRST]
+
+(37) ColumnarToRow [codegen id : 1]
+Input [5]: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41]
 
 ===== Subqueries =====
 

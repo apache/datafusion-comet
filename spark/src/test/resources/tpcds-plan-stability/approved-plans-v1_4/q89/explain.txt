@@ -3,11 +3,11 @@ TakeOrderedAndProject (28)
 +- * Project (27)
    +- * Filter (26)
       +- Window (25)
-         +- * Sort (24)
-            +- Exchange (23)
-               +- * HashAggregate (22)
-                  +- Exchange (21)
-                     +- * ColumnarToRow (20)
+         +- * ColumnarToRow (24)
+            +- CometSort (23)
+               +- CometExchange (22)
+                  +- CometHashAggregate (21)
+                     +- CometExchange (20)
                         +- CometHashAggregate (19)
                            +- CometProject (18)
                               +- CometBroadcastHashJoin (17)
@@ -122,43 +122,41 @@ Input [7]: [i_brand#2, i_class#3, i_category#4, ss_sales_price#7, d_moy#12, s_st
 Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12]
 Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#7))]
 
-(20) ColumnarToRow [codegen id : 1]
+(20) CometExchange
 Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum#16]
+Arguments: hashpartitioning(i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(21) Exchange
-Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum#16]
-Arguments: hashpartitioning(i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(22) HashAggregate [codegen id : 2]
+(21) CometHashAggregate
 Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum#16]
 Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12]
 Functions [1]: [sum(UnscaledValue(ss_sales_price#7))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_sales_price#7))#17]
-Results [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, MakeDecimal(sum(UnscaledValue(ss_sales_price#7))#17,17,2) AS sum_sales#18, MakeDecimal(sum(UnscaledValue(ss_sales_price#7))#17,17,2) AS _w0#19]
 
-(23) Exchange
-Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, _w0#19]
-Arguments: hashpartitioning(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(22) CometExchange
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]
+Arguments: hashpartitioning(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(24) Sort [codegen id : 3]
-Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, _w0#19]
-Arguments: [i_category#4 ASC NULLS FIRST, i_brand#2 ASC NULLS FIRST, s_store_name#14 ASC NULLS FIRST, s_company_name#15 ASC NULLS FIRST], false, 0
+(23) CometSort
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]
+Arguments: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18], [i_category#4 ASC NULLS FIRST, i_brand#2 ASC NULLS FIRST, s_store_name#14 ASC NULLS FIRST, s_company_name#15 ASC NULLS FIRST]
+
+(24) ColumnarToRow [codegen id : 1]
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]
 
 (25) Window
-Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, _w0#19]
-Arguments: [avg(_w0#19) windowspecdefinition(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#20], [i_category#4, i_brand#2, s_store_name#14, s_company_name#15]
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18]
+Arguments: [avg(_w0#18) windowspecdefinition(i_category#4, i_brand#2, s_store_name#14, s_company_name#15, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#19], [i_category#4, i_brand#2, s_store_name#14, s_company_name#15]
 
-(26) Filter [codegen id : 4]
-Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, _w0#19, avg_monthly_sales#20]
-Condition : CASE WHEN NOT (avg_monthly_sales#20 = 0.000000) THEN ((abs((sum_sales#18 - avg_monthly_sales#20)) / avg_monthly_sales#20) > 0.1000000000000000) END
+(26) Filter [codegen id : 2]
+Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18, avg_monthly_sales#19]
+Condition : CASE WHEN NOT (avg_monthly_sales#19 = 0.000000) THEN ((abs((sum_sales#17 - avg_monthly_sales#19)) / avg_monthly_sales#19) > 0.1000000000000000) END
 
-(27) Project [codegen id : 4]
-Output [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, avg_monthly_sales#20]
-Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, _w0#19, avg_monthly_sales#20]
+(27) Project [codegen id : 2]
+Output [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, avg_monthly_sales#19]
+Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, _w0#18, avg_monthly_sales#19]
 
 (28) TakeOrderedAndProject
-Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, avg_monthly_sales#20]
-Arguments: 100, [(sum_sales#18 - avg_monthly_sales#20) ASC NULLS FIRST, s_store_name#14 ASC NULLS FIRST], [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#18, avg_monthly_sales#20]
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, avg_monthly_sales#19]
+Arguments: 100, [(sum_sales#17 - avg_monthly_sales#19) ASC NULLS FIRST, s_store_name#14 ASC NULLS FIRST], [i_category#4, i_class#3, i_brand#2, s_store_name#14, s_company_name#15, d_moy#12, sum_sales#17, avg_monthly_sales#19]
 
 ===== Subqueries =====
 

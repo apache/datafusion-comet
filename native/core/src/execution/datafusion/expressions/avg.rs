@@ -96,7 +96,7 @@ impl AggregateExpr for Avg {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr.clone()]
+        vec![Arc::clone(&self.expr)]
     }
 
     fn name(&self) -> &str {
@@ -121,6 +121,10 @@ impl AggregateExpr for Avg {
                 self.result_data_type
             ),
         }
+    }
+
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
     }
 }
 

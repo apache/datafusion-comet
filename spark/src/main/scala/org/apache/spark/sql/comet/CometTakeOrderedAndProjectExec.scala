@@ -25,10 +25,8 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec.{METRIC_NATIVE_TIME_DESCRIPTION, METRIC_NATIVE_TIME_NAME}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
-import org.apache.spark.sql.execution.metric.{SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
-import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
@@ -57,8 +55,6 @@ case class CometTakeOrderedAndProjectExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    METRIC_NATIVE_TIME_NAME ->
-      SQLMetrics.createNanoTimingMetric(sparkContext, METRIC_NATIVE_TIME_DESCRIPTION),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -79,12 +75,12 @@ case class CometTakeOrderedAndProjectExec(
         childRDD
       } else {
         val localTopK = if (orderingSatisfies) {
-          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(childRDD, child.output, limit)
         } else {
           childRDD.mapPartitionsInternal { iter =>
             val topK =
               CometExecUtils
-                .getTopKNativePlan(output, sortOrder, child, limit)
+                .getTopKNativePlan(child.output, sortOrder, child, limit)
                 .get
             CometExec.getCometIterator(Seq(iter), topK)
           }
@@ -104,7 +100,7 @@ case class CometTakeOrderedAndProjectExec(
 
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val topKAndProjection = CometExecUtils
-          .getProjectionNativePlan(projectList, output, sortOrder, child, limit)
+          .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit)
           .get
         val it = CometExec.getCometIterator(Seq(iter), topKAndProjection)
         setSubqueries(it.id, this)

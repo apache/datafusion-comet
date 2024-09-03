@@ -1,7 +1,7 @@
 == Physical Plan ==
-* HashAggregate (28)
-+- Exchange (27)
-   +- * ColumnarToRow (26)
+* ColumnarToRow (28)
++- CometHashAggregate (27)
+   +- CometExchange (26)
       +- CometHashAggregate (25)
          +- CometProject (24)
             +- CometBroadcastHashJoin (23)
@@ -150,19 +150,17 @@ Input [1]: [ss_quantity#4]
 Keys: []
 Functions [1]: [partial_sum(ss_quantity#4)]
 
-(26) ColumnarToRow [codegen id : 1]
+(26) CometExchange
 Input [1]: [sum#18]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(27) Exchange
-Input [1]: [sum#18]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=1]
-
-(28) HashAggregate [codegen id : 2]
+(27) CometHashAggregate
 Input [1]: [sum#18]
 Keys: []
 Functions [1]: [sum(ss_quantity#4)]
-Aggregate Attributes [1]: [sum(ss_quantity#4)#19]
-Results [1]: [sum(ss_quantity#4)#19 AS sum(ss_quantity)#20]
+
+(28) ColumnarToRow [codegen id : 1]
+Input [1]: [sum(ss_quantity)#19]
 
 ===== Subqueries =====
 

@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (19)
-+- * HashAggregate (18)
-   +- Exchange (17)
-      +- * ColumnarToRow (16)
+* ColumnarToRow (19)
++- CometTakeOrderedAndProject (18)
+   +- CometHashAggregate (17)
+      +- CometExchange (16)
          +- CometHashAggregate (15)
             +- CometProject (14)
                +- CometBroadcastHashJoin (13)
@@ -93,21 +93,19 @@ Input [4]: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#9]
 Keys [3]: [d_year#2, i_category_id#8, i_category#9]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
 
-(16) ColumnarToRow [codegen id : 1]
+(16) CometExchange
 Input [4]: [d_year#2, i_category_id#8, i_category#9, sum#11]
+Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(17) Exchange
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum#11]
-Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#9, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(18) HashAggregate [codegen id : 2]
+(17) CometHashAggregate
 Input [4]: [d_year#2, i_category_id#8, i_category#9, sum#11]
 Keys [3]: [d_year#2, i_category_id#8, i_category#9]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#12]
-Results [4]: [d_year#2, i_category_id#8, i_category#9, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#12,17,2) AS sum(ss_ext_sales_price)#13]
 
-(19) TakeOrderedAndProject
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#13]
-Arguments: 100, [sum(ss_ext_sales_price)#13 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#9 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#13]
+(18) CometTakeOrderedAndProject
+Input [4]: [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[sum(ss_ext_sales_price)#12 DESC NULLS LAST,d_year#2 ASC NULLS FIRST,i_category_id#8 ASC NULLS FIRST,i_category#9 ASC NULLS FIRST], output=[d_year#2,i_category_id#8,i_category#9,sum(ss_ext_sales_price)#12]), [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12], 100, [sum(ss_ext_sales_price)#12 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#9 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
+
+(19) ColumnarToRow [codegen id : 1]
+Input [4]: [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
 

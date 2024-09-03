@@ -49,11 +49,12 @@ git checkout -b branch-0.1
 git push apache branch-0.1
 ```
 
-Create and merge a PR against the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`
+Create and merge a PR against the release branch to update the Maven version from `0.3.0-SNAPSHOT` to `0.1.0`
 
 ### Update Version in main
 
 Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPSHOT`.
+The Spark diffs also need updating.
 
 ### Generate the Change Log
 
@@ -74,7 +75,7 @@ example generates a change log of all changes between the previous version and t
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 52241f44315fd1b2fd6cd9031bb05f046fe3a5a3 branch-0.1 0.0.0 > ../changelog/0.1.0.md
+python3 generate-changelog.py 0.0.0 HEAD 0.1.0 > ../changelog/0.1.0.md
 ```
 
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the

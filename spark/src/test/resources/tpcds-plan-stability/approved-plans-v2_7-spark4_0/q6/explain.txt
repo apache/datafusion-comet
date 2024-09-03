@@ -271,9 +271,9 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:2 Hosting operator id = 42 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
 Subquery:3 Hosting operator id = 41 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
-* HashAggregate (52)
-+- Exchange (51)
-   +- * ColumnarToRow (50)
+* ColumnarToRow (52)
++- CometHashAggregate (51)
+   +- CometExchange (50)
       +- CometHashAggregate (49)
          +- CometProject (48)
             +- CometFilter (47)
@@ -300,19 +300,17 @@ Input [1]: [d_month_seq#29]
 Keys [1]: [d_month_seq#29]
 Functions: []
 
-(50) ColumnarToRow [codegen id : 1]
+(50) CometExchange
 Input [1]: [d_month_seq#29]
+Arguments: hashpartitioning(d_month_seq#29, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
-(51) Exchange
-Input [1]: [d_month_seq#29]
-Arguments: hashpartitioning(d_month_seq#29, 5), ENSURE_REQUIREMENTS, [plan_id=6]
-
-(52) HashAggregate [codegen id : 2]
+(51) CometHashAggregate
 Input [1]: [d_month_seq#29]
 Keys [1]: [d_month_seq#29]
 Functions: []
-Aggregate Attributes: []
-Results [1]: [d_month_seq#29]
+
+(52) ColumnarToRow [codegen id : 1]
+Input [1]: [d_month_seq#29]
 
 Subquery:4 Hosting operator id = 14 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 

@@ -5,9 +5,9 @@
       +- * Project (46)
          +- * BroadcastHashJoin LeftAnti BuildRight (45)
             :- * BroadcastHashJoin LeftAnti BuildRight (31)
-            :  :- * HashAggregate (17)
-            :  :  +- Exchange (16)
-            :  :     +- * ColumnarToRow (15)
+            :  :- * ColumnarToRow (17)
+            :  :  +- CometHashAggregate (16)
+            :  :     +- CometExchange (15)
             :  :        +- CometHashAggregate (14)
             :  :           +- CometProject (13)
             :  :              +- CometBroadcastHashJoin (12)
@@ -23,9 +23,9 @@
             :  :                    +- CometFilter (10)
             :  :                       +- CometScan parquet spark_catalog.default.customer (9)
             :  +- BroadcastExchange (30)
-            :     +- * HashAggregate (29)
-            :        +- Exchange (28)
-            :           +- * ColumnarToRow (27)
+            :     +- * ColumnarToRow (29)
+            :        +- CometHashAggregate (28)
+            :           +- CometExchange (27)
             :              +- CometHashAggregate (26)
             :                 +- CometProject (25)
             :                    +- CometBroadcastHashJoin (24)
@@ -36,9 +36,9 @@
             :                       :     +- ReusedExchange (20)
             :                       +- ReusedExchange (23)
             +- BroadcastExchange (44)
-               +- * HashAggregate (43)
-                  +- Exchange (42)
-                     +- * ColumnarToRow (41)
+               +- * ColumnarToRow (43)
+                  +- CometHashAggregate (42)
+                     +- CometExchange (41)
                         +- CometHashAggregate (40)
                            +- CometProject (39)
                               +- CometBroadcastHashJoin (38)
@@ -119,19 +119,17 @@ Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Keys [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Functions: []
 
-(15) ColumnarToRow [codegen id : 1]
+(15) CometExchange
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
+Arguments: hashpartitioning(c_last_name#9, c_first_name#8, d_date#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(16) Exchange
-Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
-Arguments: hashpartitioning(c_last_name#9, c_first_name#8, d_date#5, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(17) HashAggregate [codegen id : 6]
+(16) CometHashAggregate
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Keys [3]: [c_last_name#9, c_first_name#8, d_date#5]
 Functions: []
-Aggregate Attributes: []
-Results [3]: [c_last_name#9, c_first_name#8, d_date#5]
+
+(17) ColumnarToRow [codegen id : 3]
+Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 
 (18) Scan parquet spark_catalog.default.catalog_sales
 Output [2]: [cs_bill_customer_sk#10, cs_sold_date_sk#11]
@@ -174,25 +172,23 @@ Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Keys [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Functions: []
 
-(27) ColumnarToRow [codegen id : 2]
+(27) CometExchange
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
+Arguments: hashpartitioning(c_last_name#17, c_first_name#16, d_date#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(28) Exchange
-Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
-Arguments: hashpartitioning(c_last_name#17, c_first_name#16, d_date#14, 5), ENSURE_REQUIREMENTS, [plan_id=2]
-
-(29) HashAggregate [codegen id : 3]
+(28) CometHashAggregate
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Keys [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Functions: []
-Aggregate Attributes: []
-Results [3]: [c_last_name#17, c_first_name#16, d_date#14]
+
+(29) ColumnarToRow [codegen id : 1]
+Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 
 (30) BroadcastExchange
 Input [3]: [c_last_name#17, c_first_name#16, d_date#14]
 Arguments: HashedRelationBroadcastMode(List(coalesce(input[0, string, true], ), isnull(input[0, string, true]), coalesce(input[1, string, true], ), isnull(input[1, string, true]), coalesce(input[2, date, true], 1970-01-01), isnull(input[2, date, true])),false), [plan_id=3]
 
-(31) BroadcastHashJoin [codegen id : 6]
+(31) BroadcastHashJoin [codegen id : 3]
 Left keys [6]: [coalesce(c_last_name#9, ), isnull(c_last_name#9), coalesce(c_first_name#8, ), isnull(c_first_name#8), coalesce(d_date#5, 1970-01-01), isnull(d_date#5)]
 Right keys [6]: [coalesce(c_last_name#17, ), isnull(c_last_name#17), coalesce(c_first_name#16, ), isnull(c_first_name#16), coalesce(d_date#14, 1970-01-01), isnull(d_date#14)]
 Join type: LeftAnti
@@ -239,35 +235,33 @@ Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Keys [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Functions: []
 
-(41) ColumnarToRow [codegen id : 4]
+(41) CometExchange
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
+Arguments: hashpartitioning(c_last_name#25, c_first_name#24, d_date#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
-(42) Exchange
-Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
-Arguments: hashpartitioning(c_last_name#25, c_first_name#24, d_date#22, 5), ENSURE_REQUIREMENTS, [plan_id=4]
-
-(43) HashAggregate [codegen id : 5]
+(42) CometHashAggregate
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Keys [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Functions: []
-Aggregate Attributes: []
-Results [3]: [c_last_name#25, c_first_name#24, d_date#22]
+
+(43) ColumnarToRow [codegen id : 2]
+Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 
 (44) BroadcastExchange
 Input [3]: [c_last_name#25, c_first_name#24, d_date#22]
 Arguments: HashedRelationBroadcastMode(List(coalesce(input[0, string, true], ), isnull(input[0, string, true]), coalesce(input[1, string, true], ), isnull(input[1, string, true]), coalesce(input[2, date, true], 1970-01-01), isnull(input[2, date, true])),false), [plan_id=5]
 
-(45) BroadcastHashJoin [codegen id : 6]
+(45) BroadcastHashJoin [codegen id : 3]
 Left keys [6]: [coalesce(c_last_name#9, ), isnull(c_last_name#9), coalesce(c_first_name#8, ), isnull(c_first_name#8), coalesce(d_date#5, 1970-01-01), isnull(d_date#5)]
 Right keys [6]: [coalesce(c_last_name#25, ), isnull(c_last_name#25), coalesce(c_first_name#24, ), isnull(c_first_name#24), coalesce(d_date#22, 1970-01-01), isnull(d_date#22)]
 Join type: LeftAnti
 Join condition: None
 
-(46) Project [codegen id : 6]
+(46) Project [codegen id : 3]
 Output: []
 Input [3]: [c_last_name#9, c_first_name#8, d_date#5]
 
-(47) HashAggregate [codegen id : 6]
+(47) HashAggregate [codegen id : 3]
 Input: []
 Keys: []
 Functions [1]: [partial_count(1)]
@@ -278,7 +272,7 @@ Results [1]: [count#27]
 Input [1]: [count#27]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=6]
 
-(49) HashAggregate [codegen id : 7]
+(49) HashAggregate [codegen id : 4]
 Input [1]: [count#27]
 Keys: []
 Functions [1]: [count(1)]

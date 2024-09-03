@@ -2,11 +2,11 @@
 TakeOrderedAndProject (28)
 +- * Filter (27)
    +- Window (26)
-      +- * Sort (25)
-         +- Exchange (24)
-            +- * HashAggregate (23)
-               +- Exchange (22)
-                  +- * ColumnarToRow (21)
+      +- * ColumnarToRow (25)
+         +- CometSort (24)
+            +- CometExchange (23)
+               +- CometHashAggregate (22)
+                  +- CometExchange (21)
                      +- CometHashAggregate (20)
                         +- CometExpand (19)
                            +- CometProject (18)
@@ -126,39 +126,37 @@ Input [11]: [ss_quantity#3, ss_sales_price#4, i_category#19, i_class#20, i_brand
 Keys [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27]
 Functions [1]: [partial_sum(coalesce((ss_sales_price#4 * cast(ss_quantity#3 as decimal(10,0))), 0.00))]
 
-(21) ColumnarToRow [codegen id : 1]
+(21) CometExchange
 Input [11]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27, sum#28, isEmpty#29]
+Arguments: hashpartitioning(i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(22) Exchange
-Input [11]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27, sum#28, isEmpty#29]
-Arguments: hashpartitioning(i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(23) HashAggregate [codegen id : 2]
+(22) CometHashAggregate
 Input [11]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27, sum#28, isEmpty#29]
 Keys [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, spark_grouping_id#27]
 Functions [1]: [sum(coalesce((ss_sales_price#4 * cast(ss_quantity#3 as decimal(10,0))), 0.00))]
-Aggregate Attributes [1]: [sum(coalesce((ss_sales_price#4 * cast(ss_quantity#3 as decimal(10,0))), 0.00))#30]
-Results [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sum(coalesce((ss_sales_price#4 * cast(ss_quantity#3 as decimal(10,0))), 0.00))#30 AS sumsales#31]
 
-(24) Exchange
-Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31]
-Arguments: hashpartitioning(i_category#19, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+(23) CometExchange
+Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
+Arguments: hashpartitioning(i_category#19, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(25) Sort [codegen id : 3]
-Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31]
-Arguments: [i_category#19 ASC NULLS FIRST, sumsales#31 DESC NULLS LAST], false, 0
+(24) CometSort
+Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
+Arguments: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30], [i_category#19 ASC NULLS FIRST, sumsales#30 DESC NULLS LAST]
+
+(25) ColumnarToRow [codegen id : 1]
+Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
 
 (26) Window
-Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31]
-Arguments: [rank(sumsales#31) windowspecdefinition(i_category#19, sumsales#31 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#32], [i_category#19], [sumsales#31 DESC NULLS LAST]
+Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
+Arguments: [rank(sumsales#30) windowspecdefinition(i_category#19, sumsales#30 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#31], [i_category#19], [sumsales#30 DESC NULLS LAST]
 
-(27) Filter [codegen id : 4]
-Input [10]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31, rk#32]
-Condition : (rk#32 <= 100)
+(27) Filter [codegen id : 2]
+Input [10]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30, rk#31]
+Condition : (rk#31 <= 100)
 
 (28) TakeOrderedAndProject
-Input [10]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31, rk#32]
-Arguments: 100, [i_category#19 ASC NULLS FIRST, i_class#20 ASC NULLS FIRST, i_brand#21 ASC NULLS FIRST, i_product_name#22 ASC NULLS FIRST, d_year#23 ASC NULLS FIRST, d_qoy#24 ASC NULLS FIRST, d_moy#25 ASC NULLS FIRST, s_store_id#26 ASC NULLS FIRST, sumsales#31 ASC NULLS FIRST, rk#32 ASC NULLS FIRST], [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#31, rk#32]
+Input [10]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30, rk#31]
+Arguments: 100, [i_category#19 ASC NULLS FIRST, i_class#20 ASC NULLS FIRST, i_brand#21 ASC NULLS FIRST, i_product_name#22 ASC NULLS FIRST, d_year#23 ASC NULLS FIRST, d_qoy#24 ASC NULLS FIRST, d_moy#25 ASC NULLS FIRST, s_store_id#26 ASC NULLS FIRST, sumsales#30 ASC NULLS FIRST, rk#31 ASC NULLS FIRST], [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30, rk#31]
 
 ===== Subqueries =====
 

@@ -31,10 +31,10 @@ TakeOrderedAndProject (57)
                         :                       +- * Project (30)
                         :                          +- * Filter (29)
                         :                             +- Window (28)
-                        :                                +- * Sort (27)
-                        :                                   +- * HashAggregate (26)
-                        :                                      +- Exchange (25)
-                        :                                         +- * ColumnarToRow (24)
+                        :                                +- * ColumnarToRow (27)
+                        :                                   +- CometSort (26)
+                        :                                      +- CometHashAggregate (25)
+                        :                                         +- CometExchange (24)
                         :                                            +- CometHashAggregate (23)
                         :                                               +- CometProject (22)
                         :                                                  +- CometBroadcastHashJoin (21)
@@ -98,7 +98,7 @@ Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner, BuildRight
 Input [4]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3, d_date_sk#5]
 Arguments: [ss_store_sk#1, ss_net_profit#2], [ss_store_sk#1, ss_net_profit#2]
 
-(9) ColumnarToRow [codegen id : 5]
+(9) ColumnarToRow [codegen id : 4]
 Input [2]: [ss_store_sk#1, ss_net_profit#2]
 
 (10) Scan parquet spark_catalog.default.store
@@ -112,7 +112,7 @@ ReadSchema: struct<s_store_sk:int,s_county:string,s_state:string>
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 Condition : isnotnull(s_store_sk#7)
 
-(12) ColumnarToRow [codegen id : 4]
+(12) ColumnarToRow [codegen id : 3]
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 
 (13) Scan parquet spark_catalog.default.store_sales
@@ -168,41 +168,39 @@ Input [2]: [ss_net_profit#11, s_state#15]
 Keys [1]: [s_state#15]
 Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#11))]
 
-(24) ColumnarToRow [codegen id : 1]
+(24) CometExchange
 Input [2]: [s_state#15, sum#17]
+Arguments: hashpartitioning(s_state#15, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(25) Exchange
-Input [2]: [s_state#15, sum#17]
-Arguments: hashpartitioning(s_state#15, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(26) HashAggregate [codegen id : 2]
+(25) CometHashAggregate
 Input [2]: [s_state#15, sum#17]
 Keys [1]: [s_state#15]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#11))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#11))#18]
-Results [3]: [s_state#15, MakeDecimal(sum(UnscaledValue(ss_net_profit#11))#18,17,2) AS _w0#19, s_state#15]
 
-(27) Sort [codegen id : 2]
-Input [3]: [s_state#15, _w0#19, s_state#15]
-Arguments: [s_state#15 ASC NULLS FIRST, _w0#19 DESC NULLS LAST], false, 0
+(26) CometSort
+Input [3]: [s_state#15, _w0#18, s_state#15]
+Arguments: [s_state#15, _w0#18, s_state#15], [s_state#15 ASC NULLS FIRST, _w0#18 DESC NULLS LAST]
+
+(27) ColumnarToRow [codegen id : 1]
+Input [3]: [s_state#15, _w0#18, s_state#15]
 
 (28) Window
-Input [3]: [s_state#15, _w0#19, s_state#15]
-Arguments: [rank(_w0#19) windowspecdefinition(s_state#15, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS ranking#20], [s_state#15], [_w0#19 DESC NULLS LAST]
+Input [3]: [s_state#15, _w0#18, s_state#15]
+Arguments: [rank(_w0#18) windowspecdefinition(s_state#15, _w0#18 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS ranking#19], [s_state#15], [_w0#18 DESC NULLS LAST]
 
-(29) Filter [codegen id : 3]
-Input [4]: [s_state#15, _w0#19, s_state#15, ranking#20]
-Condition : (ranking#20 <= 5)
+(29) Filter [codegen id : 2]
+Input [4]: [s_state#15, _w0#18, s_state#15, ranking#19]
+Condition : (ranking#19 <= 5)
 
-(30) Project [codegen id : 3]
+(30) Project [codegen id : 2]
 Output [1]: [s_state#15]
-Input [4]: [s_state#15, _w0#19, s_state#15, ranking#20]
+Input [4]: [s_state#15, _w0#18, s_state#15, ranking#19]
 
 (31) BroadcastExchange
 Input [1]: [s_state#15]
 Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
 
-(32) BroadcastHashJoin [codegen id : 4]
+(32) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [s_state#9]
 Right keys [1]: [s_state#15]
 Join type: LeftSemi
@@ -212,129 +210,129 @@ Join condition: None
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=3]
 
-(34) BroadcastHashJoin [codegen id : 5]
+(34) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ss_store_sk#1]
 Right keys [1]: [s_store_sk#7]
 Join type: Inner
 Join condition: None
 
-(35) Project [codegen id : 5]
+(35) Project [codegen id : 4]
 Output [3]: [ss_net_profit#2, s_county#8, s_state#9]
 Input [5]: [ss_store_sk#1, ss_net_profit#2, s_store_sk#7, s_county#8, s_state#9]
 
-(36) HashAggregate [codegen id : 5]
+(36) HashAggregate [codegen id : 4]
 Input [3]: [ss_net_profit#2, s_county#8, s_state#9]
 Keys [2]: [s_state#9, s_county#8]
 Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum#21]
-Results [3]: [s_state#9, s_county#8, sum#22]
+Aggregate Attributes [1]: [sum#20]
+Results [3]: [s_state#9, s_county#8, sum#21]
 
 (37) Exchange
-Input [3]: [s_state#9, s_county#8, sum#22]
+Input [3]: [s_state#9, s_county#8, sum#21]
 Arguments: hashpartitioning(s_state#9, s_county#8, 5), ENSURE_REQUIREMENTS, [plan_id=4]
 
-(38) HashAggregate [codegen id : 6]
-Input [3]: [s_state#9, s_county#8, sum#22]
+(38) HashAggregate [codegen id : 5]
+Input [3]: [s_state#9, s_county#8, sum#21]
 Keys [2]: [s_state#9, s_county#8]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#23]
-Results [6]: [cast(MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#23,17,2) as decimal(27,2)) AS total_sum#24, s_state#9, s_county#8, 0 AS g_state#25, 0 AS g_county#26, 0 AS lochierarchy#27]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#22]
+Results [6]: [cast(MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#22,17,2) as decimal(27,2)) AS total_sum#23, s_state#9, s_county#8, 0 AS g_state#24, 0 AS g_county#25, 0 AS lochierarchy#26]
 
 (39) ReusedExchange [Reuses operator id: 37]
-Output [3]: [s_state#9, s_county#8, sum#28]
+Output [3]: [s_state#9, s_county#8, sum#27]
 
-(40) HashAggregate [codegen id : 12]
-Input [3]: [s_state#9, s_county#8, sum#28]
+(40) HashAggregate [codegen id : 10]
+Input [3]: [s_state#9, s_county#8, sum#27]
 Keys [2]: [s_state#9, s_county#8]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#23]
-Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#23,17,2) AS total_sum#29, s_state#9]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#22]
+Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#22,17,2) AS total_sum#28, s_state#9]
 
-(41) HashAggregate [codegen id : 12]
-Input [2]: [total_sum#29, s_state#9]
+(41) HashAggregate [codegen id : 10]
+Input [2]: [total_sum#28, s_state#9]
 Keys [1]: [s_state#9]
-Functions [1]: [partial_sum(total_sum#29)]
-Aggregate Attributes [2]: [sum#30, isEmpty#31]
-Results [3]: [s_state#9, sum#32, isEmpty#33]
+Functions [1]: [partial_sum(total_sum#28)]
+Aggregate Attributes [2]: [sum#29, isEmpty#30]
+Results [3]: [s_state#9, sum#31, isEmpty#32]
 
 (42) Exchange
-Input [3]: [s_state#9, sum#32, isEmpty#33]
+Input [3]: [s_state#9, sum#31, isEmpty#32]
 Arguments: hashpartitioning(s_state#9, 5), ENSURE_REQUIREMENTS, [plan_id=5]
 
-(43) HashAggregate [codegen id : 13]
-Input [3]: [s_state#9, sum#32, isEmpty#33]
+(43) HashAggregate [codegen id : 11]
+Input [3]: [s_state#9, sum#31, isEmpty#32]
 Keys [1]: [s_state#9]
-Functions [1]: [sum(total_sum#29)]
-Aggregate Attributes [1]: [sum(total_sum#29)#34]
-Results [6]: [sum(total_sum#29)#34 AS total_sum#35, s_state#9, null AS s_county#36, 0 AS g_state#37, 1 AS g_county#38, 1 AS lochierarchy#39]
+Functions [1]: [sum(total_sum#28)]
+Aggregate Attributes [1]: [sum(total_sum#28)#33]
+Results [6]: [sum(total_sum#28)#33 AS total_sum#34, s_state#9, null AS s_county#35, 0 AS g_state#36, 1 AS g_county#37, 1 AS lochierarchy#38]
 
 (44) ReusedExchange [Reuses operator id: 37]
-Output [3]: [s_state#9, s_county#8, sum#40]
+Output [3]: [s_state#9, s_county#8, sum#39]
 
-(45) HashAggregate [codegen id : 19]
-Input [3]: [s_state#9, s_county#8, sum#40]
+(45) HashAggregate [codegen id : 16]
+Input [3]: [s_state#9, s_county#8, sum#39]
 Keys [2]: [s_state#9, s_county#8]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#23]
-Results [1]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#23,17,2) AS total_sum#29]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#22]
+Results [1]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#22,17,2) AS total_sum#28]
 
-(46) HashAggregate [codegen id : 19]
-Input [1]: [total_sum#29]
+(46) HashAggregate [codegen id : 16]
+Input [1]: [total_sum#28]
 Keys: []
-Functions [1]: [partial_sum(total_sum#29)]
-Aggregate Attributes [2]: [sum#41, isEmpty#42]
-Results [2]: [sum#43, isEmpty#44]
+Functions [1]: [partial_sum(total_sum#28)]
+Aggregate Attributes [2]: [sum#40, isEmpty#41]
+Results [2]: [sum#42, isEmpty#43]
 
 (47) Exchange
-Input [2]: [sum#43, isEmpty#44]
+Input [2]: [sum#42, isEmpty#43]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=6]
 
-(48) HashAggregate [codegen id : 20]
-Input [2]: [sum#43, isEmpty#44]
+(48) HashAggregate [codegen id : 17]
+Input [2]: [sum#42, isEmpty#43]
 Keys: []
-Functions [1]: [sum(total_sum#29)]
-Aggregate Attributes [1]: [sum(total_sum#29)#45]
-Results [6]: [sum(total_sum#29)#45 AS total_sum#46, null AS s_state#47, null AS s_county#48, 1 AS g_state#49, 1 AS g_county#50, 2 AS lochierarchy#51]
+Functions [1]: [sum(total_sum#28)]
+Aggregate Attributes [1]: [sum(total_sum#28)#44]
+Results [6]: [sum(total_sum#28)#44 AS total_sum#45, null AS s_state#46, null AS s_county#47, 1 AS g_state#48, 1 AS g_county#49, 2 AS lochierarchy#50]
 
 (49) Union
 
-(50) HashAggregate [codegen id : 21]
-Input [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
-Keys [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
+(50) HashAggregate [codegen id : 18]
+Input [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
+Keys [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
 Functions: []
 Aggregate Attributes: []
-Results [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
+Results [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
 
 (51) Exchange
-Input [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
-Arguments: hashpartitioning(total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27, 5), ENSURE_REQUIREMENTS, [plan_id=7]
+Input [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
+Arguments: hashpartitioning(total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26, 5), ENSURE_REQUIREMENTS, [plan_id=7]
 
-(52) HashAggregate [codegen id : 22]
-Input [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
-Keys [6]: [total_sum#24, s_state#9, s_county#8, g_state#25, g_county#26, lochierarchy#27]
+(52) HashAggregate [codegen id : 19]
+Input [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
+Keys [6]: [total_sum#23, s_state#9, s_county#8, g_state#24, g_county#25, lochierarchy#26]
 Functions: []
 Aggregate Attributes: []
-Results [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, CASE WHEN (g_county#26 = 0) THEN s_state#9 END AS _w0#52]
+Results [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, CASE WHEN (g_county#25 = 0) THEN s_state#9 END AS _w0#51]
 
 (53) Exchange
-Input [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, _w0#52]
-Arguments: hashpartitioning(lochierarchy#27, _w0#52, 5), ENSURE_REQUIREMENTS, [plan_id=8]
+Input [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, _w0#51]
+Arguments: hashpartitioning(lochierarchy#26, _w0#51, 5), ENSURE_REQUIREMENTS, [plan_id=8]
 
-(54) Sort [codegen id : 23]
-Input [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, _w0#52]
-Arguments: [lochierarchy#27 ASC NULLS FIRST, _w0#52 ASC NULLS FIRST, total_sum#24 DESC NULLS LAST], false, 0
+(54) Sort [codegen id : 20]
+Input [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, _w0#51]
+Arguments: [lochierarchy#26 ASC NULLS FIRST, _w0#51 ASC NULLS FIRST, total_sum#23 DESC NULLS LAST], false, 0
 
 (55) Window
-Input [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, _w0#52]
-Arguments: [rank(total_sum#24) windowspecdefinition(lochierarchy#27, _w0#52, total_sum#24 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#53], [lochierarchy#27, _w0#52], [total_sum#24 DESC NULLS LAST]
+Input [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, _w0#51]
+Arguments: [rank(total_sum#23) windowspecdefinition(lochierarchy#26, _w0#51, total_sum#23 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#52], [lochierarchy#26, _w0#51], [total_sum#23 DESC NULLS LAST]
 
-(56) Project [codegen id : 24]
-Output [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, rank_within_parent#53]
-Input [6]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, _w0#52, rank_within_parent#53]
+(56) Project [codegen id : 21]
+Output [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, rank_within_parent#52]
+Input [6]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, _w0#51, rank_within_parent#52]
 
 (57) TakeOrderedAndProject
-Input [5]: [total_sum#24, s_state#9, s_county#8, lochierarchy#27, rank_within_parent#53]
-Arguments: 100, [lochierarchy#27 DESC NULLS LAST, CASE WHEN (lochierarchy#27 = 0) THEN s_state#9 END ASC NULLS FIRST, rank_within_parent#53 ASC NULLS FIRST], [total_sum#24, s_state#9, s_county#8, lochierarchy#27, rank_within_parent#53]
+Input [5]: [total_sum#23, s_state#9, s_county#8, lochierarchy#26, rank_within_parent#52]
+Arguments: 100, [lochierarchy#26 DESC NULLS LAST, CASE WHEN (lochierarchy#26 = 0) THEN s_state#9 END ASC NULLS FIRST, rank_within_parent#52 ASC NULLS FIRST], [total_sum#23, s_state#9, s_county#8, lochierarchy#26, rank_within_parent#52]
 
 ===== Subqueries =====
 

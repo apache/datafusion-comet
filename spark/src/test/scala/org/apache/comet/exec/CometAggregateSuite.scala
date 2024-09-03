@@ -22,8 +22,6 @@ package org.apache.comet.exec
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.example.data.simple.SimpleGroup
-import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
@@ -429,11 +427,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (-0.0.asInstanceOf[Float], 2),
         (0.0.asInstanceOf[Float], 3),
         (Float.NaN, 4))
-      withParquetTable(data, "tbl", dictionaryEnabled) {
-        checkSparkAnswer("SELECT SUM(_2), MIN(_2), MAX(_2), _1 FROM tbl GROUP BY _1")
-        checkSparkAnswer("SELECT MIN(_1), MAX(_1), MIN(_2), MAX(_2) FROM tbl")
-        checkSparkAnswer("SELECT AVG(_2), _1 FROM tbl GROUP BY _1")
-        checkSparkAnswer("SELECT AVG(_1), AVG(_2) FROM tbl")
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        withParquetTable(data, "tbl", dictionaryEnabled) {
+          checkSparkAnswer("SELECT SUM(_2), MIN(_2), MAX(_2), _1 FROM tbl GROUP BY _1")
+          checkSparkAnswer("SELECT MIN(_1), MAX(_1), MIN(_2), MAX(_2) FROM tbl")
+          checkSparkAnswer("SELECT AVG(_2), _1 FROM tbl GROUP BY _1")
+          checkSparkAnswer("SELECT AVG(_1), AVG(_2) FROM tbl")
+        }
       }
     }
   }
@@ -551,7 +551,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withParquetTable(
               (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
@@ -578,7 +577,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withTempPath { dir =>
               val path = new Path(dir.toURI.toString, "test.parquet")
@@ -586,15 +584,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g1, _g2, _3 FROM tbl ORDER BY _3")
-                  checkSparkAnswer("SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2")
-                  checkSparkAnswer("SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                 }
-                checkSparkAnswer("SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, COUNT(DISTINCT _3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, MIN(_3), MAX(_3) FROM tbl GROUP BY _g1, _g2")
-                checkSparkAnswer("SELECT _g1, _g2, AVG(_3) FROM tbl GROUP BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, COUNT(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, SUM(DISTINCT _3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, COUNT(DISTINCT _3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, MIN(_3), MAX(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                checkSparkAnswer(
+                  "SELECT _g1, _g2, AVG(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
               }
             }
           }
@@ -607,7 +613,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t(v VARCHAR(3), i INT) USING PARQUET")
       sql("INSERT INTO t VALUES ('c', 1)")
-      checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
+      }
     }
   }
 
@@ -619,7 +627,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(true, false).foreach { dictionaryEnabled =>
           withSQLConf(
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
             CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
             withTempPath { dir =>
               val path = new Path(dir.toURI.toString, "test.parquet")
@@ -628,19 +635,22 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g3, _g4, _3, _4 FROM tbl ORDER BY _3, _4")
                   checkSparkAnswer(
-                    "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4")
-                  checkSparkAnswer("SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4")
+                    "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                  checkSparkAnswer(
+                    "SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 }
-                checkSparkAnswer("SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, SUM(DISTINCT _3), SUM(DISTINCT _4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, COUNT(DISTINCT _3), COUNT(DISTINCT _4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, COUNT(_3), COUNT(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
-                  "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4")
-                checkSparkAnswer("SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4")
+                  "SELECT _g3, _g4, COUNT(DISTINCT _3), COUNT(DISTINCT _4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                checkSparkAnswer(
+                  "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+                checkSparkAnswer(
+                  "SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
               }
             }
           }
@@ -659,7 +669,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
             Seq(128, numValues + 100).foreach { batchSize =>
-              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
@@ -667,13 +679,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
                       "FROM tbl ORDER BY _1, _2, _3, _4")
                     checkSparkAnswer(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
-                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol")
+                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
                   }
                   checkSparkAnswer(s"SELECT _g$gCol, SUM(_1), SUM(_2), COUNT(_3), COUNT(_4), " +
-                    s"MIN(_1), MAX(_4), AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol")
-                  checkSparkAnswer(s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol")
+                    s"MIN(_1), MAX(_4), AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
                   checkSparkAnswer(
-                    s"SELECT _g$gCol, COUNT(DISTINCT _1) FROM tbl GROUP BY _g$gCol")
+                    s"SELECT _g$gCol, SUM(DISTINCT _3) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
+                  checkSparkAnswer(
+                    s"SELECT _g$gCol, COUNT(DISTINCT _1) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
                 }
               }
             }
@@ -842,7 +855,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
         "tbl",
         dictionaryEnabled) {
-        checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+        withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+        }
       }
     }
   }
@@ -969,7 +984,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_ENFORCE_MODE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1228,7 +1242,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("stddev_pop and stddev_samp") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXPR_STDDEV_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1295,90 +1311,4 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
   }
 
-  def makeParquetFile(
-      path: Path,
-      total: Int,
-      numGroups: Int,
-      dictionaryEnabled: Boolean): Unit = {
-    val schemaStr =
-      """
-        |message root {
-        |  optional INT32                    _1(INT_8);
-        |  optional INT32                    _2(INT_16);
-        |  optional INT32                    _3;
-        |  optional INT64                    _4;
-        |  optional FLOAT                    _5;
-        |  optional DOUBLE                   _6;
-        |  optional INT32                    _7(DECIMAL(5, 2));
-        |  optional INT64                    _8(DECIMAL(18, 10));
-        |  optional FIXED_LEN_BYTE_ARRAY(16) _9(DECIMAL(38, 37));
-        |  optional INT64                    _10(TIMESTAMP(MILLIS,true));
-        |  optional INT64                    _11(TIMESTAMP(MICROS,true));
-        |  optional INT32                    _12(DATE);
-        |  optional INT32                    _g1(INT_8);
-        |  optional INT32                    _g2(INT_16);
-        |  optional INT32                    _g3;
-        |  optional INT64                    _g4;
-        |  optional FLOAT                    _g5;
-        |  optional DOUBLE                   _g6;
-        |  optional INT32                    _g7(DECIMAL(5, 2));
-        |  optional INT64                    _g8(DECIMAL(18, 10));
-        |  optional FIXED_LEN_BYTE_ARRAY(16) _g9(DECIMAL(38, 37));
-        |  optional INT64                    _g10(TIMESTAMP(MILLIS,true));
-        |  optional INT64                    _g11(TIMESTAMP(MICROS,true));
-        |  optional INT32                    _g12(DATE);
-        |  optional BINARY                   _g13(UTF8);
-        |  optional BINARY                   _g14;
-        |}
-      """.stripMargin
-
-    val schema = MessageTypeParser.parseMessageType(schemaStr)
-    val writer = createParquetWriter(schema, path, dictionaryEnabled = true)
-
-    val rand = scala.util.Random
-    val expected = (0 until total).map { i =>
-      // use a single value for the first page, to make sure dictionary encoding kicks in
-      if (rand.nextBoolean()) None
-      else {
-        if (dictionaryEnabled) Some(i % 10) else Some(i)
-      }
-    }
-
-    expected.foreach { opt =>
-      val record = new SimpleGroup(schema)
-      opt match {
-        case Some(i) =>
-          record.add(0, i.toByte)
-          record.add(1, i.toShort)
-          record.add(2, i)
-          record.add(3, i.toLong)
-          record.add(4, rand.nextFloat())
-          record.add(5, rand.nextDouble())
-          record.add(6, i)
-          record.add(7, i.toLong)
-          record.add(8, (i % 10).toString * 16)
-          record.add(9, i.toLong)
-          record.add(10, i.toLong)
-          record.add(11, i)
-          record.add(12, i.toByte % numGroups)
-          record.add(13, i.toShort % numGroups)
-          record.add(14, i % numGroups)
-          record.add(15, i.toLong % numGroups)
-          record.add(16, rand.nextFloat())
-          record.add(17, rand.nextDouble())
-          record.add(18, i)
-          record.add(19, i.toLong)
-          record.add(20, (i % 10).toString * 16)
-          record.add(21, i.toLong)
-          record.add(22, i.toLong)
-          record.add(23, i)
-          record.add(24, (i % 10).toString * 24)
-          record.add(25, (i % 10).toString * 36)
-        case _ =>
-      }
-      writer.write(record)
-    }
-
-    writer.close()
-  }
 }

@@ -215,12 +215,8 @@ object Utils {
       val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
       writer.start()
       writer.writeBatch()
-
       root.clear()
-      writer.end()
-
-      out.flush()
-      out.close()
+      writer.close()
 
       if (out.size() > 0) {
         (batch.numRows(), cbbos.toChunkedByteBuffer)

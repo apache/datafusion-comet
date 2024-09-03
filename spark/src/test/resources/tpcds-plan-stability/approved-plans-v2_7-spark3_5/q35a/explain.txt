@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (38)
-+- * HashAggregate (37)
-   +- Exchange (36)
-      +- * ColumnarToRow (35)
+* ColumnarToRow (38)
++- CometTakeOrderedAndProject (37)
+   +- CometHashAggregate (36)
+      +- CometExchange (35)
          +- CometHashAggregate (34)
             +- CometProject (33)
                +- CometBroadcastHashJoin (32)
@@ -202,23 +202,21 @@ Input [6]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd
 Keys [6]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27]
 Functions [10]: [partial_count(1), partial_avg(cd_dep_count#25), partial_max(cd_dep_count#25), partial_sum(cd_dep_count#25), partial_avg(cd_dep_employed_count#26), partial_max(cd_dep_employed_count#26), partial_sum(cd_dep_employed_count#26), partial_avg(cd_dep_college_count#27), partial_max(cd_dep_college_count#27), partial_sum(cd_dep_college_count#27)]
 
-(35) ColumnarToRow [codegen id : 1]
+(35) CometExchange
 Input [19]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27, count#28, sum#29, count#30, max#31, sum#32, sum#33, count#34, max#35, sum#36, sum#37, count#38, max#39, sum#40]
+Arguments: hashpartitioning(ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(36) Exchange
-Input [19]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27, count#28, sum#29, count#30, max#31, sum#32, sum#33, count#34, max#35, sum#36, sum#37, count#38, max#39, sum#40]
-Arguments: hashpartitioning(ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27, 5), ENSURE_REQUIREMENTS, [plan_id=1]
-
-(37) HashAggregate [codegen id : 2]
+(36) CometHashAggregate
 Input [19]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27, count#28, sum#29, count#30, max#31, sum#32, sum#33, count#34, max#35, sum#36, sum#37, count#38, max#39, sum#40]
 Keys [6]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cd_dep_employed_count#26, cd_dep_college_count#27]
 Functions [10]: [count(1), avg(cd_dep_count#25), max(cd_dep_count#25), sum(cd_dep_count#25), avg(cd_dep_employed_count#26), max(cd_dep_employed_count#26), sum(cd_dep_employed_count#26), avg(cd_dep_college_count#27), max(cd_dep_college_count#27), sum(cd_dep_college_count#27)]
-Aggregate Attributes [10]: [count(1)#41, avg(cd_dep_count#25)#42, max(cd_dep_count#25)#43, sum(cd_dep_count#25)#44, avg(cd_dep_employed_count#26)#45, max(cd_dep_employed_count#26)#46, sum(cd_dep_employed_count#26)#47, avg(cd_dep_college_count#27)#48, max(cd_dep_college_count#27)#49, sum(cd_dep_college_count#27)#50]
-Results [18]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, count(1)#41 AS cnt1#51, avg(cd_dep_count#25)#42 AS avg(cd_dep_count)#52, max(cd_dep_count#25)#43 AS max(cd_dep_count)#53, sum(cd_dep_count#25)#44 AS sum(cd_dep_count)#54, cd_dep_employed_count#26, count(1)#41 AS cnt2#55, avg(cd_dep_employed_count#26)#45 AS avg(cd_dep_employed_count)#56, max(cd_dep_employed_count#26)#46 AS max(cd_dep_employed_count)#57, sum(cd_dep_employed_count#26)#47 AS sum(cd_dep_employed_count)#58, cd_dep_college_count#27, count(1)#41 AS cnt3#59, avg(cd_dep_college_count#27)#48 AS avg(cd_dep_college_count)#60, max(cd_dep_college_count#27)#49 AS max(cd_dep_college_count)#61, sum(cd_dep_college_count#27)#50 AS sum(cd_dep_college_count)#62]
 
-(38) TakeOrderedAndProject
-Input [18]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#51, avg(cd_dep_count)#52, max(cd_dep_count)#53, sum(cd_dep_count)#54, cd_dep_employed_count#26, cnt2#55, avg(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, sum(cd_dep_employed_count)#58, cd_dep_college_count#27, cnt3#59, avg(cd_dep_college_count)#60, max(cd_dep_college_count)#61, sum(cd_dep_college_count)#62]
-Arguments: 100, [ca_state#21 ASC NULLS FIRST, cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_dep_count#25 ASC NULLS FIRST, cd_dep_employed_count#26 ASC NULLS FIRST, cd_dep_college_count#27 ASC NULLS FIRST], [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#51, avg(cd_dep_count)#52, max(cd_dep_count)#53, sum(cd_dep_count)#54, cd_dep_employed_count#26, cnt2#55, avg(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, sum(cd_dep_employed_count)#58, cd_dep_college_count#27, cnt3#59, avg(cd_dep_college_count)#60, max(cd_dep_college_count)#61, sum(cd_dep_college_count)#62]
+(37) CometTakeOrderedAndProject
+Input [18]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#41, avg(cd_dep_count)#42, max(cd_dep_count)#43, sum(cd_dep_count)#44, cd_dep_employed_count#26, cnt2#45, avg(cd_dep_employed_count)#46, max(cd_dep_employed_count)#47, sum(cd_dep_employed_count)#48, cd_dep_college_count#27, cnt3#49, avg(cd_dep_college_count)#50, max(cd_dep_college_count)#51, sum(cd_dep_college_count)#52]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_state#21 ASC NULLS FIRST,cd_gender#23 ASC NULLS FIRST,cd_marital_status#24 ASC NULLS FIRST,cd_dep_count#25 ASC NULLS FIRST,cd_dep_employed_count#26 ASC NULLS FIRST,cd_dep_college_count#27 ASC NULLS FIRST], output=[ca_state#21,cd_gender#23,cd_marital_status#24,cd_dep_count#25,cnt1#41,avg(cd_dep_count)#42,max(cd_dep_count)#43,sum(cd_dep_count)#44,cd_dep_employed_count#26,cnt2#45,avg(cd_dep_employed_count)#46,max(cd_dep_employed_count)#47,sum(cd_dep_employed_count)#48,cd_dep_college_count#27,cnt3#49,avg(cd_dep_college_count)#50,max(cd_dep_college_count)#51,sum(cd_dep_college_count)#52]), [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#41, avg(cd_dep_count)#42, max(cd_dep_count)#43, sum(cd_dep_count)#44, cd_dep_employed_count#26, cnt2#45, avg(cd_dep_employed_count)#46, max(cd_dep_employed_count)#47, sum(cd_dep_employed_count)#48, cd_dep_college_count#27, cnt3#49, avg(cd_dep_college_count)#50, max(cd_dep_college_count)#51, sum(cd_dep_college_count)#52], 100, [ca_state#21 ASC NULLS FIRST, cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_dep_count#25 ASC NULLS FIRST, cd_dep_employed_count#26 ASC NULLS FIRST, cd_dep_college_count#27 ASC NULLS FIRST], [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#41, avg(cd_dep_count)#42, max(cd_dep_count)#43, sum(cd_dep_count)#44, cd_dep_employed_count#26, cnt2#45, avg(cd_dep_employed_count)#46, max(cd_dep_employed_count)#47, sum(cd_dep_employed_count)#48, cd_dep_college_count#27, cnt3#49, avg(cd_dep_college_count)#50, max(cd_dep_college_count)#51, sum(cd_dep_college_count)#52]
+
+(38) ColumnarToRow [codegen id : 1]
+Input [18]: [ca_state#21, cd_gender#23, cd_marital_status#24, cd_dep_count#25, cnt1#41, avg(cd_dep_count)#42, max(cd_dep_count)#43, sum(cd_dep_count)#44, cd_dep_employed_count#26, cnt2#45, avg(cd_dep_employed_count)#46, max(cd_dep_employed_count)#47, sum(cd_dep_employed_count)#48, cd_dep_college_count#27, cnt3#49, avg(cd_dep_college_count)#50, max(cd_dep_college_count)#51, sum(cd_dep_college_count)#52]
 
 ===== Subqueries =====
 
