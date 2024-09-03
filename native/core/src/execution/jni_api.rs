@@ -359,6 +359,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 &mut exec_context.input_sources.clone(),
             )?;
 
+            // optimize the physical plan
+            let root_op = planner.optimize_plan(root_op)?;
+
             exec_context.root_op = Some(root_op.clone());
             exec_context.scans = scans;
 
