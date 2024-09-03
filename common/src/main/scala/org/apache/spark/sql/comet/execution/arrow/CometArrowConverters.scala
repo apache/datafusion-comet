@@ -46,7 +46,7 @@ object CometArrowConverters extends Logging {
   // only decreased when the native plan is done with the vectors, which is usually longer than
   // all the ColumnarBatches are consumed.
 
-  abstract private[sql] class SparkToArrowConverter(
+  abstract private[sql] class ArrowBatchIterBase(
       schema: StructType,
       timeZoneId: String,
       context: TaskContext)
@@ -101,13 +101,13 @@ object CometArrowConverters extends Logging {
 
   }
 
-  private[sql] class ArrowBatchIteratorFromInternalRow(
+  private[sql] class RowToArrowBatchIter(
       rowIter: Iterator[InternalRow],
       schema: StructType,
       maxRecordsPerBatch: Long,
       timeZoneId: String,
       context: TaskContext)
-      extends SparkToArrowConverter(schema, timeZoneId, context)
+      extends ArrowBatchIterBase(schema, timeZoneId, context)
       with AutoCloseable {
 
     override def hasNext: Boolean = rowIter.hasNext || {
@@ -133,27 +133,22 @@ object CometArrowConverters extends Logging {
     }
   }
 
-  def toArrowBatchIteratorFromInternalRow(
+  def rowToArrowBatchIter(
       rowIter: Iterator[InternalRow],
       schema: StructType,
       maxRecordsPerBatch: Long,
       timeZoneId: String,
       context: TaskContext): Iterator[ColumnarBatch] = {
-    new ArrowBatchIteratorFromInternalRow(
-      rowIter,
-      schema,
-      maxRecordsPerBatch,
-      timeZoneId,
-      context)
+    new RowToArrowBatchIter(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
   }
 
-  private[sql] class ArrowBatchIteratorFromColumnBatch(
+  private[sql] class ColumnBatchToArrowBatchIter(
       colBatch: ColumnarBatch,
       schema: StructType,
       maxRecordsPerBatch: Int,
       timeZoneId: String,
       context: TaskContext)
-      extends SparkToArrowConverter(schema, timeZoneId, context)
+      extends ArrowBatchIterBase(schema, timeZoneId, context)
       with AutoCloseable {
 
     private var rowsProduced: Int = 0
@@ -192,17 +187,12 @@ object CometArrowConverters extends Logging {
     }
   }
 
-  def toArrowBatchIteratorFromColumnBatch(
+  def columnarBatchToArrowBatchIter(
       colBatch: ColumnarBatch,
       schema: StructType,
       maxRecordsPerBatch: Int,
       timeZoneId: String,
       context: TaskContext): Iterator[ColumnarBatch] = {
-    new ArrowBatchIteratorFromColumnBatch(
-      colBatch,
-      schema,
-      maxRecordsPerBatch,
-      timeZoneId,
-      context)
+    new ColumnBatchToArrowBatchIter(colBatch, schema, maxRecordsPerBatch, timeZoneId, context)
   }
 }
