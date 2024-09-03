@@ -296,11 +296,6 @@ unsafe fn prepare_output(
         }
     }
 
-    let return_flag = 1;
-
-    let long_array = env.new_long_array((results.len() * 2) as i32 + 2)?;
-    env.set_long_array_region(long_array, 0, &[return_flag, num_rows as jlong])?;
-
     let mut i = 0;
     while i < results.len() {
         let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
