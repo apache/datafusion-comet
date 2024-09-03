@@ -1492,6 +1492,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case dateAdd @ DateAdd(left, right) =>
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
+
+          if (leftExpr.isDefined && rightExpr.isDefined) {
+            val builder = ExprOuterClass.DateAdd.newBuilder()
+            builder.setLeft(leftExpr.get)
+            builder.setRight(rightExpr.get)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setDateAdd(builder)
+                .build())
+          } else {
+            withInfo(dateAdd, left, right)
+            None
+          }
+
         case TruncDate(child, format) =>
           val childExpr = exprToProtoInternal(child, inputs)
           val formatExpr = exprToProtoInternal(format, inputs)
