@@ -30,12 +30,22 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
 
+/**
+ * Provides functionality for importing Arrow vectors from native code and wrapping them as
+ * CometVectors.
+ *
+ * Also provides functionality for exporting Comet columnar batches to native code.
+ *
+ * Each instance of NativeUtils creates an instance of CDataDictionaryProvider (a
+ * DictionaryProvider that is used in C Data Interface for imports).
+ */
 class NativeUtil {
   import Utils._
 
+  /** Use the global allocator */
   private val allocator = CometArrowAllocator
-  private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
   private val importer = new ArrowImporter(allocator)
+  private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
   /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
@@ -132,6 +142,11 @@ class NativeUtil {
     }
 
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
+  }
+
+  def close(): Unit = {
+    // closing the dictionary provider also closes the dictionary arrays
+    dictionaryProvider.close()
   }
 }
 

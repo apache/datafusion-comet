@@ -48,7 +48,7 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
-  private val nativeUtil = new NativeUtil
+  private val nativeUtil = new NativeUtil()
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
@@ -157,6 +157,7 @@ class CometExecIterator(
         currentBatch.close()
         currentBatch = null
       }
+      nativeUtil.close()
       nativeLib.releasePlan(plan)
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
