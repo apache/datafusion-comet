@@ -40,15 +40,12 @@ public class ArrowImporter {
   }
 
   Field importField(ArrowSchema schema, CDataDictionaryProvider provider) {
-    Field var4;
     try {
-      var4 = importer.importField(schema, provider);
+      return importer.importField(schema, provider);
     } finally {
       schema.release();
       schema.close();
     }
-
-    return var4;
   }
 
   public FieldVector importVector(
