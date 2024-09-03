@@ -51,8 +51,8 @@ class NativeUtil {
   private val importer = new ArrowImporter(allocator)
 
   /**
-   * Dictionary provider to use for the lifetime of this instance of NativeUtil. The
-   * dictionary provider is closed when NativeUtil is closed.
+   * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary
+   * provider is closed when NativeUtil is closed.
    */
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
