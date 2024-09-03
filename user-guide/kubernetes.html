@@ -279,6 +279,11 @@ under the License.
    Example Spark Submit
   </a>
  </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#helm-chart">
+   Helm chart
+  </a>
+ </li>
 </ul>
 
 </nav>
@@ -339,6 +344,77 @@ Docker image from https://github.com/orgs/apache/packages?repo_name=datafusion-c
 <h2>Example Spark Submit<a class="headerlink" href="#example-spark-submit" title="Link to this heading">¶</a></h2>
 <p>The exact syntax will vary depending on the Kubernetes distribution, but an example <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code> command can be
 found <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/benchmarks">here</a>.</p>
+</section>
+<section id="helm-chart">
+<h2>Helm chart<a class="headerlink" href="#helm-chart" title="Link to this heading">¶</a></h2>
+<p>Install helm Spark operator for Kubernetes</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>repo<span class="w"> </span>add<span class="w"> </span>spark-operator<span class="w"> </span>https://kubeflow.github.io/spark-operator
+
+helm<span class="w"> </span>repo<span class="w"> </span>update
+
+helm<span class="w"> </span>install<span class="w"> </span>my-release<span class="w"> </span>spark-operator/spark-operator<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>--create-namespace<span class="w"> </span>--set<span class="w"> </span>webhook.enable<span class="o">=</span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>Check the operator is deployed</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>status<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>my-release
+
+NAME:<span class="w"> </span>my-release
+NAMESPACE:<span class="w"> </span>spark-operator
+STATUS:<span class="w"> </span>deployed
+REVISION:<span class="w"> </span><span class="m">1</span>
+TEST<span class="w"> </span>SUITE:<span class="w"> </span>None
+</pre></div>
+</div>
+<p>Create example Spark application file <code class="docutils literal notranslate"><span class="pre">spark-pi.yaml</span></code></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>apiVersion:<span class="w"> </span>sparkoperator.k8s.io/v1beta2
+kind:<span class="w"> </span>SparkApplication
+metadata:
+<span class="w">  </span>name:<span class="w"> </span>spark-pi
+<span class="w">  </span>namespace:<span class="w"> </span>default
+spec:
+<span class="w">  </span>type:<span class="w"> </span>Scala
+<span class="w">  </span>mode:<span class="w"> </span>cluster
+<span class="w">  </span>image:<span class="w"> </span>ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.2.0
+<span class="w">  </span>imagePullPolicy:<span class="w"> </span>IfNotPresent
+<span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.SparkPi
+<span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
+<span class="w">  </span>sparkConf:
+<span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.plugins&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.CometPlugin&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.comet.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.comet.exec.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.comet.cast.allowIncompatible&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.mode&quot;</span>:<span class="w"> </span><span class="s2">&quot;auto&quot;</span>
+<span class="w">    </span><span class="s2">&quot;conf spark.shuffle.manager&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager&quot;</span>
+<span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">  </span>driver:
+<span class="w">    </span>labels:
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">    </span>cores:<span class="w"> </span><span class="m">1</span>
+<span class="w">    </span>coreLimit:<span class="w"> </span>1200m
+<span class="w">    </span>memory:<span class="w"> </span>512m
+<span class="w">    </span>serviceAccount:<span class="w"> </span>spark-operator-spark
+<span class="w">  </span>executor:
+<span class="w">    </span>labels:
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">    </span>instances:<span class="w"> </span><span class="m">1</span>
+<span class="w">    </span>cores:<span class="w"> </span><span class="m">2</span>
+<span class="w">    </span>coreLimit:<span class="w"> </span>1200m
+<span class="w">    </span>memory:<span class="w"> </span>512m
+</pre></div>
+</div>
+<p>Refer to <a class="reference internal" href="#comet-docker-images">Comet builds</a></p>
+<p>Run Apache Spark application with Comet enabled</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>spark-pi.yaml
+</pre></div>
+</div>
+<p>Check application status</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>--namespace<span class="o">=</span>spark-operator
+</pre></div>
+</div>
+<p>More info on Kube Spark operator https://www.kubeflow.org/docs/components/spark-operator/getting-started/</p>
 </section>
 </section>
 
