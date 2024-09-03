@@ -36,15 +36,24 @@ import org.apache.comet.CometArrowAllocator
  *
  * Also provides functionality for exporting Comet columnar batches to native code.
  *
- * Each instance of NativeUtils creates an instance of CDataDictionaryProvider (a
+ * Each instance of NativeUtil creates an instance of CDataDictionaryProvider (a
  * DictionaryProvider that is used in C Data Interface for imports).
+ *
+ * NativeUtil must be closed after use to release resources in the dictionary provider.
  */
 class NativeUtil {
   import Utils._
 
   /** Use the global allocator */
   private val allocator = CometArrowAllocator
+
+  /** ArrowImporter does not hold any state and does not need to be closed */
   private val importer = new ArrowImporter(allocator)
+
+  /**
+   * Dictionary provider to use for the lifetime of this instance of NativeUtil. The
+   * dictionary provider is closed when NativeUtil is closed.
+   */
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
   /**
