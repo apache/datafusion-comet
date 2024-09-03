@@ -46,6 +46,24 @@ format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)
 
+# build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
+core-amd64-libs:
+	rustup target add x86_64-apple-darwin
+	# if the environment variable HAS_OSXCROSS is defined
+ifdef $(HAS_OSXCROSS)
+	cd native && RUSTFLAGS="-Ctarget-cpu=skylake" CC=o64-clang CXX=o64-clang++ cargo build -j 2 --target x86_64-apple-darwin --release
+endif
+	cd native && cargo build -j 2 --release
+
+# build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
+core-arm64-libs:
+	rustup target add aarch64-apple-darwin
+	# if the environment variable HAS_OSXCROSS is defined
+ifdef $(HAS_OSXCROSS)
+	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build -j 2 --target aarch64-apple-darwin --release
+endif
+	cd native && cargo build -j 2 --release
+
 core-amd64:
 	rustup target add x86_64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release

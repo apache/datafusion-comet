@@ -81,6 +81,32 @@ python3 generate-changelog.py 0.0.0 HEAD 0.1.0 > ../changelog/0.1.0.md
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
 commit into the release branch.
 
+### Build the jars 
+
+#### Setup to do the build
+  The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
+
+  In Docker Desktop -> Settings -> General -> Enable 'Use containerd for pulling and storing images'
+
+  (when the build process is done, you can disable the above setting)
+
+  If you have multiple docker contexts running switch to the context of the Docker Desktop. For example - 
+
+  ```shell
+$ docker context ls
+NAME              DESCRIPTION                               DOCKER ENDPOINT                               ERROR
+default           Current DOCKER_HOST based configuration   unix:///var/run/docker.sock
+desktop-linux     Docker Desktop                            unix:///Users/parth/.docker/run/docker.sock
+my_custom_context *                                         tcp://192.168.64.2:2376
+
+$ docker context use desktop-linux
+  ```
+#### Run the build script
+```shell
+./mvnw clean
+cd dev/release && ./build-release-comet.sh && cd ../..
+```
+
 ### Tag the Release Candidate
 
 Tag the release branch with `0.1.0-rc1` and push to the `apache` repo
@@ -104,6 +130,15 @@ Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to crea
 ```shell
 GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
 ```
+
+### Publish the maven artifacts
+#### Setup maven
+##### One time project setup
+Setting up your project in the ASF Nexus Repository from here: https://infra.apache.org/publishing-maven-artifacts.html
+##### Release Manager Setup
+Set up your development environment from here:  https://infra.apache.org/publishing-maven-artifacts.html
+
+TODO: build and publish a release candidate to nexus.
 
 ### Start an Email Voting Thread
 
