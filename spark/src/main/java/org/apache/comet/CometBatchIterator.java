@@ -23,7 +23,6 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
-import org.apache.comet.vector.ExportedBatch;
 import org.apache.comet.vector.NativeUtil;
 
 /**
@@ -35,41 +34,25 @@ public class CometBatchIterator {
   final Iterator<ColumnarBatch> input;
   final NativeUtil nativeUtil;
 
-  private ExportedBatch lastBatch;
-
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
     this.input = input;
     this.nativeUtil = nativeUtil;
-    this.lastBatch = null;
   }
 
   /**
-   * Get the next batches of Arrow arrays. It will consume input iterator and return Arrow arrays by
-   * addresses. If the input iterator is done, it will return a one negative element array
-   * indicating the end of the iterator.
+   * Get the next batches of Arrow arrays.
+   *
+   * @param arrayAddrs The addresses of the ArrowArray structures.
+   * @param schemaAddrs The addresses of the ArrowSchema structures.
+   * @return the number of rows of the current batch. -1 if there is no more batch.
    */
-  public long[] next() {
-    // Native side already copied the content of ArrowSchema and ArrowArray. We should deallocate
-    // the ArrowSchema and ArrowArray base structures allocated in JVM.
-    if (lastBatch != null) {
-      lastBatch.close();
-      lastBatch = null;
-    }
-
+  public int next(long[] arrayAddrs, long[] schemaAddrs) {
     boolean hasBatch = input.hasNext();
 
     if (!hasBatch) {
-      return new long[] {-1};
+      return -1;
     }
 
-    lastBatch = nativeUtil.exportBatch(input.next());
-    return lastBatch.batch();
-  }
-
-  public void close() {
-    if (lastBatch != null) {
-      lastBatch.close();
-      lastBatch = null;
-    }
+    return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());
   }
 }

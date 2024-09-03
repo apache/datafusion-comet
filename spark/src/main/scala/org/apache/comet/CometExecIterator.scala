@@ -159,8 +159,6 @@ class CometExecIterator(
       }
       nativeLib.releasePlan(plan)
 
-      cometBatchIterators.foreach(_.close())
-
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
       // Caused by: java.lang.IllegalStateException: Memory was leaked by query.
