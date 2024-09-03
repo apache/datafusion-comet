@@ -17,11 +17,14 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::{
     datatypes::DataType as ArrowDataType,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::RecordBatch;
+use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -41,8 +44,6 @@ use jni::{
     JNIEnv,
 };
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -249,11 +250,14 @@ fn prepare_datafusion_session_context(
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
-    let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(Arc::new(runtime))
+        .with_default_features()
+        .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown::new())])
+        .build();
 
-    datafusion_functions_nested::register_all(&mut session_ctx)?;
-
-    Ok(session_ctx)
+    Ok(SessionContext::new_with_state(state))
 }
 
 fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
