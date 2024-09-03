@@ -40,17 +40,19 @@ public class CometBatchIterator {
   }
 
   /**
-   * Get the next batches of Arrow arrays. It will consume input iterator and return Arrow arrays by
-   * addresses. If the input iterator is done, it will return a one negative element array
-   * indicating the end of the iterator.
+   * Get the next batches of Arrow arrays.
+   *
+   * @param arrayAddrs The addresses of the ArrowArray structures.
+   * @param schemaAddrs The addresses of the ArrowSchema structures.
+   * @return the number of rows of the current batch. -1 if there is no more batch.
    */
-  public long[] next() {
+  public int next(long[] arrayAddrs, long[] schemaAddrs) {
     boolean hasBatch = input.hasNext();
 
     if (!hasBatch) {
-      return new long[] {-1};
+      return -1;
     }
 
-    return nativeUtil.exportBatch(input.next());
+    return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());
   }
 }

@@ -33,3 +33,77 @@ docker build -t apache/datafusion-comet -f kube/Dockerfile .
 The exact syntax will vary depending on the Kubernetes distribution, but an example `spark-submit` command can be
 found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks).
 
+## Helm chart
+
+Install helm Spark operator for Kubernetes
+```bash
+helm repo add spark-operator https://kubeflow.github.io/spark-operator
+
+helm repo update
+
+helm install my-release spark-operator/spark-operator --namespace spark-operator --create-namespace --set webhook.enable=true
+````
+
+Check the operator is deployed
+```bash
+helm status --namespace spark-operator my-release
+
+NAME: my-release
+NAMESPACE: spark-operator
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+```
+
+Create example Spark application file `spark-pi.yaml`
+```bash
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: spark-pi
+  namespace: default
+spec:
+  type: Scala
+  mode: cluster
+  image: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.2.0
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkPi
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
+  sparkConf:
+    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar"
+    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar"
+    "spark.plugins": "org.apache.spark.CometPlugin"
+    "spark.comet.enabled": "true"
+    "spark.comet.exec.enabled": "true"
+    "spark.comet.cast.allowIncompatible": "true"
+    "spark.comet.exec.shuffle.enabled": "true"
+    "spark.comet.exec.shuffle.mode": "auto"
+    "conf spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+  sparkVersion: 3.4.3
+  driver:
+    labels:
+      version: 3.4.3
+    cores: 1
+    coreLimit: 1200m
+    memory: 512m
+    serviceAccount: spark-operator-spark
+  executor:
+    labels:
+      version: 3.4.3
+    instances: 1
+    cores: 2
+    coreLimit: 1200m
+    memory: 512m
+```
+Refer to [Comet builds](#comet-docker-images)
+
+Run Apache Spark application with Comet enabled
+```bash
+kubectl apply -f spark-pi.yaml
+```
+
+Check application status
+```bash
+kubectl describe sparkapplication --namespace=spark-operator
+```
+More info on Kube Spark operator https://www.kubeflow.org/docs/components/spark-operator/getting-started/

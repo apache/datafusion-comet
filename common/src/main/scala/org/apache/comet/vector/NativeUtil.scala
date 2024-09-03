@@ -44,13 +44,13 @@ class NativeUtil {
    * @param batch
    *   the input Comet columnar batch
    * @return
-   *   a list containing number of rows + pairs of memory addresses in the format of (address of
-   *   Arrow array, address of Arrow schema)
+   *   an exported batches object containing an array containing number of rows + pairs of memory
+   *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportBatch(batch: ColumnarBatch): Array[Long] = {
-    val exportedVectors = mutable.ArrayBuffer.empty[Long]
-    exportedVectors += batch.numRows()
-
+  def exportBatch(
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      batch: ColumnarBatch): Int = {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometVector =>
@@ -62,17 +62,16 @@ class NativeUtil {
             null
           }
 
-          val arrowSchema = ArrowSchema.allocateNew(allocator)
-          val arrowArray = ArrowArray.allocateNew(allocator)
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
           Data.exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
             arrowSchema)
-
-          exportedVectors += arrowArray.memoryAddress()
-          exportedVectors += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -80,7 +79,7 @@ class NativeUtil {
       }
     }
 
-    exportedVectors.toArray
+    batch.numRows()
   }
 
   /**
