@@ -86,7 +86,8 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         let java_vm = env.get_java_vm()?;
         JAVA_VM.get_or_init(|| java_vm);
 
-        info!("Comet native library initialized");
+        let comet_version = env!("CARGO_PKG_VERSION");
+        info!("Comet native library version {} initialized", comet_version);
         Ok(())
     })
 }

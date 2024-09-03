@@ -142,6 +142,18 @@ impl AggregateExpr for AvgDecimal {
             ),
         }
     }
+
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        match &self.result_data_type {
+            Decimal128(target_precision, target_scale) => {
+                Ok(make_decimal128(None, *target_precision, *target_scale))
+            }
+            _ => not_impl_err!(
+                "The result_data_type of AvgDecimal should be Decimal128 but got{}",
+                self.result_data_type
+            ),
+        }
+    }
 }
 
 impl PartialEq<dyn Any> for AvgDecimal {
@@ -211,6 +223,10 @@ impl AvgDecimalAccumulator {
     }
 }
 
+fn make_decimal128(value: Option<i128>, precision: u8, scale: i8) -> ScalarValue {
+    ScalarValue::Decimal128(value, precision, scale)
+}
+
 impl Accumulator for AvgDecimalAccumulator {
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
@@ -265,10 +281,6 @@ impl Accumulator for AvgDecimalAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        fn make_decimal128(value: Option<i128>, precision: u8, scale: i8) -> ScalarValue {
-            ScalarValue::Decimal128(value, precision, scale)
-        }
-
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
         let target_min = MIN_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
         let target_max = MAX_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];

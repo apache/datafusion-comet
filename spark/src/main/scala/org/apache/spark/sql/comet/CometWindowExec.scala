@@ -65,6 +65,7 @@ case class CometWindowExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometWindowExec =>
+        this.output == other.output &&
         this.windowExpression == other.windowExpression && this.child == other.child &&
         this.partitionSpec == other.partitionSpec && this.orderSpec == other.orderSpec &&
         this.serializedPlanOpt == other.serializedPlanOpt
@@ -74,5 +75,5 @@ case class CometWindowExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(windowExpression, partitionSpec, orderSpec, child)
+    Objects.hashCode(output, windowExpression, partitionSpec, orderSpec, child)
 }

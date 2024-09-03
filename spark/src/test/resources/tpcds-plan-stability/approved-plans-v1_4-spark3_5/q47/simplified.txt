@@ -54,9 +54,11 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                           ColumnarToRow
                             InputAdapter
                               CometSort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales]
-                                ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales] #1
+                                CometExchange [i_category,i_brand,s_store_name,s_company_name] #8
+                                  CometHashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales,sum,sum(UnscaledValue(ss_sales_price))]
+                                    ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] #2
         InputAdapter
-          BroadcastExchange #8
+          BroadcastExchange #9
             WholeStageCodegen (6)
               Project [i_category,i_brand,s_store_name,s_company_name,sum_sales,rn]
                 InputAdapter
@@ -65,4 +67,4 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                       ColumnarToRow
                         InputAdapter
                           CometSort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales]
-                            ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales] #1
+                            ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales] #8

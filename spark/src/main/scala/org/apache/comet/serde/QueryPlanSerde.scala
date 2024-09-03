@@ -2953,10 +2953,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }
 
-        // TODO: Support SortMergeJoin with join condition after new DataFusion release
-        if (join.condition.isDefined) {
-          withInfo(op, "Sort merge join with a join condition is not supported")
-          return None
+        val condition = join.condition.map { cond =>
+          val condProto = exprToProto(cond, join.left.output ++ join.right.output)
+          if (condProto.isEmpty) {
+            withInfo(join, cond)
+            return None
+          }
+          condProto.get
         }
 
         val joinType = join.joinType match {
@@ -2965,7 +2968,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          case LeftAnti => JoinType.LeftAnti
+          // TODO: DF SMJ with join condition fails TPCH q21
+          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
+          case LeftAnti =>
+            withInfo(join, "LeftAnti SMJ join with condition is not supported")
+            return None
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
@@ -3002,6 +3009,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .addAllSortOptions(sortOptions.map(_.get).asJava)
             .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+          condition.map(joinBuilder.setCondition)
           Some(result.setSortMergeJoin(joinBuilder).build())
         } else {
           val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys

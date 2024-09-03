@@ -122,6 +122,10 @@ impl AggregateExpr for Avg {
             ),
         }
     }
+
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
+    }
 }
 
 impl PartialEq<dyn Any> for Avg {
