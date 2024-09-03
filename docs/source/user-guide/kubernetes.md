@@ -79,17 +79,17 @@ spec:
     "spark.comet.exec.shuffle.enabled": "true"
     "spark.comet.exec.shuffle.mode": "auto"
     "conf spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-  sparkVersion: 3.4.2
+  sparkVersion: 3.4.3
   driver:
     labels:
-      version: 3.4.2
+      version: 3.4.3
     cores: 1
     coreLimit: 1200m
     memory: 512m
     serviceAccount: spark-operator-spark
   executor:
     labels:
-      version: 3.4.2
+      version: 3.4.3
     instances: 1
     cores: 2
     coreLimit: 1200m
