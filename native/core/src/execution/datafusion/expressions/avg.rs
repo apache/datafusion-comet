@@ -25,20 +25,23 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::{
-    type_coercion::aggregates::avg_return_type, Accumulator, EmitTo, GroupsAccumulator,
+    type_coercion::aggregates::avg_return_type, Accumulator, EmitTo, GroupsAccumulator, Signature,
 };
 use datafusion_common::{not_impl_err, Result, ScalarValue};
-use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
+use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
 use arrow_array::ArrowNativeTypeOp;
-
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::AggregateUDFImpl;
+use datafusion_expr::Volatility::Immutable;
 use DataType::*;
 
 /// AVG aggregate expression
 #[derive(Debug, Clone)]
 pub struct Avg {
     name: String,
+    signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     input_data_type: DataType,
     result_data_type: DataType,
@@ -51,6 +54,7 @@ impl Avg {
 
         Self {
             name: name.into(),
+            signature: Signature::user_defined(Immutable),
             expr,
             input_data_type: data_type,
             result_data_type,
@@ -58,17 +62,13 @@ impl Avg {
     }
 }
 
-impl AggregateExpr for Avg {
+impl AggregateUDFImpl for Avg {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, self.result_data_type.clone(), true))
-    }
-
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         // instantiate specialized accumulator based for the type
         match (&self.input_data_type, &self.result_data_type) {
             (Float64, Float64) => Ok(Box::<AvgAccumulator>::default()),
@@ -80,7 +80,7 @@ impl AggregateExpr for Avg {
         }
     }
 
-    fn state_fields(&self) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "sum"),
@@ -95,19 +95,18 @@ impl AggregateExpr for Avg {
         ])
     }
 
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr)]
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn groups_accumulator_supported(&self) -> bool {
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
         true
     }
 
-    fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
         // instantiate specialized accumulator based for the type
         match (&self.input_data_type, &self.result_data_type) {
             (Float64, Float64) => Ok(Box::new(AvgGroupsAccumulator::<Float64Type, _>::new(
@@ -125,6 +124,14 @@ impl AggregateExpr for Avg {
 
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
         Ok(ScalarValue::Float64(None))
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        avg_return_type(self.name(), &arg_types[0])
     }
 }
 
