@@ -20,7 +20,7 @@ use arrow::compute::{and, filter, is_not_null};
 use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::expressions::{
-    covariance::CovarianceAccumulator, stats::StatsType, stddev::StddevAccumulator,
+    covariance::CovarianceAccumulator, stddev::StddevAccumulator,
 };
 use arrow::{
     array::ArrayRef,
@@ -32,6 +32,7 @@ use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// CORR aggregate expression

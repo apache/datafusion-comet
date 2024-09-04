@@ -17,7 +17,7 @@
 
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::{stats::StatsType, variance::VarianceAccumulator};
+use crate::execution::datafusion::expressions::variance::VarianceAccumulator;
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
@@ -27,6 +27,7 @@ use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression

@@ -17,7 +17,6 @@
 
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::stats::StatsType;
 use arrow::{
     array::{ArrayRef, Float64Array},
     datatypes::{DataType, Field},
@@ -28,6 +27,7 @@ use datafusion_common::{downcast_value, DataFusionError, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::Volatility::Immutable;
 use datafusion_expr::{AggregateUDFImpl, Signature};
+use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// VAR_SAMP and VAR_POP aggregate expression

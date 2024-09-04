@@ -33,7 +33,6 @@ use crate::{
                 correlation::Correlation,
                 covariance::Covariance,
                 negative,
-                stats::StatsType,
                 stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
@@ -107,7 +106,7 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
-use datafusion_physical_expr::expressions::Literal;
+use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;

@@ -19,7 +19,6 @@
 
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::stats::StatsType;
 use arrow::{
     array::{ArrayRef, Float64Array},
     compute::cast,
@@ -33,6 +32,7 @@ use datafusion_common::{
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
