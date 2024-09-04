@@ -86,7 +86,7 @@ impl AggregateUDFImpl for Covariance {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Float64)
     }
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {

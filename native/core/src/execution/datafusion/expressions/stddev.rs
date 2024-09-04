@@ -27,7 +27,7 @@ use arrow::{
 use datafusion::logical_expr::Accumulator;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
+use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression

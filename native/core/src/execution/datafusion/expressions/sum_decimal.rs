@@ -82,7 +82,7 @@ impl AggregateUDFImpl for SumDecimal {
         )))
     }
 
-    fn state_fields(&self, args: StateFieldsArgs) -> DFResult<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> DFResult<Vec<Field>> {
         let fields = vec![
             Field::new(&self.name, self.result_type.clone(), self.nullable),
             Field::new("is_empty", DataType::Boolean, false),
@@ -98,7 +98,7 @@ impl AggregateUDFImpl for SumDecimal {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
         Ok(self.result_type.clone())
     }
 
