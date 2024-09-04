@@ -403,8 +403,13 @@ abstract class CometTestBase
         }
         reader.close()
         if (!hasDict) {
-          logWarning(
-            "withParquetFile was called with withDictionary=true but did not write any dictionary-encoded columns")
+          // unit test logging goes to file (see log4j.properties under src/test/resources) but
+          // we want this warning to be visible when running tests from IDE and command line so
+          // we write directly to stdout
+          // scalastyle:off println
+          println(
+            "WARN: withParquetFile was called with withDictionary=true but did not write any dictionary-encoded columns")
+          // scalastyle:on println
         }
       }
       f(file.getCanonicalPath)
