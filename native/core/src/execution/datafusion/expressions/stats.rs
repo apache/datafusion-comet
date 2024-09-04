@@ -17,6 +17,7 @@
  * under the License.
  */
 
+// TODO remove this copy once https://github.com/apache/datafusion/pull/12327 is resolved
 /// Enum used for differentiating population and sample for statistical functions
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum StatsType {

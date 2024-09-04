@@ -16,4 +16,4 @@
 // under the License.
 
 // re-export for legacy reasons
-pub use datafusion_comet_spark_expr::utils::down_cast_any_ref;
+pub use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
