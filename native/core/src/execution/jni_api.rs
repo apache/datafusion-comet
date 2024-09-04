@@ -93,6 +93,8 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
+    /// Whether to enable physical optimizer
+    pub enable_optimizer: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -133,6 +135,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Whether we've enabled additional debugging on the native side
         let debug_native = parse_bool(&configs, "debug_native")?;
         let explain_native = parse_bool(&configs, "explain_native")?;
+        let enable_optimizer = parse_bool(&configs, "native_optimizer")?;
 
         let worker_threads = configs
             .get("worker_threads")
@@ -185,6 +188,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             session_ctx: Arc::new(session),
             debug_native,
             explain_native,
+            enable_optimizer,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -360,7 +364,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             )?;
 
             // optimize the physical plan
-            let root_op = planner.optimize_plan(root_op)?;
+            let root_op = if exec_context.enable_optimizer {
+                planner.optimize_plan(root_op)?
+            } else {
+                root_op
+            };
 
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;

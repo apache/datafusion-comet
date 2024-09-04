@@ -347,6 +347,13 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_NATIVE_OPTIMIZER_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.optimizer.enabled")
+      .internal()
+      .doc("Enable DataFusion physical optimizer for native plans.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_WORKER_THREADS: ConfigEntry[Int] =
     conf("spark.comet.workerThreads")
       .internal()
