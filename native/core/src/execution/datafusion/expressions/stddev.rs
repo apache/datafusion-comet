@@ -26,7 +26,9 @@ use arrow::{
 };
 use datafusion::logical_expr::Accumulator;
 use datafusion_common::{internal_err, Result, ScalarValue};
-use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
+use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -36,6 +38,7 @@ use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, Ph
 #[derive(Debug)]
 pub struct Stddev {
     name: String,
+    signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
@@ -54,6 +57,10 @@ impl Stddev {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
+            signature: Signature::coercible(
+                vec![DataType::Float64],
+                Volatility::Immutable,
+            ),
             expr,
             stats_type,
             null_on_divide_by_zero,
@@ -61,31 +68,52 @@ impl Stddev {
     }
 }
 
-impl AggregateExpr for Stddev {
+impl AggregateUDFImpl for Stddev {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, DataType::Float64, true))
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Float64)
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(StddevAccumulator::try_new(
             self.stats_type,
             self.null_on_divide_by_zero,
         )?))
     }
 
-    fn create_sliding_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    /*
+    fn groups_accumulator_supported(&self, acc_args: AccumulatorArgs) -> bool {
+        !acc_args.is_distinct
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        Ok(Box::new(StddevGroupsAccumulator::new(StatsType::Sample)))
+    }
+    */
+
+    fn create_sliding_accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(StddevAccumulator::try_new(
             self.stats_type,
             self.null_on_divide_by_zero,
         )?))
     }
 
-    fn state_fields(&self) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "count"),
@@ -99,14 +127,6 @@ impl AggregateExpr for Stddev {
             ),
             Field::new(format_state_name(&self.name, "m2"), DataType::Float64, true),
         ])
-    }
-
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr)]
-    }
-
-    fn name(&self) -> &str {
-        &self.name
     }
 
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
