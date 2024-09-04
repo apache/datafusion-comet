@@ -101,22 +101,11 @@ class CometExecIterator(
   }
 
   def getNextBatch(): Option[ColumnarBatch] = {
-    val (arrayAddrs, schemaAddrs) = nativeUtil.allocateArrowStructs(numOutputCols)
-
-    // we execute the native plan each time we need another output batch and this could
-    // result in multiple input batches being processed
-    val result = nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
-
-    result match {
-      case -1 =>
-        // EOF
-        None
-      case numRows =>
-        val cometVectors = nativeUtil.importVector(arrayAddrs, schemaAddrs)
-        Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
-      case flag =>
-        throw new IllegalStateException(s"Invalid native flag: $flag")
-    }
+    nativeUtil.getNextBatch(
+      numOutputCols,
+      (arrayAddrs, schemaAddrs) => {
+        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+      })
   }
 
   override def hasNext: Boolean = {

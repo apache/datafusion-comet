@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::mem::forget;
 use std::sync::Arc;
 
 use arrow::{
@@ -103,19 +102,13 @@ impl SparkArrowConvert for ArrayData {
 
     /// Move this ArrowData to pointers of Arrow C data interface.
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
-        let jvm_array =
-            unsafe { std::ptr::replace(array as *mut FFI_ArrowArray, FFI_ArrowArray::new(self)) };
-        let jvm_schema = unsafe {
+        unsafe { std::ptr::replace(array as *mut FFI_ArrowArray, FFI_ArrowArray::new(self)) };
+        unsafe {
             std::ptr::replace(
                 schema as *mut FFI_ArrowSchema,
                 FFI_ArrowSchema::try_from(self.data_type())?,
             )
         };
-
-        // Don't deallocate the memory of the ArrowArray and ArrowSchema since they are allocated in Java.
-        // They will be deallocated in JVM.
-        forget(jvm_array);
-        forget(jvm_schema);
 
         Ok(())
     }
