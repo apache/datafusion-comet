@@ -21,7 +21,7 @@ use arrow_schema::{DataType, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
-    DataFusionError, Result as DataFusionResult, ScalarValue,
+    internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -154,13 +154,16 @@ impl PhysicalExpr for ListExtract {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(ListExtract::new(
-            Arc::clone(&children[0]),
-            Arc::clone(&children[1]),
-            self.default_value.clone(),
-            self.one_based,
-            self.fail_on_error,
-        )))
+        match children.len() {
+            2 => Ok(Arc::new(ListExtract::new(
+                Arc::clone(&children[0]),
+                Arc::clone(&children[1]),
+                self.default_value.clone(),
+                self.one_based,
+                self.fail_on_error,
+            ))),
+            _ => internal_err!("ListExtract should have exactly two children"),
+        }
     }
 
     fn dyn_hash(&self, state: &mut dyn Hasher) {
