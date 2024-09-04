@@ -257,7 +257,6 @@ fn prepare_datafusion_session_context(
     let state = SessionStateBuilder::new()
         .with_config(session_config)
         .with_runtime_env(Arc::new(runtime))
-        .with_default_features()
         .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown::new())])
         .build();
 
