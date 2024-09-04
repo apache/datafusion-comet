@@ -24,16 +24,19 @@ use arrow_array::{
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
 use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
+use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator, Signature};
 use datafusion_common::{not_impl_err, Result, ScalarValue};
-use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
+use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
 use arrow_array::ArrowNativeTypeOp;
 use arrow_data::decimal::{
     validate_decimal_precision, MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION,
 };
-
+use datafusion::logical_expr::Volatility::Immutable;
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::type_coercion::aggregates::avg_return_type;
+use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};
 use num::{integer::div_ceil, Integer};
 use DataType::*;
 
@@ -41,6 +44,7 @@ use DataType::*;
 #[derive(Debug, Clone)]
 pub struct AvgDecimal {
     name: String,
+    signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     sum_data_type: DataType,
     result_data_type: DataType,
@@ -56,6 +60,7 @@ impl AvgDecimal {
     ) -> Self {
         Self {
             name: name.into(),
+            signature: Signature::user_defined(Immutable),
             expr,
             result_data_type: result_type,
             sum_data_type: sum_type,
@@ -63,17 +68,13 @@ impl AvgDecimal {
     }
 }
 
-impl AggregateExpr for AvgDecimal {
+impl AggregateUDFImpl for AvgDecimal {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, self.result_data_type.clone(), true))
-    }
-
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         match (&self.sum_data_type, &self.result_data_type) {
             (Decimal128(sum_precision, sum_scale), Decimal128(target_precision, target_scale)) => {
                 Ok(Box::new(AvgDecimalAccumulator::new(
@@ -91,7 +92,7 @@ impl AggregateExpr for AvgDecimal {
         }
     }
 
-    fn state_fields(&self) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "sum"),
@@ -106,23 +107,22 @@ impl AggregateExpr for AvgDecimal {
         ])
     }
 
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr)]
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn reverse_expr(&self) -> Option<Arc<dyn AggregateExpr>> {
-        None
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
     }
 
-    fn groups_accumulator_supported(&self) -> bool {
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
         true
     }
 
-    fn create_groups_accumulator(&self) -> Result<Box<dyn GroupsAccumulator>> {
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
         // instantiate specialized accumulator based for the type
         match (&self.sum_data_type, &self.result_data_type) {
             (Decimal128(sum_precision, sum_scale), Decimal128(target_precision, target_scale)) => {
@@ -153,6 +153,14 @@ impl AggregateExpr for AvgDecimal {
                 self.result_data_type
             ),
         }
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        avg_return_type(self.name(), &arg_types[0])
     }
 }
 

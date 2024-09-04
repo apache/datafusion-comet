@@ -33,8 +33,8 @@ use std::{any::Any, sync::Arc};
 
 use arrow_array::ArrowNativeTypeOp;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::AggregateUDFImpl;
 use datafusion_expr::Volatility::Immutable;
+use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};
 use DataType::*;
 
 /// AVG aggregate expression
@@ -97,6 +97,10 @@ impl AggregateUDFImpl for Avg {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
