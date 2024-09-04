@@ -25,6 +25,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.expressions.{Expression, PlanExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
@@ -94,7 +95,17 @@ class CometSparkSessionExtensions
         }
         plan
       } else {
+
+        def isDynamicPruningFilter(e: Expression): Boolean =
+          e.exists(_.isInstanceOf[PlanExpression[_]])
+
         plan.transform {
+          case scanExec: FileSourceScanExec
+              if COMET_DPP_FALLBACK_ENABLED.get() &&
+                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
+            withInfo(scanExec, "DPP not supported")
+            scanExec
+
           // data source V2
           case scanExec: BatchScanExec
               if scanExec.scan.isInstanceOf[ParquetScan] &&

@@ -260,6 +260,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       "spark.sql.readSideCharPadding" -> "false",
