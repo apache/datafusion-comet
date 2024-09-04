@@ -116,10 +116,9 @@ impl ExecutionPlan for CopyExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let input = Arc::clone(&self.input);
-        let new_input = input.with_new_children(children)?;
+        assert!(children.len() == 1);
         Ok(Arc::new(CopyExec {
-            input: new_input,
+            input: Arc::clone(&children[0]),
             schema: Arc::clone(&self.schema),
             cache: self.cache.clone(),
             metrics: self.metrics.clone(),
