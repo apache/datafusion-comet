@@ -21,12 +21,13 @@ use arrow::{
     array::{ArrayRef, Float64Array},
     datatypes::{DataType, Field},
 };
+use datafusion::functions_aggregate::variance::VarianceGroupsAccumulator;
 use datafusion::logical_expr::Accumulator;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{downcast_value, DataFusionError, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::Volatility::Immutable;
-use datafusion_expr::{AggregateUDFImpl, Signature};
+use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature};
 use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
@@ -90,7 +91,6 @@ impl AggregateUDFImpl for Variance {
         )?))
     }
 
-    /*
     fn groups_accumulator_supported(&self, acc_args: AccumulatorArgs) -> bool {
         !acc_args.is_distinct
     }
@@ -99,11 +99,12 @@ impl AggregateUDFImpl for Variance {
         &self,
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
+        // it is safe to use DataFusion's implementation of VarianceGroupsAccumulator
+        // because it already uses f64 for count
         Ok(Box::new(VarianceGroupsAccumulator::new(
             StatsType::Population,
         )))
     }
-    */
 
     fn create_sliding_accumulator(&self, _args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(VarianceAccumulator::try_new(

@@ -22,11 +22,12 @@ use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
+use datafusion::functions_aggregate::stddev::StddevGroupsAccumulator;
 use datafusion::logical_expr::Accumulator;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 use datafusion_physical_expr::expressions::StatsType;
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
@@ -90,7 +91,6 @@ impl AggregateUDFImpl for Stddev {
         )?))
     }
 
-    /*
     fn groups_accumulator_supported(&self, acc_args: AccumulatorArgs) -> bool {
         !acc_args.is_distinct
     }
@@ -99,9 +99,10 @@ impl AggregateUDFImpl for Stddev {
         &self,
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
+        // TODO is it safe to use DataFusion's version of StddevGroupsAccumulator
+        // which uses u64 for counts or do we need to fork this and use f64?
         Ok(Box::new(StddevGroupsAccumulator::new(StatsType::Sample)))
     }
-    */
 
     fn create_sliding_accumulator(
         &self,
