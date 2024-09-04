@@ -56,7 +56,7 @@ class NativeUtil {
    */
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
- /**
+  /**
    * Allocates Arrow structs for the given number of columns.
    *
    * @param numCols
