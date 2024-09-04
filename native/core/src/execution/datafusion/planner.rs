@@ -428,23 +428,18 @@ impl PhysicalPlanner {
                         let literal_expr = Arc::new(DataFusionLiteral::new(interval_sv));
 
                         // Create a binary add expression.
-                        Ok(Arc::new(BinaryExpr::new(
+                        return Ok(Arc::new(BinaryExpr::new(
                             left,
                             DataFusionOperator::Plus,
                             literal_expr,
-                        )))
-                    } else {
-                        Err(ExecutionError::GeneralError(format!(
-                            "Not implemented: {:?}",
-                            expr
-                        )))
+                        )));
                     }
-                } else {
-                    Err(ExecutionError::GeneralError(format!(
-                        "Not implemented: {:?}",
-                        expr
-                    )))
                 }
+
+                Err(ExecutionError::GeneralError(format!(
+                    "Not implemented: {:?}",
+                    expr
+                )))
             }
             ExprStruct::TruncDate(expr) => {
                 let child =
