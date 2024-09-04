@@ -892,7 +892,6 @@ dependencies = [
  "datafusion-common",
  "datafusion-execution",
  "datafusion-expr",
- "datafusion-functions-nested",
  "datafusion-physical-expr",
  "flate2",
  "futures",
@@ -1091,28 +1090,6 @@ dependencies = [
  "datafusion-common",
  "datafusion-expr-common",
  "datafusion-physical-expr-common",
- "rand",
-]
-
-[[package]]
-name = "datafusion-functions-nested"
-version = "41.0.0"
-source = "git+https://github.com/apache/datafusion.git?rev=dff590b#dff590bfd2bb9993b2c8ce6f76a3bdd973e520a8"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-buffer",
- "arrow-ord",
- "arrow-schema",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-physical-expr-common",
- "itertools 0.13.0",
- "log",
- "paste",
  "rand",
 ]
 
