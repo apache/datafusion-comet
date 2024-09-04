@@ -152,8 +152,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
-            "SELECT _4 FROM tbl WHERE " +
-              "_20 + 5 > CAST('2020-01-01' AS DATE)")
+            "SELECT _4 FROM tbl WHERE _20 + 2 > CAST('1970-01-02' AS DATE)")
         }
       }
     }
