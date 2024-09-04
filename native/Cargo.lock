@@ -944,7 +944,6 @@ dependencies = [
  "datafusion-common",
  "datafusion-expr",
  "datafusion-physical-expr",
- "datafusion-physical-plan",
  "num",
  "rand",
  "regex",
