@@ -1348,12 +1348,23 @@ impl PhysicalPlanner {
 
                 match datatype {
                     DataType::Decimal128(_, _) => {
-                        Ok(Arc::new(SumDecimal::new("sum", child, datatype)))
+                        let func = datafusion_expr::AggregateUDF::new_from_impl(SumDecimal::new(
+                            "sum",
+                            child.clone(),
+                            datatype,
+                        ));
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                            .schema(schema)
+                            .alias("sum")
+                            .with_ignore_nulls(false)
+                            .with_distinct(false)
+                            .build()
+                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                     _ => {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
-                        let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                        let child = Arc::new(CastExpr::new(child.clone(), datatype.clone(), None));
 
                         AggregateExprBuilder::new(sum_udaf(), vec![child])
                             .schema(schema)
@@ -1370,18 +1381,38 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
                 match datatype {
-                    DataType::Decimal128(_, _) => Ok(Arc::new(AvgDecimal::new(
-                        child,
-                        "avg",
-                        datatype,
-                        input_datatype,
-                    ))),
+                    DataType::Decimal128(_, _) => {
+                        let func = datafusion_expr::AggregateUDF::new_from_impl(AvgDecimal::new(
+                            child.clone(),
+                            "avg",
+                            datatype,
+                            input_datatype,
+                        ));
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                            .schema(schema)
+                            .alias("avg")
+                            .with_ignore_nulls(false)
+                            .with_distinct(false)
+                            .build()
+                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                    }
                     _ => {
                         // cast to the result data type of AVG if the result data type is different
                         // from the input type, e.g. AVG(Int32). We should not expect a cast
                         // failure since it should have already been checked at Spark side.
-                        let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-                        Ok(Arc::new(Avg::new(child, "avg", datatype)))
+                        let child = Arc::new(CastExpr::new(child.clone(), datatype.clone(), None));
+                        let func = datafusion_expr::AggregateUDF::new_from_impl(Avg::new(
+                            child.clone(),
+                            "avg",
+                            datatype,
+                        ));
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                            .schema(schema)
+                            .alias("avg")
+                            .with_ignore_nulls(false)
+                            .with_distinct(false)
+                            .build()
+                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                 }
             }
@@ -1451,8 +1482,8 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Covariance::new(
-                            child1,
-                            child2,
+                            child1.clone(),
+                            child2.clone(),
                             "covariance",
                             datatype,
                             StatsType::Sample,
@@ -1469,8 +1500,8 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Covariance::new(
-                            child1,
-                            child2,
+                            child1.clone(),
+                            child2.clone(),
                             "covariance_pop",
                             datatype,
                             StatsType::Population,
@@ -1497,7 +1528,7 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Variance::new(
-                            child,
+                            child.clone(),
                             "variance",
                             datatype,
                             StatsType::Sample,
@@ -1514,7 +1545,7 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Variance::new(
-                            child,
+                            child.clone(),
                             "variance_pop",
                             datatype,
                             StatsType::Population,
@@ -1541,7 +1572,7 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Stddev::new(
-                            child,
+                            child.clone(),
                             "stddev",
                             datatype,
                             StatsType::Sample,
@@ -1558,7 +1589,7 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Stddev::new(
-                            child,
+                            child.clone(),
                             "stddev_pop",
                             datatype,
                             StatsType::Population,
@@ -1586,8 +1617,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = datafusion_expr::AggregateUDF::new_from_impl(Correlation::new(
-                    child1,
-                    child2,
+                    child1.clone(),
+                    child2.clone(),
                     "correlation",
                     datatype,
                     expr.null_on_divide_by_zero,
