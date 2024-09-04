@@ -261,7 +261,11 @@ fn prepare_datafusion_session_context(
         .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown::new())])
         .build();
 
-    Ok(SessionContext::new_with_state(state))
+    let mut session_ctx = SessionContext::new_with_state(state);
+
+    datafusion_functions_nested::register_all(&mut session_ctx)?;
+
+    Ok(session_ctx)
 }
 
 fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
