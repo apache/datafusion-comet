@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::unlikely;
 use arrow::{
     array::BooleanBufferBuilder,
     buffer::{BooleanBuffer, NullBuffer},
@@ -26,14 +27,17 @@ use arrow_data::decimal::validate_decimal_precision;
 use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
 use datafusion_common::{Result as DFResult, ScalarValue};
-use datafusion_physical_expr::{aggregate::utils::down_cast_any_ref, AggregateExpr, PhysicalExpr};
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::Volatility::Immutable;
+use datafusion_expr::{AggregateUDFImpl, ReversedUDAF, Signature};
+use datafusion_physical_expr::PhysicalExpr;
 use std::{any::Any, ops::BitAnd, sync::Arc};
-
-use crate::unlikely;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 
 #[derive(Debug)]
 pub struct SumDecimal {
     name: String,
+    signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
 
     /// The data type of the SUM result
@@ -56,6 +60,7 @@ impl SumDecimal {
         };
         Self {
             name: name.into(),
+            signature: Signature::user_defined(Immutable),
             expr,
             result_type: data_type,
             precision,
@@ -65,27 +70,19 @@ impl SumDecimal {
     }
 }
 
-impl AggregateExpr for SumDecimal {
+impl AggregateUDFImpl for SumDecimal {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> DFResult<Field> {
-        Ok(Field::new(
-            &self.name,
-            self.result_type.clone(),
-            self.nullable,
-        ))
-    }
-
-    fn create_accumulator(&self) -> DFResult<Box<dyn Accumulator>> {
+    fn accumulator(&self, _args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
         Ok(Box::new(SumDecimalAccumulator::new(
             self.precision,
             self.scale,
         )))
     }
 
-    fn state_fields(&self) -> DFResult<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs) -> DFResult<Vec<Field>> {
         let fields = vec![
             Field::new(&self.name, self.result_type.clone(), self.nullable),
             Field::new("is_empty", DataType::Boolean, false),
@@ -93,19 +90,26 @@ impl AggregateExpr for SumDecimal {
         Ok(fields)
     }
 
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr)]
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn groups_accumulator_supported(&self) -> bool {
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(self.result_type.clone())
+    }
+
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
         true
     }
 
-    fn create_groups_accumulator(&self) -> DFResult<Box<dyn GroupsAccumulator>> {
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> DFResult<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(SumDecimalGroupsAccumulator::new(
             self.result_type.clone(),
             self.precision,
@@ -118,6 +122,10 @@ impl AggregateExpr for SumDecimal {
             None,
             &DataType::Decimal128(self.precision, self.scale),
         )
+    }
+
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
     }
 }
 
