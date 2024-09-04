@@ -26,8 +26,8 @@ use arrow::{
 };
 use datafusion::logical_expr::Accumulator;
 use datafusion_common::{internal_err, Result, ScalarValue};
-use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::{AggregateUDFImpl, GroupsAccumulator, Signature, Volatility};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression
@@ -57,10 +57,7 @@ impl Stddev {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
-            signature: Signature::coercible(
-                vec![DataType::Float64],
-                Volatility::Immutable,
-            ),
+            signature: Signature::coercible(vec![DataType::Float64], Volatility::Immutable),
             expr,
             stats_type,
             null_on_divide_by_zero,
@@ -106,7 +103,10 @@ impl AggregateUDFImpl for Stddev {
     }
     */
 
-    fn create_sliding_accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+    fn create_sliding_accumulator(
+        &self,
+        _acc_args: AccumulatorArgs,
+    ) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(StddevAccumulator::try_new(
             self.stats_type,
             self.null_on_divide_by_zero,

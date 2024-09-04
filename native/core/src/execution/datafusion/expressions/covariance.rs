@@ -30,13 +30,10 @@ use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{
     downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
 };
-use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;
-use datafusion_physical_expr::{
-    expressions::format_state_name,
-    PhysicalExpr,
-};
+use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -127,8 +124,6 @@ impl AggregateUDFImpl for Covariance {
             ),
         ])
     }
-
-
 }
 
 impl PartialEq<dyn Any> for Covariance {
