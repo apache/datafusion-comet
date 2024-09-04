@@ -108,18 +108,15 @@ impl SparkArrowConvert for ArrayData {
         let array_align = std::mem::align_of::<FFI_ArrowArray>();
         let schema_align = std::mem::align_of::<FFI_ArrowSchema>();
 
+        // Check if the pointer alignment is correct for `replace`.
         if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
             return Err(ExecutionError::ArrowError(
                 "Pointer alignment is not correct".to_string(),
             ));
         }
 
-        let jvm_array = unsafe { std::ptr::replace(array_ptr, FFI_ArrowArray::new(self)) };
-        let jvm_schema =
-            unsafe { std::ptr::replace(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?) };
-
-        std::mem::forget(jvm_array);
-        std::mem::forget(jvm_schema);
+        unsafe { std::ptr::replace(array_ptr, FFI_ArrowArray::new(self)) };
+        unsafe { std::ptr::replace(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?) };
 
         Ok(())
     }
