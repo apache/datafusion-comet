@@ -26,11 +26,15 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{
     downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
 };
+use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::type_coercion::aggregates::NUMERICS;
 use datafusion_physical_expr::{
-    aggregate::utils::down_cast_any_ref, expressions::format_state_name, AggregateExpr,
+    expressions::format_state_name,
     PhysicalExpr,
 };
 
@@ -41,6 +45,7 @@ use datafusion_physical_expr::{
 #[derive(Debug, Clone)]
 pub struct Covariance {
     name: String,
+    signature: Signature,
     expr1: Arc<dyn PhysicalExpr>,
     expr2: Arc<dyn PhysicalExpr>,
     stats_type: StatsType,
@@ -61,6 +66,7 @@ impl Covariance {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
+            signature: Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable),
             expr1,
             expr2,
             stats_type,
@@ -69,24 +75,35 @@ impl Covariance {
     }
 }
 
-impl AggregateExpr for Covariance {
+impl AggregateUDFImpl for Covariance {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, DataType::Float64, true))
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Float64)
+    }
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(CovarianceAccumulator::try_new(
             self.stats_type,
             self.null_on_divide_by_zero,
         )?))
     }
 
-    fn state_fields(&self) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "count"),
@@ -111,17 +128,7 @@ impl AggregateExpr for Covariance {
         ])
     }
 
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr1), Arc::clone(&self.expr2)]
-    }
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(None))
-    }
 }
 
 impl PartialEq<dyn Any> for Covariance {
