@@ -17,12 +17,13 @@
 
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::{stats::StatsType, utils::down_cast_any_ref};
+use crate::execution::datafusion::expressions::stats::StatsType;
 use arrow::{
     array::{ArrayRef, Float64Array},
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{downcast_value, DataFusionError, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::Volatility::Immutable;

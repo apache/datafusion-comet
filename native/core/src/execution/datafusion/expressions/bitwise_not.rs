@@ -26,11 +26,10 @@ use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
 use datafusion_common::{Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{

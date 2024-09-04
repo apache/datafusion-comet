@@ -36,7 +36,6 @@ pub mod strings;
 pub mod subquery;
 pub mod sum_decimal;
 pub mod unbound;
-mod utils;
 pub mod variance;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};

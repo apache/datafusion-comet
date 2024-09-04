@@ -21,13 +21,13 @@ use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::expressions::{
     covariance::CovarianceAccumulator, stats::StatsType, stddev::StddevAccumulator,
-    utils::down_cast_any_ref,
 };
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;
