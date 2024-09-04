@@ -105,7 +105,9 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::expr::find_df_window_func;
-use datafusion_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition};
+use datafusion_expr::{
+    AggregateUDF, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+};
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use itertools::Itertools;
@@ -1491,13 +1493,12 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child1, child2])
-                            .schema(schema)
-                            .alias("covariance")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr(
+                            "covariance",
+                            schema,
+                            vec![child1, child2],
+                            func,
+                        )
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Covariance::new(
@@ -1509,13 +1510,12 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child1, child2])
-                            .schema(schema)
-                            .alias("covariance_pop")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr(
+                            "covariance_pop",
+                            schema,
+                            vec![child1, child2],
+                            func,
+                        )
                     }
                     stats_type => Err(ExecutionError::GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
@@ -1536,13 +1536,7 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("variance")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr("variance", schema, vec![child], func)
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Variance::new(
@@ -1553,13 +1547,7 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("variance_pop")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
                     stats_type => Err(ExecutionError::GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
@@ -1580,13 +1568,7 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("stddev")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr("stddev", schema, vec![child], func)
                     }
                     1 => {
                         let func = datafusion_expr::AggregateUDF::new_from_impl(Stddev::new(
@@ -1597,13 +1579,7 @@ impl PhysicalPlanner {
                             expr.null_on_divide_by_zero,
                         ));
 
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("stddev_pop")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| e.into())
+                        Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
                     stats_type => Err(ExecutionError::GeneralError(format!(
                         "Unknown StatisticsType {:?} for stddev",
@@ -1624,13 +1600,7 @@ impl PhysicalPlanner {
                     datatype,
                     expr.null_on_divide_by_zero,
                 ));
-                AggregateExprBuilder::new(Arc::new(func), vec![child1, child2])
-                    .schema(schema)
-                    .alias("correlation")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
+                Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
         }
     }
@@ -1890,6 +1860,21 @@ impl PhysicalPlanner {
         ));
 
         Ok(scalar_expr)
+    }
+
+    fn create_aggr_func_expr(
+        name: &str,
+        schema: SchemaRef,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+        func: AggregateUDF,
+    ) -> Result<Arc<AggregateFunctionExpr>, ExecutionError> {
+        AggregateExprBuilder::new(Arc::new(func), children)
+            .schema(schema)
+            .alias(name)
+            .with_ignore_nulls(false)
+            .with_distinct(false)
+            .build()
+            .map_err(|e| e.into())
     }
 }
 
