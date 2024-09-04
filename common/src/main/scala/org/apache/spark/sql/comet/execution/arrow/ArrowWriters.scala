@@ -28,12 +28,15 @@ import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.ColumnarArray
 
 /**
  * This file is mostly copied from Spark SQL's
  * org.apache.spark.sql.execution.arrow.ArrowWriter.scala. Comet shadows Arrow classes to avoid
  * potential conflicts with Spark's Arrow dependencies, hence we cannot reuse Spark's ArrowWriter
  * directly.
+ *
+ * Performance enhancement: https://github.com/apache/datafusion-comet/issues/888
  */
 private[arrow] object ArrowWriter {
   def create(root: VectorSchemaRoot): ArrowWriter = {
@@ -103,6 +106,16 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count += 1
   }
 
+  def writeCol(input: ColumnarArray, columnIndex: Int): Unit = {
+    fields(columnIndex).writeCol(input)
+    count = input.numElements()
+  }
+
+  def writeColNoNull(input: ColumnarArray, columnIndex: Int): Unit = {
+    fields(columnIndex).writeColNoNull(input)
+    count = input.numElements()
+  }
+
   def finish(): Unit = {
     root.setRowCount(count)
     fields.foreach(_.finish())
@@ -135,6 +148,28 @@ private[arrow] abstract class ArrowFieldWriter {
       setValue(input, ordinal)
     }
     count += 1
+  }
+
+  def writeCol(input: ColumnarArray): Unit = {
+    val inputNumElements = input.numElements()
+    valueVector.setInitialCapacity(inputNumElements)
+    while (count < inputNumElements) {
+      if (input.isNullAt(count)) {
+        setNull()
+      } else {
+        setValue(input, count)
+      }
+      count += 1
+    }
+  }
+
+  def writeColNoNull(input: ColumnarArray): Unit = {
+    val inputNumElements = input.numElements()
+    valueVector.setInitialCapacity(inputNumElements)
+    while (count < inputNumElements) {
+      setValue(input, count)
+      count += 1
+    }
   }
 
   def finish(): Unit = {

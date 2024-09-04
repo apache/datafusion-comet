@@ -310,6 +310,12 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(10.0)
 
+  val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.dppFallback.enabled")
+      .doc("Whether to fall back to Spark for queries that use DPP.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .doc(

@@ -421,12 +421,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     })
 }
 
-fn return_pending(env: JNIEnv) -> Result<jlongArray, CometError> {
-    let long_array = env.new_long_array(1)?;
-    env.set_long_array_region(&long_array, 0, &[0])?;
-    Ok(long_array.into_raw())
-}
-
 #[no_mangle]
 /// Drop the native query plan object and context object.
 pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
