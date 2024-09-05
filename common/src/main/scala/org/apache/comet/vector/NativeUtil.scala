@@ -77,6 +77,8 @@ class NativeUtil {
 
       // Manually fill NULL to `release` slot of ArrowSchema because ArrowSchema doesn't provide
       // `markReleased`.
+      // The total size of ArrowSchema is 72 bytes.
+      // The `release` slot is at offset 56 in the ArrowSchema struct.
       val buffer =
         MemoryUtil.directBuffer(arrowSchema.memoryAddress(), 72).order(ByteOrder.nativeOrder)
       buffer.putLong(56, NULL);
