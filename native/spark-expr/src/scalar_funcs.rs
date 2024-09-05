@@ -565,8 +565,8 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     } else if let ColumnarValue::Array(days) = &args[1] {
         let mut interval_builder = IntervalDayTimeBuilder::new();
         for day in days.as_primitive::<Int32Type>().into_iter() {
-            if day.is_some() {
-                interval_builder.append_value(IntervalDayTime::new(day.unwrap(), 0));
+            if let Some(non_null_day) = day {
+                interval_builder.append_value(IntervalDayTime::new(non_null_day, 0));
             } else {
                 interval_builder.append_null();
             }
