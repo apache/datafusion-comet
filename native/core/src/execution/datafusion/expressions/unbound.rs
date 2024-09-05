@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_common::{internal_err, Result};
 use datafusion_physical_expr::PhysicalExpr;

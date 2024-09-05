@@ -234,7 +234,7 @@ fn prepare_datafusion_session_context(
             // this is the threshold of number of groups / number of rows and the
             // maximum value is 1.0, so we set the threshold a little higher just
             // to be safe
-            ScalarValue::Float64(Some(1.1)),
+            &ScalarValue::Float64(Some(1.1)),
         );
 
     for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {

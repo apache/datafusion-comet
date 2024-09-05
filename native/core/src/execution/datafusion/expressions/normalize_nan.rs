@@ -29,9 +29,8 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_physical_expr::PhysicalExpr;
-
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
 
 #[derive(Debug, Hash)]
 pub struct NormalizeNaNAndZero {
