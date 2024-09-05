@@ -80,7 +80,7 @@
  - [x] variance
 
 ### array_funcs
- - [ ] array
+ - [x] array
  - [ ] array_append
  - [ ] array_compact
  - [ ] array_contains
@@ -97,8 +97,9 @@
  - [ ] array_union
  - [ ] arrays_overlap
  - [ ] arrays_zip
+ - [x] element_at
  - [ ] flatten
- - [ ] get
+ - [x] get
  - [ ] sequence
  - [ ] shuffle
  - [ ] slice
