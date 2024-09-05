@@ -1492,7 +1492,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case dateAdd @ DateAdd(left, right) =>
+        case DateAdd(left, right) =>
           val leftExpr = exprToProtoInternal(left, inputs)
           val rightExpr = exprToProtoInternal(right, inputs)
           val optExpr = scalarExprToProtoWithReturnType("date_add", DateType, leftExpr, rightExpr)
