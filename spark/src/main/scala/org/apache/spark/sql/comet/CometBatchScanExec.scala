@@ -60,7 +60,7 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
           // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
           val startNs = System.nanoTime()
           val res = batches.hasNext
-          scanTime += NANOSECONDS.toMillis(System.nanoTime() - startNs)
+          scanTime += System.nanoTime() - startNs
           res
         }
 
@@ -139,7 +139,7 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-    "scanTime" -> SQLMetrics.createTimingMetric(
+    "scanTime" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
       "scan time")) ++ wrapped.customMetrics ++ {
     wrapped.scan match {

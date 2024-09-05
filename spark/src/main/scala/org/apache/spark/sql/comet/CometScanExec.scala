@@ -198,7 +198,7 @@ case class CometScanExec(
     // Tracking scan time has overhead, we can't afford to do it for each row, and can only do
     // it for each batch.
     if (supportsColumnar) {
-      Some("scanTime" -> SQLMetrics.createTimingMetric(sparkContext, "scan time"))
+      Some("scanTime" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"))
     } else {
       None
     }
@@ -223,7 +223,7 @@ case class CometScanExec(
           // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
           val startNs = System.nanoTime()
           val res = batches.hasNext
-          scanTime += NANOSECONDS.toMillis(System.nanoTime() - startNs)
+          scanTime += System.nanoTime() - startNs
           res
         }
 
