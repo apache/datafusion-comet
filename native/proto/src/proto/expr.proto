@@ -80,7 +80,6 @@ message Expr {
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
-    DateAdd date_add = 56;
   }
 }
 
@@ -467,11 +466,6 @@ message IfExpr {
   Expr if_expr = 1;
   Expr true_expr = 2;
   Expr false_expr = 3;
-}
-
-message DateAdd {
-  Expr left = 1;
-  Expr right = 2;
 }
 
 message TruncDate {

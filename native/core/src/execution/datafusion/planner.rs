@@ -50,7 +50,6 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -409,37 +408,6 @@ impl PhysicalPlanner {
                 let timezone = expr.timezone.clone();
 
                 Ok(Arc::new(SecondExpr::new(child, timezone)))
-            }
-            ExprStruct::DateAdd(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                assert_eq!(
-                    left.data_type(&input_schema)?,
-                    DataType::Date32,
-                    "Expect this to be a Date32."
-                );
-
-                if let ExprStruct::Literal(literal) =
-                    expr.right.as_ref().unwrap().expr_struct.as_ref().unwrap()
-                {
-                    if let Some(Value::IntVal(int32_val)) = literal.value {
-                        let interval = IntervalDayTime::new(int32_val, 0);
-                        let interval_sv = ScalarValue::IntervalDayTime(Some(interval));
-                        let literal_expr = Arc::new(DataFusionLiteral::new(interval_sv));
-
-                        // Create a binary add expression.
-                        return Ok(Arc::new(BinaryExpr::new(
-                            left,
-                            DataFusionOperator::Plus,
-                            literal_expr,
-                        )));
-                    }
-                }
-
-                Err(ExecutionError::GeneralError(format!(
-                    "Not implemented: {:?}",
-                    expr
-                )))
             }
             ExprStruct::TruncDate(expr) => {
                 let child =

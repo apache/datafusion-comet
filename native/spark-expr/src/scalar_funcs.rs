@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::compute::kernels::numeric::add;
+use arrow::datatypes::IntervalDayTime;
 use arrow::{
     array::{
         ArrayRef, AsArray, Decimal128Builder, Float32Array, Float64Array, Int16Array, Int32Array,
@@ -22,9 +24,11 @@ use arrow::{
     },
     datatypes::{validate_decimal_precision, Decimal128Type, Int64Type},
 };
-use arrow_array::builder::GenericStringBuilder;
+use arrow_array::builder::{GenericStringBuilder, IntervalDayTimeBuilder};
+use arrow_array::types::Int32Type;
 use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Decimal128Array};
 use arrow_schema::{DataType, DECIMAL128_MAX_PRECISION};
+use datafusion::physical_expr_common::datum::apply;
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{
     cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
@@ -546,4 +550,31 @@ pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionEr
             ))),
         },
     }
+}
+
+/// Spark-compatible `date_add` expression
+pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    let start = &args[0];
+    if let ColumnarValue::Scalar(ScalarValue::Int32(Some(days))) = &args[1] {
+        let interval = IntervalDayTime::new(*days, 0);
+        let interval_cv = ColumnarValue::Scalar(ScalarValue::IntervalDayTime(Some(interval)));
+        let result = apply(start, &interval_cv, add)?;
+        return Ok(result);
+    } else if let ColumnarValue::Array(days) = &args[1] {
+        let mut interval_builder = IntervalDayTimeBuilder::new();
+        for day in days.as_primitive::<Int32Type>().into_iter() {
+            if day.is_some() {
+                interval_builder.append_value(IntervalDayTime::new(day.unwrap(), 0));
+            } else {
+                interval_builder.append_null();
+            }
+        }
+        let interval_cv = ColumnarValue::Array(Arc::new(interval_builder.finish()));
+        let result = apply(start, &interval_cv, add)?;
+        return Ok(result);
+    }
+    Err(DataFusionError::Internal(format!(
+        "Unsupported data type {:?} for function date_add",
+        args,
+    )))
 }
