@@ -272,6 +272,11 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#metrics">
+   Metrics
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#memory-tuning">
    Memory Tuning
   </a>
@@ -359,6 +364,13 @@ under the License.
 <section id="tuning-guide">
 <h1>Tuning Guide<a class="headerlink" href="#tuning-guide" title="Link to this heading">¶</a></h1>
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
+<section id="metrics">
+<h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
+<p>Comet metrics are not directly comparable to Spark metrics in some cases.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
+milliseconds <em>per batch</em> which can result in a large loss of precision. In one case we saw total scan time
+of 41 seconds reported as 23 seconds for example.</p>
+</section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
 <p>Comet currently doesn’t share the memory allocation from Spark but owns its own memory allocation.
