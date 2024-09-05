@@ -17,11 +17,14 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::{
     datatypes::DataType as ArrowDataType,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::RecordBatch;
+use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -41,8 +44,6 @@ use jni::{
     JNIEnv,
 };
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -92,6 +93,8 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
+    /// Whether to enable physical optimizer
+    pub enable_optimizer: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -132,6 +135,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Whether we've enabled additional debugging on the native side
         let debug_native = parse_bool(&configs, "debug_native")?;
         let explain_native = parse_bool(&configs, "explain_native")?;
+        let enable_optimizer = parse_bool(&configs, "native_optimizer")?;
 
         let worker_threads = configs
             .get("worker_threads")
@@ -184,6 +188,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             session_ctx: Arc::new(session),
             debug_native,
             explain_native,
+            enable_optimizer,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -249,7 +254,14 @@ fn prepare_datafusion_session_context(
 
     let runtime = RuntimeEnv::new(rt_config).unwrap();
 
-    let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(Arc::new(runtime))
+        .with_default_features()
+        .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown::new())])
+        .build();
+
+    let mut session_ctx = SessionContext::new_with_state(state);
 
     datafusion_functions_nested::register_all(&mut session_ctx)?;
 
@@ -354,6 +366,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
             )?;
+
+            // optimize the physical plan
+            let root_op = if exec_context.enable_optimizer {
+                planner.optimize_plan(root_op)?
+            } else {
+                root_op
+            };
 
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
