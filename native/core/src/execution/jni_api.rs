@@ -348,14 +348,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
-            let planner = PhysicalPlanner::new(exec_context.session_ctx.clone())
+            let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
             )?;
 
-            exec_context.root_op = Some(root_op.clone());
+            exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
 
             if exec_context.explain_native {
@@ -419,12 +419,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
         }
     })
-}
-
-fn return_pending(env: JNIEnv) -> Result<jlongArray, CometError> {
-    let long_array = env.new_long_array(1)?;
-    env.set_long_array_region(&long_array, 0, &[0])?;
-    Ok(long_array.into_raw())
 }
 
 #[no_mangle]

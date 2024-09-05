@@ -44,8 +44,8 @@ jobs:
       - name: Extract Comet version
         id: extract_version
         run: |
-          COMET_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
-          echo "COMET_VERSION=$COMET_VERSION" >> $GITHUB_ENV
+          # use the tag that triggered this workflow as the Comet version e.g. 0.3.0-rc1
+          echo "COMET_VERSION=${GITHUB_REF##*/}" >> $GITHUB_ENV
       - name: Echo Comet version
         run: echo "The current Comet version is ${{ env.COMET_VERSION }}"
       - name: Set up Docker Buildx
@@ -61,5 +61,5 @@ jobs:
         with:
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
+          tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile

@@ -245,7 +245,7 @@ public abstract class CometVector extends ColumnVector {
       return new CometMapVector(
           vector, useDecimal128, dictionaryProvider, nullCount, dictValNullCount);
     } else if (vector instanceof ListVector) {
-      return new CometListVector(vector, useDecimal128, nullCount);
+      return new CometListVector(vector, useDecimal128, dictionaryProvider, nullCount);
     } else {
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
       CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, false, nullCount);

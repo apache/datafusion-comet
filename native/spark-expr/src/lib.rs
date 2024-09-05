@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// The clippy throws an error if the reference clone not wrapped into `Arc::clone`
+// The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
+#![deny(clippy::clone_on_ref_ptr)]
+
 mod cast;
 mod error;
 mod if_expr;
@@ -26,6 +30,7 @@ pub mod spark_hash;
 mod structs;
 mod temporal;
 pub mod timezone;
+mod to_json;
 pub mod utils;
 mod xxhash64;
 
@@ -35,6 +40,7 @@ pub use if_expr::IfExpr;
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
+pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an

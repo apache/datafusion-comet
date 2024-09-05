@@ -21,6 +21,7 @@ package org.apache.comet.vector;
 
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
@@ -30,13 +31,19 @@ public class CometListVector extends CometDecodedVector {
   final ListVector listVector;
   final ValueVector dataVector;
   final ColumnVector dataColumnVector;
+  final DictionaryProvider dictionaryProvider;
 
-  public CometListVector(ValueVector vector, boolean useDecimal128, int nullCount) {
-    super(vector, vector.getField(), false, useDecimal128, nullCount, 0);
+  public CometListVector(
+    ValueVector vector,
+    boolean useDecimal128,
+    DictionaryProvider dictionaryProvider,
+    int nullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount, 0);
 
     this.listVector = ((ListVector) vector);
     this.dataVector = listVector.getDataVector();
-    this.dataColumnVector = getVector(dataVector, useDecimal128);
+    this.dictionaryProvider = dictionaryProvider;
+    this.dataColumnVector = getVector(dataVector, useDecimal128, dictionaryProvider);
   }
 
   @Override
@@ -54,6 +61,6 @@ public class CometListVector extends CometDecodedVector {
     ValueVector vector = tp.getTo();
 
     // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometListVector(vector, useDecimal128, vector.getNullCount());
+    return new CometListVector(vector, useDecimal128, dictionaryProvider, vector.getNullCount());
   }
 }

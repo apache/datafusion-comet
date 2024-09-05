@@ -169,14 +169,21 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
       assert(metrics.contains("shuffleRecordsWritten"))
       assert(metrics("shuffleRecordsWritten").value == 5L)
+
+      assert(metrics.contains("shuffleBytesWritten"))
+      assert(metrics("shuffleBytesWritten").value > 0)
+
+      assert(metrics.contains("dataSize"))
+      assert(metrics("dataSize").value > 0L)
+
+      assert(metrics.contains("shuffleWriteTime"))
+      assert(metrics("shuffleWriteTime").value > 0L)
     }
   }
 
   test("fix: Dictionary arrays imported from native should not be overridden") {
     Seq(10, 201).foreach { numPartitions =>
-      withSQLConf(
-        CometConf.COMET_BATCH_SIZE.key -> "10",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "10") {
         withParquetTable((0 until 50).map(i => (1.toString, 2.toString, (i + 1).toLong)), "tbl") {
           val df = sql("SELECT * FROM tbl")
             .filter($"_1" === 1.toString)

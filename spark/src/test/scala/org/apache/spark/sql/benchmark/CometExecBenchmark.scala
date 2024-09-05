@@ -91,8 +91,17 @@ object CometExecBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
+            spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Spark (Scan), Comet (Exec)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
             spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
           }
         }
@@ -129,7 +138,6 @@ object CometExecBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark.sql(
@@ -163,8 +171,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select * from parquetV1Table").sortWithinPartitions("value").noop()
           }
         }
@@ -202,8 +209,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark
               .sql("SELECT col1, col2, SUM(col3) FROM parquetV1Table " +
                 "GROUP BY col1, col2 GROUPING SETS ((col1), (col2))")

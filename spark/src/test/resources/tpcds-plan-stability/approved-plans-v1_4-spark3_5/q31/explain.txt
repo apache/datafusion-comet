@@ -11,7 +11,7 @@
             :     :  :  +- CometBroadcastHashJoin (45)
             :     :  :     :- CometBroadcastHashJoin (30)
             :     :  :     :  :- CometHashAggregate (15)
-            :     :  :     :  :  +- CometColumnarExchange (14)
+            :     :  :     :  :  +- CometExchange (14)
             :     :  :     :  :     +- CometHashAggregate (13)
             :     :  :     :  :        +- CometProject (12)
             :     :  :     :  :           +- CometBroadcastHashJoin (11)
@@ -27,7 +27,7 @@
             :     :  :     :  :                    +- CometScan parquet spark_catalog.default.customer_address (8)
             :     :  :     :  +- CometBroadcastExchange (29)
             :     :  :     :     +- CometHashAggregate (28)
-            :     :  :     :        +- CometColumnarExchange (27)
+            :     :  :     :        +- CometExchange (27)
             :     :  :     :           +- CometHashAggregate (26)
             :     :  :     :              +- CometProject (25)
             :     :  :     :                 +- CometBroadcastHashJoin (24)
@@ -41,7 +41,7 @@
             :     :  :     :                    +- ReusedExchange (23)
             :     :  :     +- CometBroadcastExchange (44)
             :     :  :        +- CometHashAggregate (43)
-            :     :  :           +- CometColumnarExchange (42)
+            :     :  :           +- CometExchange (42)
             :     :  :              +- CometHashAggregate (41)
             :     :  :                 +- CometProject (40)
             :     :  :                    +- CometBroadcastHashJoin (39)
@@ -55,7 +55,7 @@
             :     :  :                       +- ReusedExchange (38)
             :     :  +- CometBroadcastExchange (58)
             :     :     +- CometHashAggregate (57)
-            :     :        +- CometColumnarExchange (56)
+            :     :        +- CometExchange (56)
             :     :           +- CometHashAggregate (55)
             :     :              +- CometProject (54)
             :     :                 +- CometBroadcastHashJoin (53)
@@ -67,7 +67,7 @@
             :     :                    +- ReusedExchange (52)
             :     +- CometBroadcastExchange (71)
             :        +- CometHashAggregate (70)
-            :           +- CometColumnarExchange (69)
+            :           +- CometExchange (69)
             :              +- CometHashAggregate (68)
             :                 +- CometProject (67)
             :                    +- CometBroadcastHashJoin (66)
@@ -79,7 +79,7 @@
             :                       +- ReusedExchange (65)
             +- CometBroadcastExchange (85)
                +- CometHashAggregate (84)
-                  +- CometColumnarExchange (83)
+                  +- CometExchange (83)
                      +- CometHashAggregate (82)
                         +- CometProject (81)
                            +- CometBroadcastHashJoin (80)
@@ -156,9 +156,9 @@ Input [4]: [ss_ext_sales_price#2, d_year#6, d_qoy#7, ca_county#9]
 Keys [3]: [ca_county#9, d_qoy#7, d_year#6]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#2))]
 
-(14) CometColumnarExchange
+(14) CometExchange
 Input [4]: [ca_county#9, d_qoy#7, d_year#6, sum#10]
-Arguments: hashpartitioning(ca_county#9, d_qoy#7, d_year#6, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(ca_county#9, d_qoy#7, d_year#6, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (15) CometHashAggregate
 Input [4]: [ca_county#9, d_qoy#7, d_year#6, sum#10]
@@ -218,9 +218,9 @@ Input [4]: [ss_ext_sales_price#12, d_year#16, d_qoy#17, ca_county#19]
 Keys [3]: [ca_county#19, d_qoy#17, d_year#16]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#12))]
 
-(27) CometColumnarExchange
+(27) CometExchange
 Input [4]: [ca_county#19, d_qoy#17, d_year#16, sum#20]
-Arguments: hashpartitioning(ca_county#19, d_qoy#17, d_year#16, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(ca_county#19, d_qoy#17, d_year#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (28) CometHashAggregate
 Input [4]: [ca_county#19, d_qoy#17, d_year#16, sum#20]
@@ -289,9 +289,9 @@ Input [4]: [ss_ext_sales_price#24, d_year#28, d_qoy#29, ca_county#31]
 Keys [3]: [ca_county#31, d_qoy#29, d_year#28]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#24))]
 
-(42) CometColumnarExchange
+(42) CometExchange
 Input [4]: [ca_county#31, d_qoy#29, d_year#28, sum#32]
-Arguments: hashpartitioning(ca_county#31, d_qoy#29, d_year#28, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: hashpartitioning(ca_county#31, d_qoy#29, d_year#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (43) CometHashAggregate
 Input [4]: [ca_county#31, d_qoy#29, d_year#28, sum#32]
@@ -352,9 +352,9 @@ Input [4]: [ws_ext_sales_price#35, d_year#39, d_qoy#40, ca_county#42]
 Keys [3]: [ca_county#42, d_qoy#40, d_year#39]
 Functions [1]: [partial_sum(UnscaledValue(ws_ext_sales_price#35))]
 
-(56) CometColumnarExchange
+(56) CometExchange
 Input [4]: [ca_county#42, d_qoy#40, d_year#39, sum#43]
-Arguments: hashpartitioning(ca_county#42, d_qoy#40, d_year#39, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Arguments: hashpartitioning(ca_county#42, d_qoy#40, d_year#39, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (57) CometHashAggregate
 Input [4]: [ca_county#42, d_qoy#40, d_year#39, sum#43]
@@ -411,9 +411,9 @@ Input [4]: [ws_ext_sales_price#46, d_year#50, d_qoy#51, ca_county#53]
 Keys [3]: [ca_county#53, d_qoy#51, d_year#50]
 Functions [1]: [partial_sum(UnscaledValue(ws_ext_sales_price#46))]
 
-(69) CometColumnarExchange
+(69) CometExchange
 Input [4]: [ca_county#53, d_qoy#51, d_year#50, sum#54]
-Arguments: hashpartitioning(ca_county#53, d_qoy#51, d_year#50, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
+Arguments: hashpartitioning(ca_county#53, d_qoy#51, d_year#50, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (70) CometHashAggregate
 Input [4]: [ca_county#53, d_qoy#51, d_year#50, sum#54]
@@ -474,9 +474,9 @@ Input [4]: [ws_ext_sales_price#57, d_year#61, d_qoy#62, ca_county#64]
 Keys [3]: [ca_county#64, d_qoy#62, d_year#61]
 Functions [1]: [partial_sum(UnscaledValue(ws_ext_sales_price#57))]
 
-(83) CometColumnarExchange
+(83) CometExchange
 Input [4]: [ca_county#64, d_qoy#62, d_year#61, sum#65]
-Arguments: hashpartitioning(ca_county#64, d_qoy#62, d_year#61, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
+Arguments: hashpartitioning(ca_county#64, d_qoy#62, d_year#61, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
 (84) CometHashAggregate
 Input [4]: [ca_county#64, d_qoy#62, d_year#61, sum#65]

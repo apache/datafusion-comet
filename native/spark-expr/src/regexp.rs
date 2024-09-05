@@ -24,7 +24,7 @@ use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray
 use arrow_schema::{DataType, Schema};
 use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
+use datafusion_physical_expr::PhysicalExpr;
 use regex::Regex;
 use std::any::Any;
 use std::fmt::{Display, Formatter};
@@ -157,7 +157,7 @@ impl PhysicalExpr for RLike {
     ) -> Result<Arc<dyn PhysicalExpr>> {
         assert!(children.len() == 1);
         Ok(Arc::new(RLike::try_new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             &self.pattern_str,
         )?))
     }

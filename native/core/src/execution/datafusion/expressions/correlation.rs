@@ -115,11 +115,15 @@ impl AggregateExpr for Correlation {
     }
 
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![self.expr1.clone(), self.expr2.clone()]
+        vec![Arc::clone(&self.expr1), Arc::clone(&self.expr2)]
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
     }
 }
 
@@ -209,13 +213,21 @@ impl Accumulator for CorrelationAccumulator {
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         let states_c = [
-            states[0].clone(),
-            states[1].clone(),
-            states[2].clone(),
-            states[3].clone(),
+            Arc::clone(&states[0]),
+            Arc::clone(&states[1]),
+            Arc::clone(&states[2]),
+            Arc::clone(&states[3]),
         ];
-        let states_s1 = [states[0].clone(), states[1].clone(), states[4].clone()];
-        let states_s2 = [states[0].clone(), states[2].clone(), states[5].clone()];
+        let states_s1 = [
+            Arc::clone(&states[0]),
+            Arc::clone(&states[1]),
+            Arc::clone(&states[4]),
+        ];
+        let states_s2 = [
+            Arc::clone(&states[0]),
+            Arc::clone(&states[2]),
+            Arc::clone(&states[5]),
+        ];
 
         if states[0].len() > 0 && states[1].len() > 0 && states[2].len() > 0 {
             self.covar.merge_batch(&states_c)?;

@@ -51,8 +51,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select substring(c1, 1, 100) from parquetV1Table").noop()
           }
         }
@@ -82,8 +81,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select space(c1) from parquetV1Table").noop()
           }
         }
@@ -113,8 +111,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select ascii(c1) from parquetV1Table").noop()
           }
         }
@@ -144,8 +141,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select bit_length(c1) from parquetV1Table").noop()
           }
         }
@@ -175,8 +171,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select octet_length(c1) from parquetV1Table").noop()
           }
         }
@@ -207,7 +202,6 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
             CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
             spark.sql("select upper(c1) from parquetV1Table").noop()
           }
@@ -238,8 +232,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select lower(c1) from parquetV1Table").noop()
           }
         }
@@ -269,8 +262,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select chr(c1) from parquetV1Table").noop()
           }
         }
@@ -300,8 +292,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select initCap(c1) from parquetV1Table").noop()
           }
         }
@@ -331,8 +322,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select trim(c1) from parquetV1Table").noop()
           }
         }
@@ -362,8 +352,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select concat_ws(' ', c1, c1) from parquetV1Table").noop()
           }
         }
@@ -393,8 +382,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select length(c1) from parquetV1Table").noop()
           }
         }
@@ -424,8 +412,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select repeat(c1, 3) from parquetV1Table").noop()
           }
         }
@@ -455,8 +442,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select reverse(c1) from parquetV1Table").noop()
           }
         }
@@ -486,8 +472,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select instr(c1, '123') from parquetV1Table").noop()
           }
         }
@@ -517,8 +502,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select replace(c1, '123', 'abc') from parquetV1Table").noop()
           }
         }
@@ -548,8 +532,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true") {
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
             spark.sql("select translate(c1, '123456', 'aBcDeF') from parquetV1Table").noop()
           }
         }

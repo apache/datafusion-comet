@@ -32,12 +32,31 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.CometArrowAllocator
 import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount};
 
+/**
+ * Provides functionality for importing Arrow vectors from native code and wrapping them as
+ * CometVectors.
+ *
+ * Also provides functionality for exporting Comet columnar batches to native code.
+ *
+ * Each instance of NativeUtil creates an instance of CDataDictionaryProvider (a
+ * DictionaryProvider that is used in C Data Interface for imports).
+ *
+ * NativeUtil must be closed after use to release resources in the dictionary provider.
+ */
 class NativeUtil {
   import Utils._
 
+  /** Use the global allocator */
   private val allocator = CometArrowAllocator
-  private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
+
+  /** ArrowImporter does not hold any state and does not need to be closed */
   private val importer = new ArrowImporter(allocator)
+
+  /**
+   * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary
+   * provider is closed when NativeUtil is closed.
+   */
+  private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
   /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
@@ -46,18 +65,16 @@ class NativeUtil {
    * @param batch
    *   the input Comet columnar batch
    * @return
-   *   a list containing number of rows + pairs of memory addresses in the format of (address of
-   *   Arrow array, address of Arrow schema)
+   *   an exported batches object containing an array containing number of rows + pairs of memory
+   *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportBatch(batch: ColumnarBatch): Array[Long] = {
-    val exportedVectors = mutable.ArrayBuffer.empty[Long]
-    exportedVectors += batch.numRows()
-
+  def exportBatch(
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      batch: ColumnarBatch): Int = {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
-        case a: CometNativeVector =>
-          exportedVectors += a.getArrayAddress
-          exportedVectors += a.getSchemaAddress
+        case a: CometNativeVector => _
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -67,8 +84,10 @@ class NativeUtil {
             null
           }
 
-          val arrowSchema = ArrowSchema.allocateNew(allocator)
-          val arrowArray = ArrowArray.allocateNew(allocator)
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
           exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
@@ -77,9 +96,6 @@ class NativeUtil {
             arrowSchema,
             a.numNulls(),
             a.dictValNumNulls())
-
-          exportedVectors += arrowArray.memoryAddress()
-          exportedVectors += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -87,7 +103,7 @@ class NativeUtil {
       }
     }
 
-    exportedVectors.toArray
+    batch.numRows()
   }
 
   /**
@@ -144,6 +160,11 @@ class NativeUtil {
     }
 
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
+  }
+
+  def close(): Unit = {
+    // closing the dictionary provider also closes the dictionary arrays
+    dictionaryProvider.close()
   }
 }
 

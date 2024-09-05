@@ -102,6 +102,25 @@ object CometMetricNode {
   }
 
   /**
+   * SQL Metrics for DataFusion SortMergeJoin
+   */
+  def sortMergeJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "peak_mem_used" ->
+        SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
+      "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"),
+      "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
+  }
+
+  /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {

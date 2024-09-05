@@ -1,13 +1,13 @@
 == Physical Plan ==
 * ColumnarToRow (25)
 +- CometHashAggregate (24)
-   +- CometColumnarExchange (23)
+   +- CometExchange (23)
       +- CometHashAggregate (22)
          +- CometProject (21)
             +- CometSortMergeJoin (20)
                :- CometSort (11)
                :  +- CometHashAggregate (10)
-               :     +- CometColumnarExchange (9)
+               :     +- CometExchange (9)
                :        +- CometHashAggregate (8)
                :           +- CometProject (7)
                :              +- CometBroadcastHashJoin (6)
@@ -18,7 +18,7 @@
                :                          +- CometScan parquet spark_catalog.default.date_dim (2)
                +- CometSort (19)
                   +- CometHashAggregate (18)
-                     +- CometColumnarExchange (17)
+                     +- CometExchange (17)
                         +- CometHashAggregate (16)
                            +- CometProject (15)
                               +- CometBroadcastHashJoin (14)
@@ -66,9 +66,9 @@ Input [2]: [ss_item_sk#1, ss_customer_sk#2]
 Keys [2]: [ss_customer_sk#2, ss_item_sk#1]
 Functions: []
 
-(9) CometColumnarExchange
+(9) CometExchange
 Input [2]: [ss_customer_sk#2, ss_item_sk#1]
-Arguments: hashpartitioning(ss_customer_sk#2, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Arguments: hashpartitioning(ss_customer_sk#2, ss_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (10) CometHashAggregate
 Input [2]: [ss_customer_sk#2, ss_item_sk#1]
@@ -103,9 +103,9 @@ Input [2]: [cs_bill_customer_sk#9, cs_item_sk#10]
 Keys [2]: [cs_bill_customer_sk#9, cs_item_sk#10]
 Functions: []
 
-(17) CometColumnarExchange
+(17) CometExchange
 Input [2]: [cs_bill_customer_sk#9, cs_item_sk#10]
-Arguments: hashpartitioning(cs_bill_customer_sk#9, cs_item_sk#10, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: hashpartitioning(cs_bill_customer_sk#9, cs_item_sk#10, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (18) CometHashAggregate
 Input [2]: [cs_bill_customer_sk#9, cs_item_sk#10]
@@ -130,9 +130,9 @@ Input [2]: [customer_sk#7, customer_sk#14]
 Keys: []
 Functions [3]: [partial_sum(CASE WHEN (isnotnull(customer_sk#7) AND isnull(customer_sk#14)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (isnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (isnotnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END)]
 
-(23) CometColumnarExchange
+(23) CometExchange
 Input [3]: [sum#16, sum#17, sum#18]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (24) CometHashAggregate
 Input [3]: [sum#16, sum#17, sum#18]

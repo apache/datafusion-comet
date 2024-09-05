@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -43,7 +43,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometOperatorEnabled, isCometScan, isSpark34Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
@@ -666,63 +666,66 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case StddevSamp(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
-        withInfo(
-          aggExpr,
-          "stddev disabled by default because it can be slower than Spark. " +
-            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
-          child)
-        None
-
       case std @ StddevSamp(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(std.dataType)
+        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
+          val childExpr = exprToProto(child, inputs, binding)
+          val dataType = serializeDataType(std.dataType)
 
-        if (childExpr.isDefined && dataType.isDefined) {
-          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-          stdBuilder.setChild(childExpr.get)
-          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          stdBuilder.setDatatype(dataType.get)
-          stdBuilder.setStatsTypeValue(0)
+          if (childExpr.isDefined && dataType.isDefined) {
+            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+            stdBuilder.setChild(childExpr.get)
+            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+            stdBuilder.setDatatype(dataType.get)
+            stdBuilder.setStatsTypeValue(0)
 
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setStddev(stdBuilder)
-              .build())
+            Some(
+              ExprOuterClass.AggExpr
+                .newBuilder()
+                .setStddev(stdBuilder)
+                .build())
+          } else {
+            withInfo(aggExpr, child)
+            None
+          }
         } else {
-          withInfo(aggExpr, child)
+          withInfo(
+            aggExpr,
+            "stddev disabled by default because it can be slower than Spark. " +
+              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
+            child)
           None
         }
-
-      case StddevPop(child, _) if !isCometOperatorEnabled(conf, CometConf.EXPRESSION_STDDEV) =>
-        withInfo(
-          aggExpr,
-          "stddev disabled by default because it can be slower than Spark. " +
-            s"Set ${CometConf.EXPRESSION_STDDEV}.enabled=true to enable it.",
-          child)
-        None
 
       case std @ StddevPop(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(std.dataType)
+        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
+          val childExpr = exprToProto(child, inputs, binding)
+          val dataType = serializeDataType(std.dataType)
 
-        if (childExpr.isDefined && dataType.isDefined) {
-          val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-          stdBuilder.setChild(childExpr.get)
-          stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          stdBuilder.setDatatype(dataType.get)
-          stdBuilder.setStatsTypeValue(1)
+          if (childExpr.isDefined && dataType.isDefined) {
+            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
+            stdBuilder.setChild(childExpr.get)
+            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
+            stdBuilder.setDatatype(dataType.get)
+            stdBuilder.setStatsTypeValue(1)
 
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setStddev(stdBuilder)
-              .build())
+            Some(
+              ExprOuterClass.AggExpr
+                .newBuilder()
+                .setStddev(stdBuilder)
+                .build())
+          } else {
+            withInfo(aggExpr, child)
+            None
+          }
         } else {
-          withInfo(aggExpr, child)
+          withInfo(
+            aggExpr,
+            "stddev disabled by default because it can be slower than Spark. " +
+              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
+            child)
           None
         }
+
       case corr @ Corr(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)
@@ -789,7 +792,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         castBuilder.setChild(childExpr.get)
         castBuilder.setDatatype(dataType.get)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-
+        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         val timeZone = timeZoneId.getOrElse("UTC")
         castBuilder.setTimezone(timeZone)
 
@@ -1255,6 +1258,66 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case StructsToJson(options, child, timezoneId) =>
+          if (options.nonEmpty) {
+            withInfo(expr, "StructsToJson with options is not supported")
+            None
+          } else {
+
+            def isSupportedType(dt: DataType): Boolean = {
+              dt match {
+                case StructType(fields) =>
+                  fields.forall(f => isSupportedType(f.dataType))
+                case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+                    DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+                    DataTypes.DoubleType | DataTypes.StringType =>
+                  true
+                case DataTypes.DateType | DataTypes.TimestampType =>
+                  // TODO implement these types with tests for formatting options and timezone
+                  false
+                case _: MapType | _: ArrayType =>
+                  // Spark supports map and array in StructsToJson but this is not yet
+                  // implemented in Comet
+                  false
+                case _ => false
+              }
+            }
+
+            val isSupported = child.dataType match {
+              case s: StructType =>
+                s.fields.forall(f => isSupportedType(f.dataType))
+              case _: MapType | _: ArrayType =>
+                // Spark supports map and array in StructsToJson but this is not yet
+                // implemented in Comet
+                false
+              case _ =>
+                false
+            }
+
+            if (isSupported) {
+              exprToProto(child, input, binding) match {
+                case Some(p) =>
+                  val toJson = ExprOuterClass.ToJson
+                    .newBuilder()
+                    .setChild(p)
+                    .setTimezone(timezoneId.getOrElse("UTC"))
+                    .setIgnoreNullFields(true)
+                    .build()
+                  Some(
+                    ExprOuterClass.Expr
+                      .newBuilder()
+                      .setToJson(toJson)
+                      .build())
+                case _ =>
+                  withInfo(expr, child)
+                  None
+              }
+            } else {
+              withInfo(expr, "Unsupported data type", child)
+              None
+            }
+          }
+
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
             val leftExpr = exprToProtoInternal(left, inputs)
@@ -1503,6 +1566,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                     .setChild(e)
                     .setDatatype(serializeDataType(IntegerType).get)
                     .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+                    .setAllowIncompat(false)
                     .build())
                 .build()
             })
@@ -2386,13 +2450,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .build()
           }
 
-        // datafusion's make_array only supports nullable element types
-        // https://github.com/apache/datafusion/issues/11923
-        case array @ CreateArray(children, _) if array.dataType.containsNull =>
+        case CreateArray(children, _) =>
           val childExprs = children.map(exprToProto(_, inputs, binding))
 
           if (childExprs.forall(_.isDefined)) {
-            scalarExprToProtoWithReturnType("make_array", array.dataType, childExprs: _*)
+            scalarExprToProto("make_array", childExprs: _*)
           } else {
             withInfo(expr, "unsupported arguments for CreateArray", children: _*)
             None
@@ -2526,12 +2588,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    *   converted to a native operator.
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
+    val conf = op.conf
     val result = OperatorOuterClass.Operator.newBuilder()
     childOp.foreach(result.addChildren)
 
     op match {
-      case ProjectExec(projectList, child)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_PROJECT) =>
+      case ProjectExec(projectList, child) if CometConf.COMET_EXEC_PROJECT_ENABLED.get(conf) =>
         val exprs = projectList.map(exprToProto(_, child.output))
 
         if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
@@ -2544,8 +2606,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case FilterExec(condition, child)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_FILTER) =>
+      case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
@@ -2556,8 +2617,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case SortExec(sortOrder, _, child, _)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT) =>
+      case SortExec(sortOrder, _, child, _) if CometConf.COMET_EXEC_SORT_ENABLED.get(conf) =>
         if (!supportedSortType(op, sortOrder)) {
           return None
         }
@@ -2574,8 +2634,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case LocalLimitExec(limit, _)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_LOCAL_LIMIT) =>
+      case LocalLimitExec(limit, _) if CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.get(conf) =>
         if (childOp.nonEmpty) {
           // LocalLimit doesn't use offset, but it shares same operator serde class.
           // Just set it to zero.
@@ -2590,7 +2649,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case globalLimitExec: GlobalLimitExec
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_GLOBAL_LIMIT) =>
+          if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
         // TODO: We don't support negative limit for now.
         if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
@@ -2605,8 +2664,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case ExpandExec(projections, _, child)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_EXPAND) =>
+      case ExpandExec(projections, _, child) if CometConf.COMET_EXEC_EXPAND_ENABLED.get(conf) =>
         var allProjExprs: Seq[Expression] = Seq()
         val projExprs = projections.flatMap(_.map(e => {
           allProjExprs = allProjExprs :+ e
@@ -2625,7 +2683,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case WindowExec(windowExpression, partitionSpec, orderSpec, child)
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_WINDOW) =>
+          if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
         val output = child.output
 
         val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
@@ -2663,16 +2721,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case HashAggregateExec(
-            _,
-            _,
-            _,
-            groupingExpressions,
-            aggregateExpressions,
-            aggregateAttributes,
-            _,
-            resultExpressions,
-            child) if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_AGGREGATE) =>
+      case aggregate: BaseAggregateExec
+          if (aggregate.isInstanceOf[HashAggregateExec] ||
+            aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
+            CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
+        val groupingExpressions = aggregate.groupingExpressions
+        val aggregateExpressions = aggregate.aggregateExpressions
+        val aggregateAttributes = aggregate.aggregateAttributes
+        val resultExpressions = aggregate.resultExpressions
+        val child = aggregate.child
+
         if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
           withInfo(op, "No group by or aggregation")
           return None
@@ -2770,9 +2828,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case join: HashJoin =>
         // `HashJoin` has only two implementations in Spark, but we check the type of the join to
         // make sure we are handling the correct join type.
-        if (!(isCometOperatorEnabled(op.conf, CometConf.OPERATOR_HASH_JOIN) &&
+        if (!(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
             join.isInstanceOf[ShuffledHashJoinExec]) &&
-          !(isCometOperatorEnabled(op.conf, CometConf.OPERATOR_BROADCAST_HASH_JOIN) &&
+          !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
             join.isInstanceOf[BroadcastHashJoinExec])) {
           withInfo(join, s"Invalid hash join type ${join.nodeName}")
           return None
@@ -2826,8 +2884,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case join: SortMergeJoinExec
-          if isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
+      case join: SortMergeJoinExec if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
         // `requiredOrders` and `getKeyOrdering` are copied from Spark's SortMergeJoinExec.
         def requiredOrders(keys: Seq[Expression]): Seq[SortOrder] = {
           keys.map(SortOrder(_, Ascending))
@@ -2847,10 +2904,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }
 
-        // TODO: Support SortMergeJoin with join condition after new DataFusion release
-        if (join.condition.isDefined) {
-          withInfo(op, "Sort merge join with a join condition is not supported")
-          return None
+        val condition = join.condition.map { cond =>
+          val condProto = exprToProto(cond, join.left.output ++ join.right.output)
+          if (condProto.isEmpty) {
+            withInfo(join, cond)
+            return None
+          }
+          condProto.get
         }
 
         val joinType = join.joinType match {
@@ -2859,7 +2919,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          case LeftAnti => JoinType.LeftAnti
+          // TODO: DF SMJ with join condition fails TPCH q21
+          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
+          case LeftAnti =>
+            withInfo(join, "LeftAnti SMJ join with condition is not supported")
+            return None
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
@@ -2896,6 +2960,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .addAllSortOptions(sortOptions.map(_.get).asJava)
             .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+          condition.map(joinBuilder.setCondition)
           Some(result.setSortMergeJoin(joinBuilder).build())
         } else {
           val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
@@ -2903,8 +2968,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case join: SortMergeJoinExec
-          if !isCometOperatorEnabled(op.conf, CometConf.OPERATOR_SORT_MERGE_JOIN) =>
+      case join: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
         withInfo(join, "SortMergeJoin is not enabled")
         None
 

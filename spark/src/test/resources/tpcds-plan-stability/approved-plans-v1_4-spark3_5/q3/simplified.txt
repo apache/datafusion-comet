@@ -3,7 +3,7 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [d_year,brand_id,brand,sum_agg]
         CometHashAggregate [d_year,brand_id,brand,sum_agg,i_brand,i_brand_id,sum,sum(UnscaledValue(ss_ext_sales_price))]
-          CometColumnarExchange [d_year,i_brand,i_brand_id] #1
+          CometExchange [d_year,i_brand,i_brand_id] #1
             CometHashAggregate [d_year,i_brand,i_brand_id,sum,ss_ext_sales_price]
               CometProject [d_year,ss_ext_sales_price,i_brand_id,i_brand]
                 CometBroadcastHashJoin [d_year,ss_item_sk,ss_ext_sales_price,i_item_sk,i_brand_id,i_brand]

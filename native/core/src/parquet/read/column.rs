@@ -802,13 +802,13 @@ impl<T: DataType> TypedColumnReader<T> {
         let mut page_buffer = page_data;
 
         let bit_width = log2(self.desc.max_rep_level() as u64 + 1) as u8;
-        let mut rl_decoder = LevelDecoder::new(self.desc.clone(), bit_width, true);
+        let mut rl_decoder = LevelDecoder::new(Arc::clone(&self.desc), bit_width, true);
         let offset = rl_decoder.set_data(page_value_count, &page_buffer);
         self.rep_level_decoder = Some(rl_decoder);
         page_buffer = page_buffer.slice(offset);
 
         let bit_width = log2(self.desc.max_def_level() as u64 + 1) as u8;
-        let mut dl_decoder = LevelDecoder::new(self.desc.clone(), bit_width, true);
+        let mut dl_decoder = LevelDecoder::new(Arc::clone(&self.desc), bit_width, true);
         let offset = dl_decoder.set_data(page_value_count, &page_buffer);
         self.def_level_decoder = Some(dl_decoder);
         page_buffer = page_buffer.slice(offset);
@@ -830,12 +830,12 @@ impl<T: DataType> TypedColumnReader<T> {
         self.check_dictionary(&encoding);
 
         let bit_width = log2(self.desc.max_rep_level() as u64 + 1) as u8;
-        let mut rl_decoder = LevelDecoder::new(self.desc.clone(), bit_width, false);
+        let mut rl_decoder = LevelDecoder::new(Arc::clone(&self.desc), bit_width, false);
         rl_decoder.set_data(page_value_count, &rep_level_data);
         self.rep_level_decoder = Some(rl_decoder);
 
         let bit_width = log2(self.desc.max_def_level() as u64 + 1) as u8;
-        let mut dl_decoder = LevelDecoder::new(self.desc.clone(), bit_width, false);
+        let mut dl_decoder = LevelDecoder::new(Arc::clone(&self.desc), bit_width, false);
         dl_decoder.set_data(page_value_count, &def_level_data);
         self.def_level_decoder = Some(dl_decoder);
 
@@ -988,7 +988,7 @@ impl<T: DataType> TypedColumnReader<T> {
             value_data,
             page_value_count,
             encoding,
-            self.desc.clone(),
+            Arc::clone(&self.desc),
             self.read_options,
         )
     }

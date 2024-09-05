@@ -126,7 +126,7 @@ impl FilterExec {
         let schema = input.schema();
         if !check_support(predicate, &schema) {
             let selectivity = default_selectivity as f64 / 100.0;
-            let mut stats = input_stats.into_inexact();
+            let mut stats = input_stats.to_inexact();
             stats.num_rows = stats.num_rows.with_estimated_selectivity(selectivity);
             stats.total_byte_size = stats
                 .total_byte_size
@@ -318,7 +318,7 @@ fn collect_new_statistics(
                     (Precision::Inexact(lower), Precision::Inexact(upper))
                 };
                 ColumnStatistics {
-                    null_count: input_column_stats[idx].null_count.clone().to_inexact(),
+                    null_count: input_column_stats[idx].null_count.to_inexact(),
                     max_value,
                     min_value,
                     distinct_count: distinct_count.to_inexact(),
@@ -380,7 +380,7 @@ pub fn comet_filter_record_batch(
             })
             .collect();
         let options = RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows()));
-        RecordBatch::try_new_with_options(record_batch.schema().clone(), arrays, &options)
+        RecordBatch::try_new_with_options(Arc::clone(&record_batch.schema()), arrays, &options)
     } else {
         filter_record_batch(record_batch, predicate)
     }

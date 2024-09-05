@@ -77,10 +77,10 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
         labels = [label.name for label in pull.labels]
         if 'api change' in labels or cc_breaking:
             breaking.append((pull, commit))
-        elif 'bug' in labels or cc_type == 'fix':
-            bugs.append((pull, commit))
         elif 'performance' in labels or cc_type == 'perf':
             performance.append((pull, commit))
+        elif 'bug' in labels or cc_type == 'fix':
+            bugs.append((pull, commit))
         elif 'enhancement' in labels or cc_type == 'feat':
             enhancements.append((pull, commit))
         elif 'documentation' in labels or cc_type == 'docs' or cc_type == 'doc':
@@ -123,9 +123,9 @@ under the License.
           f"See credits at the end of this changelog for more information.\n")
 
     print_pulls(repo_name, "Breaking changes", breaking)
+    print_pulls(repo_name, "Fixed bugs", bugs)
     print_pulls(repo_name, "Performance related", performance)
     print_pulls(repo_name, "Implemented enhancements", enhancements)
-    print_pulls(repo_name, "Fixed bugs", bugs)
     print_pulls(repo_name, "Documentation updates", docs)
     print_pulls(repo_name, "Other", other)
 

@@ -87,7 +87,6 @@ trait CometTPCQueryListBase
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ALL_OPERATOR_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true",
         // Lower bloom filter thresholds to allows us to simulate the plan produced at larger scale.
         "spark.sql.optimizer.runtime.bloomFilter.creationSideThreshold" -> "1MB",
