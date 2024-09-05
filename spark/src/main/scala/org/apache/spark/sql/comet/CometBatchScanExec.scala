@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.concurrent.duration.NANOSECONDS
-
 import org.apache.spark.rdd._
 import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal}
