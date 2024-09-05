@@ -145,14 +145,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_add") {
+  test("date_add with scalar") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
-            "SELECT _4 FROM tbl WHERE _20 + 2 > CAST('1970-01-02' AS DATE)")
+            "SELECT _2 FROM tbl WHERE _20 + 2 > CAST('1970-01-02' AS DATE)")
+        }
+      }
+    }
+  }
+
+  test("date_add with array") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT _2 FROM tbl WHERE _20 + _4 > CAST('1970-01-02' AS DATE)")
         }
       }
     }
