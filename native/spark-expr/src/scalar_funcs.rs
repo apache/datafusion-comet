@@ -28,7 +28,7 @@ use arrow_array::builder::{GenericStringBuilder, IntervalDayTimeBuilder};
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Decimal128Array};
 use arrow_schema::{DataType, DECIMAL128_MAX_PRECISION};
-use datafusion::physical_expr_common::datum::apply;
+use datafusion::physical_expr_common::datum;
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{
     cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
@@ -552,13 +552,15 @@ pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionEr
     }
 }
 
-/// Spark-compatible `date_add` expression
+/// Spark-compatible `date_add` expression, which assumes days for the second argument, but we
+/// cannot directly add that to a Date32. We generate an IntervalDayTime from the second argument,
+/// and use DataFusion's interface to apply Arrow's add operator.
 pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let start = &args[0];
     if let ColumnarValue::Scalar(ScalarValue::Int32(Some(days))) = &args[1] {
         let interval = IntervalDayTime::new(*days, 0);
         let interval_cv = ColumnarValue::Scalar(ScalarValue::IntervalDayTime(Some(interval)));
-        let result = apply(start, &interval_cv, add)?;
+        let result = datum::apply(start, &interval_cv, add)?;
         return Ok(result);
     } else if let ColumnarValue::Array(days) = &args[1] {
         let mut interval_builder = IntervalDayTimeBuilder::new();
@@ -570,7 +572,7 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
             }
         }
         let interval_cv = ColumnarValue::Array(Arc::new(interval_builder.finish()));
-        let result = apply(start, &interval_cv, add)?;
+        let result = datum::apply(start, &interval_cv, add)?;
         return Ok(result);
     }
     Err(DataFusionError::Internal(format!(
