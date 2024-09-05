@@ -29,10 +29,9 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-
-use crate::execution::datafusion::expressions::utils::down_cast_any_ref;
 
 /// This is from Spark `CheckOverflow` expression. Spark `CheckOverflow` expression rounds decimals
 /// to given scale and check if the decimals can fit in given precision. As `cast` kernel rounds

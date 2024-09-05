@@ -30,13 +30,11 @@ pub mod comet_scalar_funcs;
 pub mod correlation;
 pub mod covariance;
 pub mod negative;
-pub mod stats;
 pub mod stddev;
 pub mod strings;
 pub mod subquery;
 pub mod sum_decimal;
 pub mod unbound;
-mod utils;
 pub mod variance;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
