@@ -577,7 +577,7 @@ fn spark_date_arithmetic(
         return datum::apply(start, &interval_cv, op);
     }
     Err(DataFusionError::Internal(format!(
-        "Unsupported data type {:?} for function date_add",
+        "Unsupported data types {:?} for date arithmetic.",
         args,
     )))
 }
