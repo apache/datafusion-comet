@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::kernels::numeric::add;
+use arrow::compute::kernels::numeric::{add, sub};
 use arrow::datatypes::IntervalDayTime;
 use arrow::{
     array::{
@@ -26,8 +26,8 @@ use arrow::{
 };
 use arrow_array::builder::{GenericStringBuilder, IntervalDayTimeBuilder};
 use arrow_array::types::Int32Type;
-use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Decimal128Array};
-use arrow_schema::{DataType, DECIMAL128_MAX_PRECISION};
+use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Datum, Decimal128Array};
+use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
 use datafusion::physical_expr_common::datum;
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{
@@ -552,15 +552,18 @@ pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionEr
     }
 }
 
-/// Spark-compatible `date_add` expression, which assumes days for the second argument, but we
-/// cannot directly add that to a Date32. We generate an IntervalDayTime from the second argument,
-/// and use DataFusion's interface to apply Arrow's add operator.
-pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+/// Spark-compatible `date_add` and `date_sub` expressions, which assumes days for the second
+/// argument, but we cannot directly add that to a Date32. We generate an IntervalDayTime from the
+/// second argument and use DataFusion's interface to apply Arrow's operators.
+fn spark_date_arithmetic(
+    args: &[ColumnarValue],
+    op: impl Fn(&dyn Datum, &dyn Datum) -> Result<ArrayRef, ArrowError>,
+) -> Result<ColumnarValue, DataFusionError> {
     let start = &args[0];
     if let ColumnarValue::Scalar(ScalarValue::Int32(Some(days))) = &args[1] {
         let interval = IntervalDayTime::new(*days, 0);
         let interval_cv = ColumnarValue::Scalar(ScalarValue::IntervalDayTime(Some(interval)));
-        return datum::apply(start, &interval_cv, add);
+        return datum::apply(start, &interval_cv, op);
     } else if let ColumnarValue::Array(days) = &args[1] {
         let mut interval_builder = IntervalDayTimeBuilder::with_capacity(days.len());
         for day in days.as_primitive::<Int32Type>().into_iter() {
@@ -571,10 +574,17 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
             }
         }
         let interval_cv = ColumnarValue::Array(Arc::new(interval_builder.finish()));
-        return datum::apply(start, &interval_cv, add);
+        return datum::apply(start, &interval_cv, op);
     }
     Err(DataFusionError::Internal(format!(
         "Unsupported data type {:?} for function date_add",
         args,
     )))
+}
+pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_date_arithmetic(args, add)
+}
+
+pub fn spark_date_sub(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_date_arithmetic(args, sub)
 }
