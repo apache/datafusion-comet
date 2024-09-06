@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -166,7 +166,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
             checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
-          assert(sparkErr.get.getMessage.contains("integer overflow"))
+          if (isSpark40Plus) {
+            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+          } else {
+            assert(sparkErr.get.getMessage.contains("integer overflow"))
+          }
           assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
         }
       }
@@ -205,7 +209,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
             checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
-          assert(sparkErr.get.getMessage.contains("integer overflow"))
+          if (isSpark40Plus) {
+            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+          } else {
+            assert(sparkErr.get.getMessage.contains("integer overflow"))
+          }
           assert(cometErr.get.getMessage.contains("`NaiveDate - TimeDelta` overflowed"))
         }
       }
