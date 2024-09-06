@@ -58,12 +58,14 @@ class Native extends NativeBase {
    *
    * @param plan
    *   the address to native query plan.
+   * @param arrayAddrs
+   *   the addresses of Arrow Array structures
+   * @param schemaAddrs
+   *   the addresses of Arrow Schema structures
    * @return
-   *   an array containing: 1) the status flag (1 for normal returned arrays, -1 for end of
-   *   output) 2) (optional) the number of rows if returned flag is 1 3) the addresses of output
-   *   Arrow arrays
+   *   the number of rows, if -1, it means end of the output.
    */
-  @native def executePlan(plan: Long): Array[Long]
+  @native def executePlan(plan: Long, arrayAddrs: Array[Long], schemaAddrs: Array[Long]): Long
 
   /**
    * Release and drop the native query plan object and context object.

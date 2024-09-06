@@ -19,9 +19,13 @@
 
 package org.apache.comet.vector
 
+import java.nio.ByteOrder
+
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.c.NativeUtil.NULL
+import org.apache.arrow.memory.util.MemoryUtil
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -36,6 +40,37 @@ class NativeUtil {
   private val allocator = CometArrowAllocator
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
   private val importer = new ArrowImporter(allocator)
+
+  /**
+   * Allocates Arrow structs for the given number of columns.
+   *
+   * @param numCols
+   *   the number of columns
+   * @return
+   *   a pair of Arrow arrays and Arrow schemas
+   */
+  def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
+    val arrays = new Array[ArrowArray](numCols)
+    val schemas = new Array[ArrowSchema](numCols)
+
+    (0 until numCols).foreach { index =>
+      val arrowSchema = ArrowSchema.allocateNew(allocator)
+
+      // Manually fill NULL to `release` slot of ArrowSchema because ArrowSchema doesn't provide
+      // `markReleased`.
+      // The total size of ArrowSchema is 72 bytes.
+      // The `release` slot is at offset 56 in the ArrowSchema struct.
+      val buffer =
+        MemoryUtil.directBuffer(arrowSchema.memoryAddress(), 72).order(ByteOrder.nativeOrder)
+      buffer.putLong(56, NULL);
+
+      val arrowArray = ArrowArray.allocateNew(allocator)
+      arrays(index) = arrowArray
+      schemas(index) = arrowSchema
+    }
+
+    (arrays, schemas)
+  }
 
   /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
@@ -83,20 +118,53 @@ class NativeUtil {
   }
 
   /**
+   * Gets the next batch from native execution.
+   *
+   * @param numOutputCols
+   *   The number of output columns
+   * @param func
+   *   The function to call to get the next batch
+   * @return
+   *   The number of row of the next batch, or None if there are no more batches
+   */
+  def getNextBatch(
+      numOutputCols: Int,
+      func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
+    val (arrays, schemas) = allocateArrowStructs(numOutputCols)
+
+    val arrayAddrs = arrays.map(_.memoryAddress())
+    val schemaAddrs = schemas.map(_.memoryAddress())
+
+    val result = func(arrayAddrs, schemaAddrs)
+
+    result match {
+      case -1 =>
+        // EOF
+        None
+      case numRows =>
+        val cometVectors = importVector(arrays, schemas)
+        Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
+      case flag =>
+        throw new IllegalStateException(s"Invalid native flag: $flag")
+    }
+  }
+
+  /**
    * Imports a list of Arrow addresses from native execution, and return a list of Comet vectors.
    *
-   * @param arrayAddress
-   *   a list containing paris of Arrow addresses from the native, in the format of (address of
-   *   Arrow array, address of Arrow schema)
+   * @param arrays
+   *   a list of Arrow array
+   * @param schemas
+   *   a list of Arrow schema
    * @return
    *   a list of Comet vectors
    */
-  def importVector(arrayAddress: Array[Long]): Seq[CometVector] = {
+  def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
 
-    for (i <- arrayAddress.indices by 2) {
-      val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
-      val arrowArray = ArrowArray.wrap(arrayAddress(i))
+    (0 until arrays.length).foreach { i =>
+      val arrowSchema = schemas(i)
+      val arrowArray = arrays(i)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
@@ -104,9 +172,6 @@ class NativeUtil {
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
         dictionaryProvider)
-
-      arrowArray.close()
-      arrowSchema.close()
     }
     arrayVectors.toSeq
   }
