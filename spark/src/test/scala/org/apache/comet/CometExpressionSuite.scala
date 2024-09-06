@@ -146,13 +146,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_add with scalar") {
+  test("date_add with int scalars") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT _20 + 2 from tbl")
+      Seq("TINYINT", "SHORT", "INT").foreach { intType =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
+          }
         }
       }
     }
@@ -177,25 +179,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_add with array") {
+  test("date_add with int arrays") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT _20 + _4 FROM tbl")
+      Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
+          }
         }
       }
     }
   }
 
-  test("date_sub with scalar") {
+  test("date_sub with int scalars") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT _20 - 2 from tbl")
+      Seq("TINYINT", "SHORT", "INT").foreach { intType =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 - CAST(2 as $intType) from tbl")
+          }
         }
       }
     }
@@ -220,13 +226,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_sub with array") {
+  test("date_sub with int arrays") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT _20 - _4 FROM tbl")
+      Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 - $intColumn FROM tbl")
+          }
         }
       }
     }
