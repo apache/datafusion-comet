@@ -24,7 +24,7 @@ under the License.
 ```
 ├── common     <- common Java/Scala code
 ├── conf       <- configuration files
-├── core       <- core native code, in Rust
+├── native     <- native code, in Rust
 ├── spark      <- Spark integration
 ```
 
@@ -71,7 +71,7 @@ After that you can open the project in CLion. The IDE should automatically detec
 ### Running Tests in IDEA
 
 Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting "Run" or "Debug".
-However if the tests is related to the native side. Please make sure to run `make core` or `cd core && cargo build` before running the tests in IDEA.
+However if the tests is related to the native side. Please make sure to run `make core` or `cd native && cargo build` before running the tests in IDEA.
 
 ### Running Tests from command line
 
