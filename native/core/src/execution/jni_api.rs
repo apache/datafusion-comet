@@ -259,21 +259,23 @@ fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
 }
 
 /// Prepares arrow arrays for output.
-unsafe fn prepare_output(
+fn prepare_output(
     env: &mut JNIEnv,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
 ) -> CometResult<jlong> {
-    let array_address_array = JLongArray::from_raw(array_addrs);
+    let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
 
-    let array_addrs = env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)?;
+    let array_addrs =
+        unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
     let array_addrs = &*array_addrs;
 
-    let schema_address_array = JLongArray::from_raw(schema_addrs);
-    let schema_addrs = env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)?;
+    let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
+    let schema_addrs =
+        unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
