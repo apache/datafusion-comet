@@ -27,6 +27,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -2117,6 +2118,76 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
       // Fixed by https://github.com/apache/datafusion/commit/140f7cec78febd73d3db537a816badaaf567530a
       // checkSparkAnswerAndOperator(df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
+      }
+    }
+  }
+
+  test("ListExtract") {
+    def assertBothThrow(df: DataFrame): Unit = {
+      checkSparkMaybeThrows(df) match {
+        case (Some(_), Some(_)) => ()
+        case (spark, comet) =>
+          fail(
+            s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
+      }
+    }
+
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
+
+        Seq(true, false).foreach { ansiEnabled =>
+          withSQLConf(
+            CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+            SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
+            // Prevent the optimizer from collapsing an extract value of a create array
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+            val df = spark.read.parquet(path.toString)
+
+            val stringArray = df.select(array(col("_8"), col("_8"), lit(null)).alias("arr"))
+            checkSparkAnswerAndOperator(
+              stringArray
+                .select(col("arr").getItem(0), col("arr").getItem(1), col("arr").getItem(2)))
+
+            checkSparkAnswerAndOperator(
+              stringArray.select(
+                element_at(col("arr"), -3),
+                element_at(col("arr"), -2),
+                element_at(col("arr"), -1),
+                element_at(col("arr"), 1),
+                element_at(col("arr"), 2),
+                element_at(col("arr"), 3)))
+
+            // 0 is an invalid index for element_at
+            assertBothThrow(stringArray.select(element_at(col("arr"), 0)))
+
+            if (ansiEnabled) {
+              assertBothThrow(stringArray.select(col("arr").getItem(-1)))
+              assertBothThrow(stringArray.select(col("arr").getItem(3)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), -4)))
+              assertBothThrow(stringArray.select(element_at(col("arr"), 4)))
+            } else {
+              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(-1)))
+              checkSparkAnswerAndOperator(stringArray.select(col("arr").getItem(3)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), -4)))
+              checkSparkAnswerAndOperator(stringArray.select(element_at(col("arr"), 4)))
+            }
+
+            val intArray =
+              df.select(when(col("_4").isNotNull, array(col("_4"), col("_4"))).alias("arr"))
+            checkSparkAnswerAndOperator(
+              intArray
+                .select(col("arr").getItem(0), col("arr").getItem(1)))
+
+            checkSparkAnswerAndOperator(
+              intArray.select(
+                element_at(col("arr"), 1),
+                element_at(col("arr"), 2),
+                element_at(col("arr"), -1),
+                element_at(col("arr"), -2)))
+          }
+        }
       }
     }
   }

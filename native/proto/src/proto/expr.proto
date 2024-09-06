@@ -80,6 +80,7 @@ message Expr {
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
+    ListExtract list_extract = 56;
   }
 }
 
@@ -506,6 +507,14 @@ message CreateNamedStruct {
 message GetStructField {
   Expr child = 1;
   int32 ordinal = 2;
+}
+
+message ListExtract {
+  Expr child = 1;
+  Expr ordinal = 2;
+  Expr default_value = 3;
+  bool one_based = 4;
+  bool fail_on_error = 5;
 }
 
 enum SortDirection {

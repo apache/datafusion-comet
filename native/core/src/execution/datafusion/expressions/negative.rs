@@ -21,6 +21,7 @@ use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeT
 use arrow_array::RecordBatch;
 use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Schema};
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
@@ -28,7 +29,6 @@ use datafusion::{
 use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
-use datafusion_physical_expr::aggregate::utils::down_cast_any_ref;
 use std::{
     any::Any,
     hash::{Hash, Hasher},

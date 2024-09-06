@@ -21,6 +21,14 @@ under the License.
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
+## Metrics
+
+Comet metrics are not directly comparable to Spark metrics in some cases.
+
+`CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
+milliseconds *per batch* which can result in a large loss of precision. In one case we saw total scan time
+of 41 seconds reported as 23 seconds for example.
+
 ## Memory Tuning
 
 Comet currently doesn't share the memory allocation from Spark but owns its own memory allocation.

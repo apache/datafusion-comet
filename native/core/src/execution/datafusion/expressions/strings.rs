@@ -17,10 +17,7 @@
 
 #![allow(deprecated)]
 
-use crate::execution::{
-    datafusion::expressions::utils::down_cast_any_ref,
-    kernels::strings::{string_space, substring},
-};
+use crate::execution::kernels::strings::{string_space, substring};
 use arrow::{
     compute::{
         contains_dyn, contains_utf8_scalar_dyn, ends_with_dyn, ends_with_utf8_scalar_dyn, like_dyn,
@@ -30,6 +27,7 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
