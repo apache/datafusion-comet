@@ -80,6 +80,15 @@ object CometMetricNode {
   }
 
   /**
+   * SQL Metrics for Comet native ScanExec
+   */
+  def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "cast_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting arrays"))
+  }
+
+  /**
    * SQL Metrics for DataFusion HashJoin
    */
   def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {

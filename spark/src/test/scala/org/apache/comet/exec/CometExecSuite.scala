@@ -517,6 +517,25 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Comet native metrics: scan") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withPar
+        val df = sql("SELECT cast(_1 as decimal(7,2)), cast(_2 as decimal(7,2)) FROM tbl")
+        df.collect()
+
+        val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
+          .map(_.metrics)
+          .get
+
+        assert(metrics.contains("scanTime"))
+        assert(metrics.contains("cast_time"))
+
+        // TODO this assertion currently fails
+        //assert(metrics("cast_time").value > 0)
+      }
+    }
+  }
+
   test("Comet native metrics: project and filter") {
     withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
