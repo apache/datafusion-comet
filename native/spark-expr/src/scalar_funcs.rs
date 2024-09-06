@@ -560,10 +560,9 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     if let ColumnarValue::Scalar(ScalarValue::Int32(Some(days))) = &args[1] {
         let interval = IntervalDayTime::new(*days, 0);
         let interval_cv = ColumnarValue::Scalar(ScalarValue::IntervalDayTime(Some(interval)));
-        let result = datum::apply(start, &interval_cv, add)?;
-        return Ok(result);
+        return datum::apply(start, &interval_cv, add);
     } else if let ColumnarValue::Array(days) = &args[1] {
-        let mut interval_builder = IntervalDayTimeBuilder::new();
+        let mut interval_builder = IntervalDayTimeBuilder::with_capacity(days.len());
         for day in days.as_primitive::<Int32Type>().into_iter() {
             if let Some(non_null_day) = day {
                 interval_builder.append_value(IntervalDayTime::new(non_null_day, 0));
@@ -572,8 +571,7 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
             }
         }
         let interval_cv = ColumnarValue::Array(Arc::new(interval_builder.finish()));
-        let result = datum::apply(start, &interval_cv, add)?;
-        return Ok(result);
+        return datum::apply(start, &interval_cv, add);
     }
     Err(DataFusionError::Internal(format!(
         "Unsupported data type {:?} for function date_add",

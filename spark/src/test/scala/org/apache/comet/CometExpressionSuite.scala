@@ -152,8 +152,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT _2 FROM tbl WHERE _20 + 2 > CAST('1970-01-02' AS DATE)")
+          checkSparkAnswerAndOperator("SELECT _20 + 2 from tbl")
+        }
+      }
+    }
+  }
+
+  test("date_add with scalar overflow") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val (sparkErr, cometErr) =
+            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+          assert(sparkErr.get.getMessage.contains("integer overflow"))
+          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
         }
       }
     }
@@ -165,8 +179,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT _2 FROM tbl WHERE _20 + _4 > CAST('1970-01-02' AS DATE)")
+          checkSparkAnswerAndOperator("SELECT _20 + _4 FROM tbl")
         }
       }
     }
