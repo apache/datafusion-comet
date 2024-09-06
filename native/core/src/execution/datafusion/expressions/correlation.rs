@@ -20,16 +20,20 @@ use arrow::compute::{and, filter, is_not_null};
 use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::expressions::{
-    covariance::CovarianceAccumulator, stats::StatsType, stddev::StddevAccumulator,
-    utils::down_cast_any_ref,
+    covariance::CovarianceAccumulator, stddev::StddevAccumulator,
 };
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{Result, ScalarValue};
-use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, PhysicalExpr};
+use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion_expr::type_coercion::aggregates::NUMERICS;
+use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_physical_expr::expressions::StatsType;
+use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 
 /// CORR aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -39,6 +43,7 @@ use datafusion_physical_expr::{expressions::format_state_name, AggregateExpr, Ph
 #[derive(Debug)]
 pub struct Correlation {
     name: String,
+    signature: Signature,
     expr1: Arc<dyn PhysicalExpr>,
     expr2: Arc<dyn PhysicalExpr>,
     null_on_divide_by_zero: bool,
@@ -56,6 +61,7 @@ impl Correlation {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
+            signature: Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable),
             expr1,
             expr2,
             null_on_divide_by_zero,
@@ -63,23 +69,34 @@ impl Correlation {
     }
 }
 
-impl AggregateExpr for Correlation {
+impl AggregateUDFImpl for Correlation {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn field(&self) -> Result<Field> {
-        Ok(Field::new(&self.name, DataType::Float64, true))
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>> {
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Float64)
+    }
+    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
+        Ok(ScalarValue::Float64(None))
+    }
+
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(CorrelationAccumulator::try_new(
             self.null_on_divide_by_zero,
         )?))
     }
 
-    fn state_fields(&self) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
                 format_state_name(&self.name, "count"),
@@ -112,18 +129,6 @@ impl AggregateExpr for Correlation {
                 true,
             ),
         ])
-    }
-
-    fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
-        vec![Arc::clone(&self.expr1), Arc::clone(&self.expr2)]
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(None))
     }
 }
 
