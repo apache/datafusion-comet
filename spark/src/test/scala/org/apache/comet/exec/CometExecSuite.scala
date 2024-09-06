@@ -519,19 +519,23 @@ class CometExecSuite extends CometTestBase {
 
   test("Comet native metrics: scan") {
     withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      withPar
-        val df = sql("SELECT cast(_1 as decimal(7,2)), cast(_2 as decimal(7,2)) FROM tbl")
-        df.collect()
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "native-scan.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val df = sql("SELECT * FROM tbl")
+          df.collect()
 
-        val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
-          .map(_.metrics)
-          .get
+          val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
+            .map(_.metrics)
+            .get
 
-        assert(metrics.contains("scanTime"))
-        assert(metrics.contains("cast_time"))
+          assert(metrics.contains("scanTime"))
+          assert(metrics.contains("cast_time"))
 
-        // TODO this assertion currently fails
-        //assert(metrics("cast_time").value > 0)
+          // TODO this assertion fails
+//            assert(metrics("cast_time").value > 0)
+        }
       }
     }
   }
