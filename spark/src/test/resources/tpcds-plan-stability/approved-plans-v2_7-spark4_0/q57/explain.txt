@@ -46,7 +46,7 @@ TakeOrderedAndProject (45)
                   +- ReusedExchange (38)
 
 
-(1) Scan parquet spark_catalog.default.item
+(1) CometScan parquet spark_catalog.default.item
 Output [3]: [i_item_sk#1, i_brand#2, i_category#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -57,7 +57,7 @@ ReadSchema: struct<i_item_sk:int,i_brand:string,i_category:string>
 Input [3]: [i_item_sk#1, i_brand#2, i_category#3]
 Condition : ((isnotnull(i_item_sk#1) AND isnotnull(i_category#3)) AND isnotnull(i_brand#2))
 
-(3) Scan parquet spark_catalog.default.catalog_sales
+(3) CometScan parquet spark_catalog.default.catalog_sales
 Output [4]: [cs_call_center_sk#4, cs_item_sk#5, cs_sales_price#6, cs_sold_date_sk#7]
 Batched: true
 Location: InMemoryFileIndex []
@@ -82,7 +82,7 @@ Arguments: [i_item_sk#1], [cs_item_sk#5], Inner, BuildRight
 Input [7]: [i_item_sk#1, i_brand#2, i_category#3, cs_call_center_sk#4, cs_item_sk#5, cs_sales_price#6, cs_sold_date_sk#7]
 Arguments: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, cs_sold_date_sk#7], [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, cs_sold_date_sk#7]
 
-(8) Scan parquet spark_catalog.default.date_dim
+(8) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -106,7 +106,7 @@ Arguments: [cs_sold_date_sk#7], [d_date_sk#9], Inner, BuildRight
 Input [8]: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, cs_sold_date_sk#7, d_date_sk#9, d_year#10, d_moy#11]
 Arguments: [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, d_year#10, d_moy#11], [i_brand#2, i_category#3, cs_call_center_sk#4, cs_sales_price#6, d_year#10, d_moy#11]
 
-(13) Scan parquet spark_catalog.default.call_center
+(13) CometScan parquet spark_catalog.default.call_center
 Output [2]: [cc_call_center_sk#12, cc_name#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/call_center]
@@ -261,7 +261,7 @@ BroadcastExchange (49)
       +- CometScan parquet spark_catalog.default.date_dim (46)
 
 
-(46) Scan parquet spark_catalog.default.date_dim
+(46) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

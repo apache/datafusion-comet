@@ -44,7 +44,7 @@ TakeOrderedAndProject (43)
       +- ReusedExchange (40)
 
 
-(1) Scan parquet spark_catalog.default.store_sales
+(1) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -188,7 +188,7 @@ Join condition: None
 Output [3]: [item_sk#10, rnk#14, item_sk#20]
 Input [4]: [item_sk#10, rnk#14, item_sk#20, rnk#22]
 
-(34) Scan parquet spark_catalog.default.item
+(34) CometScan parquet spark_catalog.default.item
 Output [2]: [i_item_sk#23, i_product_name#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -245,7 +245,7 @@ Subquery:1 Hosting operator id = 8 Hosting Expression = Subquery scalar-subquery
                +- CometScan parquet spark_catalog.default.store_sales (44)
 
 
-(44) Scan parquet spark_catalog.default.store_sales
+(44) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_addr_sk#29, ss_store_sk#30, ss_net_profit#31, ss_sold_date_sk#32]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
