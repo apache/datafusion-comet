@@ -19,13 +19,9 @@
 
 package org.apache.comet.vector
 
-import java.nio.ByteOrder
-
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.c.NativeUtil.NULL
-import org.apache.arrow.memory.util.MemoryUtil
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -55,15 +51,6 @@ class NativeUtil {
 
     (0 until numCols).foreach { index =>
       val arrowSchema = ArrowSchema.allocateNew(allocator)
-
-      // Manually fill NULL to `release` slot of ArrowSchema because ArrowSchema doesn't provide
-      // `markReleased`.
-      // The total size of ArrowSchema is 72 bytes.
-      // The `release` slot is at offset 56 in the ArrowSchema struct.
-      val buffer =
-        MemoryUtil.directBuffer(arrowSchema.memoryAddress(), 72).order(ByteOrder.nativeOrder)
-      buffer.putLong(56, NULL);
-
       val arrowArray = ArrowArray.allocateNew(allocator)
       arrays(index) = arrowArray
       schemas(index) = arrowSchema
