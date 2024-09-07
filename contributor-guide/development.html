@@ -385,7 +385,7 @@ under the License.
 <h2>Project Layout<a class="headerlink" href="#project-layout" title="Link to this heading">¶</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>├── common     &lt;- common Java/Scala code
 ├── conf       &lt;- configuration files
-├── core       &lt;- core native code, in Rust
+├── native     &lt;- native code, in Rust
 ├── spark      &lt;- Spark integration
 </pre></div>
 </div>
@@ -434,7 +434,7 @@ After that you can open the project in CLion. The IDE should automatically detec
 <section id="running-tests-in-idea">
 <h3>Running Tests in IDEA<a class="headerlink" href="#running-tests-in-idea" title="Link to this heading">¶</a></h3>
 <p>Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting “Run” or “Debug”.
-However if the tests is related to the native side. Please make sure to run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> or <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">core</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">build</span></code> before running the tests in IDEA.</p>
+However if the tests is related to the native side. Please make sure to run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> or <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">native</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">build</span></code> before running the tests in IDEA.</p>
 </section>
 <section id="running-tests-from-command-line">
 <h3>Running Tests from command line<a class="headerlink" href="#running-tests-from-command-line" title="Link to this heading">¶</a></h3>
