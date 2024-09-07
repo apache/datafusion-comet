@@ -66,6 +66,8 @@ When reading from Parquet v1 data sources, Comet provides JVM code for performin
 implementing predicate pushdown to skip row groups and then delegates to native code for decoding Parquet pages and 
 row groups into Arrow arrays.
 
+![Diagram of Comet Native Parquet Scan](../../_static/images/CometNativeParquetScan.drawio.png)
+
 `CometScanRule` replaces `FileSourceScanExec` with `CometScanExec`.
 
 `CometScanExec.doExecuteColumnar` creates an instance of `CometParquetPartitionReaderFactory` and passes it either 
