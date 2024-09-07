@@ -2508,6 +2508,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
             None
           }
+        
+        // case GetArrayStructFields(child, field, ordinal, numFields, containsNull) =>
+        //   val childExpr = exprToProto(child, inputs, binding)
+        //   val ordinalExpr = exprToProto(ordinal, inputs, binding)
+
+        //   if (childExpr.isDefined && ordinalExpr.isDefined) {
+        //     val listExtractBuilder = ExprOuterClass.ListExtract
+        //       .newBuilder()
+        //       .setChild(childExpr.get)
+        //       .setOrdinal(ordinalExpr.get)
+        //       .setOneBased(false)
+        //       .setFailOnError(failOnError)
+
+        //     Some(
+        //       ExprOuterClass.Expr
+        //         .newBuilder()
+        //         .setListExtract(listExtractBuilder)
+        //         .build())
+        //   } else {
+        //     withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
+        //     None
+        //   }
 
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
