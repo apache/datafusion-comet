@@ -57,3 +57,46 @@ and this serialized plan is passed into the native code by `CometExecIterator`.
 In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an
 Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
+
+## Parquet Support
+
+### Native Parquet Scan with v1 Data Source
+
+When reading from Parquet v1 data sources, Comet provides JVM code for performing the reads from disk and 
+implementing predicate pushdown to skip row groups and then delegates to native code for decoding Parquet pages and 
+row groups into Arrow arrays.
+
+`CometScanRule` replaces `FileSourceScanExec` with `CometScanExec`.
+
+`CometScanExec.doExecuteColumnar` creates an instance of `CometParquetPartitionReaderFactory` and passes it either 
+into a `DataSourceRDD` (if prefetch is enabled) or a `FileScanRDD`. It then calls `mapPartitionsInternal` on the 
+`RDD` and wraps the resulting `Iterator[ColumnarBatch]` in another iterator that collects metrics such as `scanTime`
+and `numOutputRows`.
+
+`CometParquetPartitionReaderFactory` will create a `org.apache.comet.parquet.BatchReader` which in turn creates one
+column reader per column. There are different column reader implementations for different data types and encodings. The
+column readers invoke methods on the `org.apache.comet.parquet.Native` class such as `resetBatch`, `readBatch`, 
+and `currentBatch`.
+
+The `CometScanExec` provides batches that will be read by the `ScanExec` native plan leaf node. `CometScanExec` is 
+wrapped in a `CometBatchIterator` that will convert Spark's `ColumnarBatch` into Arrow Arrays. This is then wrapped in
+a `CometExecIterator` that will consume the Arrow Arrays and execute the native plan via methods on 
+`org.apache.comet.Native` such as `createPlan`, `executePlan`, and `releasePlan`. The memory addresses for each batch of
+Arrow Arrays are passed to the call to `executePlan` and are then consumed by the plan's `ScanExec` leaf node.
+
+TODO: What happens when the native plan has multiple `ScanExec` nodes?
+
+### Parquet Scan with v2 Data Source
+
+`CometScanRule` replaces `BatchScanExec` with `CometBatchScanExec`.
+
+TODO:
+
+### Parquet Scan using Spark's vectorized reader
+
+When Comet's native scan is disabled (by setting `spark.comet.scan.enabled=false`), Comet will use 
+Spark's `FileSourceScanExec` or `BatchScanExec` and wrap these operators in `CometSparkToColumnarExec` which will
+convert instances of Spark's `ColumnarBatch` into Arrow Arrays. 
+
+Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable 
+this feature.
