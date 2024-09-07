@@ -84,15 +84,17 @@ The `CometScanExec` provides batches that will be read by the `ScanExec` native 
 wrapped in a `CometBatchIterator` that will convert Spark's `ColumnarBatch` into Arrow Arrays. This is then wrapped in
 a `CometExecIterator` that will consume the Arrow Arrays and execute the native plan via methods on 
 `org.apache.comet.Native` such as `createPlan`, `executePlan`, and `releasePlan`. The memory addresses for each batch of
-Arrow Arrays are passed to the call to `executePlan` and are then consumed by the plan's `ScanExec` leaf node.
+Arrow Arrays are passed to the call to `executePlan` and are then consumed by the plan's `ScanExec` leaf nodes.
 
-TODO: What happens when the native plan has multiple `ScanExec` nodes?
+An execution plan can contain multiple `ScanExec` nodes and the call to `createPlan` passes an array of 
+`ColumnBatchIterator`.
 
 ### Parquet Scan with v2 Data Source
 
 `CometScanRule` replaces `BatchScanExec` with `CometBatchScanExec`.
 
-TODO:
+Comet does not provide native acceleration for decoding Parquet files when using v2 data source and instead uses 
+Spark's vectorized reader. 
 
 ### Parquet Scan using Spark's vectorized reader
 
