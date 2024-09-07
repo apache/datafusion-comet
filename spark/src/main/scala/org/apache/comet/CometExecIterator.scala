@@ -43,6 +43,7 @@ import org.apache.comet.vector.NativeUtil
 class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
+    numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode)
     extends Iterator[ColumnarBatch] {
@@ -100,22 +101,11 @@ class CometExecIterator(
   }
 
   def getNextBatch(): Option[ColumnarBatch] = {
-    // we execute the native plan each time we need another output batch and this could
-    // result in multiple input batches being processed
-    val result = nativeLib.executePlan(plan)
-
-    result(0) match {
-      case -1 =>
-        // EOF
-        None
-      case 1 =>
-        val numRows = result(1)
-        val addresses = result.slice(2, result.length)
-        val cometVectors = nativeUtil.importVector(addresses)
-        Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
-      case flag =>
-        throw new IllegalStateException(s"Invalid native flag: $flag")
-    }
+    nativeUtil.getNextBatch(
+      numOutputCols,
+      (arrayAddrs, schemaAddrs) => {
+        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+      })
   }
 
   override def hasNext: Boolean = {

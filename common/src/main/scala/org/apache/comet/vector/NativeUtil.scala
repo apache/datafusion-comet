@@ -59,6 +59,28 @@ class NativeUtil {
   private val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
   /**
+   * Allocates Arrow structs for the given number of columns.
+   *
+   * @param numCols
+   *   the number of columns
+   * @return
+   *   a pair of Arrow arrays and Arrow schemas
+   */
+  def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
+    val arrays = new Array[ArrowArray](numCols)
+    val schemas = new Array[ArrowSchema](numCols)
+
+    (0 until numCols).foreach { index =>
+      val arrowSchema = ArrowSchema.allocateNew(allocator)
+      val arrowArray = ArrowArray.allocateNew(allocator)
+      arrays(index) = arrowArray
+      schemas(index) = arrowSchema
+    }
+
+    (arrays, schemas)
+  }
+
+  /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
    * native execution.
    *
@@ -107,20 +129,53 @@ class NativeUtil {
   }
 
   /**
+   * Gets the next batch from native execution.
+   *
+   * @param numOutputCols
+   *   The number of output columns
+   * @param func
+   *   The function to call to get the next batch
+   * @return
+   *   The number of row of the next batch, or None if there are no more batches
+   */
+  def getNextBatch(
+      numOutputCols: Int,
+      func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
+    val (arrays, schemas) = allocateArrowStructs(numOutputCols)
+
+    val arrayAddrs = arrays.map(_.memoryAddress())
+    val schemaAddrs = schemas.map(_.memoryAddress())
+
+    val result = func(arrayAddrs, schemaAddrs)
+
+    result match {
+      case -1 =>
+        // EOF
+        None
+      case numRows =>
+        val cometVectors = importVector(arrays, schemas)
+        Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
+      case flag =>
+        throw new IllegalStateException(s"Invalid native flag: $flag")
+    }
+  }
+
+  /**
    * Imports a list of Arrow addresses from native execution, and return a list of Comet vectors.
    *
-   * @param arrayAddress
-   *   a list containing paris of Arrow addresses from the native, in the format of (address of
-   *   Arrow array, address of Arrow schema)
+   * @param arrays
+   *   a list of Arrow array
+   * @param schemas
+   *   a list of Arrow schema
    * @return
    *   a list of Comet vectors
    */
-  def importVector(arrayAddress: Array[Long]): Seq[CometVector] = {
+  def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
 
-    for (i <- arrayAddress.indices by 2) {
-      val arrowSchema = ArrowSchema.wrap(arrayAddress(i + 1))
-      val arrowArray = ArrowArray.wrap(arrayAddress(i))
+    (0 until arrays.length).foreach { i =>
+      val arrowSchema = schemas(i)
+      val arrowArray = arrays(i)
       val nullCount = getNullCount(arrowArray)
       val dictValNullCount = getDictValNullCount(arrowArray)
 
@@ -132,9 +187,6 @@ class NativeUtil {
         dictionaryProvider,
         nullCount,
         dictValNullCount)
-
-      arrowArray.close()
-      arrowSchema.close()
     }
     arrayVectors.toSeq
   }

@@ -55,6 +55,9 @@ pub trait SparkArrowConvert {
     /// Convert Arrow Arrays to C data interface.
     /// It returns a tuple (ArrowArray address, ArrowSchema address).
     fn to_spark(&self) -> Result<(i64, i64), ExecutionError>;
+
+    /// Move Arrow Arrays to C data interface.
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
 
 impl SparkArrowConvert for ArrayData {
@@ -95,6 +98,31 @@ impl SparkArrowConvert for ArrayData {
         let (array, schema) = (Arc::into_raw(arrow_array), Arc::into_raw(arrow_schema));
 
         Ok((array as i64, schema as i64))
+    }
+
+    /// Move this ArrowData to pointers of Arrow C data interface.
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
+        let array_ptr = array as *mut FFI_ArrowArray;
+        let schema_ptr = schema as *mut FFI_ArrowSchema;
+
+        let array_align = std::mem::align_of::<FFI_ArrowArray>();
+        let schema_align = std::mem::align_of::<FFI_ArrowSchema>();
+
+        // Check if the pointer alignment is correct.
+        if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
+            unsafe {
+                std::ptr::write_unaligned(array_ptr, FFI_ArrowArray::new(self));
+                std::ptr::write_unaligned(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
+            }
+        } else {
+            // SAFETY: `array_ptr` and `schema_ptr` are aligned correctly.
+            unsafe {
+                std::ptr::write(array_ptr, FFI_ArrowArray::new(self));
+                std::ptr::write(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
+            }
+        }
+
+        Ok(())
     }
 }
 

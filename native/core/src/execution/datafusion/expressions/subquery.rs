@@ -15,9 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::{
+    execution::utils::bytes_to_i128,
+    jvm_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper},
+};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{internal_err, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use jni::{
@@ -29,11 +34,6 @@ use std::{
     fmt::{Display, Formatter},
     hash::{Hash, Hasher},
     sync::Arc,
-};
-
-use crate::{
-    execution::{datafusion::expressions::utils::down_cast_any_ref, utils::bytes_to_i128},
-    jvm_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper},
 };
 
 #[derive(Debug, Hash)]

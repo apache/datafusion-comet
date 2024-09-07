@@ -412,43 +412,28 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     let string_array = as_generic_string_array::<T>(array)?;
     let length = 0.max(length) as usize;
     let space_string = " ".repeat(length);
-    println!("AAA");
 
     let mut builder =
         GenericStringBuilder::<T>::with_capacity(string_array.len(), string_array.len() * length);
-    println!("BBB");
 
     for string in string_array.iter() {
-        println!("KKK");
         match string {
             Some(string) => {
                 // It looks Spark's UTF8String is closer to chars rather than graphemes
                 // https://stackoverflow.com/a/46290728
-                println!("CCC");
                 let char_len = string.chars().count();
-                println!("DDD");
                 if length <= char_len {
-                    println!("LLL");
                     builder.append_value(string);
-                    println!("EEE");
                 } else {
                     // write_str updates only the value buffer, not null nor offset buffer
                     // This is convenient for concatenating str(s)
-                    println!("NNN");
                     builder.write_str(string)?;
-                    println!("FFF");
                     builder.append_value(&space_string[char_len..]);
-                    println!("GGG");
                 }
             }
-            _ => {
-                println!("HHH");
-                builder.append_null();
-                println!("III");
-            }
+            _ => builder.append_null(),
         }
     }
-    println!("JJJ");
     Ok(ColumnarValue::Array(Arc::new(builder.finish())))
 }
 
