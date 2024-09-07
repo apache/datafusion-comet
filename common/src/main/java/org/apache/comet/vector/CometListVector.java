@@ -34,10 +34,10 @@ public class CometListVector extends CometDecodedVector {
   final DictionaryProvider dictionaryProvider;
 
   public CometListVector(
-    ValueVector vector,
-    boolean useDecimal128,
-    DictionaryProvider dictionaryProvider,
-    int nullCount) {
+      ValueVector vector,
+      boolean useDecimal128,
+      DictionaryProvider dictionaryProvider,
+      int nullCount) {
     super(vector, vector.getField(), useDecimal128, false, nullCount, 0);
 
     this.listVector = ((ListVector) vector);

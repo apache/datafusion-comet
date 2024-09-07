@@ -96,7 +96,6 @@ class NativeUtil {
       batch: ColumnarBatch): Int = {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
-        case a: CometNativeVector => _
         case a: CometVector =>
           val valueVector = a.getValueVector
 
