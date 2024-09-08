@@ -96,8 +96,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, ListExtract,
-    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
+    ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -678,6 +678,15 @@ impl PhysicalPlanner {
                     default_value,
                     expr.one_based,
                     expr.fail_on_error,
+                )))
+            }
+            ExprStruct::GetArrayStructFields(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+                Ok(Arc::new(GetArrayStructFields::new(
+                    child,
+                    expr.ordinal as usize,
                 )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
