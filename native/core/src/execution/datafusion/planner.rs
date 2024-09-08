@@ -1855,7 +1855,7 @@ impl PhysicalPlanner {
             .into_iter()
             .zip(input_expr_types.into_iter().zip(coerced_input_types))
             .map(|(expr, (from_type, to_type))| {
-                if !from_type.equals_datatype(&to_type) {
+                if from_type != to_type {
                     Arc::new(CastExpr::new(
                         expr,
                         to_type,
