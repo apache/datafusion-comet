@@ -2089,7 +2089,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
         checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
-        checkSparkAnswerAndOperator(df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
+        checkSparkAnswerAndOperator(
+          df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
       }
     }
   }
