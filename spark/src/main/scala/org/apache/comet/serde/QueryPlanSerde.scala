@@ -1710,12 +1710,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           if (dataType.isDefined) {
             if (binding) {
-              val boundRef = BindReferences
-                .bindReference(attr, inputs, allowFailures = false)
-                .asInstanceOf[BoundReference]
+              // Spark may produce unresolvable attributes in some cases,
+              // for example https://github.com/apache/datafusion-comet/issues/925.
+              // So, we allow the binding to fail.
+              val boundRef: Any = BindReferences
+                .bindReference(attr, inputs, allowFailures = true)
+
+              if (boundRef.isInstanceOf[AttributeReference]) {
+                withInfo(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
+                return None
+              }
+
               val boundExpr = ExprOuterClass.BoundReference
                 .newBuilder()
-                .setIndex(boundRef.ordinal)
+                .setIndex(boundRef.asInstanceOf[BoundReference].ordinal)
                 .setDatatype(dataType.get)
                 .build()
 
