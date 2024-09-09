@@ -523,7 +523,7 @@ class CometExecSuite extends CometTestBase {
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
         withParquetTable(path.toString, "tbl") {
-          val df = sql("SELECT * FROM tbl")
+          val df = sql("SELECT * FROM tbl WHERE _2 > _3")
           df.collect()
 
           val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
@@ -532,9 +532,8 @@ class CometExecSuite extends CometTestBase {
 
           assert(metrics.contains("scanTime"))
           assert(metrics.contains("cast_time"))
-
-          // TODO this assertion fails
-//            assert(metrics("cast_time").value > 0)
+          assert(metrics("scanTime").value > 0)
+          assert(metrics("cast_time").value > 0)
         }
       }
     }
