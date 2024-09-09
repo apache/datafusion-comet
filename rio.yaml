@@ -726,6 +726,12 @@ builds:
       targetPlatforms:
         - linux/amd64
         - linux/arm64
+      env: 
+        <<: *proxy_env
+      resources:
+        size: xlarge
+      executor:
+        type: moes
     build: &stage-build
       template: freestyle:v4:publish
       steps:
@@ -736,6 +742,23 @@ builds:
           perApplication: false
           publish:
             - repo: docker.apple.com/pie/comet-builder-ubi8
+
+  - branchName: main-apple
+    group: builder-ubi8-jdk11
+    trigger:
+      # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
+      timer: '@weekly'
+      gitPush: false
+    machine:
+      <<: *base-image-machine
+    build:
+      <<: *stage-build
+    package:
+      dockerfile:
+        - dockerfilePath: dev/Dockerfile-ubi8
+          perApplication: false
+          publish:
+            - repo: docker.apple.com/pie/comet-builder-ubi8-jdk11
 
   - group: build
     branchName: main-apple

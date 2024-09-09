@@ -1,0 +1,53 @@
+FROM docker.apple.com/base-images/ubi8/java11-builder
+
+USER root
+
+# Install Rust toolchain
+RUN dnf -y update \
+    && dnf -y install --allowerasing curl \
+    && dnf -y install \
+    make \
+    maven \
+    curl \
+    xz \
+    patch \
+    openssl-devel \
+    autoconf \
+    libtool \
+    automake \
+    wget \
+    python39-devel \
+    git \
+    neon-devel \
+    libxml2-devel \
+    llvm-toolset \
+    cmake \
+    glibc-locale-source glibc-langpack-en \
+    && dnf clean all
+
+# Install rustup
+RUN cd /tmp && curl https://sh.rustup.rs -sSf | bash -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install cargo2junit
+RUN rustup install nightly && cargo +nightly install cargo2junit
+
+# Use Rust toolchain, and seed Rust
+COPY rust-toolchain.toml  /rust-toolchain.toml
+RUN cargo search
+
+# Build OSXCross
+# To packaging MacOSX sdk on a local Mac with Xcode installed:
+#   1. checkout OSXCross repo, i.e. git clone https://github.com/tpoechtrager/osxcross.git
+#   2. run the script to packing sdk tarballs: cd osxcross; ./tools/gen_sdk_package.sh
+RUN cd / && git clone --depth 1 https://github.com/tpoechtrager/osxcross.git \
+    && cd /osxcross/tarballs \
+    && wget https://artifacts.apple.com/artifactory/amp-binaries-local/org/apache/spark/MacOSX12.3.sdk.tar.xz \
+    && cd /osxcross \
+    && UNATTENDED=1 ./build.sh
+ENV PATH="/osxcross/target/bin:${PATH}"
+
+# Use osxcross toolchain for cargo
+COPY dev/cargo.config /root/.cargo/config
+
+ENTRYPOINT ["/bin/bash"]
