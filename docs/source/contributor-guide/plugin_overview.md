@@ -82,7 +82,7 @@ Comet only supports a subset of data types and will fall back to Spark's `FileSo
 exist. `CometSparkToColumnarExec` will then convert Spark rows to Arrow arrays.
 
 Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-this feature.
+the conversion of `FileSourceScanExec` output into Arrow format.
 
 ### Comet support for v2 Data Source
 
@@ -94,7 +94,7 @@ Comet only supports a subset of data types and will fall back to Spark's `BatchS
 exist. `CometSparkToColumnarExec` will then convert Spark columnar batches to Arrow arrays. 
 
 Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-this feature.
+the conversion of `BatchScanExec` output into Arrow format.
 
 ### Parquet v1 Data Source Deep Dive
 
