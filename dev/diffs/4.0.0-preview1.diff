@@ -440,7 +440,7 @@ index 16a493b5290..3f0b70e2d59 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..de265cfaeae 100644
+index 2c24cc7d570..65163e35666 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -511,7 +511,17 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """
-@@ -1238,7 +1247,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1224,8 @@ abstract class DynamicPartitionPruningSuiteBase
+   }
+ 
+   test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
+-    "canonicalization and exchange reuse") {
++    "canonicalization and exchange reuse",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+         val df = sql(
+@@ -1238,7 +1248,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -521,7 +531,7 @@ index 2c24cc7d570..de265cfaeae 100644
      Given("dynamic pruning filter on the build side")
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
-@@ -1279,7 +1289,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1279,7 +1290,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -531,7 +541,7 @@ index 2c24cc7d570..de265cfaeae 100644
      Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
        Seq(true, false).foreach { pruning =>
          withSQLConf(
-@@ -1311,7 +1322,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1311,7 +1323,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -541,7 +551,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1424,7 +1436,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1424,7 +1437,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -551,7 +561,17 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1471,7 +1484,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1455,7 +1469,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-35568: Fix UnsupportedOperationException when enabling both AQE and DPP") {
++  test("SPARK-35568: Fix UnsupportedOperationException when enabling both AQE and DPP",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     val df = sql(
+       """
+         |SELECT s.store_id, f.product_id
+@@ -1471,7 +1486,8 @@ abstract class DynamicPartitionPruningSuiteBase
      checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
    }
  
@@ -561,7 +581,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1486,7 +1500,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1486,7 +1502,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
@@ -570,7 +590,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        Seq(
          "f.store_id = 1" -> false,
-@@ -1558,7 +1572,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1558,7 +1574,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -580,7 +600,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withTable("duplicate_keys") {
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
          Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
-@@ -1589,7 +1604,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1589,7 +1606,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -590,7 +610,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1618,7 +1634,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1618,7 +1636,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -600,7 +620,7 @@ index 2c24cc7d570..de265cfaeae 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1730,6 +1747,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1749,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -727,6 +747,30 @@ index 00000000000..4b31bea33de
 +    }
 +  }
 +}
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
+index 027477a8291..f2568916e88 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
+@@ -442,7 +442,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
+   }
+ 
+   test("Runtime bloom filter join: do not add bloom filter if dpp filter exists " +
+-    "on the same column") {
++    "on the same column",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
+       assertDidNotRewriteWithBloomFilter("select * from bf5part join bf2 on " +
+@@ -451,7 +452,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
+   }
+ 
+   test("Runtime bloom filter join: add bloom filter if dpp filter exists on " +
+-    "a different column") {
++    "a different column",
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
+     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
+       assertRewroteWithBloomFilter("select * from bf5part join bf2 on " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 53e47f428c3..a55d8f0c161 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
