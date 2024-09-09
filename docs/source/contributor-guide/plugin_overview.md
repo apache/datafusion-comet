@@ -72,11 +72,31 @@ The following section on Parquet support provides a diagram showing the complete
 
 ## Parquet Support
 
-### Native Parquet Scan with v1 Data Source
+### Comet support for v1 Data Source
 
-When reading from Parquet v1 data sources, Comet provides JVM code for performing the reads from disk and 
-implementing predicate pushdown to skip row groups and then delegates to native code for decoding Parquet pages and 
-row groups into Arrow arrays.
+When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, which provides 
+a vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2 Parquet data source 
+but leverages native code for decoding Parquet row groups directly into Arrow format.
+
+Comet only supports a subset of data types and will fall back to Spark's `FileSourceScanExec` if unsupported types 
+exist. `CometSparkToColumnarExec` will then convert Spark rows to Arrow arrays.
+
+Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
+this feature.
+
+### Comet support for v2 Data Source
+
+When reading from Parquet v2 data sources, Comet replaces `BatchScanExec` with `CometBatchScanExec`, which wraps 
+Spark's vectorized Parquet reader. Spark batches are later converted to Arrow batches before being passed to native 
+execution.
+
+Comet only supports a subset of data types and will fall back to Spark's `BatchScanExec` if unsupported types
+exist. `CometSparkToColumnarExec` will then convert Spark columnar batches to Arrow arrays. 
+
+Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
+this feature.
+
+### Parquet v1 Data Source Deep Dive
 
 ![Diagram of Comet Native Parquet Scan](../../_static/images/CometNativeParquetScan.drawio.png)
 
@@ -100,19 +120,3 @@ Arrow Arrays are passed to the call to `executePlan` and are then consumed by th
 
 An execution plan can contain multiple `ScanExec` nodes and the call to `createPlan` passes an array of 
 `ColumnBatchIterator`.
-
-### Parquet Scan with v2 Data Source
-
-`CometScanRule` replaces `BatchScanExec` with `CometBatchScanExec`.
-
-Comet does not provide native acceleration for decoding Parquet files when using v2 data source and instead uses 
-Spark's vectorized reader. 
-
-### Parquet Scan using Spark's vectorized reader
-
-When Comet's native scan is disabled (by setting `spark.comet.scan.enabled=false`), Comet will use 
-Spark's `FileSourceScanExec` or `BatchScanExec` and wrap these operators in `CometSparkToColumnarExec` which will
-convert instances of Spark's `ColumnarBatch` into Arrow Arrays. 
-
-Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable 
-this feature.
