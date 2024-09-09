@@ -54,11 +54,15 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numInputRows" -> SQLMetrics.createMetric(sparkContext, "number of input rows"),
-    "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
+    "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"),
+    "conversionTime" -> SQLMetrics.createNanoTimingMetric(
+      sparkContext,
+      "ns converting Spark to Arrow"))
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
+    val conversionTime = longMetric("conversionTime")
     val maxRecordsPerBatch = conf.arrowMaxRecordsPerBatch
     val timeZoneId = conf.sessionLocalTimeZone
     val schema = child.schema
@@ -67,14 +71,28 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       child
         .executeColumnar()
         .mapPartitionsInternal { iter =>
-          iter.flatMap { columnBatch =>
-            val context = TaskContext.get()
-            CometArrowConverters.columnarBatchToArrowBatchIter(
-              columnBatch,
-              schema,
-              maxRecordsPerBatch,
-              timeZoneId,
-              context)
+          val iter1 =
+            iter.flatMap { columnBatch =>
+              val context = TaskContext.get()
+              CometArrowConverters.columnarBatchToArrowBatchIter(
+                columnBatch,
+                schema,
+                maxRecordsPerBatch,
+                timeZoneId,
+                context)
+            }
+          new Iterator[ColumnarBatch] {
+
+            override def hasNext: Boolean = {
+              iter1.hasNext
+            }
+
+            override def next(): ColumnarBatch = {
+              val startNs = System.nanoTime()
+              val batch = iter1.next()
+              conversionTime += System.nanoTime() - startNs
+              batch
+            }
           }
         }
         .map { batch =>
@@ -87,12 +105,27 @@ case class CometSparkToColumnarExec(child: SparkPlan)
         .execute()
         .mapPartitionsInternal { iter =>
           val context = TaskContext.get()
-          CometArrowConverters.rowToArrowBatchIter(
-            iter,
-            schema,
-            maxRecordsPerBatch,
-            timeZoneId,
-            context)
+          val iter1 =
+            CometArrowConverters.rowToArrowBatchIter(
+              iter,
+              schema,
+              maxRecordsPerBatch,
+              timeZoneId,
+              context)
+
+          new Iterator[ColumnarBatch] {
+
+            override def hasNext: Boolean = {
+              iter1.hasNext
+            }
+
+            override def next(): ColumnarBatch = {
+              val startNs = System.nanoTime()
+              val batch = iter1.next()
+              conversionTime += System.nanoTime() - startNs
+              batch
+            }
+          }
         }
         .map { batch =>
           numInputRows += batch.numRows()
