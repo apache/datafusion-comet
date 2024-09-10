@@ -31,8 +31,12 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
   private val reader = StreamReader(channel, source)
   private var batch = nextBatch()
   private var currentBatch: ColumnarBatch = null
+  private var isClosed: Boolean = false
 
   override def hasNext: Boolean = {
+    if (isClosed) {
+      return false
+    }
     if (batch.isDefined) {
       return true
     }
@@ -42,10 +46,12 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
     // memory leak.
     if (currentBatch != null) {
       currentBatch.close()
+      currentBatch = null
     }
 
     batch = nextBatch()
     if (batch.isEmpty) {
+      close()
       return false
     }
     true
@@ -69,10 +75,13 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
 
   def close(): Unit =
     synchronized {
-      if (currentBatch != null) {
-        currentBatch.close()
-        currentBatch = null
+      if (!isClosed) {
+        if (currentBatch != null) {
+          currentBatch.close()
+          currentBatch = null
+        }
+        reader.close()
+        isClosed = true
       }
-      reader.close()
     }
 }
