@@ -1650,7 +1650,7 @@ class CometExecSuite extends CometTestBase {
           spark.catalog.cacheTable("abc")
           val df = spark.sql("SELECT * FROM abc").groupBy("key").count()
           checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
-          df.collect()
+          df.collect() // Without this collect we don't get an aggregation of the metrics.
 
           val metrics = find(df.queryExecution.executedPlan) {
             case _: CometSparkToColumnarExec => true

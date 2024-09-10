@@ -91,14 +91,11 @@ case class CometSparkToColumnarExec(child: SparkPlan)
               val startNs = System.nanoTime()
               val batch = arrowBatches.next()
               conversionTime += System.nanoTime() - startNs
+              numInputRows += batch.numRows()
+              numOutputBatches += 1
               batch
             }
           }
-        }
-        .map { batch =>
-          numInputRows += batch.numRows()
-          numOutputBatches += 1
-          batch
         }
     } else {
       child
@@ -124,17 +121,13 @@ case class CometSparkToColumnarExec(child: SparkPlan)
               val startNs = System.nanoTime()
               val batch = arrowBatches.next()
               conversionTime += System.nanoTime() - startNs
+              numInputRows += batch.numRows()
+              numOutputBatches += 1
               batch
             }
           }
         }
-        .map { batch =>
-          numInputRows += batch.numRows()
-          numOutputBatches += 1
-          batch
-        }
     }
-
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometSparkToColumnarExec =
