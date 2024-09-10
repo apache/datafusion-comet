@@ -620,6 +620,7 @@ builds:
     disabled: true
     machine:
       <<: *rio3-machine
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.2"
@@ -659,6 +660,7 @@ builds:
     disabled: true
     machine:
       <<: *rio3-machine
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -672,6 +674,7 @@ builds:
     disabled: true
     machine:
       <<: *rio3-machine
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -684,6 +687,7 @@ builds:
     version: 3.4_2.12
     machine:
       <<: *rio3-machine
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4"
@@ -702,6 +706,7 @@ builds:
     disabled: false
     machine:
       <<: *rio3-machine
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
