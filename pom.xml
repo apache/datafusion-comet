@@ -664,6 +664,13 @@ under the License.
                 <args>
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
                 </args>
+                <javacArgs>
+                  <javacArg>-source</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-target</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
