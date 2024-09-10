@@ -59,6 +59,29 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       sparkContext,
       "time converting Spark batches to Arrow batches"))
 
+  // The conversion from Spark to Arrow batches happens in next(), so wrap the call to measure time spent.
+  private def createTimingIter(
+      iter: Iterator[ColumnarBatch],
+      numInputRows: SQLMetric,
+      numOutputBatches: SQLMetric,
+      conversionTime: SQLMetric): Iterator[ColumnarBatch] = {
+    new Iterator[ColumnarBatch] {
+
+      override def hasNext: Boolean = {
+        iter.hasNext
+      }
+
+      override def next(): ColumnarBatch = {
+        val startNs = System.nanoTime()
+        val batch = iter.next()
+        conversionTime += System.nanoTime() - startNs
+        numInputRows += batch.numRows()
+        numOutputBatches += 1
+        batch
+      }
+    }
+  }
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
@@ -81,21 +104,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
                 timeZoneId,
                 context)
             }
-          new Iterator[ColumnarBatch] {
-            // The conversion happens in next(), so redefine the call to measure time spent.
-            override def hasNext: Boolean = {
-              arrowBatches.hasNext
-            }
-
-            override def next(): ColumnarBatch = {
-              val startNs = System.nanoTime()
-              val batch = arrowBatches.next()
-              conversionTime += System.nanoTime() - startNs
-              numInputRows += batch.numRows()
-              numOutputBatches += 1
-              batch
-            }
-          }
+          createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
         }
     } else {
       child
@@ -109,23 +118,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
               maxRecordsPerBatch,
               timeZoneId,
               context)
-
-          new Iterator[ColumnarBatch] {
-
-            override def hasNext: Boolean = {
-              arrowBatches.hasNext
-            }
-
-            override def next(): ColumnarBatch = {
-              // The conversion happens in next(), so redefine the call to measure time spent.
-              val startNs = System.nanoTime()
-              val batch = arrowBatches.next()
-              conversionTime += System.nanoTime() - startNs
-              numInputRows += batch.numRows()
-              numOutputBatches += 1
-              batch
-            }
-          }
+          createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
         }
     }
   }
