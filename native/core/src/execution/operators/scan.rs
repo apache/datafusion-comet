@@ -347,7 +347,7 @@ struct ScanStream<'a> {
     baseline_metrics: BaselineMetrics,
     /// Cast options
     cast_options: CastOptions<'a>,
-    /// Timer for cast operations
+    /// elapsed time for casting columns to different data types during scan
     cast_time: Time,
 }
 
