@@ -57,7 +57,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"),
     "conversionTime" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "ns converting Spark to Arrow"))
+      "time converting Spark batches to Arrow batches"))
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numInputRows")
@@ -70,26 +70,26 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     if (child.supportsColumnar) {
       child
         .executeColumnar()
-        .mapPartitionsInternal { iter =>
-          val iter1 =
-            iter.flatMap { columnBatch =>
+        .mapPartitionsInternal { sparkBatches =>
+          val arrowBatches =
+            sparkBatches.flatMap { sparkBatch =>
               val context = TaskContext.get()
               CometArrowConverters.columnarBatchToArrowBatchIter(
-                columnBatch,
+                sparkBatch,
                 schema,
                 maxRecordsPerBatch,
                 timeZoneId,
                 context)
             }
           new Iterator[ColumnarBatch] {
-
+            // The conversion happens in next(), so redefine the call to measure time spent.
             override def hasNext: Boolean = {
-              iter1.hasNext
+              arrowBatches.hasNext
             }
 
             override def next(): ColumnarBatch = {
               val startNs = System.nanoTime()
-              val batch = iter1.next()
+              val batch = arrowBatches.next()
               conversionTime += System.nanoTime() - startNs
               batch
             }
@@ -103,11 +103,11 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     } else {
       child
         .execute()
-        .mapPartitionsInternal { iter =>
+        .mapPartitionsInternal { sparkBatches =>
           val context = TaskContext.get()
-          val iter1 =
+          val arrowBatches =
             CometArrowConverters.rowToArrowBatchIter(
-              iter,
+              sparkBatches,
               schema,
               maxRecordsPerBatch,
               timeZoneId,
@@ -116,12 +116,13 @@ case class CometSparkToColumnarExec(child: SparkPlan)
           new Iterator[ColumnarBatch] {
 
             override def hasNext: Boolean = {
-              iter1.hasNext
+              arrowBatches.hasNext
             }
 
             override def next(): ColumnarBatch = {
+              // The conversion happens in next(), so redefine the call to measure time spent.
               val startNs = System.nanoTime()
-              val batch = iter1.next()
+              val batch = arrowBatches.next()
               conversionTime += System.nanoTime() - startNs
               batch
             }
