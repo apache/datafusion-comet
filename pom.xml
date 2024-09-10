@@ -737,6 +737,13 @@ under the License.
                 <args>
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
                 </args>
+                <javacArgs>
+                  <javacArg>-source</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-target</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>
@@ -883,6 +890,17 @@ under the License.
               </goals>
             </execution>
           </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.10.1</version>
+          <configuration>
+            <source>${java.version}</source>
+            <target>${java.version}</target>
+            <skipMain>true</skipMain>
+            <skip>true</skip>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
