@@ -96,6 +96,11 @@ class NativeUtil {
       batch: ColumnarBatch): Int = {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
+        case a: CometNativeVector =>
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          arrowArray.save(ArrowArray.wrap(a.getArrayAddress).snapshot())
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          arrowSchema.save(ArrowSchema.wrap(a.getSchemaAddress).snapshot())
         case a: CometVector =>
           val valueVector = a.getValueVector
 
