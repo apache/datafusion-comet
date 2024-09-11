@@ -147,7 +147,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
-      .doc("Experimental support for SMJ with join condition")
+      .doc("Experimental support for Sort Merge Join with filter")
       .booleanConf
       .createWithDefault(false)
 
