@@ -298,9 +298,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to string") {
-    // TODO: make the test pass for Spark 3.3
-    assume(isSpark34Plus)
-
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
@@ -323,9 +320,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast timestamp and timestamp_ntz to long, date") {
-    // TODO: make the test pass for Spark 3.3
-    assume(isSpark34Plus)
-
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
