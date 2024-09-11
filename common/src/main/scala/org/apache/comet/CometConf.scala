@@ -145,6 +145,12 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
 
+  val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
+      .doc("Experimental support for SMJ with join condition")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
       "stddev",
