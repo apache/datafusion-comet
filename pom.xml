@@ -40,8 +40,7 @@ under the License.
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <java.version>11</java.version>
-    <maven.compiler.source>${java.version}</maven.compiler.source>
-    <maven.compiler.target>${java.version}</maven.compiler.target>
+    <maven.compiler.release>11</maven.compiler.release>
     <scala.version>2.12.17</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <scala.plugin.version>4.7.2</scala.plugin.version>
@@ -660,8 +659,6 @@ under the License.
         <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -681,8 +678,6 @@ under the License.
       </activation>
       <properties>
         <java.version>1.8</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
         <spotless.version>2.29.0</spotless.version>
       </properties>
     </profile>
@@ -694,8 +689,6 @@ under the License.
       </activation>
       <properties>
         <java.version>11</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -706,8 +699,6 @@ under the License.
       </activation>
       <properties>
         <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -738,10 +729,6 @@ under the License.
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
                 </args>
                 <javacArgs>
-                  <javacArg>-source</javacArg>
-                  <javacArg>${java.version}</javacArg>
-                  <javacArg>-target</javacArg>
-                  <javacArg>${java.version}</javacArg>
                   <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
                 </javacArgs>
                 <compilerPlugins>
@@ -811,10 +798,6 @@ under the License.
               <jvmArg>-Xmx1024m</jvmArg>
             </jvmArgs>
             <javacArgs>
-              <javacArg>-source</javacArg>
-              <javacArg>${maven.compiler.source}</javacArg>
-              <javacArg>-target</javacArg>
-              <javacArg>${maven.compiler.target}</javacArg>
               <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
             </javacArgs>
           </configuration>
@@ -896,8 +879,6 @@ under the License.
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.10.1</version>
           <configuration>
-            <source>${java.version}</source>
-            <target>${java.version}</target>
             <skipMain>true</skipMain>
             <skip>true</skip>
           </configuration>
