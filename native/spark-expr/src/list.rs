@@ -290,7 +290,7 @@ impl GetArrayStructFields {
         match self.child.data_type(input_schema)? {
             DataType::List(field) | DataType::LargeList(field) => Ok(field),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in ListExtract: {:?}",
+                "Unexpected data type in GetArrayStructFields: {:?}",
                 data_type
             ))),
         }
@@ -300,7 +300,7 @@ impl GetArrayStructFields {
         match self.list_field(input_schema)?.data_type() {
             DataType::Struct(fields) => Ok(Arc::clone(&fields[self.ordinal])),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in ListExtract: {:?}",
+                "Unexpected data type in GetArrayStructFields: {:?}",
                 data_type
             ))),
         }
@@ -313,7 +313,15 @@ impl PhysicalExpr for GetArrayStructFields {
     }
 
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
-        Ok(self.child_field(input_schema)?.data_type().clone())
+        let struct_field = self.child_field(input_schema)?;
+        match self.child.data_type(input_schema)? {
+            DataType::List(_) => Ok(DataType::List(struct_field)),
+            DataType::LargeList(_) => Ok(DataType::LargeList(struct_field)),
+            data_type => Err(DataFusionError::Internal(format!(
+                "Unexpected data type in GetArrayStructFields: {:?}",
+                data_type
+            ))),
+        }
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
@@ -367,6 +375,25 @@ impl PhysicalExpr for GetArrayStructFields {
     }
 }
 
+fn get_array_struct_fields<O: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    ordinal: usize,
+) -> DataFusionResult<ColumnarValue> {
+    let values = list_array
+        .values()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .expect("A struct is expected");
+
+    let column = Arc::clone(values.column(ordinal));
+    let field = Arc::clone(&values.fields()[ordinal]);
+
+    let offsets = list_array.offsets();
+    let array = GenericListArray::new(field, offsets.clone(), column, list_array.nulls().cloned());
+
+    Ok(ColumnarValue::Array(Arc::new(array)))
+}
+
 impl Display for GetArrayStructFields {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -384,25 +411,6 @@ impl PartialEq<dyn Any> for GetArrayStructFields {
             .map(|x| self.child.eq(&x.child) && self.ordinal.eq(&x.ordinal))
             .unwrap_or(false)
     }
-}
-
-fn get_array_struct_fields<O: OffsetSizeTrait>(
-    list_array: &GenericListArray<O>,
-    ordinal: usize,
-) -> DataFusionResult<ColumnarValue> {
-    let values = list_array
-        .values()
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .expect("A struct is expected");
-
-    let column = Arc::clone(values.column(ordinal));
-    let field = Arc::clone(&values.fields()[ordinal]);
-
-    let offsets = list_array.offsets();
-    GenericListArray::new(field, offsets.clone(), column, list_array.nulls().cloned());
-
-    Ok(ColumnarValue::Array(Arc::clone(values.column(ordinal))))
 }
 
 #[cfg(test)]

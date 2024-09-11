@@ -2168,13 +2168,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("GetArrayStructFields") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName,
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          val df = spark.read.parquet(path.toString).select(array(struct(col("_2"), col("_3"), col("_4"))).alias("arr"))
-          checkSparkAnswerAndOperator(df.select("arr._2"))
-        // checkSparkAnswerAndOperator(df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
+          val df = spark.read
+            .parquet(path.toString)
+            .select(array(struct(col("_2"), col("_3"), col("_4")), lit(null)).alias("arr"))
+          checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
+
+          // val df2 =
+          //   spark.range(10).withColumn("arr", array(struct(lit(1).alias("a"), lit(2).alias("b"))))
+          // checkSparkAnswerAndOperator(df2.select("arr.a", "arr.b"))
         }
       }
     }
