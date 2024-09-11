@@ -26,7 +26,7 @@ under the License.
     <parent>
         <groupId>org.apache.comet</groupId>
         <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-        <version>0.2.0.5-apple-SNAPSHOT</version>
+        <version>0.2.0.6-apple-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
