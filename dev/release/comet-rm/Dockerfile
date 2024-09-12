@@ -49,7 +49,6 @@ RUN export LC_ALL=C \
         libbz2-dev \
         zlib1g-dev
 
-#        libbz2 \
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -63,6 +62,17 @@ FROM base AS with-macos-sdk-true
 ARG MACOS_SDK
 
 COPY workdir/$MACOS_SDK /opt/xcode/
+
+RUN export LC_ALL=C \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y pip \
+    && pip install cargo-zigbuild
+
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    rustup target add aarch64-apple-darwin; \
+elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
+    rustup target add x86_64-apple-darwin; \
+fi
 
 # Build OSXCross
 RUN cd /opt && git clone --depth 1 https://github.com/tpoechtrager/osxcross.git \

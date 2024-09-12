@@ -19,6 +19,7 @@
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+COMET_HOME_DIR=$SCRIPT_DIR/../..
 
 function usage {
   local NAME=$(basename $0)
@@ -120,6 +121,12 @@ docker run \
    --platform linux/amd64 \
    $BUILDER_IMAGE "${REPO}" "${BRANCH}" amd64
 
+if [ $? != 0 ]
+then
+  echo "Building amd64 binary failed."
+  exit 1
+fi
+
 # ARM64
 echo "Building arm64 binary"
 docker run \
@@ -130,10 +137,16 @@ docker run \
    --platform linux/arm64 \
    $BUILDER_IMAGE "${REPO}" "${BRANCH}" arm64
 
+if [ $? != 0 ]
+then
+  echo "Building arm64 binary failed."
+  exit 1
+fi
+
 echo "Building binaries completed"
 echo "Copying to java build directories"
 
-JVM_TARGET_DIR=$SCRIPT_DIR/../../common/target/classes/org/apache/comet
+JVM_TARGET_DIR=$COMET_HOME_DIR/common/target/classes/org/apache/comet
 mkdir -p $JVM_TARGET_DIR
 
 mkdir -p $JVM_TARGET_DIR/linux/amd64
@@ -163,6 +176,14 @@ then
 fi
 
 # Build final jar
-echo "Building uber jar"
-cd $SCRIPT_DIR/../..
-./mvnw package -DskipTests
+echo "Building uber jar and publishing it locally"
+pushd $COMET_HOME_DIR
+
+GIT_HASH=$(git rev-parse --short HEAD)
+LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
+
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}"  -DskipTests install
+
+echo "Installed to local repo: ${LOCAL_REPO}"
+
+popd

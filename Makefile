@@ -51,7 +51,7 @@ core-amd64-libs:
 	rustup target add x86_64-apple-darwin
 	# if the environment variable HAS_OSXCROSS is defined
 ifdef $(HAS_OSXCROSS)
-	cd native && RUSTFLAGS="-Ctarget-cpu=skylake" CC=o64-clang CXX=o64-clang++ cargo build -j 2 --target x86_64-apple-darwin --release
+	cd native && cargo zigbuild -j 2 --target x86_64-apple-darwin --release
 endif
 	cd native && cargo build -j 2 --release
 
@@ -60,7 +60,7 @@ core-arm64-libs:
 	rustup target add aarch64-apple-darwin
 	# if the environment variable HAS_OSXCROSS is defined
 ifdef $(HAS_OSXCROSS)
-	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build -j 2 --target aarch64-apple-darwin --release
+	cd native && cargo zigbuild -j 2 --target aarch64-apple-darwin --release
 endif
 	cd native && cargo build -j 2 --release
 
