@@ -18,6 +18,8 @@
 # under the License.
 #
 
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 COMET_HOME_DIR=$SCRIPT_DIR/../..
 
@@ -31,9 +33,8 @@ This script builds comet native binaries inside a docker image. The image is nam
 
 Options are:
 
-  -r [repo]   : git repo
-  -b [branch] : git branch
-  -x          : XCode sdk file name
+  -r [repo]   : git repo (default: ${REPO})
+  -b [branch] : git branch (default: ${BRANCH})
   -t [tag]    : tag for the spark-rm docker image to use for building (default: "latest").
 EOF
 exit 1
@@ -44,9 +45,22 @@ function cleanup()
   if [ $CLEANUP != 0 ]
   then
     echo Cleaning up ...
-    docker rm comet-arm64-builder-container
-    docker rm comet-amd64-builder-container
-    docker buildx rm --keep-state comet-builder
+
+
+    if [ "$(docker ps -a | grep comet-arm64-builder-container)" != "" ]
+    then
+      docker rm comet-arm64-builder-container
+    fi
+    if [ "$(docker ps -a | grep comet-amd64-builder-container)" != "" ]
+    then
+      docker rm comet-amd64-builder-container
+    fi
+#    if [ "$(docker ps -a | grep comet-builder-registry)" != "" ]
+#    then
+#      docker container stop comet-builder-registry
+#      docker rm comet-builder-registry
+#    fi
+#    docker buildx rm --keep-state comet-builder
     CLEANUP=0
   fi
 #  exit
@@ -62,11 +76,10 @@ MACOS_SDK=
 HAS_MACOS_SDK="false"
 IMGTAG=latest
 
-while getopts "b:hr:t:x:" opt; do
+while getopts "b:hr:t:" opt; do
   case $opt in
     r) REPO="$OPTARG";;
     b) BRANCH="$OPTARG";;
-    x) MACOS_SDK="$OPTARG" ;;
     t) IMGTAG="$OPTARG" ;;
     h) usage ;;
     \?) error "Invalid option. Run with -h for help." ;;
@@ -92,22 +105,37 @@ then
   HAS_MACOS_SDK="true"
 fi
 
+
+# start a local docker registry for buildx
+#docker run -d -p 49157:49157 --name comet-builder-registry registry:2
+# docker login localhost:49157
+
 # Create docker builder context
-docker buildx create \
-  --name comet-builder \
-  --driver docker-container \
-  --use --bootstrap
+#docker buildx create \
+#  --name comet-builder \
+#  --driver docker-container \
+#  --use --bootstrap
+
+BUILDER_IMAGE_ARM64="comet-rm-arm64:$IMGTAG"
+BUILDER_IMAGE_AMD64="comet-rm-amd64:$IMGTAG"
 
 # Build the docker image in which we will do the build
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t "comet-rm:$IMGTAG" \
+docker build \
+  --platform=linux/arm64 \
+  -t "$BUILDER_IMAGE_ARM64" \
   --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
   --build-arg MACOS_SDK=${MACOS_SDK} \
-  --load \
   "$SCRIPT_DIR/comet-rm"
 
-BUILDER_IMAGE="comet-rm:$IMGTAG"
+docker build \
+  --platform=linux/amd64 \
+  -t "$BUILDER_IMAGE_AMD64" \
+  --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
+  --build-arg MACOS_SDK=${MACOS_SDK} \
+  "$SCRIPT_DIR/comet-rm"
+
+# Clean previous Java build
+pushd $COMET_HOME_DIR && ./mvnw clean && popd
 
 # Run the builder container for each architecture. The entrypoint script will build the binaries
 
@@ -119,7 +147,7 @@ docker run \
    --cpus 6 \
    -it \
    --platform linux/amd64 \
-   $BUILDER_IMAGE "${REPO}" "${BRANCH}" amd64
+   $BUILDER_IMAGE_AMD64 "${REPO}" "${BRANCH}" amd64
 
 if [ $? != 0 ]
 then
@@ -135,7 +163,7 @@ docker run \
    --cpus 6 \
    -it \
    --platform linux/arm64 \
-   $BUILDER_IMAGE "${REPO}" "${BRANCH}" arm64
+   $BUILDER_IMAGE_ARM64 "${REPO}" "${BRANCH}" arm64
 
 if [ $? != 0 ]
 then
