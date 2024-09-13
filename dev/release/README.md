@@ -85,11 +85,6 @@ commit into the release branch.
 
 #### Setup to do the build
   The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
-
-  In Docker Desktop -> Settings -> General -> Enable 'Use containerd for pulling and storing images'
-
-  (when the build process is done, you can disable the above setting)
-
   If you have multiple docker contexts running switch to the context of the Docker Desktop. For example - 
 
   ```shell
@@ -102,8 +97,8 @@ my_custom_context *                                         tcp://192.168.64.2:2
 $ docker context use desktop-linux
   ```
 #### Run the build script
- The build-release-comet.sh script will create a docker image with multi-arch support and use the image 
-to build the platform specific binaries. The image is created every time this script is run.
+ The `build-release-comet.sh` script will create a docker image for each architecture and use the image 
+to build the platform specific binaries. These builder images are created every time this script is run.
 The script optionally allows overriding of the repository and branch to build the binaries from (Note that 
  the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).
 
@@ -125,6 +120,10 @@ Example:
 ```shell
 cd dev/release && ./build-release-comet.sh && cd ../..
 ```
+
+#### Build output
+ The build output is installed to a temporary local maven repository. The build script will print the name of the repository
+location at the end. This location will be required at the time of deploying the artifacts to a staging repository
 
 ### Tag the Release Candidate
 

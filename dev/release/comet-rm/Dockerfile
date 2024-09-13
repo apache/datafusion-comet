@@ -25,7 +25,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV DEBCONF_NONINTERACTIVE_SEEN=true
 
 ENV LC_ALL=C
-# RUN apt-get update \
 # Install pr-requisites for rust
 RUN export LC_ALL=C \
     && apt-get update \
@@ -52,17 +51,8 @@ RUN export LC_ALL=C \
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-#RUN cd /tmp && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ENV PATH="/root/.cargo/bin:${PATH}"
-#RUN rustup install nightly && cargo +nightly install cargo2junit
 RUN cargo install cargo2junit
-
-#RUN apt-get update \
-#    && apt-get install --no-install-recommends -y pip \
-#    && pip install cargo-zigbuild
-
-#RUN rustup target add x86_64-unknown-linux-gnu \
-#	&& rustup target add aarch64-unknown-linux-gnu
 
 # Stage to add OSXCross if MacOSSDK is provided
 FROM base AS with-macos-sdk-true
