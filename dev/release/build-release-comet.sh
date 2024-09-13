@@ -45,8 +45,6 @@ function cleanup()
   if [ $CLEANUP != 0 ]
   then
     echo Cleaning up ...
-
-
     if [ "$(docker ps -a | grep comet-arm64-builder-container)" != "" ]
     then
       docker rm comet-arm64-builder-container
@@ -55,15 +53,8 @@ function cleanup()
     then
       docker rm comet-amd64-builder-container
     fi
-#    if [ "$(docker ps -a | grep comet-builder-registry)" != "" ]
-#    then
-#      docker container stop comet-builder-registry
-#      docker rm comet-builder-registry
-#    fi
-#    docker buildx rm --keep-state comet-builder
     CLEANUP=0
   fi
-#  exit
 }
 
 trap cleanup SIGINT SIGTERM EXIT
@@ -104,17 +95,6 @@ if [ -f "${WORKING_DIR}/${MACOS_SDK}" ]
 then
   HAS_MACOS_SDK="true"
 fi
-
-
-# start a local docker registry for buildx
-#docker run -d -p 49157:49157 --name comet-builder-registry registry:2
-# docker login localhost:49157
-
-# Create docker builder context
-#docker buildx create \
-#  --name comet-builder \
-#  --driver docker-container \
-#  --use --bootstrap
 
 BUILDER_IMAGE_ARM64="comet-rm-arm64:$IMGTAG"
 BUILDER_IMAGE_AMD64="comet-rm-amd64:$IMGTAG"
