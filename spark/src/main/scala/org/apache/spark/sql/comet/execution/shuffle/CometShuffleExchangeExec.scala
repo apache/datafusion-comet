@@ -69,7 +69,8 @@ case class CometShuffleExchangeExec(
     advisoryPartitionSize: Option[Long] = None)
     extends ShuffleExchangeLike
     with CometPlan
-    with ShimCometShuffleExchangeExec {
+    with ShimCometShuffleExchangeExec
+    with RowToColumnarTransition {
 
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
