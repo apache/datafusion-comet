@@ -19,6 +19,9 @@
 #
 
 # builds a comet binary
+
+set -e
+
 REPO=$1
 BRANCH=$2
 ARCH=$3
