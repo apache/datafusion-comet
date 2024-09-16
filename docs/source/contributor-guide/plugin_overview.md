@@ -91,7 +91,7 @@ addresses of these Arrow arrays to the native code.
 
 ![Diagram of Comet Native Execution](../../_static/images/CometNativeExecution.drawio.png)
 
-### Parquet v1 Data Source Deep Dive
+## End to End Flow
 
 The following diagram shows the end-to-end flow for Comet query using the v1 data source.
 
