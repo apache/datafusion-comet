@@ -89,7 +89,7 @@ The leaf nodes in the physical plan are always `ScanExec` and these operators co
 prepared before the plan is executed. When `CometExecIterator` invokes `Native.executePlan` it passes the memory 
 addresses of these Arrow arrays to the native code.
 
-![Diagram of Comet Native Execution](../../_static/images/CometArchitecture1.drawio.png)
+![Diagram of Comet Native Execution](../../_static/images/CometNativeExecution.drawio.png)
 
 ### Parquet v1 Data Source Deep Dive
 
