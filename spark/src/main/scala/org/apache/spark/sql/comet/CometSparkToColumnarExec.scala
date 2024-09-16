@@ -59,7 +59,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       sparkContext,
       "time converting Spark batches to Arrow batches"))
 
-  // The conversion from Spark to Arrow batches happens in next(), so wrap the call to measure time spent.
+  // The conversion happens in next(), so wrap the call to measure time spent.
   private def createTimingIter(
       iter: Iterator[ColumnarBatch],
       numInputRows: SQLMetric,
