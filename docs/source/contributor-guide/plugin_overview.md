@@ -33,11 +33,31 @@ and `CometExecRule`. These rules run whenever a query stage is being planned dur
 
 ## CometScanRule
 
-`CometScanRule` replaces any Parquet scans with Comet Parquet scan classes.
+`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for v1 and v2 data sources.
 
-When the V1 data source API is being used, `FileSourceScanExec` is replaced with `CometScanExec`.
+### Parquet v1 Data Sources
 
-When the V2 data source API is being used, `BatchScanExec` is replaced with `CometBatchScanExec`.
+When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, which provides
+a vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2 Parquet data source
+but leverages native code for decoding Parquet row groups directly into Arrow format.
+
+Comet only supports a subset of data types and will fall back to Spark's `FileSourceScanExec` if unsupported types
+exist. `CometSparkToColumnarExec` will then convert Spark rows to Arrow arrays.
+
+Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
+the conversion of `FileSourceScanExec` output into Arrow format.
+
+### Parquet v2 Data Sources
+
+When reading from Parquet v2 data sources, Comet replaces `BatchScanExec` with `CometBatchScanExec`, which wraps
+Spark's vectorized Parquet reader. Spark batches are later converted to Arrow batches before being passed to native
+execution.
+
+Comet only supports a subset of data types and will fall back to Spark's `BatchScanExec` if unsupported types
+exist. `CometSparkToColumnarExec` will then convert Spark columnar batches to Arrow arrays.
+
+Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
+the conversion of `BatchScanExec` output into Arrow format.
 
 ## CometExecRule
 
@@ -54,11 +74,12 @@ of this could outweigh the benefits of running parts of the query stage natively
 
 ## Query Execution
 
-Once the plan has been transformed, it is serialized into Comet protocol buffer format by the `QueryPlanSerde` class
-and this serialized plan is passed into the native code by `CometExecIterator`.
+Once the plan has been transformed, any consecutive Comet operators are combined into a `CometNativeExec` which contains
+a serialized version of the plan (the serialization code can be found in  `QueryPlanSerde`). When this operator is 
+executed, the serialized plan is passed to the native code when calling `Native.createPlan`.
 
 In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an
-Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
+Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
 `CometExecIterator` will invoke `Native.executePlan` to fetch the next batch from the native plan. This is repeated 
@@ -68,35 +89,11 @@ The leaf nodes in the physical plan are always `ScanExec` and these operators co
 prepared before the plan is executed. When `CometExecIterator` invokes `Native.executePlan` it passes the memory 
 addresses of these Arrow arrays to the native code.
 
-The following section on Parquet support provides a diagram showing the complete execution flow.
-
-## Parquet Support
-
-### Comet support for v1 Data Source
-
-When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, which provides 
-a vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2 Parquet data source 
-but leverages native code for decoding Parquet row groups directly into Arrow format.
-
-Comet only supports a subset of data types and will fall back to Spark's `FileSourceScanExec` if unsupported types 
-exist. `CometSparkToColumnarExec` will then convert Spark rows to Arrow arrays.
-
-Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-the conversion of `FileSourceScanExec` output into Arrow format.
-
-### Comet support for v2 Data Source
-
-When reading from Parquet v2 data sources, Comet replaces `BatchScanExec` with `CometBatchScanExec`, which wraps 
-Spark's vectorized Parquet reader. Spark batches are later converted to Arrow batches before being passed to native 
-execution.
-
-Comet only supports a subset of data types and will fall back to Spark's `BatchScanExec` if unsupported types
-exist. `CometSparkToColumnarExec` will then convert Spark columnar batches to Arrow arrays. 
-
-Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-the conversion of `BatchScanExec` output into Arrow format.
+![Diagram of Comet Native Execution](../../_static/images/CometArchitecture1.drawio.png)
 
 ### Parquet v1 Data Source Deep Dive
+
+The following diagram shows the end-to-end flow for Comet query using the v1 data source.
 
 ![Diagram of Comet Native Parquet Scan](../../_static/images/CometNativeParquetScan.drawio.png)
 
