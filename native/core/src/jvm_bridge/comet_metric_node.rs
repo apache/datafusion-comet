@@ -27,8 +27,8 @@ pub struct CometMetricNode<'a> {
     pub class: JClass<'a>,
     pub method_get_child_node: JMethodID,
     pub method_get_child_node_ret: ReturnType,
-    pub method_add: JMethodID,
-    pub method_add_ret: ReturnType,
+    pub method_set: JMethodID,
+    pub method_set_ret: ReturnType,
 }
 
 impl<'a> CometMetricNode<'a> {
@@ -44,8 +44,8 @@ impl<'a> CometMetricNode<'a> {
                 format!("(I)L{:};", Self::JVM_CLASS).as_str(),
             )?,
             method_get_child_node_ret: ReturnType::Object,
-            method_add: env.get_method_id(Self::JVM_CLASS, "add", "(Ljava/lang/String;J)V")?,
-            method_add_ret: ReturnType::Primitive(Primitive::Void),
+            method_set: env.get_method_id(Self::JVM_CLASS, "set", "(Ljava/lang/String;J)V")?,
+            method_set_ret: ReturnType::Primitive(Primitive::Void),
             class,
         })
     }
