@@ -35,29 +35,15 @@ and `CometExecRule`. These rules run whenever a query stage is being planned dur
 
 `CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for v1 and v2 data sources.
 
-### Parquet v1 Data Sources
+When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for v2 
+data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. In both cases, Comet replaces Spark's Parquet 
+reader with a custom vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2 
+Parquet data source but leverages native code for decoding Parquet row groups directly into Arrow format.
 
-When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, which provides
-a vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2 Parquet data source
-but leverages native code for decoding Parquet row groups directly into Arrow format.
-
-Comet only supports a subset of data types and will fall back to Spark's `FileSourceScanExec` if unsupported types
-exist. `CometSparkToColumnarExec` will then convert Spark rows to Arrow arrays.
-
-Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-the conversion of `FileSourceScanExec` output into Arrow format.
-
-### Parquet v2 Data Sources
-
-When reading from Parquet v2 data sources, Comet replaces `BatchScanExec` with `CometBatchScanExec`, which wraps
-Spark's vectorized Parquet reader. Spark batches are later converted to Arrow batches before being passed to native
-execution.
-
-Comet only supports a subset of data types and will fall back to Spark's `BatchScanExec` if unsupported types
-exist. `CometSparkToColumnarExec` will then convert Spark columnar batches to Arrow arrays.
-
-Note that both `spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to enable
-the conversion of `BatchScanExec` output into Arrow format.
+Comet only supports a subset of data types and will fall back to Spark's scan if unsupported types
+exist. Comet can still accelerate the rest of the query execution in this case because `CometSparkToColumnarExec` will 
+convert the output from Spark's can to Arrow arrays. Note that both `spark.comet.exec.enabled=true` and 
+`spark.comet.convert.parquet.enabled=true` must be set to enable this conversion.
 
 ## CometExecRule
 
@@ -93,27 +79,6 @@ addresses of these Arrow arrays to the native code.
 
 ## End to End Flow
 
-The following diagram shows the end-to-end flow for Comet query using the v1 data source.
+The following diagram shows the end-to-end flow.
 
 ![Diagram of Comet Native Parquet Scan](../../_static/images/CometNativeParquetScan.drawio.png)
-
-`CometScanRule` replaces `FileSourceScanExec` with `CometScanExec`.
-
-`CometScanExec.doExecuteColumnar` creates an instance of `CometParquetPartitionReaderFactory` and passes it either 
-into a `DataSourceRDD` (if prefetch is enabled) or a `FileScanRDD`. It then calls `mapPartitionsInternal` on the 
-`RDD` and wraps the resulting `Iterator[ColumnarBatch]` in another iterator that collects metrics such as `scanTime`
-and `numOutputRows`.
-
-`CometParquetPartitionReaderFactory` will create a `org.apache.comet.parquet.BatchReader` which in turn creates one
-column reader per column. There are different column reader implementations for different data types and encodings. The
-column readers invoke methods on the `org.apache.comet.parquet.Native` class such as `resetBatch`, `readBatch`, 
-and `currentBatch`.
-
-The `CometScanExec` provides batches that will be read by the `ScanExec` native plan leaf node. `CometScanExec` is 
-wrapped in a `CometBatchIterator` that will convert Spark's `ColumnarBatch` into Arrow Arrays. This is then wrapped in
-a `CometExecIterator` that will consume the Arrow Arrays and execute the native plan via methods on 
-`org.apache.comet.Native` such as `createPlan`, `executePlan`, and `releasePlan`. The memory addresses for each batch of
-Arrow Arrays are passed to the call to `executePlan` and are then consumed by the plan's `ScanExec` leaf nodes.
-
-An execution plan can contain multiple `ScanExec` nodes and the call to `createPlan` passes an array of 
-`ColumnBatchIterator`.
