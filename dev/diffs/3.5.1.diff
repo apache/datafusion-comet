@@ -16,7 +16,7 @@ index 0f504dbee85..f6019da888a 100644
          <version>${netlib.ludovic.dev.version}</version>
        </dependency>
 +      <dependency>
-+        <groupId>org.apache.comet</groupId>
++        <groupId>org.apache.datafusion</groupId>
 +        <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
 +        <version>${comet.version}</version>
 +        <exclusions>
@@ -46,7 +46,7 @@ index c46ab7b8fce..d8b99c2c115 100644
        <artifactId>spark-tags_${scala.binary.version}</artifactId>
      </dependency>
 +    <dependency>
-+      <groupId>org.apache.comet</groupId>
++      <groupId>org.apache.datafusion</groupId>
 +      <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
 +    </dependency>
  

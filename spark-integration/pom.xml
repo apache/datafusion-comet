@@ -24,7 +24,7 @@ under the License.
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>org.apache.comet</groupId>
+        <groupId>org.apache.datafusion</groupId>
         <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
         <version>0.3.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
@@ -41,13 +41,13 @@ under the License.
 
     <dependencies>
         <dependency>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
             <version>${project.version}</version>
             <exclusions>
               <!-- This is shaded into the jar -->
               <exclusion>
-                <groupId>org.apache.comet</groupId>
+                <groupId>org.apache.datafusion</groupId>
                 <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
               </exclusion>
             </exclusions>
