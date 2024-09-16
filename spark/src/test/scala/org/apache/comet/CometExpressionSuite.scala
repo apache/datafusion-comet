@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -141,6 +141,100 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             "SELECT _4 FROM tbl WHERE " +
               "_20 > CAST('2020-01-01' AS DATE) AND _18 < CAST('2020-01-01' AS TIMESTAMP)")
+        }
+      }
+    }
+  }
+
+  test("date_add with int scalars") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq("TINYINT", "SHORT", "INT").foreach { intType =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
+          }
+        }
+      }
+    }
+  }
+
+  test("date_add with scalar overflow") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val (sparkErr, cometErr) =
+            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+          if (isSpark40Plus) {
+            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+          } else {
+            assert(sparkErr.get.getMessage.contains("integer overflow"))
+          }
+          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
+        }
+      }
+    }
+  }
+
+  test("date_add with int arrays") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
+  test("date_sub with int scalars") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq("TINYINT", "SHORT", "INT").foreach { intType =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 - CAST(2 as $intType) from tbl")
+          }
+        }
+      }
+    }
+  }
+
+  test("date_sub with scalar overflow") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val (sparkErr, cometErr) =
+            checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
+          if (isSpark40Plus) {
+            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+          } else {
+            assert(sparkErr.get.getMessage.contains("integer overflow"))
+          }
+          assert(cometErr.get.getMessage.contains("`NaiveDate - TimeDelta` overflowed"))
+        }
+      }
+    }
+  }
+
+  test("date_sub with int arrays") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq("_2", "_3", "_4").foreach { intColumn => // tinyint, short, int columns
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(f"SELECT _20 - $intColumn FROM tbl")
+          }
         }
       }
     }
