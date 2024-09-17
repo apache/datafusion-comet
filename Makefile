@@ -46,14 +46,6 @@ format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)
 
-# build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
-core-arm64-libs:
-	# if the environment variable HAS_OSXCROSS is defined
-ifdef $(HAS_OSXCROSS)
-	cd native && cargo zigbuild -j 1 --target aarch64-apple-darwin --release
-endif
-	cd native && cargo build -j 2 --release
-
 # build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
 core-amd64-libs:
 	cd native && cargo build -j 2 --release
