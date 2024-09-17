@@ -16,20 +16,24 @@
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow_array::builder::{Int32Builder, StringBuilder};
+use arrow_array::builder::{Decimal128Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
+use arrow_schema::SchemaRef;
+use comet::execution::datafusion::expressions::sum_decimal::SumDecimal;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_plan::aggregates::{AggregateMode, PhysicalGroupBy};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_execution::TaskContext;
+use datafusion_expr::AggregateUDF;
 use datafusion_physical_expr::aggregate::AggregateExprBuilder;
 use datafusion_physical_expr::expressions::Column;
+use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use futures::StreamExt;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("aggregate");
@@ -40,36 +44,55 @@ fn criterion_benchmark(c: &mut Criterion) {
         batches.push(batch.clone());
     }
     let partitions = &[batches];
-    let scan : Arc<dyn ExecutionPlan> = Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap());
-    let c0 = Arc::new(Column::new("c0", 0));
-    let c1 = Arc::new(Column::new("c1", 1));
+    let scan: Arc<dyn ExecutionPlan> =
+        Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap());
+    let schema = scan.schema().clone();
 
-    let schema = scan.schema();
-
-    let aggr_expr = AggregateExprBuilder::new(sum_udaf(), vec![c1])
-        .schema(schema.clone())
-        .alias("sum")
-        .with_ignore_nulls(false)
-        .with_distinct(false)
-        .build()
-        .unwrap();
-
-    let aggregate = Arc::new(
-        datafusion::physical_plan::aggregates::AggregateExec::try_new(
-            AggregateMode::Partial,
-            PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
-            vec![aggr_expr],
-            vec![None], // no filter expressions
-            scan,
-            Arc::clone(&schema),
-        ).unwrap()
-    );
+    let c0: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c0", 0));
+    let c1: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c1", 1));
 
     let rt = Runtime::new().unwrap();
 
-    group.bench_function("aggregate - sum int", |b| {
+    let datafusion_sum_decimal = sum_udaf();
+    group.bench_function("aggregate - sum decimal (DataFusion)", |b| {
         b.to_async(&rt).iter(|| async {
-            let mut x = aggregate.execute(0, Arc::new(TaskContext::default())).unwrap();
+            let scan: Arc<dyn ExecutionPlan> =
+                Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap());
+            let aggregate = create_aggregate(
+                scan,
+                c0.clone(),
+                c1.clone(),
+                &schema,
+                datafusion_sum_decimal.clone(),
+            );
+            let mut x = aggregate
+                .execute(0, Arc::new(TaskContext::default()))
+                .unwrap();
+            while let Some(batch) = x.next().await {
+                let _batch = batch.unwrap();
+            }
+        })
+    });
+
+    let comet_sum_decimal = Arc::new(AggregateUDF::new_from_impl(SumDecimal::new(
+        "sum",
+        Arc::clone(&c1),
+        DataType::Decimal128(7, 2),
+    )));
+    group.bench_function("aggregate - sum decimal (Comet)", |b| {
+        b.to_async(&rt).iter(|| async {
+            let scan: Arc<dyn ExecutionPlan> =
+                Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap());
+            let aggregate = create_aggregate(
+                scan,
+                c0.clone(),
+                c1.clone(),
+                &schema,
+                comet_sum_decimal.clone(),
+            );
+            let mut x = aggregate
+                .execute(0, Arc::new(TaskContext::default()))
+                .unwrap();
             while let Some(batch) = x.next().await {
                 let _batch = batch.unwrap();
             }
@@ -79,29 +102,60 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn create_aggregate(
+    scan: Arc<dyn ExecutionPlan>,
+    c0: Arc<dyn PhysicalExpr>,
+    c1: Arc<dyn PhysicalExpr>,
+    schema: &SchemaRef,
+    aggregate_udf: Arc<AggregateUDF>,
+) -> Arc<AggregateExec> {
+    let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])
+        .schema(schema.clone())
+        .alias("sum")
+        .with_ignore_nulls(false)
+        .with_distinct(false)
+        .build()
+        .unwrap();
 
+    let aggregate = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Partial,
+            PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
+            vec![aggr_expr],
+            vec![None], // no filter expressions
+            scan,
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    aggregate
+}
 
 fn create_record_batch(num_rows: usize) -> RecordBatch {
-    let mut int32_builder = Int32Builder::with_capacity(num_rows);
+    let mut decimal_builder = Decimal128Builder::with_capacity(num_rows);
     let mut string_builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
     for i in 0..num_rows {
-        int32_builder.append_value(i as i32);
-        string_builder.append_value(format!("this is string #{i}"));
+        decimal_builder.append_value(i as i128);
+        string_builder.append_value(format!("this is string #{}", i % 1024));
     }
-    let int32_array = Arc::new(int32_builder.finish());
+    let decimal_array = Arc::new(decimal_builder.finish());
     let string_array = Arc::new(string_builder.finish());
 
     let mut fields = vec![];
     let mut columns: Vec<ArrayRef> = vec![];
-    let mut i = 0;
+
     // string column
-    fields.push(Field::new(format!("c{i}"), DataType::Utf8, false));
-    columns.push(string_array.clone()); // note this is just copying a reference to the array
-    i += 1;
-    // int column
-    fields.push(Field::new(format!("c{i}"), DataType::Int32, false));
-    columns.push(int32_array.clone()); // note this is just copying a reference to the array
-    // i += 1;
+    fields.push(Field::new(format!("c0"), DataType::Utf8, false));
+    columns.push(Arc::clone(&string_array));
+
+    // decimal column
+    fields.push(Field::new(
+        format!("c1"),
+        DataType::Decimal128(38, 10),
+        false,
+    ));
+    columns.push(Arc::clone(&decimal_array));
+
     let schema = Schema::new(fields);
     RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
