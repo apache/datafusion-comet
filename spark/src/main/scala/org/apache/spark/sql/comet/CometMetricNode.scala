@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 /**
  * A node carrying SQL metrics from SparkPlan, and metrics of its children. Native code will call
- * [[getChildNode]] and [[add]] to update the metrics.
+ * [[getChildNode]] and [[set]] to update the metrics.
  *
  * @param metrics
  *   the mapping between metric name of native operator to `SQLMetric` of Spark operator. For
@@ -49,14 +49,15 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
-   * Adds a value to a metric. Called from native.
+   * Update the value of a metric. This method will typically be called multiple times for the
+   * same metric during multiple calls to executePlan.
    *
    * @param metricName
    *   the name of the metric at native operator.
    * @param v
-   *   the value to add.
+   *   the value to set.
    */
-  def add(metricName: String, v: Long): Unit = {
+  def set(metricName: String, v: Long): Unit = {
     metrics.get(metricName) match {
       case Some(metric) => metric.set(v)
       case None =>
@@ -77,6 +78,15 @@ object CometMetricNode {
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
         "total time (in ms) spent in this operator"))
+  }
+
+  /**
+   * SQL Metrics for Comet native ScanExec
+   */
+  def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "cast_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
   }
 
   /**

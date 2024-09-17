@@ -28,7 +28,7 @@ under the License.
     <artifactId>apache</artifactId>
     <version>23</version>
   </parent>
-  <groupId>org.apache.comet</groupId>
+  <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
   <version>0.3.0-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -272,7 +272,7 @@ under the License.
         <scope>test</scope>
         <exclusions>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
 
@@ -336,7 +336,7 @@ under the License.
             <artifactId>parquet-column</artifactId>
           </exclusion>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
 
@@ -359,7 +359,7 @@ under the License.
         <scope>test</scope>
         <exclusions>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
           <exclusion>
@@ -669,6 +669,13 @@ under the License.
                 <args>
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
                 </args>
+                <javacArgs>
+                  <javacArg>-source</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-target</javacArg>
+                  <javacArg>${java.version}</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
                     <groupId>org.scalameta</groupId>

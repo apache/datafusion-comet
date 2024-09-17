@@ -23,7 +23,7 @@ under the License.
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.apache.comet</groupId>
+        <groupId>org.apache.datafusion</groupId>
         <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
         <version>0.3.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>

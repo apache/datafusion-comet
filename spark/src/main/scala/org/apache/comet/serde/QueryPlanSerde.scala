@@ -1492,6 +1492,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case DateAdd(left, right) =>
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
+          val optExpr = scalarExprToProtoWithReturnType("date_add", DateType, leftExpr, rightExpr)
+          optExprWithInfo(optExpr, expr, left, right)
+
+        case DateSub(left, right) =>
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
+          val optExpr = scalarExprToProtoWithReturnType("date_sub", DateType, leftExpr, rightExpr)
+          optExprWithInfo(optExpr, expr, left, right)
+
         case TruncDate(child, format) =>
           val childExpr = exprToProtoInternal(child, inputs)
           val formatExpr = exprToProtoInternal(format, inputs)
@@ -2959,6 +2971,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           } else {
             requiredOrdering
           }
+        }
+
+        if (join.condition.isDefined &&
+          !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
+            .get(conf)) {
+          withInfo(join, join.condition.get)
+          return None
         }
 
         val condition = join.condition.map { cond =>
