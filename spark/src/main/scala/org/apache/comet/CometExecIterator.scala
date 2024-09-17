@@ -103,8 +103,8 @@ class CometExecIterator(
   def getNextBatch(): Option[ColumnarBatch] = {
     nativeUtil.getNextBatch(
       numOutputCols,
-      (arrayAddrs, schemaAddrs) => {
-        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+      () => {
+        nativeLib.executePlan(plan)
       })
   }
 

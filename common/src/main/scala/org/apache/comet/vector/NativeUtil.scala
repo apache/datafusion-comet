@@ -19,22 +19,18 @@
 
 package org.apache.comet.vector
 
-import java.nio.ByteOrder
-
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
 import org.apache.arrow.c.CometArrayExporter.exportVector
-import org.apache.arrow.memory.util.MemoryUtil
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount};
+import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount}
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -97,36 +93,14 @@ class NativeUtil {
   def exportBatch(
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
-      batch: ColumnarBatch): Int = {
+      batch: ColumnarBatch): CometBatchElement = {
+    val arrays = new Array[ArrowArray](batch.numCols())
+    val schemas = new Array[ArrowSchema](batch.numCols())
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometNativeVector =>
-          // spotless:off
-          // scalastyle:off
-          val arr = MemoryUtil.directBuffer(arrayAddrs(index), 80).order(ByteOrder.nativeOrder())
-          arr.putLong(Platform.getLong(null, a.getArrayAddress))      // length
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 8L)  // null_count
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 16L) // offset
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 24L) // n_buffers
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 32L) // n_children
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 40L) // buffers
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 48L) // children
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 56L) // dictionary
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 64L) // release
-            .putLong(Platform.getLong(null, a.getArrayAddress) + 72L) // private_data
-
-          val sch = MemoryUtil.directBuffer(schemaAddrs(index), 72).order(ByteOrder.nativeOrder())
-          sch.putLong(Platform.getLong(null, a.getSchemaAddress))      // format
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 8L)  // name
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 16L) // metadata
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 24L) // flags
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 32L) // n_children
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 40L) // children
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 48L) // dictionary
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 56L) // release
-            .putLong(Platform.getLong(null, a.getSchemaAddress) + 64L) // private_data
-          // scalastyle:on
-          // spotless:on
+          arrays(index) = ArrowArray.wrap(a.getArrayAddress)
+          schemas(index) = ArrowSchema.wrap(a.getSchemaAddress)
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -155,7 +129,7 @@ class NativeUtil {
       }
     }
 
-    batch.numRows()
+    CometBatchElement(batch.numRows(), arrays, schemas)
   }
 
   /**
@@ -168,15 +142,16 @@ class NativeUtil {
    * @return
    *   The number of row of the next batch, or None if there are no more batches
    */
-  def getNextBatch(
-      numOutputCols: Int,
-      func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
-    val (arrays, schemas) = allocateArrowStructs(numOutputCols)
+  def getNextBatch(numOutputCols: Int, func: () => CometBatchElement): Option[ColumnarBatch] = {
+    // val (arrays, schemas) = allocateArrowStructs(numOutputCols)
 
-    val arrayAddrs = arrays.map(_.memoryAddress())
-    val schemaAddrs = schemas.map(_.memoryAddress())
+    // val arrayAddrs = arrays.map(_.memoryAddress())
+    // val schemaAddrs = schemas.map(_.memoryAddress())
 
-    val result = func(arrayAddrs, schemaAddrs)
+    // val result = func(arrayAddrs, schemaAddrs)
+    val cometBatchElement = func()
+    val (result, arrays, schemas) =
+      (cometBatchElement.result, cometBatchElement.arrays, cometBatchElement.schemas)
 
     result match {
       case -1 =>
@@ -263,4 +238,10 @@ object NativeUtil {
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
+}
+
+case class CometBatchElement(result: Int, arrays: Array[ArrowArray], schemas: Array[ArrowSchema])
+
+object CometBatchElement {
+  def empty(): CometBatchElement = CometBatchElement(-1, null, null)
 }

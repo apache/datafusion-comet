@@ -24,6 +24,8 @@ import java.util.Map
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
+import org.apache.comet.vector.CometBatchElement
+
 class Native extends NativeBase {
 
   /**
@@ -65,7 +67,7 @@ class Native extends NativeBase {
    * @return
    *   the number of rows, if -1, it means end of the output.
    */
-  @native def executePlan(plan: Long, arrayAddrs: Array[Long], schemaAddrs: Array[Long]): Long
+  @native def executePlan(plan: Long): CometBatchElement
 
   /**
    * Release and drop the native query plan object and context object.
