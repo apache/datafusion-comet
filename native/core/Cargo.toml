@@ -80,7 +80,7 @@ datafusion-comet-proto = { workspace = true }
 
 [dev-dependencies]
 pprof = { version = "0.13.0", features = ["flamegraph"] }
-criterion = "0.5.1"
+criterion = { version = "0.5.1", features = ["async_tokio"] }
 jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "7"
@@ -121,4 +121,8 @@ harness = false
 
 [[bench]]
 name = "filter"
+harness = false
+
+[[bench]]
+name = "aggregate"
 harness = false

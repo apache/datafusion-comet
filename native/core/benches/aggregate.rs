@@ -15,62 +15,73 @@
 // specific language governing permissions and limitations
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
-use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow_array::builder::{BooleanBuilder, Int32Builder, StringBuilder};
+use arrow_array::builder::{Int32Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
-use comet::execution::operators::comet_filter_record_batch;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_plan::aggregates::{AggregateMode, PhysicalGroupBy};
+use datafusion::physical_plan::memory::MemoryExec;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_execution::TaskContext;
+use datafusion_physical_expr::aggregate::AggregateExprBuilder;
+use datafusion_physical_expr::expressions::Column;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::runtime::Runtime;
+use futures::StreamExt;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("filter");
-
+    let mut group = c.benchmark_group("aggregate");
     let num_rows = 8192;
-    let num_int_cols = 4;
-    let num_string_cols = 4;
-
-    let batch = create_record_batch(num_rows, num_int_cols, num_string_cols);
-
-    // create some different predicates
-    let mut predicate_select_few = BooleanBuilder::with_capacity(num_rows);
-    let mut predicate_select_many = BooleanBuilder::with_capacity(num_rows);
-    let mut predicate_select_all = BooleanBuilder::with_capacity(num_rows);
-    for i in 0..num_rows {
-        predicate_select_few.append_value(i % 10 == 0);
-        predicate_select_many.append_value(i % 10 > 0);
-        predicate_select_all.append_value(true);
+    let batch = create_record_batch(num_rows);
+    let mut batches = Vec::new();
+    for _ in 0..10 {
+        batches.push(batch.clone());
     }
-    let predicate_select_few = predicate_select_few.finish();
-    let predicate_select_many = predicate_select_many.finish();
-    let predicate_select_all = predicate_select_all.finish();
+    let partitions = &[batches];
+    let scan : Arc<dyn ExecutionPlan> = Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap());
+    let c0 = Arc::new(Column::new("c0", 0));
+    let c1 = Arc::new(Column::new("c1", 1));
 
-    // baseline uses Arrow's filter_record_batch method
-    group.bench_function("arrow_filter_record_batch - few rows selected", |b| {
-        b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_few)))
-    });
-    group.bench_function("arrow_filter_record_batch - many rows selected", |b| {
-        b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_many)))
-    });
-    group.bench_function("arrow_filter_record_batch - all rows selected", |b| {
-        b.iter(|| filter_record_batch(black_box(&batch), black_box(&predicate_select_all)))
-    });
+    let schema = scan.schema();
 
-    group.bench_function("comet_filter_record_batch - few rows selected", |b| {
-        b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_few)))
-    });
-    group.bench_function("comet_filter_record_batch - many rows selected", |b| {
-        b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_many)))
-    });
-    group.bench_function("comet_filter_record_batch - all rows selected", |b| {
-        b.iter(|| comet_filter_record_batch(black_box(&batch), black_box(&predicate_select_all)))
+    let aggr_expr = AggregateExprBuilder::new(sum_udaf(), vec![c1])
+        .schema(schema.clone())
+        .alias("sum")
+        .with_ignore_nulls(false)
+        .with_distinct(false)
+        .build()
+        .unwrap();
+
+    let aggregate = Arc::new(
+        datafusion::physical_plan::aggregates::AggregateExec::try_new(
+            AggregateMode::Partial,
+            PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
+            vec![aggr_expr],
+            vec![None], // no filter expressions
+            scan,
+            Arc::clone(&schema),
+        ).unwrap()
+    );
+
+    let rt = Runtime::new().unwrap();
+
+    group.bench_function("aggregate - sum int", |b| {
+        b.to_async(&rt).iter(|| async {
+            let mut x = aggregate.execute(0, Arc::new(TaskContext::default())).unwrap();
+            while let Some(batch) = x.next().await {
+                let _batch = batch.unwrap();
+            }
+        })
     });
 
     group.finish();
 }
 
-fn create_record_batch(num_rows: usize, num_int_cols: i32, num_string_cols: i32) -> RecordBatch {
+
+
+fn create_record_batch(num_rows: usize) -> RecordBatch {
     let mut int32_builder = Int32Builder::with_capacity(num_rows);
     let mut string_builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
     for i in 0..num_rows {
@@ -83,16 +94,14 @@ fn create_record_batch(num_rows: usize, num_int_cols: i32, num_string_cols: i32)
     let mut fields = vec![];
     let mut columns: Vec<ArrayRef> = vec![];
     let mut i = 0;
-    for _ in 0..num_int_cols {
-        fields.push(Field::new(format!("c{i}"), DataType::Int32, false));
-        columns.push(int32_array.clone()); // note this is just copying a reference to the array
-        i += 1;
-    }
-    for _ in 0..num_string_cols {
-        fields.push(Field::new(format!("c{i}"), DataType::Utf8, false));
-        columns.push(string_array.clone()); // note this is just copying a reference to the array
-        i += 1;
-    }
+    // string column
+    fields.push(Field::new(format!("c{i}"), DataType::Utf8, false));
+    columns.push(string_array.clone()); // note this is just copying a reference to the array
+    i += 1;
+    // int column
+    fields.push(Field::new(format!("c{i}"), DataType::Int32, false));
+    columns.push(int32_array.clone()); // note this is just copying a reference to the array
+    // i += 1;
     let schema = Schema::new(fields);
     RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
