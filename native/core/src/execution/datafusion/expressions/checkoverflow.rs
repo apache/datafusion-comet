@@ -178,9 +178,6 @@ impl PhysicalExpr for CheckOverflow {
 /// optimized to remove a memcpy that exists in the original function
 #[inline]
 pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
-    if precision > DECIMAL128_MAX_PRECISION {
-        return false;
-    }
     let idx = usize::from(precision) - 1;
-    value >= MIN_DECIMAL_FOR_EACH_PRECISION[idx] && value <= MAX_DECIMAL_FOR_EACH_PRECISION[idx]
+    precision <= DECIMAL128_MAX_PRECISION && value >= MIN_DECIMAL_FOR_EACH_PRECISION[idx] && value <= MAX_DECIMAL_FOR_EACH_PRECISION[idx]
 }
