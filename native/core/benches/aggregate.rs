@@ -19,8 +19,10 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow_array::builder::{Decimal128Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
+use comet::execution::datafusion::expressions::avg_decimal::AvgDecimal;
 use comet::execution::datafusion::expressions::sum_decimal::SumDecimal;
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
@@ -49,7 +51,38 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let rt = Runtime::new().unwrap();
 
-    group.bench_function("aggregate - sum decimal (DataFusion)", |b| {
+    group.bench_function("avg_decimal_datafusion", |b| {
+        let datafusion_sum_decimal = avg_udaf();
+        b.to_async(&rt).iter(|| {
+            agg_test(
+                partitions,
+                c0.clone(),
+                c1.clone(),
+                datafusion_sum_decimal.clone(),
+                "avg",
+            )
+        })
+    });
+
+    group.bench_function("avg_decimal_comet", |b| {
+        let comet_avg_decimal = Arc::new(AggregateUDF::new_from_impl(AvgDecimal::new(
+            Arc::clone(&c1),
+            "avg",
+            DataType::Decimal128(38, 10),
+            DataType::Decimal128(38, 10),
+        )));
+        b.to_async(&rt).iter(|| {
+            agg_test(
+                partitions,
+                c0.clone(),
+                c1.clone(),
+                comet_avg_decimal.clone(),
+                "avg",
+            )
+        })
+    });
+
+    group.bench_function("sum_decimal_datafusion", |b| {
         let datafusion_sum_decimal = sum_udaf();
         b.to_async(&rt).iter(|| {
             agg_test(
@@ -57,15 +90,16 @@ fn criterion_benchmark(c: &mut Criterion) {
                 c0.clone(),
                 c1.clone(),
                 datafusion_sum_decimal.clone(),
+                "sum",
             )
         })
     });
 
-    group.bench_function("aggregate - sum decimal (Comet)", |b| {
+    group.bench_function("sum_decimal_comet", |b| {
         let comet_sum_decimal = Arc::new(AggregateUDF::new_from_impl(SumDecimal::new(
             "sum",
             Arc::clone(&c1),
-            DataType::Decimal128(7, 2),
+            DataType::Decimal128(38, 10),
         )));
         b.to_async(&rt).iter(|| {
             agg_test(
@@ -73,6 +107,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 c0.clone(),
                 c1.clone(),
                 comet_sum_decimal.clone(),
+                "sum",
             )
         })
     });
@@ -85,11 +120,12 @@ async fn agg_test(
     c0: Arc<dyn PhysicalExpr>,
     c1: Arc<dyn PhysicalExpr>,
     aggregate_udf: Arc<AggregateUDF>,
+    alias: &str,
 ) {
     let schema = &partitions[0][0].schema();
     let scan: Arc<dyn ExecutionPlan> =
         Arc::new(MemoryExec::try_new(partitions, Arc::clone(schema), None).unwrap());
-    let aggregate = create_aggregate(scan, c0.clone(), c1.clone(), &schema, aggregate_udf);
+    let aggregate = create_aggregate(scan, c0.clone(), c1.clone(), schema, aggregate_udf, alias);
     let mut stream = aggregate
         .execute(0, Arc::new(TaskContext::default()))
         .unwrap();
@@ -104,27 +140,27 @@ fn create_aggregate(
     c1: Arc<dyn PhysicalExpr>,
     schema: &SchemaRef,
     aggregate_udf: Arc<AggregateUDF>,
+    alias: &str,
 ) -> Arc<AggregateExec> {
     let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])
         .schema(schema.clone())
-        .alias("sum")
+        .alias(alias)
         .with_ignore_nulls(false)
         .with_distinct(false)
         .build()
         .unwrap();
 
-    let aggregate = Arc::new(
+    Arc::new(
         AggregateExec::try_new(
             AggregateMode::Partial,
             PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
             vec![aggr_expr],
             vec![None], // no filter expressions
             scan,
-            Arc::clone(&schema),
+            Arc::clone(schema),
         )
         .unwrap(),
-    );
-    aggregate
+    )
 }
 
 fn create_record_batch(num_rows: usize) -> RecordBatch {
@@ -141,15 +177,11 @@ fn create_record_batch(num_rows: usize) -> RecordBatch {
     let mut columns: Vec<ArrayRef> = vec![];
 
     // string column
-    fields.push(Field::new(format!("c0"), DataType::Utf8, false));
+    fields.push(Field::new("c0", DataType::Utf8, false));
     columns.push(string_array);
 
     // decimal column
-    fields.push(Field::new(
-        format!("c1"),
-        DataType::Decimal128(38, 10),
-        false,
-    ));
+    fields.push(Field::new("c1", DataType::Decimal128(38, 10), false));
     columns.push(decimal_array);
 
     let schema = Schema::new(fields);
