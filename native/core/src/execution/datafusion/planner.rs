@@ -118,7 +118,7 @@ use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
-type PhyAggResult = Result<Vec<Arc<AggregateFunctionExpr>>, ExecutionError>;
+type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
 
@@ -1295,7 +1295,7 @@ impl PhysicalPlanner {
         &self,
         spark_expr: &AggExpr,
         schema: SchemaRef,
-    ) -> Result<Arc<AggregateFunctionExpr>, ExecutionError> {
+    ) -> Result<AggregateFunctionExpr, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
                 assert!(!expr.children.is_empty());
@@ -1885,7 +1885,7 @@ impl PhysicalPlanner {
         schema: SchemaRef,
         children: Vec<Arc<dyn PhysicalExpr>>,
         func: AggregateUDF,
-    ) -> Result<Arc<AggregateFunctionExpr>, ExecutionError> {
+    ) -> Result<AggregateFunctionExpr, ExecutionError> {
         AggregateExprBuilder::new(Arc::new(func), children)
             .schema(schema)
             .alias(name)
