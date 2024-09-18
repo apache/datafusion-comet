@@ -28,10 +28,9 @@ use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
+use crate::execution::datafusion::expressions::checkoverflow::is_valid_decimal_precision;
 use arrow_array::ArrowNativeTypeOp;
-use arrow_data::decimal::{
-    validate_decimal_precision, MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION,
-};
+use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -212,7 +211,7 @@ impl AvgDecimalAccumulator {
             None => (v, false),
         };
 
-        if is_overflow || validate_decimal_precision(new_sum, self.sum_precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null = false;
             return;
@@ -380,7 +379,7 @@ impl AvgDecimalGroupsAccumulator {
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
 
-        if is_overflow || validate_decimal_precision(new_sum, self.sum_precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
             return;

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::expressions::checkoverflow::is_valid_decimal_precision;
 use crate::unlikely;
 use arrow::{
     array::BooleanBufferBuilder,
@@ -23,7 +24,6 @@ use arrow::{
 use arrow_array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
-use arrow_data::decimal::validate_decimal_precision;
 use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
@@ -170,7 +170,7 @@ impl SumDecimalAccumulator {
         let v = unsafe { values.value_unchecked(idx) };
         let (new_sum, is_overflow) = self.sum.overflowing_add(v);
 
-        if is_overflow || validate_decimal_precision(new_sum, self.precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null = false;
             return;
@@ -312,7 +312,7 @@ impl SumDecimalGroupsAccumulator {
         self.is_empty.set_bit(group_index, false);
         let (new_sum, is_overflow) = self.sum[group_index].overflowing_add(value);
 
-        if is_overflow || validate_decimal_precision(new_sum, self.precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
             return;
