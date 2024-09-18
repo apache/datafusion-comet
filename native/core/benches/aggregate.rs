@@ -21,7 +21,7 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
 use comet::execution::datafusion::expressions::avg_decimal::AvgDecimal;
 use comet::execution::datafusion::expressions::sum_decimal::SumDecimal;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::PhysicalExpr;
@@ -54,13 +54,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("avg_decimal_datafusion", |b| {
         let datafusion_sum_decimal = avg_udaf();
         b.to_async(&rt).iter(|| {
-            agg_test(
+            black_box(agg_test(
                 partitions,
                 c0.clone(),
                 c1.clone(),
                 datafusion_sum_decimal.clone(),
                 "avg",
-            )
+            ))
         })
     });
 
@@ -72,26 +72,26 @@ fn criterion_benchmark(c: &mut Criterion) {
             DataType::Decimal128(38, 10),
         )));
         b.to_async(&rt).iter(|| {
-            agg_test(
+            black_box(agg_test(
                 partitions,
                 c0.clone(),
                 c1.clone(),
                 comet_avg_decimal.clone(),
                 "avg",
-            )
+            ))
         })
     });
 
     group.bench_function("sum_decimal_datafusion", |b| {
         let datafusion_sum_decimal = sum_udaf();
         b.to_async(&rt).iter(|| {
-            agg_test(
+            black_box(agg_test(
                 partitions,
                 c0.clone(),
                 c1.clone(),
                 datafusion_sum_decimal.clone(),
                 "sum",
-            )
+            ))
         })
     });
 
@@ -102,13 +102,13 @@ fn criterion_benchmark(c: &mut Criterion) {
             DataType::Decimal128(38, 10),
         )));
         b.to_async(&rt).iter(|| {
-            agg_test(
+            black_box(agg_test(
                 partitions,
                 c0.clone(),
                 c1.clone(),
                 comet_sum_decimal.clone(),
                 "sum",
-            )
+            ))
         })
     });
 
