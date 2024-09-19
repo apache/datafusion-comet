@@ -139,7 +139,7 @@ impl PartialEq<dyn Any> for SumDecimal {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
             .map(|x| {
-                // note that we do not compare data_type because this
+                // note that we do not compare result_type because this
                 // is guaranteed to match if the precision and scale
                 // match
                 self.precision == x.precision && self.scale == x.scale && self.expr.eq(&x.expr)
