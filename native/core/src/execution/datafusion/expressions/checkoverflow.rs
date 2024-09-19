@@ -180,8 +180,7 @@ impl PhysicalExpr for CheckOverflow {
 /// includes https://github.com/apache/arrow-rs/pull/6419
 #[inline]
 pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
-    let idx = usize::from(precision) - 1;
     precision <= DECIMAL128_MAX_PRECISION
-        && value >= MIN_DECIMAL_FOR_EACH_PRECISION[idx]
-        && value <= MAX_DECIMAL_FOR_EACH_PRECISION[idx]
+        && value >= MIN_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
+        && value <= MAX_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
 }
