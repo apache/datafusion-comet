@@ -481,6 +481,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use arrow::datatypes::*;
     use arrow_array::builder::{Decimal128Builder, StringBuilder};
     use arrow_array::RecordBatch;
@@ -492,9 +493,8 @@ mod tests {
     use datafusion_expr::AggregateUDF;
     use datafusion_physical_expr::aggregate::AggregateExprBuilder;
     use datafusion_physical_expr::expressions::Column;
-
-    use super::*;
     use futures::StreamExt;
+
     #[tokio::test]
     async fn sum_no_overflow() -> Result<()> {
         let num_rows = 8192;
