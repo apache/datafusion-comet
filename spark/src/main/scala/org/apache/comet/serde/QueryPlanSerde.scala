@@ -1034,8 +1034,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.Equal.newBuilder()
@@ -1053,8 +1053,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case Not(EqualTo(left, right)) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.NotEqual.newBuilder()
@@ -1072,8 +1072,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case EqualNullSafe(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.EqualNullSafe.newBuilder()
@@ -1091,8 +1091,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case Not(EqualNullSafe(left, right)) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.NotEqualNullSafe.newBuilder()
@@ -1110,8 +1110,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case GreaterThan(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.GreaterThan.newBuilder()
@@ -1129,8 +1129,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case GreaterThanOrEqual(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.GreaterThanEqual.newBuilder()
@@ -1148,8 +1148,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case LessThan(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.LessThan.newBuilder()
@@ -1167,8 +1167,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case LessThanOrEqual(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          val leftExpr = exprToProtoInternal(normalizeNaNAndZero(left), inputs)
+          val rightExpr = exprToProtoInternal(normalizeNaNAndZero(right), inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.LessThanEqual.newBuilder()
@@ -2619,6 +2619,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   def nullIfNegative(expression: Expression): Expression = {
     val zero = Literal.default(expression.dataType)
     If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
+  }
+
+  // Spark will normalize NaN and zero for floating point numbers for several cases.
+  // See `NormalizeFloatingNumbers` optimization rule in Spark.
+  // However, one exception is for comparison operators. Spark does not normalize NaN and zero
+  // because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the
+  // comparison functions in arrow-rs do not normalize NaN and zero. So we need to normalize NaN
+  // and zero for comparison operators in Comet.
+  def normalizeNaNAndZero(expr: Expression): Expression = {
+    expr.dataType match {
+      case _: FloatType | _: DoubleType =>
+        KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+      case _ => expr
+    }
   }
 
   /**

@@ -41,6 +41,22 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plu
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("compare true/false to negative zero") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col1 boolean, col2 float) using parquet")
+          sql(s"insert into $table values(true, -0.0)")
+          sql(s"insert into $table values(false, -0.0)")
+
+          checkSparkAnswerAndOperator(
+            s"SELECT col1, negative(col2), cast(col1 as float), col1 = negative(col2) FROM $table")
+        }
+      }
+    }
+  }
+
   test("coalesce should return correct datatype") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
