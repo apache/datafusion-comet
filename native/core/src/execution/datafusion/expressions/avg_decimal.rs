@@ -91,7 +91,11 @@ impl AggregateUDFImpl for AvgDecimal {
                 self.sum_data_type.clone(),
                 true,
             ),
-            Field::new(format_state_name(self.name(), "count"), DataType::Int64, true),
+            Field::new(
+                format_state_name(self.name(), "count"),
+                DataType::Int64,
+                true,
+            ),
         ])
     }
 
