@@ -87,11 +87,11 @@ impl AggregateUDFImpl for AvgDecimal {
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
-                format_state_name("sum", "sum"),
+                format_state_name(self.name(), "sum"),
                 self.sum_data_type.clone(),
                 true,
             ),
-            Field::new(format_state_name("sum", "count"), DataType::Int64, true),
+            Field::new(format_state_name(self.name(), "count"), DataType::Int64, true),
         ])
     }
 
