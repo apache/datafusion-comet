@@ -478,3 +478,94 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
             + self.is_not_null.capacity() / 8
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::*;
+    use arrow_array::builder::{Decimal128Builder, StringBuilder};
+    use arrow_array::RecordBatch;
+    use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
+    use datafusion::physical_plan::memory::MemoryExec;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_common::Result;
+    use datafusion_execution::TaskContext;
+    use datafusion_expr::AggregateUDF;
+    use datafusion_physical_expr::aggregate::AggregateExprBuilder;
+    use datafusion_physical_expr::expressions::Column;
+
+    use super::*;
+    use futures::StreamExt;
+    #[tokio::test]
+    async fn sum_no_overflow() -> Result<()> {
+        let num_rows = 8192;
+        let batch = create_record_batch(num_rows);
+        let mut batches = Vec::new();
+        for _ in 0..10 {
+            batches.push(batch.clone());
+        }
+        let partitions = &[batches];
+        let c0: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c0", 0));
+        let c1: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c1", 1));
+
+        let data_type = DataType::Decimal128(8, 2);
+        let schema = partitions[0][0].schema().clone();
+        let scan: Arc<dyn ExecutionPlan> =
+            Arc::new(MemoryExec::try_new(partitions, schema.clone(), None).unwrap());
+
+        let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::new(
+            "sum",
+            Arc::clone(&c1),
+            data_type.clone(),
+        )));
+
+        let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])
+            .schema(schema.clone())
+            .alias("sum")
+            .with_ignore_nulls(false)
+            .with_distinct(false)
+            .build()?;
+
+        let aggregate = Arc::new(AggregateExec::try_new(
+            AggregateMode::Partial,
+            PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
+            vec![aggr_expr],
+            vec![None], // no filter expressions
+            scan,
+            schema.clone(),
+        )?);
+
+        let mut stream = aggregate
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
+        while let Some(batch) = stream.next().await {
+            let _batch = batch?;
+        }
+
+        Ok(())
+    }
+
+    fn create_record_batch(num_rows: usize) -> RecordBatch {
+        let mut decimal_builder = Decimal128Builder::with_capacity(num_rows);
+        let mut string_builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
+        for i in 0..num_rows {
+            decimal_builder.append_value(i as i128);
+            string_builder.append_value(format!("this is string #{}", i % 1024));
+        }
+        let decimal_array = Arc::new(decimal_builder.finish());
+        let string_array = Arc::new(string_builder.finish());
+
+        let mut fields = vec![];
+        let mut columns: Vec<ArrayRef> = vec![];
+
+        // string column
+        fields.push(Field::new("c0", DataType::Utf8, false));
+        columns.push(string_array);
+
+        // decimal column
+        fields.push(Field::new("c1", DataType::Decimal128(38, 10), false));
+        columns.push(decimal_array);
+
+        let schema = Schema::new(fields);
+        RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+    }
+}
