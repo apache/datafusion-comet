@@ -517,9 +517,9 @@ mod tests {
         let c1: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c1", 1));
 
         let data_type = DataType::Decimal128(8, 2);
-        let schema = partitions[0][0].schema().clone();
+        let schema = Arc::clone(&partitions[0][0].schema());
         let scan: Arc<dyn ExecutionPlan> =
-            Arc::new(MemoryExec::try_new(partitions, schema.clone(), None).unwrap());
+            Arc::new(MemoryExec::try_new(partitions, Arc::clone(&schema), None).unwrap());
 
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             Arc::clone(&c1),
@@ -527,7 +527,7 @@ mod tests {
         )?));
 
         let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])
-            .schema(schema.clone())
+            .schema(Arc::clone(&schema))
             .alias("sum")
             .with_ignore_nulls(false)
             .with_distinct(false)
@@ -539,7 +539,7 @@ mod tests {
             vec![aggr_expr],
             vec![None], // no filter expressions
             scan,
-            schema.clone(),
+            Arc::clone(&schema),
         )?);
 
         let mut stream = aggregate
