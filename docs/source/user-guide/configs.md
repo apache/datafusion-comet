@@ -41,7 +41,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. | true |
 | spark.comet.exec.coalesce.enabled | Whether to enable coalesce by default. | true |
 | spark.comet.exec.collectLimit.enabled | Whether to enable collectLimit by default. | true |
-| spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is false. | false |
+| spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. By default, this config is true. | true |
 | spark.comet.exec.expand.enabled | Whether to enable expand by default. | true |
 | spark.comet.exec.filter.enabled | Whether to enable filter by default. | true |
 | spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. | true |
@@ -53,6 +53,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.shuffle.enabled | Whether to enable Comet native shuffle. Note that this requires setting 'spark.shuffle.manager' to 'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. 'spark.shuffle.manager' must be set before starting the Spark application and cannot be changed during the application. | true |
 | spark.comet.exec.sort.enabled | Whether to enable sort by default. | true |
 | spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. | true |
+| spark.comet.exec.sortMergeJoinWithJoinFilter.enabled | Experimental support for Sort Merge Join with filter | false |
 | spark.comet.exec.stddev.enabled | Whether to enable stddev by default. stddev is slower than Spark's implementation. | true |
 | spark.comet.exec.takeOrderedAndProject.enabled | Whether to enable takeOrderedAndProject by default. | true |
 | spark.comet.exec.union.enabled | Whether to enable union by default. | true |

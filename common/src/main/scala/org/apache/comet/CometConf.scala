@@ -108,9 +108,9 @@ object CometConf extends ShimCometConf {
         "native space. Note: each operator is associated with a separate config in the " +
         "format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the " +
         "config and this need to be turned on, in order for the operator to be executed in " +
-        "native. By default, this config is false.")
+        "native. By default, this config is true.")
     .booleanConf
-    .createWithDefault(false)
+    .createWithDefault(true)
 
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
@@ -144,6 +144,12 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
+
+  val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
+      .doc("Experimental support for Sort Merge Join with filter")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXPR_STDDEV_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig(
@@ -189,7 +195,7 @@ object CometConf extends ShimCometConf {
           "'spark.shuffle.manager' must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +

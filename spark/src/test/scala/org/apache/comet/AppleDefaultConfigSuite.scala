@@ -29,9 +29,8 @@ class AppleDefaultConfigSuite extends CometTestBase {
     // scans should be enabled by default
     assert(CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get)
 
-    // execs should be disabled by default and users can opt in to try out Comet
-    // we will enable by default once all memory and performance issues are resolved
-    assert(!CometConf.COMET_EXEC_ENABLED.defaultValue.get)
+    // execs should be enabled by default
+    assert(CometConf.COMET_EXEC_ENABLED.defaultValue.get)
 
     // individual execs all default to enabled
     assert(CometConf.COMET_EXEC_AGGREGATE_ENABLED.defaultValue.get)
@@ -51,8 +50,11 @@ class AppleDefaultConfigSuite extends CometTestBase {
     assert(CometConf.COMET_EXEC_UNION_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_WINDOW_ENABLED.defaultValue.get)
 
-    // shuffle is disabled by default
-    assert(!CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
+    // SMJ + join condition has known issues
+    assert(!CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.defaultValue.get)
+
+    // shuffle is enabled by default
+    assert(CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
     assert("auto" == CometConf.COMET_SHUFFLE_MODE.defaultValue.get)
   }
 

@@ -2912,6 +2912,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
         }
 
+        if (join.condition.isDefined &&
+          !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
+            .get(conf)) {
+          withInfo(join, join.condition.get)
+          return None
+        }
+
         val condition = join.condition.map { cond =>
           val condProto = exprToProto(cond, join.left.output ++ join.right.output)
           if (condProto.isEmpty) {
