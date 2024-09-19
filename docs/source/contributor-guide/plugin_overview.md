@@ -34,7 +34,7 @@ run once for the entire plan when Adaptive Query Execution is disabled.
 
 ## CometScanRule
 
-`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for v1 and v2 data sources.
+`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
 
 When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for v2
 data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. In both cases, Comet replaces Spark's Parquet
@@ -72,7 +72,7 @@ In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which c
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
-`CometExecIterator` will invoke `Native.executePlan` to fetch the next batch from the native plan. This is repeated
+`CometExecIterator` will invoke `Native.executePlan` to pull the next batch from the native plan. This is repeated
 until no more batches are available (meaning that all data has been processed by the native plan).
 
 The leaf nodes in the physical plan are always `ScanExec` and these operators consume batches of Arrow data that were
