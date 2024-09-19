@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Plugin Overview &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comet Plugin Architecture &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -272,6 +272,11 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#comet-sql-plugin">
+   Comet SQL Plugin
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#cometscanrule">
    CometScanRule
   </a>
@@ -279,6 +284,16 @@ under the License.
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#cometexecrule">
    CometExecRule
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#query-execution">
+   Query Execution
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#end-to-end-flow">
+   End to End Flow
   </a>
  </li>
 </ul>
@@ -327,24 +342,36 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="comet-plugin-overview">
-<h1>Comet Plugin Overview<a class="headerlink" href="#comet-plugin-overview" title="Link to this heading">¶</a></h1>
-<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code> class, which can be registered with Spark by adding the following setting to the Spark configuration when launching <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code>:</p>
+<section id="comet-plugin-architecture">
+<h1>Comet Plugin Architecture<a class="headerlink" href="#comet-plugin-architecture" title="Link to this heading">¶</a></h1>
+<section id="comet-sql-plugin">
+<h2>Comet SQL Plugin<a class="headerlink" href="#comet-sql-plugin" title="Link to this heading">¶</a></h2>
+<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code> class, which can be registered with Spark by adding the
+following setting to the Spark configuration when launching <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
 </pre></div>
 </div>
-<p>On initialization, this class registers two physical plan optimization rules with Spark: <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> and <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>. These rules run whenever a query stage is being planned.</p>
+<p>On initialization, this class registers two physical plan optimization rules with Spark: <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>
+and <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>. These rules run whenever a query stage is being planned during Adaptive Query Execution, and
+run once for the entire plan when Adaptive Query Execution is disabled.</p>
+</section>
 <section id="cometscanrule">
 <h2>CometScanRule<a class="headerlink" href="#cometscanrule" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet Parquet scan classes.</p>
-<p>When the V1 data source API is being used, <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>.</p>
-<p>When the V2 data source API is being used, <code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometBatchScanExec</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.</p>
+<p>When reading from Parquet v1 data sources, Comet replaces <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> with a <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>, and for v2
+data sources, <code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometBatchScanExec</span></code>. In both cases, Comet replaces Spark’s Parquet
+reader with a custom vectorized Parquet reader. This is similar to Spark’s vectorized Parquet reader used by the v2
+Parquet data source but leverages native code for decoding Parquet row groups directly into Arrow format.</p>
+<p>Comet only supports a subset of data types and will fall back to Spark’s scan if unsupported types
+exist. Comet can still accelerate the rest of the query execution in this case because <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> will
+convert the output from Spark’s can to Arrow arrays. Note that both <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=true</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled=true</span></code> must be set to enable this conversion.</p>
+<p>Refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/datatypes.html">Supported Spark Data Types</a> section
+in the contributor guide to see a list of currently supported data types.</p>
 </section>
 <section id="cometexecrule">
 <h2>CometExecRule<a class="headerlink" href="#cometexecrule" title="Link to this heading">¶</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> attempts to transform a Spark physical plan into a Comet plan. This rule is executed against
-individual query stages when they are being prepared for execution.</p>
-<p>This rule traverses bottom-up from the original Spark plan and attempts to replace each node with a Comet equivalent.
+<p>This rule traverses bottom-up from the original Spark plan and attempts to replace each operator with a Comet equivalent.
 For example, a <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code> will be replaced by <code class="docutils literal notranslate"><span class="pre">CometProjectExec</span></code>.</p>
 <p>When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
 If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
@@ -352,11 +379,26 @@ underlying Spark node and the plan will not be converted.</p>
 <p>Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
 transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
 of this could outweigh the benefits of running parts of the query stage natively in Comet.</p>
-<p>Once the plan has been transformed, it is serialized into Comet protocol buffer format by the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> class
-and this serialized plan is passed into the native code by <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>.</p>
+</section>
+<section id="query-execution">
+<h2>Query Execution<a class="headerlink" href="#query-execution" title="Link to this heading">¶</a></h2>
+<p>Once the plan has been transformed, any consecutive Comet operators are combined into a <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> which contains
+a serialized version of the plan (the serialization code can be found in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>). When this operator is
+executed, the serialized plan is passed to the native code when calling <code class="docutils literal notranslate"><span class="pre">Native.createPlan</span></code>.</p>
 <p>In the native code there is a <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner</span></code> struct (in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>) which converts the serialized plan into an
-Apache DataFusion physical plan. In some cases, Comet provides specialized physical operators and expressions to
+Apache DataFusion <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code>. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> will invoke <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code> to pull the next batch from the native plan. This is repeated
+until no more batches are available (meaning that all data has been processed by the native plan).</p>
+<p>The leaf nodes in the physical plan are always <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> and these operators consume batches of Arrow data that were
+prepared before the plan is executed. When <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> invokes <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code> it passes the memory
+addresses of these Arrow arrays to the native code.</p>
+<p><img alt="Diagram of Comet Native Execution" src="../_static/images/CometNativeExecution.drawio.png" /></p>
+</section>
+<section id="end-to-end-flow">
+<h2>End to End Flow<a class="headerlink" href="#end-to-end-flow" title="Link to this heading">¶</a></h2>
+<p>The following diagram shows the end-to-end flow.</p>
+<p><img alt="Diagram of Comet Native Parquet Scan" src="../_static/images/CometNativeParquetScan.drawio.png" /></p>
 </section>
 </section>
 
