@@ -1365,56 +1365,42 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
 
-                match datatype {
+                let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(SumDecimal::new(
-                            "sum",
+                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(
                             Arc::clone(&child),
                             datatype,
-                        ));
+                        )?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("sum")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                     _ => {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
                         let child =
                             Arc::new(CastExpr::new(Arc::clone(&child), datatype.clone(), None));
-
                         AggregateExprBuilder::new(sum_udaf(), vec![child])
-                            .schema(schema)
-                            .alias("sum")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
-                }
+                };
+                builder
+                    .schema(schema)
+                    .alias("sum")
+                    .with_ignore_nulls(false)
+                    .with_distinct(false)
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::Avg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
-                match datatype {
+                let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let func = AggregateUDF::new_from_impl(AvgDecimal::new(
                             Arc::clone(&child),
-                            "avg",
                             datatype,
                             input_datatype,
                         ));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("avg")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
                     _ => {
                         // cast to the result data type of AVG if the result data type is different
@@ -1428,14 +1414,15 @@ impl PhysicalPlanner {
                             datatype,
                         ));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
-                            .schema(schema)
-                            .alias("avg")
-                            .with_ignore_nulls(false)
-                            .with_distinct(false)
-                            .build()
-                            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                     }
-                }
+                };
+                builder
+                    .schema(schema)
+                    .alias("avg")
+                    .with_ignore_nulls(false)
+                    .with_distinct(false)
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::First(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;

@@ -42,7 +42,6 @@ use DataType::*;
 /// AVG aggregate expression
 #[derive(Debug, Clone)]
 pub struct AvgDecimal {
-    name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     sum_data_type: DataType,
@@ -51,14 +50,8 @@ pub struct AvgDecimal {
 
 impl AvgDecimal {
     /// Create a new AVG aggregate function
-    pub fn new(
-        expr: Arc<dyn PhysicalExpr>,
-        name: impl Into<String>,
-        result_type: DataType,
-        sum_type: DataType,
-    ) -> Self {
+    pub fn new(expr: Arc<dyn PhysicalExpr>, result_type: DataType, sum_type: DataType) -> Self {
         Self {
-            name: name.into(),
             signature: Signature::user_defined(Immutable),
             expr,
             result_data_type: result_type,
@@ -94,20 +87,16 @@ impl AggregateUDFImpl for AvgDecimal {
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
-                format_state_name(&self.name, "sum"),
+                format_state_name("sum", "sum"),
                 self.sum_data_type.clone(),
                 true,
             ),
-            Field::new(
-                format_state_name(&self.name, "count"),
-                DataType::Int64,
-                true,
-            ),
+            Field::new(format_state_name("sum", "count"), DataType::Int64, true),
         ])
     }
 
     fn name(&self) -> &str {
-        &self.name
+        "avg"
     }
 
     fn reverse_expr(&self) -> ReversedUDAF {
@@ -168,8 +157,7 @@ impl PartialEq<dyn Any> for AvgDecimal {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
             .map(|x| {
-                self.name == x.name
-                    && self.sum_data_type == x.sum_data_type
+                self.sum_data_type == x.sum_data_type
                     && self.result_data_type == x.result_data_type
                     && self.expr.eq(&x.expr)
             })
