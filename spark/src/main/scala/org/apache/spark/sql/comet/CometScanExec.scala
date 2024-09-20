@@ -220,9 +220,12 @@ case class CometScanExec(
     // Tracking scan time has overhead, we can't afford to do it for each row, and can only do
     // it for each batch.
     if (supportsColumnar) {
-      Some("scanTime" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"))
+      Map(
+        "scanTime" -> SQLMetrics.createNanoTimingMetric(
+          sparkContext,
+          "scan time")) ++ CometMetricNode.scanMetrics(sparkContext)
     } else {
-      None
+      Map.empty
     }
   } ++ {
     relation.fileFormat match {

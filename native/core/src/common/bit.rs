@@ -998,7 +998,7 @@ impl From<Vec<u8>> for BitReader {
     #[inline]
     fn from(vec: Vec<u8>) -> Self {
         let len = vec.len();
-        BitReader::new(Buffer::from(vec), len)
+        BitReader::new(Buffer::from(vec.as_slice()), len)
     }
 }
 
@@ -1109,7 +1109,7 @@ mod tests {
     #[test]
     fn test_bit_reader_get_aligned() {
         // 01110101 11001011
-        let buffer = Buffer::from(vec![0x75, 0xCB]);
+        let buffer = Buffer::from(&[0x75, 0xCB]);
         let mut bit_reader = BitReader::new_all(buffer.clone());
         assert_eq!(bit_reader.get_value::<i32>(3), Some(5));
         assert_eq!(bit_reader.get_aligned::<i32>(1), Some(203));

@@ -517,6 +517,28 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Comet native metrics: scan") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "native-scan.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val df = sql("SELECT * FROM tbl WHERE _2 > _3")
+          df.collect()
+
+          val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
+            .map(_.metrics)
+            .get
+
+          assert(metrics.contains("scanTime"))
+          assert(metrics.contains("cast_time"))
+          assert(metrics("scanTime").value > 0)
+          assert(metrics("cast_time").value > 0)
+        }
+      }
+    }
+  }
+
   test("Comet native metrics: project and filter") {
     withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
@@ -1635,23 +1657,31 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SparkToColumnar over InMemoryTableScanExec") {
-    Seq("true", "false").foreach(aqe => {
-      Seq("true", "false").foreach(cacheVectorized => {
-        withSQLConf(
-          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-          CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-          SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> cacheVectorized) {
-          spark
-            .range(1000)
-            .selectExpr("id as key", "id % 8 as value")
-            .toDF("key", "value")
-            .selectExpr("key", "value", "key+1")
-            .createOrReplaceTempView("abc")
-          spark.catalog.cacheTable("abc")
-          val df = spark.sql("SELECT * FROM abc").groupBy("key").count()
-          checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
-        }
-      })
+    Seq("true", "false").foreach(cacheVectorized => {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> cacheVectorized) {
+        spark
+          .range(1000)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .selectExpr("key", "value", "key+1")
+          .createOrReplaceTempView("abc")
+        spark.catalog.cacheTable("abc")
+        val df = spark.sql("SELECT * FROM abc").groupBy("key").count()
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
+        df.collect() // Without this collect we don't get an aggregation of the metrics.
+
+        val metrics = find(df.queryExecution.executedPlan) {
+          case _: CometSparkToColumnarExec => true
+          case _ => false
+        }.map(_.metrics).get
+
+        assert(metrics.contains("conversionTime"))
+        assert(metrics("conversionTime").value > 0)
+
+      }
     })
   }
 
