@@ -19,8 +19,9 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters._
+import scala.collection.JavaConverters.asScalaIteratorConverter
 
+import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder, UnsafeProjection}
@@ -29,9 +30,11 @@ import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.Utils
+
+import org.apache.comet.CometConf
 
 /**
  * This is currently an identical copy of Spark's ColumnarToRowExec except for removing the
@@ -46,6 +49,28 @@ case class CometColumnarToRowExec(child: SparkPlan)
     with CodegenSupport {
   // supportsColumnar requires to be only called on driver side, see also SPARK-37779.
   assert(Utils.isInRunningSparkTask || child.supportsColumnar)
+
+  val sparkConf: SparkConf = SparkEnv.get.conf
+
+  private def isNativeSupported(schema: StructType): Boolean = {
+    schema.fields.foreach(field => {
+      val dt = field.dataType
+      dt match {
+        case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+            _: FloatType | _: DoubleType =>
+          true
+        case _ => return false
+      }
+    })
+    true
+  }
+
+  private def canEnableNative: Boolean = {
+    CometConf.COMET_EXEC_NATIVE_COLUMNAR_TO_ROW_ENABLED.get(conf) && isNativeSupported(
+      child.schema)
+  }
+
+  override def supportCodegen: Boolean = !canEnableNative
 
   override def supportsColumnar: Boolean = false
 
@@ -75,19 +100,27 @@ case class CometColumnarToRowExec(child: SparkPlan)
     // This avoids calling `output` in the RDD closure, so that we don't need to include the entire
     // plan (this) in the closure.
     val localOutput = this.output
-    child.executeColumnar().mapPartitionsInternal { batches =>
+    val timeZoneId = conf.sessionLocalTimeZone
+    val schema = child.schema
+    val rowRDD = child.executeColumnar().mapPartitionsInternal { batches =>
       val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
       batches.flatMap { batch =>
         numInputBatches += 1
         numOutputRows += batch.numRows()
 
-        // This is the original Spark code that creates an iterator over `ColumnarBatch`
-        // to provide `Iterator[InternalRow]`. The implementation uses a `ColumnarBatchRow`
-        // instance that contains an array of `ColumnVector` which will be instances of
-        // `CometVector`, which in turn is a wrapper around Arrow's `ValueVector`.
-        batch.rowIterator().asScala.map(toUnsafe)
+        if (canEnableNative && batch.numCols() > 0 && !CometUnsafeRowIterators
+            .hasDictionaryOrNullVector(batch)) {
+          CometUnsafeRowIterators.columnarBatchToSparkRowIter(sparkConf, batch, TaskContext.get)
+        } else {
+          // This is the original Spark code that creates an iterator over `ColumnarBatch`
+          // to provide `Iterator[InternalRow]`. The implementation uses a `ColumnarBatchRow`
+          // instance that contains an array of `ColumnVector` which will be instances of
+          // `CometVector`, which in turn is a wrapper around Arrow's `ValueVector`.
+          batch.rowIterator().asScala.map(toUnsafe)
+        }
       }
     }
+    rowRDD
   }
 
   /**
@@ -172,7 +205,8 @@ case class CometColumnarToRowExec(child: SparkPlan)
     } else {
       "// shouldStop check is eliminated"
     }
-    s"""
+    val out =
+      s"""
        |if ($batch == null) {
        |  $nextBatchFuncName();
        |}
@@ -189,6 +223,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
        |  $nextBatchFuncName();
        |}
      """.stripMargin
+    out
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {

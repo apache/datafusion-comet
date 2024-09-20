@@ -29,6 +29,8 @@ use crate::{
     },
 };
 use arrow::compute::cast;
+use arrow::datatypes::DataType as ArrowDataType;
+use arrow_array::cast::AsArray;
 use arrow_array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
@@ -37,13 +39,15 @@ use arrow_array::{
         StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
-    Array, ArrayRef, RecordBatch, RecordBatchOptions,
+    Array, ArrayRef, Date32Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    Int8Array, RecordBatch, RecordBatchOptions, TimestampMicrosecondArray,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
     io::{Cursor, Seek, SeekFrom, Write},
+    mem, ptr,
     str::from_utf8,
     sync::Arc,
 };
@@ -206,8 +210,19 @@ impl Default for SparkUnsafeRow {
     }
 }
 
+macro_rules! set_value_at {
+    ($self:ident, $value_type:ty, $index: expr, $value: expr) => {
+        unsafe {
+            $self.set_not_null_at($index);
+            let addr = $self.get_element_offset($index, mem::size_of::<$value_type>()) as *mut u8;
+            let bytes = $value.to_le_bytes().as_ptr();
+            ptr::copy_nonoverlapping(bytes, addr, mem::size_of::<$value_type>());
+        }
+    };
+}
+
 impl SparkUnsafeRow {
-    fn new(schema: &[DataType]) -> Self {
+    pub(crate) fn new(schema: &[DataType]) -> Self {
         Self {
             row_addr: -1,
             row_size: -1,
@@ -232,6 +247,126 @@ impl SparkUnsafeRow {
             row_addr: -1,
             row_size: -1,
             row_bitset_width: Self::get_row_bitset_width(num_fields) as i64,
+        }
+    }
+
+    pub fn get_rows_from_arrays(
+        schema: Vec<ArrowDataType>,
+        arrays: Vec<ArrayRef>,
+        num_rows: usize,
+        num_cols: usize,
+        addr: usize,
+    ) -> () {
+        let mut row_start_addr: usize = addr;
+        for i in 0..num_rows {
+            let mut row = SparkUnsafeRow::new(&schema);
+            let row_size = SparkUnsafeRow::get_row_bitset_width(schema.len()) + 8 * num_cols;
+            unsafe {
+                row.point_to_slice(std::slice::from_raw_parts(
+                    row_start_addr as *const u8,
+                    row_size,
+                ));
+            }
+            row_start_addr = row_start_addr + row_size;
+            for j in 0..num_cols {
+                let arr = arrays.get(j).unwrap();
+                let dt = &schema[j];
+                assert_eq!(dt, arr.data_type());
+                match dt {
+                    ArrowDataType::Boolean => {
+                        let array = arr.as_boolean();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_boolean(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Int8 => {
+                        let array: Int8Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_byte(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Int16 => {
+                        let array: Int16Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_short(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Int32 => {
+                        let array: Int32Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_int(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Int64 => {
+                        let array: Int64Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_long(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Float32 => {
+                        let array: Float32Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_float(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Float64 => {
+                        let array: Float64Array = arr.as_primitive().clone();
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_double(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Timestamp(TimeUnit::Microsecond, _) => {
+                        let array = arr
+                            .as_ref()
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .expect("Error downcasting to Timestamp(Microsecond)");
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_long(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Date32 => {
+                        let array = arr
+                            .as_ref()
+                            .as_any()
+                            .downcast_ref::<Date32Array>()
+                            .expect("Error downcasting to Date32");
+                        if array.is_null(i) {
+                            row.set_null_at(j);
+                        } else {
+                            row.set_int(j, array.value(i));
+                        }
+                    }
+                    ArrowDataType::Binary => {
+                        //TODO
+                    }
+                    ArrowDataType::Utf8 => {
+                        //TODO
+                    }
+                    ArrowDataType::Decimal128(_, _) => {
+                        //TODO
+                    }
+                    _ => {
+                        unreachable!("Unsupported data type of column: {:?}", dt)
+                    }
+                }
+            }
         }
     }
 
@@ -270,6 +405,55 @@ impl SparkUnsafeRow {
             let word: i64 = *word_offset;
             *word_offset = word & !mask;
         }
+    }
+
+    #[inline]
+    pub fn set_null_at(&mut self, index: usize) {
+        unsafe {
+            let mask: i64 = 1i64 << (index & 0x3f);
+            let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
+            let word: i64 = *word_offset;
+            *word_offset = word | mask;
+        }
+    }
+
+    #[inline]
+    pub fn set_boolean(&mut self, index: usize, value: bool) {
+        unsafe {
+            self.set_not_null_at(index);
+            let addr = self.get_element_offset(index, mem::size_of::<bool>()) as *mut u8;
+            *addr = value as u8;
+        }
+    }
+
+    #[inline]
+    pub fn set_byte(&mut self, index: usize, value: i8) {
+        set_value_at!(self, i8, index, value)
+    }
+
+    #[inline]
+    pub fn set_short(&mut self, index: usize, value: i16) {
+        set_value_at!(self, i16, index, value)
+    }
+
+    #[inline]
+    pub fn set_int(&mut self, index: usize, value: i32) {
+        set_value_at!(self, i32, index, value)
+    }
+
+    #[inline]
+    pub fn set_long(&mut self, index: usize, value: i64) {
+        set_value_at!(self, i64, index, value)
+    }
+
+    #[inline]
+    pub fn set_float(&mut self, index: usize, value: f32) {
+        set_value_at!(self, f64, index, value)
+    }
+
+    #[inline]
+    pub fn set_double(&mut self, index: usize, value: f64) {
+        set_value_at!(self, f64, index, value)
     }
 }
 

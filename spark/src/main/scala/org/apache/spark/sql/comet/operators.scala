@@ -67,9 +67,6 @@ abstract class CometExec extends CometPlan {
   override def doExecute(): RDD[InternalRow] =
     CometColumnarToRowExec(this).doExecute()
 
-  override def executeCollect(): Array[InternalRow] =
-    CometColumnarToRowExec(this).executeCollect()
-
   override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
   // `CometExec` reuses the outputPartitioning of the original SparkPlan.

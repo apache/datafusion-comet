@@ -18,7 +18,8 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use arrow::datatypes::DataType as ArrowDataType;
-use arrow_array::RecordBatch;
+use arrow_array::{make_array, Array, ArrayRef, RecordBatch};
+use arrow_data::ArrayData;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -59,6 +60,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use crate::execution::shuffle::row::SparkUnsafeRow;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -562,5 +564,63 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+#[no_mangle]
+/// Used by Comet ColumnarToRow
+/// From a set of vectors and a block of native memory allocated by Spark, convert the vectors
+/// into a batch of SparkUnsafeRows. The unsafe rows are written to the memory block passed in
+/// Currently implemented only for boolean and numeric types.
+pub extern "system" fn Java_org_apache_comet_Native_getUnsafeRowsNative(
+    e: JNIEnv,
+    _class: JClass,
+    _base_object: JObject,
+    offset: jlong,
+    _length: jlong,
+    array_addrs: jlongArray,
+    schema_addrs: jlongArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        // SAFETY: JVM unsafe memory allocation is aligned with long.
+        // let long_array = env.new_long_array(2)?;
+
+        let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
+        let num_cols = env.get_array_length(&array_address_array)? as usize;
+
+        let array_addrs =
+            unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
+        let array_addrs = &*array_addrs;
+
+        let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
+        let schema_addrs =
+            unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
+        let schema_addrs = &*schema_addrs;
+
+        let mut schema: Vec<ArrowDataType> = Vec::with_capacity(num_cols);
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
+        let mut num_rows = 0;
+        for i in 0..num_cols {
+            let array_ptr = array_addrs[i];
+            let schema_ptr = schema_addrs[i];
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+
+            let array = make_array(array_data);
+            if num_rows == 0 {
+                num_rows = array.len();
+            } else {
+                assert_eq!(array.len(), num_rows)
+            }
+            schema.push(array.data_type().clone());
+            arrays.push(array);
+        }
+
+        // A MemoryBlock object allocated by UnsafeMemoryAllocator has 'null' as the underlying
+        // object, and the address of the allocated memory as the offset.
+        // The base_object passed in is therefore a null pointer and the offset is the raw pointer
+        // to the memory we wish to write to.
+        SparkUnsafeRow::get_rows_from_arrays(schema, arrays, num_rows, num_cols, offset as usize);
+        Ok(array_addrs[0]) // Bogus
     })
 }

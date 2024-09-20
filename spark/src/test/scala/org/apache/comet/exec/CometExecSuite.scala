@@ -1858,6 +1858,48 @@ class CometExecSuite extends CometTestBase {
       }
     }
   }
+
+  test("CometColumnarToRowExec ") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "c2r.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
+      withParquetTable(path.toString, "tbl") {
+        //    Seq("", "parquet").foreach { v1List =>
+        Seq("parquet").foreach { v1List =>
+          Seq(
+            "_1 as bool_value",
+            "_2 as int8_value",
+            "_3 as int16_value",
+            "_4 as int32_value",
+            "_5 as int64_value",
+            "_6 as float_value",
+            "_7 as double_value",
+//            "_8 as utf8_value",
+//            "_15 as decimal_5_2_value",
+//            "_16 as decimal_18_10_value",
+//            "_17 as decimal_38_37_value",
+            "_18 as timestamp_millis_value",
+            "_19 as timestamp_micros_value").foreach { valueType =>
+            {
+              withSQLConf(
+                SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+                CometConf.COMET_EXEC_ENABLED.key -> "true",
+                CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+                CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
+                CometConf.COMET_EXEC_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
+                withTempPath { _ =>
+                  val df = sql(s"select $valueType from tbl")
+                  val (_, ep) = checkSparkAnswer(df)
+                  val explain = ep.simpleString(2)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 case class BucketedTableTestSpec(

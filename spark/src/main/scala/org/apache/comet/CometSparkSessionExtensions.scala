@@ -1103,6 +1103,7 @@ class CometSparkSessionExtensions
         case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec)
             if !sparkToColumnar.child.supportsColumnar =>
           sparkToColumnar.child
+        case CometColumnarToRowExec(child: CometColumnarToRowExec) => child
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec)
             if !sparkToColumnar.child.supportsColumnar =>
           sparkToColumnar.child
