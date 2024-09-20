@@ -2976,7 +2976,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (join.condition.isDefined &&
           !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
             .get(conf)) {
-          withInfo(join, join.condition.get)
+          withInfo(
+            join,
+            s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
+            join.condition.get)
           return None
         }
 
