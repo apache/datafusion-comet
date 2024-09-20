@@ -877,10 +877,14 @@ class CometSparkSessionExtensions
     }
 
     def normalizeNaNAndZero(expr: Expression): Expression = {
-      expr.dataType match {
-        case _: FloatType | _: DoubleType =>
-          KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
-        case _ => expr
+      expr match {
+        case _: KnownFloatingPointNormalized => expr
+        case _ =>
+          expr.dataType match {
+            case _: FloatType | _: DoubleType =>
+              KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+            case _ => expr
+          }
       }
     }
 
