@@ -32,8 +32,6 @@ Options
   -u ASF_USERNAME - Username of ASF committer account
   -r LOCAL_REPO - path to temporary local maven repo (created and written to by 'build-release-comet.sh')
 
-  One of -p or -v must be specified
-
 The following will be prompted for -
   ASF_PASSWORD - Password of ASF committer account
   GPG_KEY - GPG key used to sign release artifacts
@@ -96,18 +94,6 @@ GIT_HASH=$(git rev-parse --short HEAD)
 # REF: https://support.sonatype.com/hc/en-us/articles/213465818-How-can-I-programmatically-upload-an-artifact-into-Nexus-Repo-2
 # REF: https://support.sonatype.com/hc/en-us/articles/213465868-Uploading-to-a-Nexus-Repository-2-Staging-Repository-via-REST-API
 echo "Creating Nexus staging repository"
-# check permission
-PERMITTED_REQUEST="-u $ASF_USERNAME:$ASF_PASSWORD \
-  -H "Content-Type:application/xml"  \
-  $NEXUS_ROOT/profiles/$NEXUS_PROFILE/start"
-PERMITTED=$(curl -s -o /dev/null -w "%{http_code}" $PERMITTED_REQUEST)
-
-if [ "$PERMITTED" != "200" ]
-then
-  echo "Nexus replied with a status code: $PERMITTED"
-  echo "You may not be authorized to perform this action"
-  exit 1
-fi
 
 REPO_REQUEST="<promoteRequest><data><description>Apache Datafusion Comet $COMET_VERSION (commit $GIT_HASH)</description></data></promoteRequest>"
 REPO_REQUEST_RESPONSE=$(curl -I -X POST -d "$REPO_REQUEST" -u $ASF_USERNAME:$ASF_PASSWORD \
@@ -120,7 +106,7 @@ then
   exit 1
 fi
 
-STAGED_REPO_ID=$(echo $REPO_REQUEST_RESPONSE | xmllint -xpath "//stagedRepositoryId/text()" )
+STAGED_REPO_ID=$(echo $REPO_REQUEST_RESPONSE | xmllint --xpath "//stagedRepositoryId/text()" -)
 echo "Created Nexus staging repository: $STAGED_REPO_ID"
 
 if [ "$STAGED_REPO_ID" == "" ]
