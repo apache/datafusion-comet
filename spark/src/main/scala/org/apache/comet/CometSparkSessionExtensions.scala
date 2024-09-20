@@ -25,8 +25,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.{Expression, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
@@ -47,6 +48,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -840,6 +842,48 @@ class CometSparkSessionExtensions
       }
     }
 
+    def normalizePlan(plan: SparkPlan): SparkPlan = {
+      plan.transformUp {
+        case p: ProjectExec =>
+          val newProjectList = p.projectList.map(normalize(_).asInstanceOf[NamedExpression])
+          ProjectExec(newProjectList, p.child)
+        case f: FilterExec =>
+          val newCondition = normalize(f.condition)
+          FilterExec(newCondition, f.child)
+      }
+    }
+
+    // Spark will normalize NaN and zero for floating point numbers for several cases.
+    // See `NormalizeFloatingNumbers` optimization rule in Spark.
+    // However, one exception is for comparison operators. Spark does not normalize NaN and zero
+    // because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the
+    // comparison functions in arrow-rs do not normalize NaN and zero. So we need to normalize NaN
+    // and zero for comparison operators in Comet.
+    def normalize(expr: Expression): Expression = {
+      expr.transformUp {
+        case EqualTo(left, right) =>
+          EqualTo(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case EqualNullSafe(left, right) =>
+          EqualNullSafe(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case GreaterThan(left, right) =>
+          GreaterThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case GreaterThanOrEqual(left, right) =>
+          GreaterThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case LessThan(left, right) =>
+          LessThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case LessThanOrEqual(left, right) =>
+          LessThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+      }
+    }
+
+    def normalizeNaNAndZero(expr: Expression): Expression = {
+      expr.dataType match {
+        case _: FloatType | _: DoubleType =>
+          KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+        case _ => expr
+      }
+    }
+
     override def apply(plan: SparkPlan): SparkPlan = {
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
@@ -865,7 +909,7 @@ class CometSparkSessionExtensions
           plan
         }
       } else {
-        var newPlan = transform(plan)
+        var newPlan = transform(normalizePlan(plan))
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
