@@ -156,7 +156,47 @@ Setting up your project in the ASF Nexus Repository from here: https://infra.apa
 ##### Release Manager Setup
 Set up your development environment from here:  https://infra.apache.org/publishing-maven-artifacts.html
 
-TODO: build and publish a release candidate to nexus.
+##### Build and publish a release candidate to nexus.
+The script `publish-to-maven.sh` will publish the artifacts created by the `build-release-comet.sh` script. 
+The artifacts will be signed using the gpg key of the release manager and uploaded to the maven staging repository.
+
+Note: This script needs `xmllint` to be installed. On MacOS xmllint is available by default.
+
+On Ubuntu `apt-get install -y libxml2-utils`
+
+On RedHat `yum install -y xmlstarlet`
+
+```shell
+
+/comet:$./dev/release/publish-to-maven.sh -h
+usage: publish-to-maven.sh options
+
+Publish signed artifacts to Maven.
+
+Options
+-u ASF_USERNAME - Username of ASF committer account
+-r LOCAL_REPO - path to temporary local maven repo (created and written to by 'build-release-comet.sh')
+
+The following will be prompted for -
+ASF_PASSWORD - Password of ASF committer account
+GPG_KEY - GPG key used to sign release artifacts
+GPG_PASSPHRASE - Passphrase for GPG key
+```
+
+example 
+```shell
+/comet:$./dev/release/publish-to-maven.sh -u release_manager_asf_id  -r /tmp/comet-staging-repo-VsYOX
+ASF Password :
+GPG Key (Optional):
+GPG Passphrase :
+Creating Nexus staging repository
+...
+```
+
+In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in 
+staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).
+
+If the artifacts appear to be correct, then close and release the repository so it is made visible.
 
 ### Start an Email Voting Thread
 
@@ -227,7 +267,7 @@ svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repo
 
 ### Publishing JAR Files to Maven
 
-The process for publishing JAR files to Maven is not defined yet.
+Once the vote has passed, promote the staged release candidate to production in the Nexus repository UI (https://repository.apache.org/).
 
 ### Publishing to crates.io
 
