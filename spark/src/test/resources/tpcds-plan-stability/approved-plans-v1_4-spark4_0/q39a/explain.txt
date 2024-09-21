@@ -162,10 +162,10 @@ Results [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stddev_samp(cast(inv_quan
 
 (23) Filter [codegen id : 4]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stdev#24, mean#25]
-Condition : CASE WHEN (mean#25 = 0.0) THEN false ELSE ((stdev#24 / mean#25) > 1.0) END
+Condition : CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#25)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#24 / mean#25))) > knownfloatingpointnormalized(normalizenanandzero(1.0))) END
 
 (24) Project [codegen id : 4]
-Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#25, CASE WHEN (mean#25 = 0.0) THEN null ELSE (stdev#24 / mean#25) END AS cov#26]
+Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#25, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#25)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN null ELSE (stdev#24 / mean#25) END AS cov#26]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stdev#24, mean#25]
 
 (25) Scan parquet spark_catalog.default.inventory
@@ -255,10 +255,10 @@ Results [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stddev_samp(cast(inv_qu
 
 (43) Filter [codegen id : 3]
 Input [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stdev#48, mean#49]
-Condition : CASE WHEN (mean#49 = 0.0) THEN false ELSE ((stdev#48 / mean#49) > 1.0) END
+Condition : CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#49)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#48 / mean#49))) > knownfloatingpointnormalized(normalizenanandzero(1.0))) END
 
 (44) Project [codegen id : 3]
-Output [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, mean#49, CASE WHEN (mean#49 = 0.0) THEN null ELSE (stdev#48 / mean#49) END AS cov#50]
+Output [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, mean#49, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#49)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN null ELSE (stdev#48 / mean#49) END AS cov#50]
 Input [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stdev#48, mean#49]
 
 (45) BroadcastExchange

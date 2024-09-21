@@ -1034,8 +1034,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.Equal.newBuilder()
@@ -1053,8 +1053,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case Not(EqualTo(left, right)) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.NotEqual.newBuilder()
@@ -1072,8 +1072,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case EqualNullSafe(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.EqualNullSafe.newBuilder()
@@ -1091,8 +1091,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case Not(EqualNullSafe(left, right)) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.NotEqualNullSafe.newBuilder()
@@ -1110,8 +1110,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case GreaterThan(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.GreaterThan.newBuilder()
@@ -1129,8 +1129,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case GreaterThanOrEqual(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.GreaterThanEqual.newBuilder()
@@ -1148,8 +1148,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case LessThan(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.LessThan.newBuilder()
@@ -1167,8 +1167,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case LessThanOrEqual(left, right) =>
-          val leftExpr = exprToProto(left, inputs)
-          val rightExpr = exprToProto(right, inputs)
+          val leftExpr = exprToProtoInternal(left, inputs)
+          val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
             val builder = ExprOuterClass.LessThanEqual.newBuilder()
