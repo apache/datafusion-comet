@@ -38,6 +38,14 @@ Comet uses the Rust regexp crate for evaluating regular expressions, and this ha
 regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
 this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
+## Floating number comparison
+
+Spark normalizes NaN and zero for floating point numbers for several cases. See `NormalizeFloatingNumbers` optimization rule in Spark.
+However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
+because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
+functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
+So Comet will add additional normalization expression of NaN and zero for comparison.
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:
