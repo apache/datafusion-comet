@@ -44,8 +44,21 @@ There are no published JAR files yet.
 
 Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
 
-Building from a source release is mostly the same as building directly from the GitHub repository but requires the 
-use of the command `make release-nogit` instead of `make release`. 
+Download the latest Apache DataFusion Comet tarball file from `datafusion-comet-1.2.3` folder. For example 
+`https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.2.0/apache-datafusion-comet-0.2.0.tar.gz`
+
+Unpack the tarball
+
+```console
+tar -xzf apache-datafusion-comet-0.2.0.tar.gz
+cd apache-datafusion-comet-0.2.0
+```
+
+Build
+
+```console
+make release-nogit PROFILES="-Pspark-3.4"
+```
 
 ## Building from the GitHub repository
 
