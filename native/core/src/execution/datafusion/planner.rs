@@ -1696,8 +1696,13 @@ impl PhysicalPlanner {
                     WindowFrameUnits::Rows => {
                         WindowFrameBound::Preceding(ScalarValue::UInt64(None))
                     }
-                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    WindowFrameUnits::Range => {
                         WindowFrameBound::Preceding(ScalarValue::Int64(None))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "WindowFrameUnits::Groups is not supported."
+                        )))
                     }
                 },
                 LowerFrameBoundStruct::Preceding(offset) => {
@@ -1706,8 +1711,13 @@ impl PhysicalPlanner {
                         WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(
                             Some(offset_value as u64),
                         )),
-                        WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                        WindowFrameUnits::Range => {
                             WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
+                        },
+                        WindowFrameUnits::Groups => {
+                            return Err(ExecutionError::GeneralError(format!(
+                                "WindowFrameUnits::Groups is not supported."
+                            )))
                         }
                     }
                 }
@@ -1715,9 +1725,11 @@ impl PhysicalPlanner {
             },
             None => match units {
                 WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
-                    WindowFrameBound::Preceding(ScalarValue::Int64(None))
-                }
+                WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+                WindowFrameUnits::Groups =>
+                    return Err(ExecutionError::GeneralError(format!(
+                        "WindowFrameUnits::Groups is not supported."
+                    )))
             },
         };
 
@@ -1731,25 +1743,37 @@ impl PhysicalPlanner {
                     WindowFrameUnits::Rows => {
                         WindowFrameBound::Following(ScalarValue::UInt64(None))
                     }
-                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    WindowFrameUnits::Range => {
                         WindowFrameBound::Following(ScalarValue::Int64(None))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "WindowFrameUnits::Groups is not supported."
+                        )))
                     }
                 },
                 UpperFrameBoundStruct::Following(offset) => match units {
                     WindowFrameUnits::Rows => {
                         WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
                     }
-                    WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    WindowFrameUnits::Range => {
                         WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "WindowFrameUnits::Groups is not supported."
+                        )))
                     }
                 },
                 UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
             None => match units {
                 WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
-                    WindowFrameBound::Following(ScalarValue::Int64(None))
-                }
+                WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
+                WindowFrameUnits::Groups =>
+                    return Err(ExecutionError::GeneralError(format!(
+                        "WindowFrameUnits::Groups is not supported."
+                    )))
             },
         };
 
