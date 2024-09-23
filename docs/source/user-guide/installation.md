@@ -49,7 +49,7 @@ There are no published JAR files yet.
 
 Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
 
-Download the latest Apache DataFusion Comet tarball file from `datafusion-comet-1.2.3` folder. For example 
+Download the latest Apache DataFusion Comet tarball file from `datafusion-comet-x.y.z` folder. For example 
 `https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.2.0/apache-datafusion-comet-0.2.0.tar.gz`
 
 Unpack the tarball
