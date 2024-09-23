@@ -3303,33 +3303,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     if (partitionSpec.length != orderSpec.length) {
       withInfo(op, "Partitioning and sorting specifications do not match")
       return false
-    } else {
-      val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
-        a.name
-      }
-
-      if (partitionColumnNames.length != partitionSpec.length) {
-        withInfo(op, "Unsupported partitioning specification")
-        return false
-      }
-
-      val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-        s.child match {
-          case a: AttributeReference => a.name
-        }
-      }
-
-      if (orderColumnNames.length != orderSpec.length) {
-        withInfo(op, "Unsupported SortOrder")
-        return false
-      }
-
-      if (partitionColumnNames.toSet != orderColumnNames.toSet) {
-        withInfo(op, "Partitioning and sorting specifications do not match")
-        return false
-      }
-
-      true
     }
+
+    val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
+      a.name
+    }
+
+    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
+      s.child match {
+        case a: AttributeReference => a.name
+      }
+    }
+
+    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
+        partCol != orderCol
+      }) {
+      withInfo(op, "Partitioning and sorting specifications must be the same.")
+      return false
+    }
+
+    true
   }
 }
