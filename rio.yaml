@@ -1073,6 +1073,8 @@ builds:
         VERSION: 3.2_2.12
         PROFILES: "-Pspark-3.2,scala-2.12"
         HADOOP_BINARY_VERSION: "3.2"
+        SPARK_VERSION: 3.2
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build: &snapshot_image_build
       template: freestyle:v4:publish
@@ -1081,23 +1083,16 @@ builds:
       steps:
         - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
 
-        # Use the upstream published Comet
-        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
-        - echo "COMET_VERSION = ${COMET_VERSION}"
-
-        # Configure Spark
-        - dev/install-comet-spark.sh --use-existing-comet "$COMET_VERSION"
-        - source apache-spark/comet-parameters.sh
-        - cd apache-spark
-
-        # Build Spark Distribution
-        - ./dev/rio-maven-custom-build.sh --scala "$SCALA_BINARY_VERSION" --snapshot --maven-opts "${MAVEN_OPTS}" --maven-params "-Dscala.version=$SCALA_VERSION -P scala-${SCALA_BINARY_VERSION},hive,hadoop-cloud,hadoop-${HADOOP_BINARY_VERSION},hive-thriftserver,kinesis-asl,yarn,kubernetes,volcano,code-profiler"
-        - ./dev/make-distribution.sh --tgz --use-existing-build --with-hadoop --skip-java-test -DskipTests=true -Dscala-$SCALA_BINARY_VERSION=enabled -Dhive-thriftserver=enabled -Dscala.version="$SCALA_VERSION" -Dscala.binary.version="$SCALA_BINARY_VERSION" -Pscala-$SCALA_BINARY_VERSION -Phadoop-${HADOOP_BINARY_VERSION}
+        - rm -rvf spark/target
+        - mkdir -p spark/target
+        - (cd spark/target; wget -q $BUILD_PARAM_ARTIFACT)
     package: &snapshot_image_package
       release: false
       dockerfile:
-        - dockerfilePath: apache-spark/dist/kubernetes/dockerfiles/spark/Dockerfile
-          context: apache-spark/dist
+        - env:
+            SPARK_VERSION: ${SPARK_VERSION}
+            SCALA_VERSION: ${SCALA_VERSION}
+          dockerfilePath: dev/Dockerfile-spark
           perApplication: false
           version: snapshot
           publish:
@@ -1116,6 +1111,8 @@ builds:
         VERSION: 3.3_2.12
         PROFILES: "-Pspark-3.3,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.3
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build:
       <<: *snapshot_image_build
@@ -1135,6 +1132,8 @@ builds:
         VERSION: 3.3_2.13
         PROFILES: "-Pspark-3.3,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.3
+        SCALA_VERSION: 2.13
         PUBLISH_JARS: false
     build:
       <<: *snapshot_image_build
@@ -1154,6 +1153,8 @@ builds:
         VERSION: 3.4_2.12
         PROFILES: "-Pspark-3.4,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build:
       <<: *snapshot_image_build
@@ -1173,6 +1174,8 @@ builds:
         VERSION: 3.4_2.13
         PROFILES: "-Pspark-3.4,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.13
         PUBLISH_JARS: false
     build:
       <<: *snapshot_image_build
@@ -1563,32 +1566,18 @@ builds:
         VERSION: 3.2_2.12
         PROFILES: "-Pspark-3.2,scala-2.12"
         HADOOP_BINARY_VERSION: "3.2"
+        SPARK_VERSION: 3.2
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build: &release_image_build
-      template: freestyle:v4:publish
-      buildParameters:
-        - parameter: ARTIFACT
-      steps:
-        - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
-
-        # Use the upstream published Comet
-        - COMET_VERSION=$(echo ${BUILD_PARAM_ARTIFACT} | sed 's/^.*_[^-]*-//' | sed 's/.jar$//' | head -1)
-        - echo "COMET_VERSION = ${COMET_VERSION}"
-
-        # Configure Spark
-        - dev/install-comet-spark.sh --use-existing-comet "$COMET_VERSION"
-        - source apache-spark/comet-parameters.sh
-        - cd apache-spark
-
-        # Build Spark Distribution
-        - ./dev/rio-maven-custom-build.sh --scala "$SCALA_BINARY_VERSION" --snapshot --maven-opts "${MAVEN_OPTS}" --maven-params "-Dscala.version=$SCALA_VERSION -P scala-${SCALA_BINARY_VERSION},hive,hadoop-cloud,hadoop-${HADOOP_BINARY_VERSION},hive-thriftserver,kinesis-asl,yarn,kubernetes,volcano,code-profiler"
-        - ./dev/make-distribution.sh --tgz --use-existing-build --with-hadoop --skip-java-test -DskipTests=true -Dscala-$SCALA_BINARY_VERSION=enabled -Dhive-thriftserver=enabled -Dscala.version="$SCALA_VERSION" -Dscala.binary.version="$SCALA_BINARY_VERSION" -Pscala-$SCALA_BINARY_VERSION -Phadoop-${HADOOP_BINARY_VERSION}
-    # This is the same as the "snapshot_image_package" except for the version (non-snapshot)
+      <<: *snapshot_image_build
     package: &release_image_package
       release: true
       dockerfile:
-        - dockerfilePath: apache-spark/dist/kubernetes/dockerfiles/spark/Dockerfile
-          context: apache-spark/dist
+        - env:
+            SPARK_VERSION: ${SPARK_VERSION}
+            SCALA_VERSION: ${SCALA_VERSION}
+          dockerfilePath: dev/Dockerfile-spark
           perApplication: false
           version: latest
           publish:
@@ -1607,6 +1596,8 @@ builds:
         VERSION: 3.3_2.12
         PROFILES: "-Pspark-3.3,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.3
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build:
       <<: *release_image_build
@@ -1626,6 +1617,8 @@ builds:
         VERSION: 3.3_2.13
         PROFILES: "-Pspark-3.3,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.3
+        SCALA_VERSION: 2.13
         PUBLISH_JARS: false
     build:
       <<: *release_image_build
@@ -1645,6 +1638,8 @@ builds:
         VERSION: 3.4_2.12
         PROFILES: "-Pspark-3.4,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.12
         PUBLISH_JARS: false
     build:
       <<: *release_image_build
@@ -1664,6 +1659,8 @@ builds:
         VERSION: 3.4_2.13
         PROFILES: "-Pspark-3.4,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
+        SPARK_VERSION: 3.4
+        SCALA_VERSION: 2.13
         PUBLISH_JARS: false
     build:
       <<: *release_image_build
@@ -1880,7 +1877,7 @@ builds:
       <<: *pr_build_package
       dockerfile:
         - env:
-            SPARK_VERSION: 3.4.3
+            SPARK_VERSION: ${SPARK_VERSION}
             SCALA_VERSION: ${SCALA_VERSION}
             PR_NUMBER: ${BUILD_PARAM_PR_NUMBER}
           dockerfilePath: dev/Dockerfile-spark

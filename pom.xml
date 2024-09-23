@@ -663,6 +663,13 @@ under the License.
     </profile>
 
     <profile>
+      <id>scala-2.12</id>
+      <properties>
+        <!-- Scala 2.12 properites are the default -->
+      </properties>
+    </profile>
+
+    <profile>
       <id>scala-2.13</id>
       <properties>
         <scala.version>2.13.14</scala.version>
