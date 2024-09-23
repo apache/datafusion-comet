@@ -26,9 +26,14 @@ Make sure the following requirements are met and software installed on your mach
 - Linux
 - Apple OSX (Intel and Apple Silicon)
 
+## Supported Apache Spark versions
+- 3.3
+- 3.4
+- 3.5
+
 ## Requirements
 
-- Apache Spark 3.3, 3.4, or 3.5
+- [Apache Spark supported by Comet](#supported-apache-spark-versions)
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
