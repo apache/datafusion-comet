@@ -255,15 +255,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       (None, exprToProto(windowExpr.windowFunction, output))
     }
 
+    if (aggExpr.isEmpty && builtinFunc.isEmpty) {
+      return None
+    }
+
     val f = windowExpr.windowSpec.frameSpecification
 
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
         val frameProto = frameType match {
           case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame =>
-            withInfo(windowExpr, "Range frame is not supported")
-            return None
+          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
         }
 
         val lBoundProto = lBound match {
@@ -278,12 +280,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
+            val offset = e.eval() match {
+              case i: Integer => i.toLong
+              case l: Long => l
+              case _ => return None
+            }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
               .setPreceding(
                 OperatorOuterClass.Preceding
                   .newBuilder()
-                  .setOffset(e.eval().asInstanceOf[Int])
+                  .setOffset(offset)
                   .build())
               .build()
         }
@@ -300,12 +307,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
+            val offset = e.eval() match {
+              case i: Integer => i.toLong
+              case l: Long => l
+              case _ => return None
+            }
+
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
               .setFollowing(
                 OperatorOuterClass.Following
                   .newBuilder()
-                  .setOffset(e.eval().asInstanceOf[Int])
+                  .setOffset(offset)
                   .build())
               .build()
         }
@@ -2774,6 +2787,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
+        if (partitionSpec.nonEmpty && orderSpec.nonEmpty &&
+          !validatePartitionAndSortSpecsForWindowFunc(partitionSpec, orderSpec, op)) {
+          return None
+        }
+
         val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
         val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
 
@@ -3279,5 +3297,34 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     } else {
       true
     }
+  }
+
+  private def validatePartitionAndSortSpecsForWindowFunc(
+      partitionSpec: Seq[Expression],
+      orderSpec: Seq[SortOrder],
+      op: SparkPlan): Boolean = {
+    if (partitionSpec.length != orderSpec.length) {
+      withInfo(op, "Partitioning and sorting specifications do not match")
+      return false
+    }
+
+    val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
+      a.name
+    }
+
+    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
+      s.child match {
+        case a: AttributeReference => a.name
+      }
+    }
+
+    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
+        partCol != orderCol
+      }) {
+      withInfo(op, "Partitioning and sorting specifications must be the same.")
+      return false
+    }
+
+    true
   }
 }

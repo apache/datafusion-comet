@@ -1692,16 +1692,46 @@ impl PhysicalPlanner {
             .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
         {
             Some(l) => match l {
-                LowerFrameBoundStruct::UnboundedPreceding(_) => {
-                    WindowFrameBound::Preceding(ScalarValue::UInt64(None))
-                }
+                LowerFrameBoundStruct::UnboundedPreceding(_) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Preceding(ScalarValue::UInt64(None))
+                    }
+                    WindowFrameUnits::Range => {
+                        WindowFrameBound::Preceding(ScalarValue::Int64(None))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(
+                            "WindowFrameUnits::Groups is not supported.".to_string(),
+                        ));
+                    }
+                },
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = offset.offset.unsigned_abs() as u64;
-                    WindowFrameBound::Preceding(ScalarValue::UInt64(Some(offset_value)))
+                    let offset_value = offset.offset.abs();
+                    match units {
+                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(
+                            Some(offset_value as u64),
+                        )),
+                        WindowFrameUnits::Range => {
+                            WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
+                        }
+                        WindowFrameUnits::Groups => {
+                            return Err(ExecutionError::GeneralError(
+                                "WindowFrameUnits::Groups is not supported.".to_string(),
+                            ));
+                        }
+                    }
                 }
                 LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
-            None => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+            None => match units {
+                WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+                WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+                WindowFrameUnits::Groups => {
+                    return Err(ExecutionError::GeneralError(
+                        "WindowFrameUnits::Groups is not supported.".to_string(),
+                    ));
+                }
+            },
         };
 
         let upper_bound: WindowFrameBound = match spark_window_frame
@@ -1710,15 +1740,43 @@ impl PhysicalPlanner {
             .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
         {
             Some(u) => match u {
-                UpperFrameBoundStruct::UnboundedFollowing(_) => {
-                    WindowFrameBound::Following(ScalarValue::UInt64(None))
-                }
-                UpperFrameBoundStruct::Following(offset) => {
-                    WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
-                }
+                UpperFrameBoundStruct::UnboundedFollowing(_) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Following(ScalarValue::UInt64(None))
+                    }
+                    WindowFrameUnits::Range => {
+                        WindowFrameBound::Following(ScalarValue::Int64(None))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(
+                            "WindowFrameUnits::Groups is not supported.".to_string(),
+                        ));
+                    }
+                },
+                UpperFrameBoundStruct::Following(offset) => match units {
+                    WindowFrameUnits::Rows => {
+                        WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
+                    }
+                    WindowFrameUnits::Range => {
+                        WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
+                    }
+                    WindowFrameUnits::Groups => {
+                        return Err(ExecutionError::GeneralError(
+                            "WindowFrameUnits::Groups is not supported.".to_string(),
+                        ));
+                    }
+                },
                 UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
             },
-            None => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+            None => match units {
+                WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
+                WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
+                WindowFrameUnits::Groups => {
+                    return Err(ExecutionError::GeneralError(
+                        "WindowFrameUnits::Groups is not supported.".to_string(),
+                    ));
+                }
+            },
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
