@@ -918,7 +918,6 @@ impl PhysicalPlanner {
                 let fetch = sort.fetch.map(|num| num as usize);
 
                 let child: Arc<dyn ExecutionPlan> = if can_reuse_input_batch(&child) {
-                    // perform a deep copy but do not unpack dictionaries
                     Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
                 } else {
                     child
