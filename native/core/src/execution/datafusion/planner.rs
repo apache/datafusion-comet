@@ -1284,7 +1284,10 @@ impl PhysicalPlanner {
         ))
     }
 
-    fn wrap_in_copy_exec(is_sort_merge: bool, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    fn wrap_in_copy_exec(
+        is_sort_merge: bool,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Arc<dyn ExecutionPlan> {
         if is_sort_merge {
             // SortExec does not produce dictionary arrays and does not re-use batches,
             // so no need for a CopyExec in this case
