@@ -54,7 +54,7 @@
                               +- CometScan parquet spark_catalog.default.web_site (42)
 
 
-(1) Scan parquet spark_catalog.default.web_sales
+(1) CometScan parquet spark_catalog.default.web_sales
 Output [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ws_sold_date_sk#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -77,7 +77,7 @@ Arguments: hashpartitioning(ws_order_number#4, 5), ENSURE_REQUIREMENTS, CometNat
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Arguments: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6], [ws_order_number#4 ASC NULLS FIRST]
 
-(6) Scan parquet spark_catalog.default.web_sales
+(6) CometScan parquet spark_catalog.default.web_sales
 Output [3]: [ws_warehouse_sk#8, ws_order_number#9, ws_sold_date_sk#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
@@ -121,7 +121,7 @@ Left output [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_ord
 Right output [1]: [ws_order_number#9]
 Arguments: [ws_order_number#4], [ws_order_number#9], LeftSemi
 
-(16) Scan parquet spark_catalog.default.web_returns
+(16) CometScan parquet spark_catalog.default.web_returns
 Output [2]: [wr_order_number#13, wr_returned_date_sk#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
@@ -181,7 +181,7 @@ Left output [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_ord
 Right output [1]: [wr_order_number#13]
 Arguments: [ws_order_number#4], [wr_order_number#13], LeftSemi
 
-(30) Scan parquet spark_catalog.default.date_dim
+(30) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#19, d_date#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -209,7 +209,7 @@ Arguments: [ws_ship_date_sk#1], [d_date_sk#19], Inner, BuildRight
 Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, d_date_sk#19]
 Arguments: [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6], [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 
-(36) Scan parquet spark_catalog.default.customer_address
+(36) CometScan parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#21, ca_state#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -237,7 +237,7 @@ Arguments: [ws_ship_addr_sk#2], [ca_address_sk#21], Inner, BuildRight
 Input [6]: [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, ca_address_sk#21]
 Arguments: [ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6], [ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 
-(42) Scan parquet spark_catalog.default.web_site
+(42) CometScan parquet spark_catalog.default.web_site
 Output [2]: [web_site_sk#23, web_company_name#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_site]

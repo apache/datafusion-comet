@@ -87,7 +87,7 @@ TakeOrderedAndProject (86)
                                     +- CometScan parquet spark_catalog.default.date_dim (73)
 
 
-(1) Scan parquet spark_catalog.default.store_sales
+(1) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#1, ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -99,7 +99,7 @@ ReadSchema: struct<ss_item_sk:int,ss_quantity:int,ss_list_price:decimal(7,2)>
 Input [4]: [ss_item_sk#1, ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4]
 Condition : isnotnull(ss_item_sk#1)
 
-(3) Scan parquet spark_catalog.default.item
+(3) CometScan parquet spark_catalog.default.item
 Output [4]: [i_item_sk#6, i_brand_id#7, i_class_id#8, i_category_id#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -110,7 +110,7 @@ ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_class_id:int,i_category_id:int
 Input [4]: [i_item_sk#6, i_brand_id#7, i_class_id#8, i_category_id#9]
 Condition : ((isnotnull(i_brand_id#7) AND isnotnull(i_class_id#8)) AND isnotnull(i_category_id#9))
 
-(5) Scan parquet spark_catalog.default.store_sales
+(5) CometScan parquet spark_catalog.default.store_sales
 Output [2]: [ss_item_sk#10, ss_sold_date_sk#11]
 Batched: true
 Location: InMemoryFileIndex []
@@ -122,7 +122,7 @@ ReadSchema: struct<ss_item_sk:int>
 Input [2]: [ss_item_sk#10, ss_sold_date_sk#11]
 Condition : isnotnull(ss_item_sk#10)
 
-(7) Scan parquet spark_catalog.default.item
+(7) CometScan parquet spark_catalog.default.item
 Output [4]: [i_item_sk#13, i_brand_id#14, i_class_id#15, i_category_id#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -133,7 +133,7 @@ ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_class_id:int,i_category_id:int
 Input [4]: [i_item_sk#13, i_brand_id#14, i_class_id#15, i_category_id#16]
 Condition : (((isnotnull(i_item_sk#13) AND isnotnull(i_brand_id#14)) AND isnotnull(i_class_id#15)) AND isnotnull(i_category_id#16))
 
-(9) Scan parquet spark_catalog.default.catalog_sales
+(9) CometScan parquet spark_catalog.default.catalog_sales
 Output [2]: [cs_item_sk#17, cs_sold_date_sk#18]
 Batched: true
 Location: InMemoryFileIndex []
@@ -145,7 +145,7 @@ ReadSchema: struct<cs_item_sk:int>
 Input [2]: [cs_item_sk#17, cs_sold_date_sk#18]
 Condition : isnotnull(cs_item_sk#17)
 
-(11) Scan parquet spark_catalog.default.item
+(11) CometScan parquet spark_catalog.default.item
 Output [4]: [i_item_sk#20, i_brand_id#21, i_class_id#22, i_category_id#23]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -169,7 +169,7 @@ Arguments: [cs_item_sk#17], [i_item_sk#20], Inner, BuildRight
 Input [6]: [cs_item_sk#17, cs_sold_date_sk#18, i_item_sk#20, i_brand_id#21, i_class_id#22, i_category_id#23]
 Arguments: [cs_sold_date_sk#18, i_brand_id#21, i_class_id#22, i_category_id#23], [cs_sold_date_sk#18, i_brand_id#21, i_class_id#22, i_category_id#23]
 
-(16) Scan parquet spark_catalog.default.date_dim
+(16) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#24, d_year#25]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -245,7 +245,7 @@ Input [3]: [brand_id#27, class_id#28, category_id#29]
 Keys [3]: [brand_id#27, class_id#28, category_id#29]
 Functions: []
 
-(33) Scan parquet spark_catalog.default.web_sales
+(33) CometScan parquet spark_catalog.default.web_sales
 Output [2]: [ws_item_sk#30, ws_sold_date_sk#31]
 Batched: true
 Location: InMemoryFileIndex []
@@ -312,7 +312,7 @@ Left output [4]: [ss_item_sk#1, ss_quantity#2, ss_list_price#3, ss_sold_date_sk#
 Right output [1]: [ss_item_sk#38]
 Arguments: [ss_item_sk#1], [ss_item_sk#38], LeftSemi, BuildRight
 
-(48) Scan parquet spark_catalog.default.item
+(48) CometScan parquet spark_catalog.default.item
 Output [4]: [i_item_sk#39, i_brand_id#40, i_class_id#41, i_category_id#42]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -344,7 +344,7 @@ Arguments: [ss_item_sk#1], [i_item_sk#39], Inner, BuildRight
 Input [8]: [ss_item_sk#1, ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4, i_item_sk#39, i_brand_id#40, i_class_id#41, i_category_id#42]
 Arguments: [ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4, i_brand_id#40, i_class_id#41, i_category_id#42], [ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4, i_brand_id#40, i_class_id#41, i_category_id#42]
 
-(55) Scan parquet spark_catalog.default.date_dim
+(55) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#43, d_week_seq#44]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -397,7 +397,7 @@ Results [6]: [store AS channel#55, i_brand_id#40, i_class_id#41, i_category_id#4
 Input [6]: [channel#55, i_brand_id#40, i_class_id#41, i_category_id#42, sales#56, number_sales#57]
 Condition : (isnotnull(sales#56) AND (cast(sales#56 as decimal(32,6)) > cast(Subquery scalar-subquery#58, [id=#59] as decimal(32,6))))
 
-(66) Scan parquet spark_catalog.default.store_sales
+(66) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#60, ss_quantity#61, ss_list_price#62, ss_sold_date_sk#63]
 Batched: true
 Location: InMemoryFileIndex []
@@ -429,7 +429,7 @@ Arguments: [ss_item_sk#60], [i_item_sk#66], Inner, BuildRight
 Input [8]: [ss_item_sk#60, ss_quantity#61, ss_list_price#62, ss_sold_date_sk#63, i_item_sk#66, i_brand_id#67, i_class_id#68, i_category_id#69]
 Arguments: [ss_quantity#61, ss_list_price#62, ss_sold_date_sk#63, i_brand_id#67, i_class_id#68, i_category_id#69], [ss_quantity#61, ss_list_price#62, ss_sold_date_sk#63, i_brand_id#67, i_class_id#68, i_category_id#69]
 
-(73) Scan parquet spark_catalog.default.date_dim
+(73) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#70, d_week_seq#71]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -518,7 +518,7 @@ Subquery:1 Hosting operator id = 65 Hosting Expression = Subquery scalar-subquer
                   +- ReusedExchange (96)
 
 
-(87) Scan parquet spark_catalog.default.store_sales
+(87) CometScan parquet spark_catalog.default.store_sales
 Output [3]: [ss_quantity#85, ss_list_price#86, ss_sold_date_sk#87]
 Batched: true
 Location: InMemoryFileIndex []
@@ -537,7 +537,7 @@ Arguments: [ss_sold_date_sk#87], [d_date_sk#89], Inner, BuildRight
 Input [4]: [ss_quantity#85, ss_list_price#86, ss_sold_date_sk#87, d_date_sk#89]
 Arguments: [quantity#90, list_price#91], [ss_quantity#85 AS quantity#90, ss_list_price#86 AS list_price#91]
 
-(91) Scan parquet spark_catalog.default.catalog_sales
+(91) CometScan parquet spark_catalog.default.catalog_sales
 Output [3]: [cs_quantity#92, cs_list_price#93, cs_sold_date_sk#94]
 Batched: true
 Location: InMemoryFileIndex []
@@ -556,7 +556,7 @@ Arguments: [cs_sold_date_sk#94], [d_date_sk#96], Inner, BuildRight
 Input [4]: [cs_quantity#92, cs_list_price#93, cs_sold_date_sk#94, d_date_sk#96]
 Arguments: [quantity#97, list_price#98], [cs_quantity#92 AS quantity#97, cs_list_price#93 AS list_price#98]
 
-(95) Scan parquet spark_catalog.default.web_sales
+(95) CometScan parquet spark_catalog.default.web_sales
 Output [3]: [ws_quantity#99, ws_list_price#100, ws_sold_date_sk#101]
 Batched: true
 Location: InMemoryFileIndex []
@@ -615,7 +615,7 @@ BroadcastExchange (108)
          +- CometScan parquet spark_catalog.default.date_dim (104)
 
 
-(104) Scan parquet spark_catalog.default.date_dim
+(104) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#43, d_week_seq#44]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -646,7 +646,7 @@ Subquery:7 Hosting operator id = 104 Hosting Expression = Subquery scalar-subque
       +- CometScan parquet spark_catalog.default.date_dim (109)
 
 
-(109) Scan parquet spark_catalog.default.date_dim
+(109) CometScan parquet spark_catalog.default.date_dim
 Output [4]: [d_week_seq#112, d_year#113, d_moy#114, d_dom#115]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -672,7 +672,7 @@ BroadcastExchange (117)
          +- CometScan parquet spark_catalog.default.date_dim (113)
 
 
-(113) Scan parquet spark_catalog.default.date_dim
+(113) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#26, d_year#116]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -712,7 +712,7 @@ BroadcastExchange (122)
          +- CometScan parquet spark_catalog.default.date_dim (118)
 
 
-(118) Scan parquet spark_catalog.default.date_dim
+(118) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#70, d_week_seq#71]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -743,7 +743,7 @@ Subquery:16 Hosting operator id = 118 Hosting Expression = Subquery scalar-subqu
       +- CometScan parquet spark_catalog.default.date_dim (123)
 
 
-(123) Scan parquet spark_catalog.default.date_dim
+(123) CometScan parquet spark_catalog.default.date_dim
 Output [4]: [d_week_seq#117, d_year#118, d_moy#119, d_dom#120]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
