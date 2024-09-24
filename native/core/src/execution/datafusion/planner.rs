@@ -83,6 +83,7 @@ use datafusion::{
 };
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::DebugExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -917,16 +918,20 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let copy_exec = if can_reuse_input_batch(&child) {
-                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
+                let child: Arc<dyn ExecutionPlan> = Arc::new(DebugExec::new(child));
+
+                let child: Arc<dyn ExecutionPlan> = if can_reuse_input_batch(&child) {
+                    Arc::new(CopyExec::new(child, CopyMode::DeepCopy))
                 } else {
-                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
+                    child
                 };
 
-                Ok((
-                    scans,
-                    Arc::new(SortExec::new(exprs?, copy_exec).with_fetch(fetch)),
-                ))
+                let child = Arc::new(DebugExec::new(child));
+
+                let sort_exec = Arc::new(SortExec::new(exprs?, child).with_fetch(fetch));
+                let sort_exec = Arc::new(DebugExec::new(sort_exec));
+
+                Ok((scans, sort_exec))
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
@@ -1030,6 +1035,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
+                    true
                 )?;
 
                 let sort_options = join
@@ -1058,6 +1064,8 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
+                let join = Arc::new(DebugExec::new(join));
+
                 Ok((scans, join))
             }
             OpStruct::HashJoin(join) => {
@@ -1068,6 +1076,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
+                    false
                 )?;
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
@@ -1143,6 +1152,7 @@ impl PhysicalPlanner {
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
+        is_sort_merge: bool,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
         assert!(children.len() == 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
@@ -1266,17 +1276,26 @@ impl PhysicalPlanner {
         // DataFusion Join operators keep the input batch internally. We need
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
-        let left = if can_reuse_input_batch(&left) {
+        let left = if is_sort_merge {
+            // sortexec already unpacks
+            left
+        } else if can_reuse_input_batch(&left) {
             Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
         } else {
             Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
         };
 
-        let right = if can_reuse_input_batch(&right) {
+        let right = if is_sort_merge {
+            // sortexec already unpacks
+            right
+        } else if can_reuse_input_batch(&right) {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
         } else {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };
+
+        let left = Arc::new(DebugExec::new(left));
+        let right = Arc::new(DebugExec::new(right));
 
         Ok((
             JoinParameters {
@@ -1918,7 +1937,10 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
+    if op.as_any().is::<ProjectionExec>()
+        || op.as_any().is::<LocalLimitExec>()
+        || op.as_any().is::<DebugExec>()
+    {
         can_reuse_input_batch(op.children()[0])
     } else {
         op.as_any().is::<ScanExec>()
