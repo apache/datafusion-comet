@@ -50,6 +50,8 @@ pub struct CopyExec {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CopyMode {
+    /// Perform a deep copy but do not unpack dictionaries
+    DeepCopy,
     /// Perform a deep copy and also unpack dictionaries
     UnpackOrDeepCopy,
     /// Perform a clone and also unpack dictionaries
@@ -66,7 +68,7 @@ impl CopyExec {
             .fields
             .iter()
             .map(|f: &FieldRef| match f.data_type() {
-                DataType::Dictionary(_, value_type) => {
+                DataType::Dictionary(_, value_type) if mode != CopyMode::DeepCopy => {
                     Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
                 }
                 _ => f.as_ref().clone(),
@@ -260,15 +262,15 @@ fn copy_array(array: &dyn Array) -> ArrayRef {
 /// array is a primitive array, we simply copy the array.
 fn copy_or_unpack_array(array: &Arc<dyn Array>, mode: &CopyMode) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
-        DataType::Dictionary(_, value_type) => {
+        DataType::Dictionary(_, value_type) if mode != &CopyMode::DeepCopy => {
             let options = CastOptions::default();
             cast_with_options(array, value_type.as_ref(), &options)
         }
         _ => {
-            if mode == &CopyMode::UnpackOrDeepCopy {
-                Ok(copy_array(array))
-            } else {
+            if mode == &CopyMode::UnpackOrClone {
                 Ok(Arc::clone(array))
+            } else {
+                Ok(copy_array(array))
             }
         }
     }
