@@ -1030,7 +1030,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
-                    true
+                    true,
                 )?;
 
                 let sort_options = join
@@ -1069,7 +1069,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
-                    false
+                    false,
                 )?;
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     join_params.left,
@@ -1269,25 +1269,8 @@ impl PhysicalPlanner {
         // DataFusion Join operators keep the input batch internally. We need
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
-        let left = if is_sort_merge {
-            // SortExec does not produce dictionary arrays and does not re-use batches,
-            // so no need for a CopyExec in this case
-            left
-        } else if can_reuse_input_batch(&left) {
-            Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
-        } else {
-            Arc::new(CopyExec::new(left, CopyMode::UnpackOrClone))
-        };
-
-        let right = if is_sort_merge {
-            // SortExec does not produce dictionary arrays and does not re-use batches,
-            // so no need for a CopyExec in this case
-            right
-        } else if can_reuse_input_batch(&right) {
-            Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
-        } else {
-            Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
-        };
+        let left = Self::wrap_in_copy_exec(is_sort_merge, left);
+        let right = Self::wrap_in_copy_exec(is_sort_merge, right);
 
         Ok((
             JoinParameters {
@@ -1299,6 +1282,18 @@ impl PhysicalPlanner {
             },
             left_scans,
         ))
+    }
+
+    fn wrap_in_copy_exec(is_sort_merge: bool, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        if is_sort_merge {
+            // SortExec does not produce dictionary arrays and does not re-use batches,
+            // so no need for a CopyExec in this case
+            plan
+        } else if can_reuse_input_batch(&plan) {
+            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
+        } else {
+            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
+        }
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression

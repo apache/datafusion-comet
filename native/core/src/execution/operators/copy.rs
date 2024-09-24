@@ -68,7 +68,7 @@ impl CopyExec {
             .fields
             .iter()
             .map(|f: &FieldRef| match f.data_type() {
-                DataType::Dictionary(_, value_type) if mode != CopyMode::DeepCopy=> {
+                DataType::Dictionary(_, value_type) if mode != CopyMode::DeepCopy => {
                     Field::new(f.name(), value_type.as_ref().clone(), f.is_nullable())
                 }
                 _ => f.as_ref().clone(),
