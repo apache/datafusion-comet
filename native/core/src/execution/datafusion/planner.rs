@@ -917,15 +917,16 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let child: Arc<dyn ExecutionPlan> = if can_reuse_input_batch(&child) {
+                let copy_exec = if can_reuse_input_batch(&child) {
                     Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
                 } else {
-                    child
+                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrClone))
                 };
 
-                let sort_exec = Arc::new(SortExec::new(exprs?, child).with_fetch(fetch));
-
-                Ok((scans, sort_exec))
+                Ok((
+                    scans,
+                    Arc::new(SortExec::new(exprs?, copy_exec).with_fetch(fetch)),
+                ))
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
