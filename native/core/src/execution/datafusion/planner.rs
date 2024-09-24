@@ -916,7 +916,16 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
+
+                let child: Arc<dyn ExecutionPlan> = if can_reuse_input_batch(&child) {
+                    // perform a deep copy but do not unpack dictionaries
+                    Arc::new(CopyExec::new(child, CopyMode::DeepCopy))
+                } else {
+                    child
+                };
+
                 let sort_exec = Arc::new(SortExec::new(exprs?, child).with_fetch(fetch));
+
                 Ok((scans, sort_exec))
             }
             OpStruct::Scan(scan) => {
@@ -1260,8 +1269,8 @@ impl PhysicalPlanner {
         // DataFusion Join operators keep the input batch internally. We need
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
-        let left = Self::wrap_join_input_in_copy_exec(is_sort_merge, left);
-        let right = Self::wrap_join_input_in_copy_exec(is_sort_merge, right);
+        let left = Self::wrap_in_copy_exec(is_sort_merge, left);
+        let right = Self::wrap_in_copy_exec(is_sort_merge, right);
 
         Ok((
             JoinParameters {
@@ -1275,14 +1284,10 @@ impl PhysicalPlanner {
         ))
     }
 
-    fn wrap_join_input_in_copy_exec(
-        is_sort_merge: bool,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Arc<dyn ExecutionPlan> {
+    fn wrap_in_copy_exec(is_sort_merge: bool, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         if is_sort_merge {
-            // The input to a SortMergeJoin is always a SortExec, which does not produce
-            // dictionary-encoded arrays and does not re-use batches, so there is no need for
-            // a CopyExec in this case
+            // SortExec does not produce dictionary arrays and does not re-use batches,
+            // so no need for a CopyExec in this case
             plan
         } else if can_reuse_input_batch(&plan) {
             Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
