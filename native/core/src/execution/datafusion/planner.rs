@@ -83,7 +83,6 @@ use datafusion::{
 };
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
-use crate::execution::DebugExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -918,18 +917,14 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
-                let child: Arc<dyn ExecutionPlan> = Arc::new(DebugExec::new(child));
-
                 let child: Arc<dyn ExecutionPlan> = if can_reuse_input_batch(&child) {
+                    // perform a deep copy but do not unpack dictionaries
                     Arc::new(CopyExec::new(child, CopyMode::DeepCopy))
                 } else {
                     child
                 };
 
-                let child = Arc::new(DebugExec::new(child));
-
                 let sort_exec = Arc::new(SortExec::new(exprs?, child).with_fetch(fetch));
-                let sort_exec = Arc::new(DebugExec::new(sort_exec));
 
                 Ok((scans, sort_exec))
             }
@@ -1063,8 +1058,6 @@ impl PhysicalPlanner {
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     false,
                 )?);
-
-                let join = Arc::new(DebugExec::new(join));
 
                 Ok((scans, join))
             }
@@ -1277,7 +1270,8 @@ impl PhysicalPlanner {
         // to copy the input batch to avoid the data corruption from reusing the input
         // batch.
         let left = if is_sort_merge {
-            // sortexec already unpacks
+            // SortExec does not produce dictionary arrays and does not re-use batches,
+            // so no need for a CopyExec in this case
             left
         } else if can_reuse_input_batch(&left) {
             Arc::new(CopyExec::new(left, CopyMode::UnpackOrDeepCopy))
@@ -1286,16 +1280,14 @@ impl PhysicalPlanner {
         };
 
         let right = if is_sort_merge {
-            // sortexec already unpacks
+            // SortExec does not produce dictionary arrays and does not re-use batches,
+            // so no need for a CopyExec in this case
             right
         } else if can_reuse_input_batch(&right) {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrDeepCopy))
         } else {
             Arc::new(CopyExec::new(right, CopyMode::UnpackOrClone))
         };
-
-        let left = Arc::new(DebugExec::new(left));
-        let right = Arc::new(DebugExec::new(right));
 
         Ok((
             JoinParameters {
@@ -1937,10 +1929,7 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>()
-        || op.as_any().is::<LocalLimitExec>()
-        || op.as_any().is::<DebugExec>()
-    {
+    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
         can_reuse_input_batch(op.children()[0])
     } else {
         op.as_any().is::<ScanExec>()
