@@ -1137,6 +1137,7 @@ impl PhysicalPlanner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_join_parameters(
         &self,
         inputs: &mut Vec<Arc<GlobalRef>>,
