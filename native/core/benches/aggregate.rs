@@ -67,7 +67,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("avg_decimal_comet", |b| {
         let comet_avg_decimal = Arc::new(AggregateUDF::new_from_impl(AvgDecimal::new(
             Arc::clone(&c1),
-            "avg",
             DataType::Decimal128(38, 10),
             DataType::Decimal128(38, 10),
         )));
@@ -96,11 +95,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     group.bench_function("sum_decimal_comet", |b| {
-        let comet_sum_decimal = Arc::new(AggregateUDF::new_from_impl(SumDecimal::new(
-            "sum",
-            Arc::clone(&c1),
-            DataType::Decimal128(38, 10),
-        )));
+        let comet_sum_decimal = Arc::new(AggregateUDF::new_from_impl(
+            SumDecimal::try_new(Arc::clone(&c1), DataType::Decimal128(38, 10)).unwrap(),
+        ));
         b.to_async(&rt).iter(|| {
             black_box(agg_test(
                 partitions,

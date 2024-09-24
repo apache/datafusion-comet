@@ -27,7 +27,8 @@ use arrow::{
     datatypes::{Decimal128Type, DecimalType},
     record_batch::RecordBatch,
 };
-use arrow_schema::{DataType, Schema};
+use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
+use arrow_schema::{DataType, Schema, DECIMAL128_MAX_PRECISION};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
@@ -170,4 +171,16 @@ impl PhysicalExpr for CheckOverflow {
         self.fail_on_error.hash(&mut s);
         self.hash(&mut s);
     }
+}
+
+/// Adapted from arrow-rs `validate_decimal_precision` but returns bool
+/// instead of Err to avoid the cost of formatting the error strings and is
+/// optimized to remove a memcpy that exists in the original function
+/// we can remove this code once we upgrade to a version of arrow-rs that
+/// includes https://github.com/apache/arrow-rs/pull/6419
+#[inline]
+pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
+    precision <= DECIMAL128_MAX_PRECISION
+        && value >= MIN_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
+        && value <= MAX_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
 }
