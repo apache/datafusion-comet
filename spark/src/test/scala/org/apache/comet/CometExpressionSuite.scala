@@ -949,8 +949,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Enabling ANSI will cause native engine failure, but as we cannot catch
     // native error now, we cannot test it here.
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      withParquetTable(Seq((1, 0, 1.0, 0.0)), "tbl") {
-        checkSparkAnswerAndOperator("SELECT _1 / _2, _3 / _4 FROM tbl")
+      withParquetTable(Seq((1, 0, 1.0, 0.0, -0.0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 / _2, _3 / _4, _3 / _5 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 % _2, _3 % _4, _3 % _5 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 / 0, _3 / 0.0, _3 / -0.0 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 % 0, _3 % 0.0, _3 % -0.0 FROM tbl")
       }
     }
   }
