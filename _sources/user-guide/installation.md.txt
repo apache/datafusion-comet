@@ -26,9 +26,14 @@ Make sure the following requirements are met and software installed on your mach
 - Linux
 - Apple OSX (Intel and Apple Silicon)
 
+## Supported Apache Spark versions
+- 3.3
+- 3.4
+- 3.5
+
 ## Requirements
 
-- Apache Spark 3.3, 3.4, or 3.5
+- [Apache Spark supported by Comet](#supported-apache-spark-versions)
 - JDK 8 and up
 - GLIBC 2.17 (Centos 7) and up
 
@@ -44,8 +49,21 @@ There are no published JAR files yet.
 
 Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
 
-Building from a source release is mostly the same as building directly from the GitHub repository but requires the 
-use of the command `make release-nogit` instead of `make release`. 
+```console
+# Pick the latest version
+export COMET_VERSION=0.2.0
+# Download the tarball
+curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
+# Unpack
+tar -xzf apache-datafusion-comet-$COMET_VERSION.tar.gz
+cd apache-datafusion-comet-$COMET_VERSION
+```
+
+Build
+
+```console
+make release-nogit PROFILES="-Pspark-3.4"
+```
 
 ## Building from the GitHub repository
 
