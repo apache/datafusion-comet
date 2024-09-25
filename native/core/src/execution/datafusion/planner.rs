@@ -917,6 +917,10 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
 
+                // SortExec caches batches so we need to make a copy of incoming batches. Also,
+                // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
+                // it would be more efficient if we could avoid that.
+                // https://github.com/apache/datafusion-comet/issues/963
                 let child = Self::wrap_in_copy_exec(child);
 
                 Ok((
@@ -1280,6 +1284,8 @@ impl PhysicalPlanner {
         ))
     }
 
+    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays
+    /// and make a deep copy of other arrays if the plan re-uses batches.
     fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         if can_reuse_input_batch(&plan) {
             Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
