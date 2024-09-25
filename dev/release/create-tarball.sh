@@ -108,7 +108,7 @@ Here is my vote:
 
 [1]: https://github.com/apache/datafusion-comet/tree/${release_hash}
 [2]: ${url}
-[3]: ** TODO: add Maven staging repository URL here **
+[3]: https://repository.apache.org/#nexus-search;quick~org.apache.datafusion
 [4]: https://github.com/apache/datafusion-comet/blob/${release_hash}/CHANGELOG.md
 MAIL
 echo "---------------------------------------------------------"

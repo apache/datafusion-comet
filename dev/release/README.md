@@ -17,9 +17,9 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Aapche DataFusion Comet: Source Release Process
+# Apache DataFusion Comet: Release Process
 
-This documentation is for creating an official source release of Apache DataFusion Comet.
+This documentation explains the release process for Apache DataFusion Comet.
 
 ## Creating the Release Candidate
 
@@ -49,12 +49,18 @@ git checkout -b branch-0.1
 git push apache branch-0.1
 ```
 
-Create and merge a PR against the release branch to update the Maven version from `0.3.0-SNAPSHOT` to `0.1.0`
+Update the `pom.xml` files in the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`.
+
+There is no need to update the Rust crate versions because they will already be `0.1.0`.
 
 ### Update Version in main
 
-Create a PR against the main branch to update the Rust crate version to `0.2.0` and the Maven version to `0.2.0-SNAPSHOT`.
-The Spark diffs also need updating.
+Create a PR against the main branch to prepare for developing the next release:
+
+- Update the Rust crate version to `0.2.0`.
+- Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files 
+  under `dev/diffs`).
+- Update the CI scripts under the `.github` directory.
 
 ### Generate the Change Log
 
@@ -122,8 +128,10 @@ cd dev/release && ./build-release-comet.sh && cd ../..
 ```
 
 #### Build output
- The build output is installed to a temporary local maven repository. The build script will print the name of the repository
-location at the end. This location will be required at the time of deploying the artifacts to a staging repository
+
+The build output is installed to a temporary local maven repository. The build script will print the name of the 
+repository location at the end. This location will be required at the time of deploying the artifacts to a staging 
+repository
 
 ### Tag the Release Candidate
 
@@ -137,17 +145,12 @@ git tag 0.1.0-rc1
 git push apache 0.1.0-rc1
 ```
 
+Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
+it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
-
-### Create the Release Candidate Tarball
-
-Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to the dev subversion repository
-
-```shell
-GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
-```
 
 ### Publish the maven artifacts
 #### Setup maven
@@ -196,7 +199,19 @@ Creating Nexus staging repository
 In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in 
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).
 
-If the artifacts appear to be correct, then close and release the repository so it is made visible.
+If the artifacts appear to be correct, then close and release the repository so it is made visible (this should
+actually happen automatically when running the script).
+
+### Create the Release Candidate Tarball
+
+Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to 
+the dev subversion repository
+
+```shell
+GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
+```
+
+This will generate an email template for starting the vote.
 
 ### Start an Email Voting Thread
 
@@ -210,6 +225,9 @@ Once the vote passes, run the release-tarball script to move the tarball to the 
 ./dev/release/create-tarball.sh 0.1.0 1
 ```
 
+Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories 
+and selecting the staging repository and then clicking the "release" button.
+
 Push a release tag (`0.1.0`) to the `apache` repository.
 
 ```shell
@@ -218,6 +236,9 @@ git checkout 0.1.0-rc1
 git tag 0.1.0
 git push apache 0.1.0
 ```
+
+Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
+it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
 Reply to the vote thread to close the vote and announce the release.
 
