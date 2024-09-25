@@ -239,6 +239,11 @@ Run the release-tarball script to move the tarball to the release subversion rep
 ./dev/release/release-tarball.sh 0.1.0 1
 ```
 
+### Create a release in the GitHub repository
+
+Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the 
+changelog in the description.
+
 ### Publishing Maven Artifacts
 
 Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories
