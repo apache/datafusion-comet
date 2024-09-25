@@ -31,10 +31,10 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{AnalysisException, Column, CometTestBase, DataFrame, DataFrameWriter, Row, SaveMode}
-import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.Hex
-import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateMode
+import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
@@ -909,6 +909,29 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator(df)
       }
     }
+  }
+
+  test("bloom_filter_agg") {
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    withParquetTable(
+      (0 until 100)
+        .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
+      "tbl") {
+      val df = sql("SELECT bloom_filter_agg(cast(_2 as long)) FROM tbl")
+      checkSparkAnswerAndOperator(df)
+    }
+
+    spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
   }
 
   test("sort (non-global)") {
