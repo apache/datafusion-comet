@@ -53,16 +53,21 @@ speedup compared to Spark.
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
 for a broader set of queries.
 
-![](docs/source/_static/images/benchmark-results/2024-09-25/tpch_allqueries.png)
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
 
-![](docs/source/_static/images/benchmark-results/2024-09-25/tpch_queries_compare.png)
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_compare.png)
 
-The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
-is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
+The following charts shows how much Comet currently accelerates each query from the benchmark.
 
-![](docs/source/_static/images/benchmark-results/2024-09-25/tpch_queries_speedup_rel.png)
+### Relative speedup
+
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_speedup_rel.png)
+
+### Absolute speedup
+
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_speedup_abs.png)
 
 These benchmarks can be reproduced in any environment using the documentation in the 
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
