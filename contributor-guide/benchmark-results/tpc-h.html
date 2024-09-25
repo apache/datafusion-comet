@@ -313,20 +313,21 @@ under the License.
 <section id="apache-datafusion-comet-benchmarks-derived-from-tpc-h">
 <h1>Apache DataFusion Comet: Benchmarks Derived From TPC-H<a class="headerlink" href="#apache-datafusion-comet-benchmarks-derived-from-tpc-h" title="Link to this heading">¶</a></h1>
 <p>The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage
-you to run these benchmarks in your own environments.</p>
-<p>Comet can not yet run all TPC-H queries natively. The tracking issue is <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/391">#391</a>.</p>
-<p>Comet currently provides a 62% speedup for TPC-H &#64; SF=100GB.</p>
+data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
+and we encourage you to run these benchmarks in your own environments.</p>
+<p>The tracking issue for improving TPC-H performance is <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/391">#391</a>.</p>
 <p><img alt="" src="../../_images/tpch_allqueries.png" /></p>
 <p>Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.</p>
 <p><img alt="" src="../../_images/tpch_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.</p>
 <p><img alt="" src="../../_images/tpch_queries_speedup_rel.png" /></p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.</p>
+<p><img alt="" src="../../_images/tpch_queries_speedup_abs.png" /></p>
 <p>The raw results of these benchmarks in JSON format is available here:</p>
 <ul class="simple">
-<li><p><a class="reference download internal" download="" href="../../_downloads/6f4a1b2febfd3e1f3c6e2f511411b65e/spark-tpch.json"><span class="xref download myst">Spark</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../../_downloads/dededb5c3da5c33d14a0ef195d7cf05e/comet-tpch.json"><span class="xref download myst">Comet</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../../_downloads/3f6a6a7654de7d907d3a2e945e2a888b/datafusion-python-tpch.json"><span class="xref download myst">DataFusion</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../../_downloads/ea5d080217e78582dab0c3ab4b6144b0/spark-tpch.json"><span class="xref download myst">Spark</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../../_downloads/f46edaf27072f04e5fc62706e1e0f355/comet-tpch.json"><span class="xref download myst">Comet</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../../_downloads/807546f646c85b91efdc98cc0da24c4d/datafusion-python-tpch.json"><span class="xref download myst">DataFusion</span></a></p></li>
 </ul>
 </section>
 

@@ -313,19 +313,20 @@ under the License.
 <section id="apache-datafusion-comet-benchmarks-derived-from-tpc-ds">
 <h1>Apache DataFusion Comet: Benchmarks Derived From TPC-DS<a class="headerlink" href="#apache-datafusion-comet-benchmarks-derived-from-tpc-ds" title="Link to this heading">¶</a></h1>
 <p>The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally on NVMe storage. Performance characteristics will vary in different environments and we encourage
-you to run these benchmarks in your own environments.</p>
-<p>Comet can not yet run all TPC-DS queries natively. The tracking issue is <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a>.</p>
-<p>Comet currently provides a 21% speedup for TPC-DS &#64; SF=100GB.</p>
+data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
+and we encourage you to run these benchmarks in your own environments.</p>
+<p>The tracking issue for improving TPC-DS performance is <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a>.</p>
 <p><img alt="" src="../../_images/tpcds_allqueries.png" /></p>
 <p>Here is a breakdown showing relative performance of Spark and Comet for each query.</p>
 <p><img alt="" src="../../_images/tpcds_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark.</p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.</p>
+<p><img alt="" src="../../_images/tpcds_queries_speedup_rel.png" /></p>
+<p>The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.</p>
 <p><img alt="" src="../../_images/tpcds_queries_speedup_abs.png" /></p>
 <p>The raw results of these benchmarks in JSON format is available here:</p>
 <ul class="simple">
-<li><p><a class="reference download internal" download="" href="../../_downloads/06d29931f82b07f0cc4c80ee688a0e72/spark-tpcds.json"><span class="xref download myst">Spark</span></a></p></li>
-<li><p><a class="reference download internal" download="" href="../../_downloads/dee6fcf95d033e36af717b5ab4ee2626/comet-tpcds.json"><span class="xref download myst">Comet</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../../_downloads/d5f7a42ec1c48932792feb4ee388e952/spark-tpcds.json"><span class="xref download myst">Spark</span></a></p></li>
+<li><p><a class="reference download internal" download="" href="../../_downloads/5903fbfcf4ae1a0da738d03d8cb54f79/comet-tpcds.json"><span class="xref download myst">Comet</span></a></p></li>
 </ul>
 </section>
 
