@@ -26,6 +26,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.SparkEnv;
 import org.apache.spark.launcher.SparkLauncher;
 
+import org.apache.comet.CometConf;
+
 /**
  * Comet specific Parquet related read options.
  *
@@ -33,30 +35,6 @@ import org.apache.spark.launcher.SparkLauncher;
  */
 public class ReadOptions {
   private static final Logger LOG = LoggerFactory.getLogger(ReadOptions.class);
-  public static final String COMET_PARQUET_PARALLEL_IO_ENABLED =
-      "comet.parquet.read.parallel.io.enabled";
-  public static final boolean COMET_PARQUET_PARALLEL_IO_ENABLED_DEFAULT = true;
-
-  public static final String COMET_PARQUET_PARALLEL_IO_THREADS =
-      "comet.parquet.read.parallel.io.thread-pool.size";
-  public static final int COMET_PARQUET_PARALLEL_IO_THREADS_DEFAULT = 32;
-
-  public static final String COMET_IO_MERGE_RANGES = "comet.parquet.read.io.mergeRanges";
-  private static final boolean COMET_IO_MERGE_RANGES_DEFAULT = true;
-
-  public static final String COMET_IO_MERGE_RANGES_DELTA =
-      "comet.parquet.read.io.mergeRanges.delta";
-  private static final int COMET_IO_MERGE_RANGES_DELTA_DEFAULT = 1 << 23; // 8 MB
-
-  // In the parallel reader, if the read ranges submitted are skewed in sizes, this
-  // option will cause the reader to break up larger read ranges into smaller ranges
-  // to reduce the skew. This will result in a slightly larger number of connections
-  // opened to the file system but may give improved performance.
-  // The option is off by default.
-  public static final String COMET_IO_ADJUST_READRANGE_SKEW =
-      "comet.parquet.read.io.adjust.readRange.skew";
-
-  private static final boolean COMET_IO_ADJUST_READRANGE_SKEW_DEFAULT = false;
 
   // Max number of concurrent tasks we expect. Used to autoconfigure S3 client connections
   public static final int S3A_MAX_EXPECTED_PARALLELISM = 32;
@@ -110,10 +88,6 @@ public class ReadOptions {
 
   public static Builder builder(Configuration conf) {
     return new Builder(conf);
-  }
-
-  public static Builder builder() {
-    return builder(new Configuration());
   }
 
   public static class Builder {
@@ -173,14 +147,24 @@ public class ReadOptions {
       this.conf = conf;
       this.parallelIOEnabled =
           conf.getBoolean(
-              COMET_PARQUET_PARALLEL_IO_ENABLED, COMET_PARQUET_PARALLEL_IO_ENABLED_DEFAULT);
+              CometConf.COMET_PARQUET_PARALLEL_IO_ENABLED().key(),
+              (Boolean) CometConf.COMET_PARQUET_PARALLEL_IO_ENABLED().defaultValue().get());
       this.parallelIOThreadPoolSize =
-          conf.getInt(COMET_PARQUET_PARALLEL_IO_THREADS, COMET_PARQUET_PARALLEL_IO_THREADS_DEFAULT);
-      this.ioMergeRanges = conf.getBoolean(COMET_IO_MERGE_RANGES, COMET_IO_MERGE_RANGES_DEFAULT);
+          conf.getInt(
+              CometConf.COMET_PARQUET_PARALLEL_IO_THREADS().key(),
+              (Integer) CometConf.COMET_PARQUET_PARALLEL_IO_THREADS().defaultValue().get());
+      this.ioMergeRanges =
+          conf.getBoolean(
+              CometConf.COMET_IO_MERGE_RANGES().key(),
+              (boolean) CometConf.COMET_IO_MERGE_RANGES().defaultValue().get());
       this.ioMergeRangesDelta =
-          conf.getInt(COMET_IO_MERGE_RANGES_DELTA, COMET_IO_MERGE_RANGES_DELTA_DEFAULT);
+          conf.getInt(
+              CometConf.COMET_IO_MERGE_RANGES_DELTA().key(),
+              (Integer) CometConf.COMET_IO_MERGE_RANGES_DELTA().defaultValue().get());
       this.adjustReadRangeSkew =
-          conf.getBoolean(COMET_IO_ADJUST_READRANGE_SKEW, COMET_IO_ADJUST_READRANGE_SKEW_DEFAULT);
+          conf.getBoolean(
+              CometConf.COMET_IO_ADJUST_READRANGE_SKEW().key(),
+              (Boolean) CometConf.COMET_IO_ADJUST_READRANGE_SKEW().defaultValue().get());
       // override some S3 defaults
       setS3Config();
     }
