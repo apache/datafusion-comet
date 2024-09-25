@@ -58,7 +58,7 @@ There is no need to update the Rust crate versions because they will already be 
 Create a PR against the main branch to prepare for developing the next release:
 
 - Update the Rust crate version to `0.2.0`.
-- Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files 
+- Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
   under `dev/diffs`).
 - Update the CI scripts under the `.github` directory.
 
@@ -87,13 +87,14 @@ python3 generate-changelog.py 0.0.0 HEAD 0.1.0 > ../changelog/0.1.0.md
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
 commit into the release branch.
 
-### Build the jars 
+### Build the jars
 
 #### Setup to do the build
-  The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
-  If you have multiple docker contexts running switch to the context of the Docker Desktop. For example - 
 
-  ```shell
+The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
+If you have multiple docker contexts running switch to the context of the Docker Desktop. For example -
+
+```shell
 $ docker context ls
 NAME              DESCRIPTION                               DOCKER ENDPOINT                               ERROR
 default           Current DOCKER_HOST based configuration   unix:///var/run/docker.sock
@@ -101,12 +102,14 @@ desktop-linux     Docker Desktop                            unix:///Users/parth/
 my_custom_context *                                         tcp://192.168.64.2:2376
 
 $ docker context use desktop-linux
-  ```
+```
+
 #### Run the build script
- The `build-release-comet.sh` script will create a docker image for each architecture and use the image 
+
+The `build-release-comet.sh` script will create a docker image for each architecture and use the image
 to build the platform specific binaries. These builder images are created every time this script is run.
-The script optionally allows overriding of the repository and branch to build the binaries from (Note that 
- the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).
+The script optionally allows overriding of the repository and branch to build the binaries from (Note that
+the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).
 
 ```shell
 Usage: build-release-comet.sh [options]
@@ -129,8 +132,8 @@ cd dev/release && ./build-release-comet.sh && cd ../..
 
 #### Build output
 
-The build output is installed to a temporary local maven repository. The build script will print the name of the 
-repository location at the end. This location will be required at the time of deploying the artifacts to a staging 
+The build output is installed to a temporary local maven repository. The build script will print the name of the
+repository location at the end. This location will be required at the time of deploying the artifacts to a staging
 repository
 
 ### Tag the Release Candidate
@@ -153,14 +156,20 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 This part of the process can mostly only be performed by a PMC member.
 
 ### Publish the maven artifacts
+
 #### Setup maven
+
 ##### One time project setup
+
 Setting up your project in the ASF Nexus Repository from here: https://infra.apache.org/publishing-maven-artifacts.html
+
 ##### Release Manager Setup
-Set up your development environment from here:  https://infra.apache.org/publishing-maven-artifacts.html
+
+Set up your development environment from here: https://infra.apache.org/publishing-maven-artifacts.html
 
 ##### Build and publish a release candidate to nexus.
-The script `publish-to-maven.sh` will publish the artifacts created by the `build-release-comet.sh` script. 
+
+The script `publish-to-maven.sh` will publish the artifacts created by the `build-release-comet.sh` script.
 The artifacts will be signed using the gpg key of the release manager and uploaded to the maven staging repository.
 
 Note: This script needs `xmllint` to be installed. On MacOS xmllint is available by default.
@@ -186,7 +195,8 @@ GPG_KEY - GPG key used to sign release artifacts
 GPG_PASSPHRASE - Passphrase for GPG key
 ```
 
-example 
+example
+
 ```shell
 /comet:$./dev/release/publish-to-maven.sh -u release_manager_asf_id  -r /tmp/comet-staging-repo-VsYOX
 ASF Password :
@@ -196,7 +206,7 @@ Creating Nexus staging repository
 ...
 ```
 
-In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in 
+In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).
 
 If the artifacts appear to be correct, then close and release the repository so it is made visible (this should
@@ -204,7 +214,7 @@ actually happen automatically when running the script).
 
 ### Create the Release Candidate Tarball
 
-Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to 
+Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to
 the dev subversion repository
 
 ```shell
@@ -217,16 +227,29 @@ This will generate an email template for starting the vote.
 
 Send the email that is generated in the previous step to `dev@datafusion.apache.org`.
 
-### Publish the Release Tarball
+## Publishing Binary Releases
 
-Once the vote passes, run the release-tarball script to move the tarball to the release subversion repository.
+Once the vote passes, we can publish the source and binary releases.
+
+### Publishing Source Tarball
+
+Run the release-tarball script to move the tarball to the release subversion repository.
 
 ```shell
-./dev/release/create-tarball.sh 0.1.0 1
+./dev/release/release-tarball.sh 0.1.0 1
 ```
 
-Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories 
+### Publishing Maven Artifacts
+
+Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories
 and selecting the staging repository and then clicking the "release" button.
+
+### Publishing Crates
+
+Publish the `datafusion-comet-spark-expr` crate to crates.io so that other Rust projects can leverage the
+Spark-compatible operators and expressions outside of Spark.
+
+### Push a release tag to the repo
 
 Push a release tag (`0.1.0`) to the `apache` repository.
 
@@ -283,17 +306,6 @@ Delete a release:
 ```shell
 svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion-comet/datafusion-comet-0.0.0
 ```
-
-## Publishing Binary Releases
-
-### Publishing JAR Files to Maven
-
-Once the vote has passed, promote the staged release candidate to production in the Nexus repository UI (https://repository.apache.org/).
-
-### Publishing to crates.io
-
-We may choose to publish the `datafusion-comet` to crates.io so that other Rust projects can leverage the
-Spark-compatible operators and expressions outside of Spark.
 
 ## Post Release Activities
 
