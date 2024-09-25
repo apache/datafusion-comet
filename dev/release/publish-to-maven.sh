@@ -80,7 +80,7 @@ then
 fi
 
 # Default GPG command to use
-GPG="gpg"
+GPG="gpg --pinentry-mode loopback"
 if [ "$GPG_KEY" != "" ]
 then
   GPG="$GPG -u $GPG_KEY"
@@ -96,7 +96,7 @@ GIT_HASH=$(git rev-parse --short HEAD)
 echo "Creating Nexus staging repository"
 
 REPO_REQUEST="<promoteRequest><data><description>Apache Datafusion Comet $COMET_VERSION (commit $GIT_HASH)</description></data></promoteRequest>"
-REPO_REQUEST_RESPONSE=$(curl -I -X POST -d "$REPO_REQUEST" -u $ASF_USERNAME:$ASF_PASSWORD \
+REPO_REQUEST_RESPONSE=$(curl -X POST -d "$REPO_REQUEST" -u $ASF_USERNAME:$ASF_PASSWORD \
   -H "Content-Type:application/xml"  \
   $NEXUS_ROOT/profiles/$NEXUS_PROFILE/start)
 if [ $? -ne 0 ]
