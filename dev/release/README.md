@@ -218,7 +218,7 @@ Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to crea
 the dev subversion repository
 
 ```shell
-GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.1.0 1
+./dev/release/create-tarball.sh 0.1.0 1
 ```
 
 This will generate an email template for starting the vote.
