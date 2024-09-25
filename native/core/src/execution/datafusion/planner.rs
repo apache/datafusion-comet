@@ -1607,6 +1607,9 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
+            AggExprStruct::BloomFilterAgg(expr) => Err(ExecutionError::GeneralError(
+                "BloomFilterAgg not implemented yet".to_string(),
+            )),
         }
     }
 
