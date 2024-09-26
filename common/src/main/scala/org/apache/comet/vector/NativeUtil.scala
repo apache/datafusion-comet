@@ -92,10 +92,14 @@ class NativeUtil {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       batch: ColumnarBatch): Int = {
+    val numRows = mutable.ArrayBuffer.empty[Int]
+
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometVector =>
           val valueVector = a.getValueVector
+
+          numRows += valueVector.getValueCount
 
           val provider = if (valueVector.getField.getDictionary != null) {
             a.getDictionaryProvider
@@ -120,7 +124,16 @@ class NativeUtil {
       }
     }
 
-    batch.numRows()
+    if (numRows.distinct.length > 1) {
+      throw new SparkException(
+        s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
+    }
+
+    // `ColumnarBatch.numRows` might return a different number than the actual number of rows in
+    // the Arrow arrays. For example, Iceberg column reader will skip deleted rows internally in
+    // its `CometVector` implementation. The `ColumnarBatch` returned by the reader will report
+    // logical number of rows which is less than actual number of rows due to row deletion.
+    numRows.headOption.getOrElse(batch.numRows())
   }
 
   /**
