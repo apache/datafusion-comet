@@ -105,6 +105,8 @@ To get started with Apache DataFusion Comet, follow the
 [DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html) to connect
 with other users, ask questions, and share your experiences with Comet.
 
+Follow [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/user-guide/overview.html) to get more detailed information 
+
 ## Contributing
 
 We welcome contributions from the community to help improve and enhance Apache DataFusion Comet. Whether it's fixing
