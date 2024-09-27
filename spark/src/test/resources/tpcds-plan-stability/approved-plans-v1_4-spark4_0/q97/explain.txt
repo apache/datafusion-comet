@@ -26,14 +26,14 @@
                                  +- ReusedExchange (13)
 
 
-(1) Scan parquet spark_catalog.default.store_sales
+(1) CometScan parquet spark_catalog.default.store_sales
 Output [3]: [ss_item_sk#1, ss_customer_sk#2, ss_sold_date_sk#3]
 Batched: true
 Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#3), dynamicpruningexpression(ss_sold_date_sk#3 IN dynamicpruning#4)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int>
 
-(2) Scan parquet spark_catalog.default.date_dim
+(2) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -79,7 +79,7 @@ Functions: []
 Input [2]: [customer_sk#7, item_sk#8]
 Arguments: [customer_sk#7, item_sk#8], [customer_sk#7 ASC NULLS FIRST, item_sk#8 ASC NULLS FIRST]
 
-(12) Scan parquet spark_catalog.default.catalog_sales
+(12) CometScan parquet spark_catalog.default.catalog_sales
 Output [3]: [cs_bill_customer_sk#9, cs_item_sk#10, cs_sold_date_sk#11]
 Batched: true
 Location: InMemoryFileIndex []
@@ -156,7 +156,7 @@ BroadcastExchange (30)
          +- CometScan parquet spark_catalog.default.date_dim (26)
 
 
-(26) Scan parquet spark_catalog.default.date_dim
+(26) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

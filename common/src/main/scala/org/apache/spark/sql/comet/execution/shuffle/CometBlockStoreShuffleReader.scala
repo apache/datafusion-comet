@@ -88,20 +88,20 @@ class CometBlockStoreShuffleReader[K, C](
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
+    var currentReadIterator: ArrowReaderIterator = null
+
+    // Closes last read iterator after the task is finished.
+    // We need to close read iterator during iterating input streams,
+    // instead of one callback per read iterator. Otherwise if there are too many
+    // read iterators, it may blow up the call stack and cause OOM.
+    context.addTaskCompletionListener[Unit] { _ =>
+      if (currentReadIterator != null) {
+        currentReadIterator.close()
+      }
+    }
+
     val recordIter = fetchIterator
       .flatMap { case (_, inputStream) =>
-        var currentReadIterator: ArrowReaderIterator = null
-
-        // Closes last read iterator after the task is finished.
-        // We need to close read iterator during iterating input streams,
-        // instead of one callback per read iterator. Otherwise if there are too many
-        // read iterators, it may blow up the call stack and cause OOM.
-        context.addTaskCompletionListener[Unit] { _ =>
-          if (currentReadIterator != null) {
-            currentReadIterator.close()
-          }
-        }
-
         IpcInputStreamIterator(inputStream, decompressingNeeded = true, context)
           .flatMap { channel =>
             if (currentReadIterator != null) {

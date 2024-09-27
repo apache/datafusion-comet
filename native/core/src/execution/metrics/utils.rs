@@ -66,7 +66,7 @@ fn update_metrics(
     unsafe {
         for &(name, value) in metric_values {
             let jname = jni_new_string!(env, &name)?;
-            jni_call!(env, comet_metric_node(metric_node).add(&jname, value) -> ())?;
+            jni_call!(env, comet_metric_node(metric_node).set(&jname, value) -> ())?;
         }
     }
     Ok(())

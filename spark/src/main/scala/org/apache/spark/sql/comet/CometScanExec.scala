@@ -141,8 +141,30 @@ case class CometScanExec(
     if (wrapped == null) Map.empty else wrapped.metadata
 
   override def verboseStringWithOperatorId(): String = {
-    getTagValue(QueryPlan.OP_ID_TAG).foreach(id => wrapped.setTagValue(QueryPlan.OP_ID_TAG, id))
-    wrapped.verboseStringWithOperatorId()
+    val metadataStr = metadata.toSeq.sorted
+      .filterNot {
+        case (_, value) if (value.isEmpty || value.equals("[]")) => true
+        case (key, _) if (key.equals("DataFilters") || key.equals("Format")) => true
+        case (_, _) => false
+      }
+      .map {
+        case (key, _) if (key.equals("Location")) =>
+          val location = relation.location
+          val numPaths = location.rootPaths.length
+          val abbreviatedLocation = if (numPaths <= 1) {
+            location.rootPaths.mkString("[", ", ", "]")
+          } else {
+            "[" + location.rootPaths.head + s", ... ${numPaths - 1} entries]"
+          }
+          s"$key: ${location.getClass.getSimpleName} ${redact(abbreviatedLocation)}"
+        case (key, value) => s"$key: ${redact(value)}"
+      }
+
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Output", output)}
+       |${metadataStr.mkString("\n")}
+       |""".stripMargin
   }
 
   lazy val inputRDD: RDD[InternalRow] = {
@@ -198,9 +220,12 @@ case class CometScanExec(
     // Tracking scan time has overhead, we can't afford to do it for each row, and can only do
     // it for each batch.
     if (supportsColumnar) {
-      Some("scanTime" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"))
+      Map(
+        "scanTime" -> SQLMetrics.createNanoTimingMetric(
+          sparkContext,
+          "scan time")) ++ CometMetricNode.scanMetrics(sparkContext)
     } else {
-      None
+      Map.empty
     }
   } ++ {
     relation.fileFormat match {
