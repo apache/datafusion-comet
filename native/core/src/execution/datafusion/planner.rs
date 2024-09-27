@@ -28,6 +28,7 @@ use crate::{
                 avg::Avg,
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
+                bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
@@ -1607,9 +1608,24 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
-            AggExprStruct::BloomFilterAgg(expr) => Err(ExecutionError::GeneralError(
-                "BloomFilterAgg not implemented yet".to_string(),
-            )),
+            AggExprStruct::BloomFilterAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_items =
+                    self.create_expr(expr.num_items.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_bits =
+                    self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
+                    Arc::clone(&child),
+                    Arc::clone(&num_items),
+                    Arc::clone(&num_bits),
+                    "bloom_filter_agg",
+                    datatype,
+                    expr.mutable_buffer_offset,
+                    expr.input_buffer_offset,
+                ));
+                Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
+            }
         }
     }
 

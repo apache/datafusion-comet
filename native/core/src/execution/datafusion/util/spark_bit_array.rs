@@ -128,4 +128,30 @@ mod test {
         // check cardinality
         assert_eq!(array.cardinality(), 6);
     }
+
+    #[test]
+    fn test_spark_bit_with_empty_buffer() {
+        let buf = vec![0u64; 4];
+        let array = SparkBitArray::new(buf);
+
+        assert_eq!(array.bit_size(), 256);
+        assert_eq!(array.cardinality(), 0);
+
+        for n in 0..256 {
+            assert!(!array.get(n));
+        }
+    }
+
+    #[test]
+    fn test_spark_bit_with_full_buffer() {
+        let buf = vec![u64::MAX; 4];
+        let array = SparkBitArray::new(buf);
+
+        assert_eq!(array.bit_size(), 256);
+        assert_eq!(array.cardinality(), 256);
+
+        for n in 0..256 {
+            assert!(array.get(n));
+        }
+    }
 }
