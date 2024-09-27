@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::util::spark_bit_array;
 use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
+use std::cmp;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 
@@ -30,8 +32,31 @@ pub struct SparkBloomFilter {
     num_hash_functions: u32,
 }
 
-impl SparkBloomFilter {
-    pub fn new(buf: &[u8]) -> Self {
+static DEFAULT_FPP: f64 = 0.03;
+
+pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
+    cmp::max(
+        1,
+        ((num_bits as f64 / expected_items as f64) * 2.0_f64.ln()).round() as i32,
+    )
+}
+
+impl From<(i32, i32)> for SparkBloomFilter {
+    /// Creates an empty SparkBloomFilter given number of hash functions and bits.
+    fn from((num_hash_functions, num_bits): (i32, i32)) -> Self {
+        let num_words = spark_bit_array::num_words(num_bits);
+        let bits = vec![0u64; num_words as usize];
+        Self {
+            bits: SparkBitArray::new(bits),
+            num_hash_functions: num_hash_functions as u32,
+        }
+    }
+}
+
+impl From<&[u8]> for SparkBloomFilter {
+    /// Creates a SparkBloomFilter from a serialized byte array conforming to Spark's BloomFilter
+    /// binary format version 1.
+    fn from(buf: &[u8]) -> Self {
         let mut offset = 0;
         let version = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
@@ -54,7 +79,9 @@ impl SparkBloomFilter {
             num_hash_functions: num_hash_functions as u32,
         }
     }
+}
 
+impl SparkBloomFilter {
     pub fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.

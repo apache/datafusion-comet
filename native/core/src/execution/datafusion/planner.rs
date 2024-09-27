@@ -1621,8 +1621,6 @@ impl PhysicalPlanner {
                     Arc::clone(&num_bits),
                     "bloom_filter_agg",
                     datatype,
-                    expr.mutable_buffer_offset,
-                    expr.input_buffer_offset,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }

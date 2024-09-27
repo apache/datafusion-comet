@@ -63,6 +63,10 @@ impl SparkBitArray {
     }
 }
 
+pub fn num_words(num_bits: i32) -> i32 {
+    (num_bits as f64 / 64.0).ceil() as i32
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

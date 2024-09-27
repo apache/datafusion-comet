@@ -776,8 +776,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           numBitsExpr.isDefined && dataType.isDefined) {
           val bloomFilterAggBuilder = ExprOuterClass.BloomFilterAgg.newBuilder()
           bloomFilterAggBuilder.setChild(childExpr.get)
-          bloomFilterAggBuilder.setNumItems(childExpr.get)
-          bloomFilterAggBuilder.setNumBits(childExpr.get)
+          bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
+          bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
           bloomFilterAggBuilder.setMutableBufferOffset(mutableBufferOffset)
           bloomFilterAggBuilder.setInputBufferOffset(inputBufferOffset)
           bloomFilterAggBuilder.setDatatype(dataType.get)
