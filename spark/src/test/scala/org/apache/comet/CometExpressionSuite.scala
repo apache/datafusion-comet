@@ -2264,12 +2264,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           val df = spark.read
             .parquet(path.toString)
-            .select(array(struct(col("_2"), col("_3"), col("_4")), lit(null)).alias("arr"))
+            .select(
+              array(struct(col("_2"), col("_3"), col("_4"), col("_8")), lit(null)).alias("arr"))
           checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
 
-          // val df2 =
-          //   spark.range(10).withColumn("arr", array(struct(lit(1).alias("a"), lit(2).alias("b"))))
-          // checkSparkAnswerAndOperator(df2.select("arr.a", "arr.b"))
+          val complex = spark.read
+            .parquet(path.toString)
+            .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
+
+          checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
         }
       }
     }
