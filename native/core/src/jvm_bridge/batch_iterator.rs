@@ -38,7 +38,8 @@ impl<'a> CometBatchIterator<'a> {
 
         Ok(CometBatchIterator {
             class,
-            method_next: env.get_method_id(Self::JVM_CLASS, "next", "([J[J)I")?,
+            // method_next: env.get_method_id(Self::JVM_CLASS, "next", "([J[J)I")?,
+            method_next: env.get_method_id(Self::JVM_CLASS, "next", "()Lorg/apache/comet/vector/CometBatchElement;")?,
             method_next_ret: ReturnType::Primitive(Primitive::Int),
         })
     }

@@ -104,6 +104,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     comet_task_memory_manager_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+
         // Init JVM classes
         JVMClasses::init(&mut env);
 
@@ -261,32 +262,32 @@ fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    // array_addrs: jlongArray,
+    // schema_addrs: jlongArray,
     output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
 ) -> CometResult<jlong> {
-    let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
-    let num_cols = env.get_array_length(&array_address_array)? as usize;
+    // let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
+    // let num_cols = env.get_array_length(&array_address_array)? as usize;
 
-    let array_addrs =
-        unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
-    let array_addrs = &*array_addrs;
+    // let array_addrs =
+    //     unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
+    // let array_addrs = &*array_addrs;
 
-    let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
-    let schema_addrs =
-        unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
-    let schema_addrs = &*schema_addrs;
+    // let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
+    // let schema_addrs =
+    //     unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
+    // let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    if results.len() != num_cols {
-        return Err(CometError::Internal(format!(
-            "Output column count mismatch: expected {num_cols}, got {}",
-            results.len()
-        )));
-    }
+    // if results.len() != num_cols {
+    //     return Err(CometError::Internal(format!(
+    //         "Output column count mismatch: expected {num_cols}, got {}",
+    //         results.len()
+    //     )));
+    // }
 
     if exec_context.debug_native {
         // Validate the output arrays.
@@ -298,15 +299,15 @@ fn prepare_output(
         }
     }
 
-    let mut i = 0;
-    while i < results.len() {
-        let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
-        array_ref
-            .to_data()
-            .move_to_spark(array_addrs[i], schema_addrs[i])?;
+    // let mut i = 0;
+    // while i < results.len() {
+    //     let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+    //     array_ref
+    //         .to_data()
+    //         .move_to_spark(array_addrs[i], schema_addrs[i])?;
 
-        i += 1;
-    }
+    //     i += 1;
+    // }
 
     // Update metrics
     update_metrics(env, exec_context)?;
@@ -337,8 +338,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
     exec_context: jlong,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    // array_addrs: jlongArray,
+    // schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
@@ -387,8 +388,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 Poll::Ready(Some(output)) => {
                     return prepare_output(
                         &mut env,
-                        array_addrs,
-                        schema_addrs,
+                        // array_addrs,
+                        // schema_addrs,
                         output?,
                         exec_context,
                     );

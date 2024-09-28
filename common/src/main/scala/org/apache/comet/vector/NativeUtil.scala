@@ -91,8 +91,8 @@ class NativeUtil {
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
   def exportBatch(
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
+      // arrayAddrs: Array[Long],
+      // schemaAddrs: Array[Long],
       batch: ColumnarBatch): CometBatchElement = {
     val arrays = new Array[ArrowArray](batch.numCols())
     val schemas = new Array[ArrowSchema](batch.numCols())
@@ -103,29 +103,29 @@ class NativeUtil {
         case a: CometNativeVector =>
           arrays(index) = ArrowArray.wrap(a.getArrayAddress)
           schemas(index) = ArrowSchema.wrap(a.getSchemaAddress)
-        case a: CometVector =>
-          val valueVector = a.getValueVector
+        // case a: CometVector =>
+        //   val valueVector = a.getValueVector
 
-          numRows += valueVector.getValueCount
+        //   numRows += valueVector.getValueCount
 
-          val provider = if (valueVector.getField.getDictionary != null) {
-            a.getDictionaryProvider
-          } else {
-            null
-          }
+        //   val provider = if (valueVector.getField.getDictionary != null) {
+        //     a.getDictionaryProvider
+        //   } else {
+        //     null
+        //   }
 
-          // The array and schema structures are allocated by native side.
-          // Don't need to deallocate them here.
-          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
-          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
-          exportVector(
-            allocator,
-            getFieldVector(valueVector, "export"),
-            provider,
-            arrowArray,
-            arrowSchema,
-            a.numNulls(),
-            a.dictValNumNulls())
+        //   // The array and schema structures are allocated by native side.
+        //   // Don't need to deallocate them here.
+        //   val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+        //   val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+        //   exportVector(
+        //     allocator,
+        //     getFieldVector(valueVector, "export"),
+        //     provider,
+        //     arrowArray,
+        //     arrowSchema,
+        //     a.numNulls(),
+        //     a.dictValNumNulls())
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
