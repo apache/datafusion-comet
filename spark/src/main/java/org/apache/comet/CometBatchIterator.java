@@ -23,7 +23,6 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
-import org.apache.comet.vector.CometBatchElement;
 import org.apache.comet.vector.NativeUtil;
 
 /**
@@ -46,11 +45,11 @@ public class CometBatchIterator {
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
   // public CometBatchElement next(long[] arrayAddrs, long[] schemaAddrs) {
-  public CometBatchElement next() {
+  public long[] next() {
     boolean hasBatch = input.hasNext();
 
     if (!hasBatch) {
-      return CometBatchElement.empty();
+      return new long[] {-1};
     }
 
     // return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());

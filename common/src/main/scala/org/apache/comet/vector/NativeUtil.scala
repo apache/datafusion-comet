@@ -22,7 +22,6 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
-import org.apache.arrow.c.CometArrayExporter.exportVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -93,16 +92,16 @@ class NativeUtil {
   def exportBatch(
       // arrayAddrs: Array[Long],
       // schemaAddrs: Array[Long],
-      batch: ColumnarBatch): CometBatchElement = {
-    val arrays = new Array[ArrowArray](batch.numCols())
-    val schemas = new Array[ArrowSchema](batch.numCols())
-    val numRows = mutable.ArrayBuffer.empty[Int]
+      batch: ColumnarBatch): Array[Long] = {
+    // val numRows = mutable.ArrayBuffer.empty[Int]
+    val builder = Array.newBuilder[Long]
+    builder += batch.numRows()
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometNativeVector =>
-          arrays(index) = ArrowArray.wrap(a.getArrayAddress)
-          schemas(index) = ArrowSchema.wrap(a.getSchemaAddress)
+          builder += a.getArrayAddress
+          builder += a.getSchemaAddress
         // case a: CometVector =>
         //   val valueVector = a.getValueVector
 
@@ -133,17 +132,17 @@ class NativeUtil {
       }
     }
 
-    if (numRows.distinct.length > 1) {
-      throw new SparkException(
-        s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
-    }
+    // if (numRows.distinct.length > 1) {
+    //   throw new SparkException(
+    //     s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
+    // }
 
     // `ColumnarBatch.numRows` might return a different number than the actual number of rows in
     // the Arrow arrays. For example, Iceberg column reader will skip deleted rows internally in
     // its `CometVector` implementation. The `ColumnarBatch` returned by the reader will report
     // logical number of rows which is less than actual number of rows due to row deletion.
 
-    CometBatchElement(batch.numRows(), arrays, schemas)
+    builder.result()
   }
 
   /**
@@ -156,16 +155,23 @@ class NativeUtil {
    * @return
    *   The number of row of the next batch, or None if there are no more batches
    */
-  def getNextBatch(numOutputCols: Int, func: () => CometBatchElement): Option[ColumnarBatch] = {
+  def getNextBatch(numOutputCols: Int, func: () => Array[Long]): Option[ColumnarBatch] = {
     // val (arrays, schemas) = allocateArrowStructs(numOutputCols)
 
     // val arrayAddrs = arrays.map(_.memoryAddress())
     // val schemaAddrs = schemas.map(_.memoryAddress())
 
     // val result = func(arrayAddrs, schemaAddrs)
-    val cometBatchElement = func()
-    val (result, arrays, schemas) =
-      (cometBatchElement.result, cometBatchElement.arrays, cometBatchElement.schemas)
+    val cometBatchElements = func()
+    val result = cometBatchElements(0)
+    val arrayBuilder = Array.newBuilder[ArrowArray]
+    val schemaBuilder = Array.newBuilder[ArrowSchema]
+    for (i <- 1 until cometBatchElements.length by 2) {
+      arrayBuilder += ArrowArray.wrap(cometBatchElements(i))
+      schemaBuilder += ArrowSchema.wrap(cometBatchElements(i + 1))
+    }
+    val arrays = arrayBuilder.result()
+    val schemas = schemaBuilder.result()
 
     result match {
       case -1 =>
@@ -252,10 +258,4 @@ object NativeUtil {
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }
-}
-
-case class CometBatchElement(result: Int, arrays: Array[ArrowArray], schemas: Array[ArrowSchema])
-
-object CometBatchElement {
-  def empty(): CometBatchElement = CometBatchElement(-1, null, null)
 }

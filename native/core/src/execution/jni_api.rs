@@ -104,7 +104,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     comet_task_memory_manager_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-
         // Init JVM classes
         JVMClasses::init(&mut env);
 
