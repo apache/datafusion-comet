@@ -309,7 +309,7 @@ svn ls https://dist.apache.org/repos/dist/release/datafusion | grep comet
 Delete a release:
 
 ```shell
-svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion-comet/datafusion-comet-0.0.0
+svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.0.0
 ```
 
 ## Post Release Activities
