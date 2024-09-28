@@ -43,7 +43,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 
 ## Using a Published JAR File
 
-Pre-built jar files are available in Maven central at https://central.sonatype.com/search?q=org.apache.datafusion
+Pre-built jar files are available in Maven central at https://central.sonatype.com/namespace/org.apache.datafusion
 
 ## Using a Published Source Release
 
