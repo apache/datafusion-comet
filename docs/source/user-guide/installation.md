@@ -35,7 +35,7 @@ For more details, refer to the documentation: [Apache Spark supported by Comet](
   - **Supported Java Versions**: JDK 8 and above
   - **GLIBC**: 2.17 (CentOS 7) and above
 - **Apache Spark 4.0** *(Experimental Support)*
-  - **Supported Java Versions**: JDK 11 and above (JDK 8 is not supported)
+  - **Supported Java Versions**: JDK 17/21 
   - **GLIBC**: 2.17 (CentOS 7) and above
 
 ## Deploying to Kubernetes
