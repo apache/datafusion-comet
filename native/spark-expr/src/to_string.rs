@@ -1,37 +1,37 @@
 // Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
+// or more contributor license agreements. See the NOTICE file
 // distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
+// regarding copyright ownership. The ASF licenses this file
 // to you under the Apache License, Version 2.0 (the
 // "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// with the License. You may obtain a copy of the License at
 //
 //   http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing,
 // software distributed under the License is distributed on an
 // "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
+// KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations
 // under the License.
 
 use crate::{spark_cast, EvalMode};
-use arrow_array::{Array, ArrayRef, RecordBatch};
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
 use datafusion_common::Result;
-use datafusion_expr::ColumnarValue;
+use datafusion_expr::{ColumnarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::string::ToString as TOString;
 use std::sync::Arc;
+use arrow_array::builder::StringBuilder;
 
 /// to_string function
 #[derive(Debug, Hash)]
 pub struct ToString {
-    /// The input to convert to string
     expr: Arc<dyn PhysicalExpr>,
-    /// Timezone to use when converting timestamps to string
     timezone: String,
 }
 
@@ -104,15 +104,183 @@ impl PhysicalExpr for ToString {
     }
 }
 
-/// Convert an array into a string representation
-fn array_to_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef> {
-    spark_cast(
-        ColumnarValue::Array(Arc::clone(arr)),
-        &DataType::Utf8,
-        EvalMode::Legacy,
-        timezone,
-        false,
-    )?
-        .into_array(arr.len())
+fn struct_to_string(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
+    // Get field names
+    let field_names: Vec<String> = array
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
+
+    // Convert each column to string representation
+    let string_arrays: Vec<ArrayRef> = array
+        .columns()
+        .iter()
+        .map(|arr| array_to_string(arr, timezone))
+        .collect::<Result<Vec<_>>>()?;
+
+    let string_arrays: Vec<&StringArray> = string_arrays
+        .iter()
+        .map(|arr| {
+            arr.as_any()
+                .downcast_ref::<StringArray>()
+                .expect("string array")
+        })
+        .collect();
+
+    // Build the string representation of each struct
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut struct_str = String::with_capacity(array.len() * 16);
+
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            struct_str.clear();
+            struct_str.push('{');
+            let mut any_fields_written = false;
+
+            for col_index in 0..string_arrays.len() {
+                if !string_arrays[col_index].is_null(row_index) {
+                    if any_fields_written {
+                        struct_str.push(',');
+                    }
+                    struct_str.push_str(&field_names[col_index]);
+                    struct_str.push_str(": ");
+                    struct_str.push_str(string_arrays[col_index].value(row_index));
+                    any_fields_written = true;
+                }
+            }
+
+            struct_str.push('}');
+            builder.append_value(&struct_str);
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
 }
 
+// Helper function to convert an array to string representation
+fn array_to_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef> {
+    match arr.data_type() {
+        DataType::Struct(_) => {
+            let struct_array = arr.as_any().downcast_ref::<StructArray>().unwrap();
+            struct_to_string(struct_array, timezone)
+        }
+        _ => spark_cast(
+            ColumnarValue::Array(Arc::clone(arr)),
+            &DataType::Utf8,
+            EvalMode::Legacy,
+            timezone,
+            false,
+        )?.into_array(arr.len()),
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use crate::to_string::struct_to_string;
+    use datafusion_common::Result;
+    use arrow_array::{Array, PrimitiveArray, StringArray};
+    use arrow_array::{ArrayRef, BooleanArray, Int32Array, StructArray};
+    use arrow_schema::{DataType, Field};
+    use std::sync::Arc;
+    use arrow_array::types::Int32Type;
+
+    #[test]
+    fn test_primitives() -> Result<()> {
+        let bools: ArrayRef = create_bools();
+        let ints: ArrayRef = create_ints();
+        let strings: ArrayRef = create_strings();
+        let struct_array = StructArray::from(vec![
+            (Arc::new(Field::new("a", DataType::Boolean, true)), bools),
+            (Arc::new(Field::new("b", DataType::Int32, true)), ints),
+            (Arc::new(Field::new("c", DataType::Utf8, true)), strings),
+        ]);
+        let result = struct_to_string(&struct_array, "UTC")?;
+        let result = result
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(4, result.len());
+        assert_eq!("{b: 123}", result.value(0));
+        assert_eq!("{a: true,c: foo}", result.value(1));
+        assert_eq!("{a: false,b: 2147483647,c: bar}", result.value(2));
+        assert_eq!("{a: false,b: -2147483648,c: }", result.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_struct() -> Result<()> {
+        let bools: ArrayRef = create_bools();
+        let ints: ArrayRef = create_ints();
+
+        // create first struct array
+        let struct_fields = vec![
+            Arc::new(Field::new("a", DataType::Boolean, true)),
+            Arc::new(Field::new("b", DataType::Int32, true)),
+        ];
+        let struct_values = vec![bools, ints];
+        let struct_array = StructArray::from(
+            struct_fields
+                .clone()
+                .into_iter()
+                .zip(struct_values)
+                .collect::<Vec<_>>(),
+        );
+
+        // create second struct array containing the first struct array
+        let struct_fields2 = vec![Arc::new(Field::new(
+            "a",
+            DataType::Struct(struct_fields.into()),
+            true,
+        ))];
+        let struct_values2: Vec<ArrayRef> = vec![Arc::new(struct_array.clone())];
+        let struct_array2 = StructArray::from(
+            struct_fields2
+                .into_iter()
+                .zip(struct_values2)
+                .collect::<Vec<_>>(),
+        );
+
+        let result = struct_to_string(&struct_array2, "UTC")?;
+        let result = result
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(4, result.len());
+        assert_eq!("{a: {b: 123}}", result.value(0));
+        assert_eq!("{a: {a: true}}", result.value(1));
+        assert_eq!("{a: {a: false,b: 2147483647}}", result.value(2));
+        assert_eq!("{a: {a: false,b: -2147483648}}", result.value(3));
+        Ok(())
+    }
+
+    fn create_ints() -> Arc<PrimitiveArray<Int32Type>> {
+        Arc::new(Int32Array::from(vec![
+            Some(123),
+            None,
+            Some(i32::MAX),
+            Some(i32::MIN),
+        ]))
+    }
+
+    fn create_bools() -> Arc<BooleanArray> {
+        Arc::new(BooleanArray::from(vec![
+            None,
+            Some(true),
+            Some(false),
+            Some(false),
+        ]))
+    }
+
+    fn create_strings() -> Arc<StringArray> {
+        Arc::new(StringArray::from(vec![
+            None,
+            Some("foo"),
+            Some("bar"),
+            Some(""),
+        ]))
+    }
+}
