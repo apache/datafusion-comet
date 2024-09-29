@@ -355,7 +355,7 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
-message toString {
+message ToString {
   Expr child = 1;
   string timezone = 2;
   string date_format = 3;

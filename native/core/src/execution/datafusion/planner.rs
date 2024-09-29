@@ -663,7 +663,7 @@ impl PhysicalPlanner {
                 Ok(Arc::new(ToJson::new(child, &expr.timezone)))
             }
             ExprStruct::ToString(expr) => {
-                let child = self.create_expr(expr.as_ref().unwrap(), input_schema)?;
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(To_String::new(child, &expr.timezone)))
             }
             ExprStruct::ListExtract(expr) => {
