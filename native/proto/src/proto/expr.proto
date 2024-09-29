@@ -360,6 +360,8 @@ message toString {
   string timezone = 2;
   string date_format = 3;
   string timestamp_format = 4;
+  string timestamp_ntz_format = 5;
+  bool ignore_null_fields = 6;
 }
 
 message Hour {

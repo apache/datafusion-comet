@@ -97,7 +97,7 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, ListExtract,
-    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson, ToString as To_String
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -661,6 +661,10 @@ impl PhysicalPlanner {
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+            }
+            ExprStruct::ToString(expr) => {
+                let child = self.create_expr(expr.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(To_String::new(child, &expr.timezone)))
             }
             ExprStruct::ListExtract(expr) => {
                 let child =
@@ -2113,7 +2117,7 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, task::Poll};
-
+    use std::string::ToString;
     use futures::{poll, StreamExt};
 
     use arrow_array::{DictionaryArray, Int32Array, StringArray};
