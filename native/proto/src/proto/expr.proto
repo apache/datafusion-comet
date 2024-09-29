@@ -81,6 +81,7 @@ message Expr {
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
     ListExtract list_extract = 56;
+    ToString to_string = 57;
   }
 }
 
@@ -352,6 +353,13 @@ message ToJson {
   string timestamp_format = 4;
   string timestamp_ntz_format = 5;
   bool ignore_null_fields = 6;
+}
+
+message toString {
+  Expr child = 1;
+  string timezone = 2;
+  string date_format = 3;
+  string timestamp_format = 4;
 }
 
 message Hour {

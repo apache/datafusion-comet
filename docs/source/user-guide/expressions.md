@@ -184,14 +184,14 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Complex Types
 
-| Expression        | Notes       |
-| ----------------- | ----------- |
-| CreateNamedStruct |             |
-| ElementAt         | Arrays only |
-| GetArrayItem      |             |
-| GetStructField    |             |
-| StructsToJson     |             |
-
+| Expression         | Notes       |
+|--------------------| ----------- |
+| CreateNamedStruct  |             |
+| ElementAt          | Arrays only |
+| GetArrayItem       |             |
+| GetStructField     |             |
+| StructsToJson      |             |
+| StructsToString    |             |
 ## Other
 
 | Expression              | Notes                                                                           |
