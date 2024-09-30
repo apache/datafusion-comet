@@ -2542,7 +2542,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case GetArrayStructFields(child, _, ordinal, _, containsNull) =>
+        case GetArrayStructFields(child, _, ordinal, _, _) =>
           val childExpr = exprToProto(child, inputs, binding)
 
           if (childExpr.isDefined) {
