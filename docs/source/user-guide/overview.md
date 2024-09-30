@@ -38,7 +38,7 @@ The following diagram illustrates the architecture of Comet:
 
 ![Comet System Diagram](../_static/images/comet-system-diagram.png)
 
-## Current Status
+## Supported Apache Spark versions
 
 Comet currently supports the following versions of Apache Spark:
 
