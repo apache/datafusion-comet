@@ -18,6 +18,7 @@
 use crate::execution::datafusion::util::spark_bit_array;
 use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
+use arrow_buffer::ToByteSlice;
 use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
 use std::cmp;
 
@@ -82,6 +83,22 @@ impl From<&[u8]> for SparkBloomFilter {
 }
 
 impl SparkBloomFilter {
+    /// Serializes a SparkBloomFilter to a byte array conforming to Spark's BloomFilter
+    /// binary format version 1.
+    pub fn spark_serialization(&self) -> Vec<u8> {
+        // TODO(Matt): There must be a more efficient way to do this, even with all of the
+        // endianness stuff.
+        let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
+        spark_bloom_filter.append(&mut self.num_hash_functions.to_be_bytes().to_vec());
+        spark_bloom_filter.append(&mut (self.bits.word_size() as u32).to_be_bytes().to_vec());
+        let mut filter_state: Vec<u64> = self.bits.data();
+        for i in filter_state.iter_mut() {
+            *i = i.to_be();
+        }
+        spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
+        spark_bloom_filter
+    }
+
     pub fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
@@ -124,18 +141,6 @@ impl SparkBloomFilter {
 
     pub fn state_as_bytes(&self) -> Vec<u8> {
         self.bits.to_bytes()
-    }
-
-    pub fn bits_state(&self) -> Vec<u64> {
-        self.bits.data()
-    }
-
-    pub fn state_size_words(&self) -> usize {
-        self.bits.word_size()
-    }
-
-    pub fn num_hash_functions(&self) -> u32 {
-        self.num_hash_functions
     }
 
     pub fn merge_filter(&mut self, other: &[u8]) {

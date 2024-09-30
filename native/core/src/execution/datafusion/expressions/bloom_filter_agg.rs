@@ -23,7 +23,6 @@ use crate::execution::datafusion::util::spark_bloom_filter;
 use crate::execution::datafusion::util::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::ArrayRef;
 use arrow_array::BinaryArray;
-use arrow_buffer::ToByteSlice;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_common::{downcast_value, DataFusionError, ScalarValue};
@@ -42,7 +41,7 @@ pub struct BloomFilterAgg {
     num_bits: i32,
 }
 
-fn i32_from_literal_physical_expr(expr: Arc<dyn PhysicalExpr>) -> i32 {
+fn extract_i32_from_literal(expr: Arc<dyn PhysicalExpr>) -> i32 {
     match expr.as_any().downcast_ref::<Literal>().unwrap().value() {
         ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
         _ => {
@@ -64,8 +63,8 @@ impl BloomFilterAgg {
             name: name.into(),
             signature: Signature::exact(vec![DataType::Int64], Volatility::Immutable),
             expr,
-            num_items: i32_from_literal_physical_expr(num_items),
-            num_bits: i32_from_literal_physical_expr(num_bits),
+            num_items: extract_i32_from_literal(num_items),
+            num_bits: extract_i32_from_literal(num_bits),
         }
     }
 }
@@ -94,7 +93,6 @@ impl AggregateUDFImpl for BloomFilterAgg {
         ))))
     }
 
-    /// This is the description of the state. accumulator's state() must match the types here.
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![Field::new("bits", DataType::Binary, false)])
     }
@@ -123,16 +121,7 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        // TODO(Matt): There's got to be a more efficient way to do this.
-        let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
-        spark_bloom_filter.append(&mut self.num_hash_functions().to_be_bytes().to_vec());
-        spark_bloom_filter.append(&mut (self.state_size_words() as u32).to_be_bytes().to_vec());
-        let mut filter_state: Vec<u64> = self.bits_state();
-        for i in filter_state.iter_mut() {
-            *i = i.to_be();
-        }
-        spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
-        Ok(ScalarValue::Binary(Some(spark_bloom_filter)))
+        Ok(ScalarValue::Binary(Some(self.spark_serialization())))
     }
 
     fn size(&self) -> usize {
@@ -140,8 +129,8 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        // TODO(Matt): There might be a more efficient way to do this. Right now it's deep copying
-        // SparkBitArray's Vec<u64> to Vec<u8>. I think ScalarValue then deep copies the Vec<u8>.
+        // TODO(Matt): There might be a more efficient way to do this by transmuting since calling
+        // state() on an Accumulator is considered destructive.
         let state_sv = ScalarValue::Binary(Some(self.state_as_bytes()));
         Ok(vec![state_sv])
     }
