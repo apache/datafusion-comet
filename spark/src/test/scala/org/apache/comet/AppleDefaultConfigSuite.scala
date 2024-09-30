@@ -53,8 +53,8 @@ class AppleDefaultConfigSuite extends CometTestBase {
     // SMJ + join condition has known issues
     assert(!CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.defaultValue.get)
 
-    // shuffle is enabled by default
-    assert(CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
+    // shuffle is disabled by default due to memory issues
+    assert(!CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
     assert("auto" == CometConf.COMET_SHUFFLE_MODE.defaultValue.get)
   }
 

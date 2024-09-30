@@ -195,7 +195,7 @@ object CometConf extends ShimCometConf {
           "'spark.shuffle.manager' must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
