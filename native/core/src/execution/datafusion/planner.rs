@@ -1374,6 +1374,7 @@ impl PhysicalPlanner {
                         let func = AggregateUDF::new_from_impl(SumDecimal::try_new(
                             Arc::clone(&child),
                             datatype,
+                            expr.fail_on_error,
                         )?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
@@ -1403,6 +1404,7 @@ impl PhysicalPlanner {
                             Arc::clone(&child),
                             datatype,
                             input_datatype,
+                            expr.fail_on_error,
                         ));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
