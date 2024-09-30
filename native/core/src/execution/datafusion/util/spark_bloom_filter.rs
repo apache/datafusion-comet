@@ -121,4 +121,25 @@ impl SparkBloomFilter {
             .map(|v| v.map(|x| self.might_contain_long(x)))
             .collect()
     }
+
+    pub fn state_as_bytes(&self) -> Vec<u8> {
+        self.bits.to_bytes()
+    }
+
+    pub fn state_size_words(&self) -> usize {
+        self.bits.word_size()
+    }
+
+    pub fn num_hash_functions(&self) -> u32 {
+        self.num_hash_functions
+    }
+
+    pub fn merge_filter(&mut self, other: &[u8]) {
+        assert_eq!(
+            other.len(),
+            self.bits.byte_size(),
+            "Cannot merge SparkBloomFilters with different lengths."
+        );
+        self.bits.merge_bits(other);
+    }
 }

@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::iter::zip;
+use arrow_buffer::ToByteSlice;
+
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
@@ -55,11 +58,34 @@ impl SparkBitArray {
     }
 
     pub fn bit_size(&self) -> u64 {
-        self.data.len() as u64 * 64
+        self.word_size() as u64 * 64
+    }
+
+    pub fn byte_size(&self) -> usize {
+        self.word_size() * 8
+    }
+
+    pub fn word_size(&self) -> usize {
+        self.data.len()
     }
 
     pub fn cardinality(&self) -> usize {
         self.bit_count
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        Vec::from(self.data.to_byte_slice())
+    }
+
+    pub fn to_bytes_not_vec(&self) -> &[u8] {
+        self.data.to_byte_slice()
+    }
+
+    pub fn merge_bits(&mut self, other: &[u8]) {
+        assert_eq!(self.byte_size(), other.len());
+        for i in zip(self.data.iter_mut(), other.chunks(8).map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))) {
+            *i.0 = *i.0 | i.1;
+        };
     }
 }
 
@@ -156,6 +182,39 @@ mod test {
 
         for n in 0..256 {
             assert!(array.get(n));
+        }
+    }
+
+    #[test]
+    fn test_spark_bit_merge() {
+        let buf1 = vec![0u64; 4];
+        let mut array1 = SparkBitArray::new(buf1);
+        let buf2 = vec![0u64; 4];
+        let mut array2 = SparkBitArray::new(buf2);
+
+
+        let primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251];
+        let fibs = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
+
+        for n in fibs {
+            array1.set(n);
+        }
+
+        for n in primes {
+            array2.set(n);
+        }
+
+        assert_eq!(array1.cardinality(), fibs.len());
+        assert_eq!(array2.cardinality(), primes.len());
+
+        array1.merge_bits(array2.to_bytes_not_vec());
+
+        for n in fibs {
+            assert!(array1.get(n));
+        }
+
+        for n in primes {
+            assert!(array1.get(n));
         }
     }
 }

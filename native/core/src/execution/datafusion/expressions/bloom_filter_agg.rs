@@ -15,25 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_schema::{Field, Schema};
+use arrow_schema::Field;
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
-use datafusion_physical_expr::NullState;
 use std::{any::Any, sync::Arc};
 
 use crate::execution::datafusion::util::spark_bloom_filter;
 use crate::execution::datafusion::util::spark_bloom_filter::SparkBloomFilter;
-use arrow::{
-    array::{ArrayRef, AsArray, Float32Array, PrimitiveArray, PrimitiveBuilder, UInt32Array},
-    datatypes::{ArrowNativeTypeOp, ArrowPrimitiveType, Float64Type, UInt32Type},
-    record_batch::RecordBatch,
-};
+use arrow::array::ArrayRef;
+use arrow_array::BinaryArray;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::prelude::*;
-use datafusion_common::{cast::as_float64_array, ScalarValue};
+use datafusion_common::{downcast_value, DataFusionError, ScalarValue};
 use datafusion_expr::{
     function::{AccumulatorArgs, StateFieldsArgs},
-    Accumulator, AggregateUDF, AggregateUDFImpl, Signature,
+    Accumulator, AggregateUDFImpl, Signature,
 };
 use datafusion_physical_expr::expressions::Literal;
 
@@ -83,12 +78,10 @@ impl BloomFilterAgg {
 }
 
 impl AggregateUDFImpl for BloomFilterAgg {
-    /// We implement as_any so that we can downcast the AggregateUDFImpl trait object
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    /// Return the name of this function
     fn name(&self) -> &str {
         "bloom_filter_agg"
     }
@@ -101,12 +94,6 @@ impl AggregateUDFImpl for BloomFilterAgg {
         Ok(DataType::Binary)
     }
 
-    /// This is the accumulator factory; DataFusion uses it to create new accumulators.
-    ///
-    /// This is the accumulator factory for row wise accumulation; Even when `GroupsAccumulator`
-    /// is supported, DataFusion will use this row oriented
-    /// accumulator when the aggregate function is used as a window function
-    /// or when there are only aggregates (no GROUP BY columns) in the plan.
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(SparkBloomFilter::from((
             spark_bloom_filter::optimal_num_hash_functions(self.num_items, self.num_bits),
@@ -115,7 +102,7 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 
     /// This is the description of the state. accumulator's state() must match the types here.
-    fn state_fields(&self, args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![Field::new("bits", DataType::Binary, false)])
     }
 
@@ -124,12 +111,7 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 }
 
-// UDAFs are built using the trait `Accumulator`, that offers DataFusion the necessary functions
-// to use them.
 impl Accumulator for SparkBloomFilter {
-    // DataFusion calls this function to update the accumulator's state for a batch
-    // of inputs rows. In this case the product is updated with values from the first column
-    // and the count is updated based on the row count
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         if values.is_empty() {
             return Ok(());
@@ -147,49 +129,29 @@ impl Accumulator for SparkBloomFilter {
         })
     }
 
-    // DataFusion expects this function to return the final value of this aggregator.
-    // in this case, this is the formula of the geometric mean
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        // TODO(Matt): Finish this.
-        // let value = self.prod.powf(1.0 / self.n as f64);
-        // Ok(ScalarValue::from(value))
-        Ok(ScalarValue::from(0))
+        // TODO(Matt): There's got to be a more efficient way to do this.
+        let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
+        spark_bloom_filter.append(&mut self.num_hash_functions().to_be_bytes().to_vec());
+        spark_bloom_filter.append(&mut (self.state_size_words() as u32).to_be_bytes().to_vec());
+        spark_bloom_filter.append(&mut self.state_as_bytes());
+        Ok(ScalarValue::Binary(Some(spark_bloom_filter)))
     }
 
     fn size(&self) -> usize {
         std::mem::size_of_val(self)
     }
 
-    // This function serializes our state to `ScalarValue`, which DataFusion uses
-    // to pass this state between execution stages.
-    // Note that this can be arbitrary data.
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        // TODO(Matt): Finish this.
-        Ok(vec![ScalarValue::from(0), ScalarValue::from(0)])
+        // TODO(Matt): There might be a more efficient way to do this. Right now it's deep copying
+        // SparkBitArray's Vec<u64> to Vec<u8>. I think ScalarValue then deep copies the Vec<u8>.
+        let state_sv = ScalarValue::Binary(Some(self.state_as_bytes()));
+        Ok(vec![state_sv])
     }
 
-    // Merge the output of `Self::state()` from other instances of this accumulator
-    // into this accumulator's state
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        // TODO(Matt): Finish this.
-        // if states.is_empty() {
-        //     return Ok(());
-        // }
-        // let arr = &states[0];
-        // (0..arr.len()).try_for_each(|index| {
-        //     let v = states
-        //         .iter()
-        //         .map(|array| ScalarValue::try_from_array(array, index))
-        //         .collect::<Result<Vec<_>>>()?;
-        //     if let (ScalarValue::Float64(Some(prod)), ScalarValue::UInt32(Some(n))) = (&v[0], &v[1])
-        //     {
-        //         self.prod *= prod;
-        //         self.n += n;
-        //     } else {
-        //         unreachable!("")
-        //     }
-        //     Ok(())
-        // })
+        let state_sv = downcast_value!(states[0], BinaryArray);
+        self.merge_filter(state_sv.value_data());
         Ok(())
     }
 }
