@@ -42,6 +42,15 @@ pub struct BloomFilterAgg {
     num_bits: i32,
 }
 
+fn i32_from_literal_physical_expr(expr: Arc<dyn PhysicalExpr>) -> i32 {
+    match expr.as_any().downcast_ref::<Literal>().unwrap().value() {
+        ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
+        _ => {
+            unreachable!()
+        }
+    }
+}
+
 impl BloomFilterAgg {
     pub fn new(
         expr: Arc<dyn PhysicalExpr>,
@@ -51,29 +60,12 @@ impl BloomFilterAgg {
         data_type: DataType,
     ) -> Self {
         assert!(matches!(data_type, DataType::Binary));
-        let num_items = match num_items
-            .as_any()
-            .downcast_ref::<Literal>()
-            .unwrap()
-            .value()
-        {
-            ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
-            _ => {
-                unreachable!()
-            }
-        };
-        let num_bits = match num_bits.as_any().downcast_ref::<Literal>().unwrap().value() {
-            ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
-            _ => {
-                unreachable!()
-            }
-        };
         Self {
             name: name.into(),
             signature: Signature::exact(vec![DataType::Int64], Volatility::Immutable),
             expr,
-            num_items: num_items,
-            num_bits: num_bits,
+            num_items: i32_from_literal_physical_expr(num_items),
+            num_bits: i32_from_literal_physical_expr(num_bits),
         }
     }
 }
@@ -136,8 +128,8 @@ impl Accumulator for SparkBloomFilter {
         spark_bloom_filter.append(&mut self.num_hash_functions().to_be_bytes().to_vec());
         spark_bloom_filter.append(&mut (self.state_size_words() as u32).to_be_bytes().to_vec());
         let mut filter_state: Vec<u64> = self.bits_state();
-        for i in 0..filter_state.len() {
-            filter_state[i] = filter_state[i].to_be();
+        for i in filter_state.iter_mut() {
+            *i = i.to_be();
         }
         spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
         Ok(ScalarValue::Binary(Some(spark_bloom_filter)))

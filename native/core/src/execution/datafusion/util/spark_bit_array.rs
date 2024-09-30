@@ -93,7 +93,7 @@ impl SparkBitArray {
                 .chunks(8)
                 .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap())),
         ) {
-            *i.0 = *i.0 | i.1;
+            *i.0 |= i.1;
         }
     }
 }
