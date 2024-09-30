@@ -110,12 +110,7 @@ impl AggregateUDFImpl for AvgDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
-        if self.ansi_mode {
-            false
-        } else {
-            true
-        }
+        !self.ansi_mode
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {

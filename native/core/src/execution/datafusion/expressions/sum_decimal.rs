@@ -133,12 +133,9 @@ impl AggregateUDFImpl for SumDecimal {
 
     fn is_nullable(&self) -> bool {
         // SumDecimal is always nullable because overflows can cause null values
-        if self.ansi_mode {
-            false
-        } else {
-            true
-        }
+        !self.ansi_mode
     }
+
 }
 
 impl PartialEq<dyn Any> for SumDecimal {
