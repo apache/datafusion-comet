@@ -139,7 +139,6 @@ impl Accumulator for SparkBloomFilter {
         for i in 0..filter_state.len() {
             filter_state[i] = filter_state[i].to_be();
         }
-        // TODO(Matt): Flip the endianness of 64-bit words.
         spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
         Ok(ScalarValue::Binary(Some(spark_bloom_filter)))
     }
