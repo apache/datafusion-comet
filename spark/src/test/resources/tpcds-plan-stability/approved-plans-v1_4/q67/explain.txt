@@ -29,7 +29,7 @@ TakeOrderedAndProject (28)
                                        +- CometScan parquet spark_catalog.default.item (14)
 
 
-(1) Scan parquet spark_catalog.default.store_sales
+(1) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, ss_sold_date_sk#5]
 Batched: true
 Location: InMemoryFileIndex []
@@ -41,7 +41,7 @@ ReadSchema: struct<ss_item_sk:int,ss_store_sk:int,ss_quantity:int,ss_sales_price
 Input [5]: [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, ss_sold_date_sk#5]
 Condition : (isnotnull(ss_store_sk#2) AND isnotnull(ss_item_sk#1))
 
-(3) Scan parquet spark_catalog.default.date_dim
+(3) CometScan parquet spark_catalog.default.date_dim
 Output [5]: [d_date_sk#7, d_month_seq#8, d_year#9, d_moy#10, d_qoy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -69,7 +69,7 @@ Arguments: [ss_sold_date_sk#5], [d_date_sk#7], Inner, BuildRight
 Input [9]: [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, ss_sold_date_sk#5, d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 Arguments: [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, d_year#9, d_moy#10, d_qoy#11], [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, d_year#9, d_moy#10, d_qoy#11]
 
-(9) Scan parquet spark_catalog.default.store
+(9) CometScan parquet spark_catalog.default.store
 Output [2]: [s_store_sk#12, s_store_id#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -93,7 +93,7 @@ Arguments: [ss_store_sk#2], [s_store_sk#12], Inner, BuildRight
 Input [9]: [ss_item_sk#1, ss_store_sk#2, ss_quantity#3, ss_sales_price#4, d_year#9, d_moy#10, d_qoy#11, s_store_sk#12, s_store_id#13]
 Arguments: [ss_item_sk#1, ss_quantity#3, ss_sales_price#4, d_year#9, d_moy#10, d_qoy#11, s_store_id#13], [ss_item_sk#1, ss_quantity#3, ss_sales_price#4, d_year#9, d_moy#10, d_qoy#11, s_store_id#13]
 
-(14) Scan parquet spark_catalog.default.item
+(14) CometScan parquet spark_catalog.default.item
 Output [5]: [i_item_sk#14, i_brand#15, i_class#16, i_category#17, i_product_name#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -168,7 +168,7 @@ BroadcastExchange (33)
          +- CometScan parquet spark_catalog.default.date_dim (29)
 
 
-(29) Scan parquet spark_catalog.default.date_dim
+(29) CometScan parquet spark_catalog.default.date_dim
 Output [5]: [d_date_sk#7, d_month_seq#8, d_year#9, d_moy#10, d_qoy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

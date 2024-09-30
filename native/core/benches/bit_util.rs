@@ -41,7 +41,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         }
     }
     let buffer = writer.consume();
-    let buffer = Buffer::from(&buffer);
+    let buffer = Buffer::from(buffer.as_slice());
 
     // log2
     for bits in (0..64).step_by(3) {

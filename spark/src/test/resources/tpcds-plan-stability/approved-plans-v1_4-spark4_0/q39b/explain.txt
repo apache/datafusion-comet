@@ -50,7 +50,7 @@
                                              +- CometScan parquet spark_catalog.default.date_dim (33)
 
 
-(1) Scan parquet spark_catalog.default.inventory
+(1) CometScan parquet spark_catalog.default.inventory
 Output [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -62,7 +62,7 @@ ReadSchema: struct<inv_item_sk:int,inv_warehouse_sk:int,inv_quantity_on_hand:int
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Condition : (isnotnull(inv_item_sk#1) AND isnotnull(inv_warehouse_sk#2))
 
-(3) Scan parquet spark_catalog.default.item
+(3) CometScan parquet spark_catalog.default.item
 Output [1]: [i_item_sk#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -86,7 +86,7 @@ Arguments: [inv_item_sk#1], [i_item_sk#6], Inner, BuildRight
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6]
 Arguments: [inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6], [inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6]
 
-(8) Scan parquet spark_catalog.default.warehouse
+(8) CometScan parquet spark_catalog.default.warehouse
 Output [2]: [w_warehouse_sk#7, w_warehouse_name#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
@@ -110,7 +110,7 @@ Arguments: [inv_warehouse_sk#2], [w_warehouse_sk#7], Inner, BuildRight
 Input [6]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6, w_warehouse_sk#7, w_warehouse_name#8]
 Arguments: [inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6, w_warehouse_sk#7, w_warehouse_name#8], [inv_quantity_on_hand#3, inv_date_sk#4, i_item_sk#6, w_warehouse_sk#7, w_warehouse_name#8]
 
-(13) Scan parquet spark_catalog.default.date_dim
+(13) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -161,13 +161,13 @@ Results [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stddev_samp(cast(inv_quan
 
 (23) Filter [codegen id : 4]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stdev#24, mean#25]
-Condition : (CASE WHEN (mean#25 = 0.0) THEN false ELSE ((stdev#24 / mean#25) > 1.0) END AND CASE WHEN (mean#25 = 0.0) THEN false ELSE ((stdev#24 / mean#25) > 1.5) END)
+Condition : (CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#25)) = 0.0) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#24 / knownfloatingpointnormalized(normalizenanandzero(mean#25))))) > 1.0) END AND CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#25)) = 0.0) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#24 / knownfloatingpointnormalized(normalizenanandzero(mean#25))))) > 1.5) END)
 
 (24) Project [codegen id : 4]
-Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#25, CASE WHEN (mean#25 = 0.0) THEN null ELSE (stdev#24 / mean#25) END AS cov#26]
+Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#25, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#25)) = 0.0) THEN null ELSE (stdev#24 / knownfloatingpointnormalized(normalizenanandzero(mean#25))) END AS cov#26]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, stdev#24, mean#25]
 
-(25) Scan parquet spark_catalog.default.inventory
+(25) CometScan parquet spark_catalog.default.inventory
 Output [4]: [inv_item_sk#27, inv_warehouse_sk#28, inv_quantity_on_hand#29, inv_date_sk#30]
 Batched: true
 Location: InMemoryFileIndex []
@@ -203,7 +203,7 @@ Arguments: [inv_warehouse_sk#28], [w_warehouse_sk#33], Inner, BuildRight
 Input [6]: [inv_warehouse_sk#28, inv_quantity_on_hand#29, inv_date_sk#30, i_item_sk#32, w_warehouse_sk#33, w_warehouse_name#34]
 Arguments: [inv_quantity_on_hand#29, inv_date_sk#30, i_item_sk#32, w_warehouse_sk#33, w_warehouse_name#34], [inv_quantity_on_hand#29, inv_date_sk#30, i_item_sk#32, w_warehouse_sk#33, w_warehouse_name#34]
 
-(33) Scan parquet spark_catalog.default.date_dim
+(33) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#35, d_year#36, d_moy#37]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -254,10 +254,10 @@ Results [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stddev_samp(cast(inv_qu
 
 (43) Filter [codegen id : 3]
 Input [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stdev#48, mean#49]
-Condition : CASE WHEN (mean#49 = 0.0) THEN false ELSE ((stdev#48 / mean#49) > 1.0) END
+Condition : CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#49)) = 0.0) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#48 / knownfloatingpointnormalized(normalizenanandzero(mean#49))))) > 1.0) END
 
 (44) Project [codegen id : 3]
-Output [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, mean#49, CASE WHEN (mean#49 = 0.0) THEN null ELSE (stdev#48 / mean#49) END AS cov#50]
+Output [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, mean#49, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#49)) = 0.0) THEN null ELSE (stdev#48 / knownfloatingpointnormalized(normalizenanandzero(mean#49))) END AS cov#50]
 Input [5]: [w_warehouse_sk#33, i_item_sk#32, d_moy#37, stdev#48, mean#49]
 
 (45) BroadcastExchange
@@ -291,7 +291,7 @@ BroadcastExchange (54)
          +- CometScan parquet spark_catalog.default.date_dim (50)
 
 
-(50) Scan parquet spark_catalog.default.date_dim
+(50) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#9, d_year#10, d_moy#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -321,7 +321,7 @@ BroadcastExchange (59)
          +- CometScan parquet spark_catalog.default.date_dim (55)
 
 
-(55) Scan parquet spark_catalog.default.date_dim
+(55) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#35, d_year#36, d_moy#37]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

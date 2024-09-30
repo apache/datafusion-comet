@@ -28,10 +28,9 @@ use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
+use crate::execution::datafusion::expressions::checkoverflow::is_valid_decimal_precision;
 use arrow_array::ArrowNativeTypeOp;
-use arrow_data::decimal::{
-    validate_decimal_precision, MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION,
-};
+use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -43,7 +42,6 @@ use DataType::*;
 /// AVG aggregate expression
 #[derive(Debug, Clone)]
 pub struct AvgDecimal {
-    name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     sum_data_type: DataType,
@@ -52,14 +50,8 @@ pub struct AvgDecimal {
 
 impl AvgDecimal {
     /// Create a new AVG aggregate function
-    pub fn new(
-        expr: Arc<dyn PhysicalExpr>,
-        name: impl Into<String>,
-        result_type: DataType,
-        sum_type: DataType,
-    ) -> Self {
+    pub fn new(expr: Arc<dyn PhysicalExpr>, result_type: DataType, sum_type: DataType) -> Self {
         Self {
-            name: name.into(),
             signature: Signature::user_defined(Immutable),
             expr,
             result_data_type: result_type,
@@ -95,12 +87,12 @@ impl AggregateUDFImpl for AvgDecimal {
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
         Ok(vec![
             Field::new(
-                format_state_name(&self.name, "sum"),
+                format_state_name(self.name(), "sum"),
                 self.sum_data_type.clone(),
                 true,
             ),
             Field::new(
-                format_state_name(&self.name, "count"),
+                format_state_name(self.name(), "count"),
                 DataType::Int64,
                 true,
             ),
@@ -108,7 +100,7 @@ impl AggregateUDFImpl for AvgDecimal {
     }
 
     fn name(&self) -> &str {
-        &self.name
+        "avg"
     }
 
     fn reverse_expr(&self) -> ReversedUDAF {
@@ -169,8 +161,7 @@ impl PartialEq<dyn Any> for AvgDecimal {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
             .map(|x| {
-                self.name == x.name
-                    && self.sum_data_type == x.sum_data_type
+                self.sum_data_type == x.sum_data_type
                     && self.result_data_type == x.result_data_type
                     && self.expr.eq(&x.expr)
             })
@@ -212,7 +203,7 @@ impl AvgDecimalAccumulator {
             None => (v, false),
         };
 
-        if is_overflow || validate_decimal_precision(new_sum, self.sum_precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null = false;
             return;
@@ -380,7 +371,7 @@ impl AvgDecimalGroupsAccumulator {
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
 
-        if is_overflow || validate_decimal_precision(new_sum, self.sum_precision).is_err() {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
             return;
