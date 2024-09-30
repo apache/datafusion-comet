@@ -927,7 +927,7 @@ class CometExecSuite extends CometTestBase {
       (0 until 100)
         .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
       "tbl") {
-      val df = sql("SELECT bloom_filter_agg(cast(_2 as long)) FROM tbl")
+      val df = sql("SELECT bloom_filter_agg(cast(_2 as long), cast(10 as long)) FROM tbl")
       checkSparkAnswerAndOperator(df)
     }
 

@@ -126,6 +126,10 @@ impl SparkBloomFilter {
         self.bits.to_bytes()
     }
 
+    pub fn bits_state(&self) -> Vec<u64> {
+        self.bits.data()
+    }
+
     pub fn state_size_words(&self) -> usize {
         self.bits.word_size()
     }

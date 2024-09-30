@@ -23,6 +23,7 @@ use crate::execution::datafusion::util::spark_bloom_filter;
 use crate::execution::datafusion::util::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::ArrayRef;
 use arrow_array::BinaryArray;
+use arrow_buffer::ToByteSlice;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_common::{downcast_value, DataFusionError, ScalarValue};
@@ -134,7 +135,12 @@ impl Accumulator for SparkBloomFilter {
         let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
         spark_bloom_filter.append(&mut self.num_hash_functions().to_be_bytes().to_vec());
         spark_bloom_filter.append(&mut (self.state_size_words() as u32).to_be_bytes().to_vec());
-        spark_bloom_filter.append(&mut self.state_as_bytes());
+        let mut filter_state: Vec<u64> = self.bits_state();
+        for i in 0..filter_state.len() {
+            filter_state[i] = filter_state[i].to_be();
+        }
+        // TODO(Matt): Flip the endianness of 64-bit words.
+        spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
         Ok(ScalarValue::Binary(Some(spark_bloom_filter)))
     }
 

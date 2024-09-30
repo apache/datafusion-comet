@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::iter::zip;
 use arrow_buffer::ToByteSlice;
+use std::iter::zip;
 
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
@@ -81,11 +81,20 @@ impl SparkBitArray {
         self.data.to_byte_slice()
     }
 
+    pub fn data(&self) -> Vec<u64> {
+        self.data.clone()
+    }
+
     pub fn merge_bits(&mut self, other: &[u8]) {
         assert_eq!(self.byte_size(), other.len());
-        for i in zip(self.data.iter_mut(), other.chunks(8).map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))) {
+        for i in zip(
+            self.data.iter_mut(),
+            other
+                .chunks(8)
+                .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap())),
+        ) {
             *i.0 = *i.0 | i.1;
-        };
+        }
     }
 }
 
@@ -192,8 +201,11 @@ mod test {
         let buf2 = vec![0u64; 4];
         let mut array2 = SparkBitArray::new(buf2);
 
-
-        let primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251];
+        let primes = [
+            2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
+            89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179,
+            181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+        ];
         let fibs = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
 
         for n in fibs {
