@@ -761,12 +761,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case bloom_filter @ BloomFilterAggregate(
-            child,
-            numItems,
-            numBits,
-            mutableBufferOffset,
-            inputBufferOffset) => {
+      case bloom_filter @ BloomFilterAggregate(child, numItems, numBits, _, _) =>
         val childExpr = exprToProto(child, inputs, binding)
         val numItemsExpr = exprToProto(numItems, inputs, binding)
         val numBitsExpr = exprToProto(numBits, inputs, binding)
@@ -778,8 +773,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           bloomFilterAggBuilder.setChild(childExpr.get)
           bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
           bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
-          bloomFilterAggBuilder.setMutableBufferOffset(mutableBufferOffset)
-          bloomFilterAggBuilder.setInputBufferOffset(inputBufferOffset)
           bloomFilterAggBuilder.setDatatype(dataType.get)
 
           Some(
@@ -791,7 +784,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child, numItems, numBits)
           None
         }
-      }
 
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"

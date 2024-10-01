@@ -196,9 +196,7 @@ message BloomFilterAgg {
   Expr child = 1;
   Expr numItems = 2;
   Expr numBits = 3;
-  int32 mutableBufferOffset = 4;
-  int32 inputBufferOffset = 5;
-  DataType datatype = 6;
+  DataType datatype = 4;
 }
 
 message Literal {
