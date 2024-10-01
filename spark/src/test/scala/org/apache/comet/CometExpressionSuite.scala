@@ -2274,9 +2274,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("GetArrayStructFields") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withSQLConf(
-        SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName,
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
