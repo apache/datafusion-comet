@@ -27,7 +27,7 @@ import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
 import org.scalactic.source.Position
-import org.scalatest.Tag
+import org.scalatest.{FixtureContext, Succeeded, Tag}
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
@@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.CometBatchScanExec
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.FileScanRDD
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -1339,14 +1340,26 @@ abstract class ParquetReadSuite extends CometTestBase {
               val schema = StructType(
                 Seq(StructField("_1", ShortType, true), StructField("_3", LongType, true)))
               readParquetFile(path.toString, Some(schema)) { df =>
-                checkAnswer(
-                  df,
-                  expected.map {
-                    case None =>
-                      Row(null, null)
-                    case Some(i) =>
-                      Row(i.toShort, i.toLong)
-                  })
+                {
+                  // CometScanExec calls sessionState.newHadoopConfWithOptions which copies
+                  // the sqlConf and some additional options to the hadoopConf and then
+                  // uses the result to create the inputRDD (https://github.com/apache/datafusion-comet/blob/3783faaa01078a35bee93b299368f8c72869198d/spark/src/main/scala/org/apache/spark/sql/comet/CometScanExec.scala#L181).
+                  // We don't have access to the created hadoop Conf, but can confirm that the
+                  // result does contain the correct configuration
+                  assert(
+                    df.sparkSession.sessionState
+                      .newHadoopConfWithOptions(Map.empty)
+                      .get(CometConf.COMET_IO_MERGE_RANGES_DELTA.key)
+                      .equals(mergeRangeDelta.toString))
+                  checkAnswer(
+                    df,
+                    expected.map {
+                      case None =>
+                        Row(null, null)
+                      case Some(i) =>
+                        Row(i.toShort, i.toLong)
+                    })
+                }
               }
             }
           }
