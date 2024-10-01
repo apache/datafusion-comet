@@ -35,13 +35,13 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Binary Arithmetic
 
-| Expression      | Notes                                               |
-| --------------- | --------------------------------------------------- |
-| Add (`+`)       |                                                     |
-| Subtract (`-`)  |                                                     |
-| Multiply (`*`)  |                                                     |
-| Divide (`/`)    |                                                     |
-| Remainder (`%`) | Comet produces `NaN` instead of `NULL` for `% -0.0` |
+| Expression      | Notes |
+| --------------- | ----- |
+| Add (`+`)       |       |
+| Subtract (`-`)  |       |
+| Multiply (`*`)  |       |
+| Divide (`/`)    |       |
+| Remainder (`%`) |       |
 
 ## Conditional Expressions
 

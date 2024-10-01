@@ -50,7 +50,9 @@ pub struct CopyExec {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CopyMode {
+    /// Perform a deep copy and also unpack dictionaries
     UnpackOrDeepCopy,
+    /// Perform a clone and also unpack dictionaries
     UnpackOrClone,
 }
 
