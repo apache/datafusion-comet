@@ -2135,6 +2135,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("to_string") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          val str = if (i % 2 == 0) {
+            "even"
+          } else {
+            "odd"
+          }
+          (i.toByte, i.toShort, i, i.toLong, i * 1.2f, -i * 1.2d, str, i.toString)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val fields = Range(1, 8).map(n => s"_$n").mkString(", ")
+
+        checkSparkAnswerAndOperator(s"SELECT to_string(struct($fields)) FROM tbl")
+        checkSparkAnswerAndOperator(
+          s"SELECT to_string(named_struct('nested', struct($fields))) FROM tbl")
+      }
+    }
+  }
+
+  test("to_string with various data types") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 100).map(i => {
+          val date = java.sql.Date.valueOf("2023-01-01")
+          val timestamp = java.sql.Timestamp.valueOf("2023-01-01 12:00:00")
+          val array = Array(1, 2, 3)
+          val map = Map("key" -> "value")
+          (i, i.toString, date, timestamp, array, map)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        checkSparkAnswerAndOperator("SELECT to_string(_1), to_string(_2), to_string(_3), to_string(_4), to_string(_5), to_string(_6) FROM tbl")
+      }
+    }
+  }
+
   test("struct and named_struct with dictionary") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(

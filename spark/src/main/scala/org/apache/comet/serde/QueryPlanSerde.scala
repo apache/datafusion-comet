@@ -1331,6 +1331,65 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             }
           }
 
+       case StructsToString(child, timezoneId) =>
+         exprToProto(child, input, binding) match {
+           case Some(p) =>
+             val toString = ExprOuterClass.ToString
+               .newBuilder()
+               .setChild(p)
+               .setTimezone(timezoneId.getOrElse("UTC"))
+               .build()
+             Some(
+               ExprOuterClass.Expr
+                 .newBuilder()
+                 .setToString(toString)
+                 .build())
+           case _ =>
+             withInfo(expr, child)
+             None
+         }
+
+       def handleStructsToString(expr: Expression, child: Expression, timezoneId: Option[String]): Option[ExprOuterClass.Expr] = {
+         def isSupportedType(dt: DataType): Boolean = {
+           dt match {
+             case StructType(fields) =>
+               fields.forall(f => isSupportedType(f.dataType))
+             case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+                 DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+                 DataTypes.DoubleType | DataTypes.StringType | DataTypes.DateType |
+                 DataTypes.TimestampType =>
+               true
+             case _: MapType | _: ArrayType =>
+               true
+             case _ => false
+           }
+         }
+
+         val isSupported = isSupportedType(child.dataType)
+
+         if (isSupported) {
+           exprToProto(child, input, binding) match {
+             case Some(p) =>
+               val toString = ExprOuterClass.ToString
+                 .newBuilder()
+                 .setChild(p)
+                 .setTimezone(timezoneId.getOrElse("UTC"))
+                 .build()
+               Some(
+                 ExprOuterClass.Expr
+                   .newBuilder()
+                   .setToString(toString)
+                   .build())
+             case _ =>
+               withInfo(expr, child)
+               None
+           }
+         } else {
+           withInfo(expr, "Unsupported data type", child)
+           None
+         }
+       }
+
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
             val leftExpr = exprToProtoInternal(left, inputs)
