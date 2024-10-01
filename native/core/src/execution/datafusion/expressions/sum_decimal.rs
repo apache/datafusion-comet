@@ -52,7 +52,11 @@ pub struct SumDecimal {
 }
 
 impl SumDecimal {
-    pub fn try_new(expr: Arc<dyn PhysicalExpr>, data_type: DataType, ansi_mode: bool) -> DFResult<Self> {
+    pub fn try_new(
+        expr: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        ansi_mode: bool,
+    ) -> DFResult<Self> {
         // The `data_type` is the SUM result type passed from Spark side
         let (precision, scale) = match data_type {
             DataType::Decimal128(p, s) => (p, s),
@@ -132,10 +136,8 @@ impl AggregateUDFImpl for SumDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
         !self.ansi_mode
     }
-
 }
 
 impl PartialEq<dyn Any> for SumDecimal {
@@ -528,7 +530,7 @@ mod tests {
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             Arc::clone(&c1),
             data_type.clone(),
-            false
+            false,
         )?));
 
         let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])

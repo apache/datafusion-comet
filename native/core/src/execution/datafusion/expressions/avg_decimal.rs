@@ -51,7 +51,12 @@ pub struct AvgDecimal {
 
 impl AvgDecimal {
     /// Create a new AVG aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>, result_type: DataType, sum_type: DataType, ansi_mode: bool) -> Self {
+    pub fn new(
+        expr: Arc<dyn PhysicalExpr>,
+        result_type: DataType,
+        sum_type: DataType,
+        ansi_mode: bool,
+    ) -> Self {
         Self {
             signature: Signature::user_defined(Immutable),
             expr,
