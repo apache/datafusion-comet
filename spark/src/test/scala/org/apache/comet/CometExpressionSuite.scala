@@ -1270,6 +1270,56 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("round overflow test") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
+
+    def checkOverflow(query: String, dtype: String): Unit = {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(dtype + " overflow"))
+          assert(cometException.getMessage.contains(dtype + " overflow"))
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not " + ex.getMessage)
+        case (Some(_), None) =>
+          fail("Spark threw an exception but Comet did not")
+      }
+    }
+
+    def runArrayTest(query: String, dtype: String, path: String): Unit = {
+      withParquetTable(path, "t") {
+        withAnsiMode(enabled = false) {
+          checkSparkAnswerAndOperator(sql(query))
+        }
+        withAnsiMode(enabled = true) {
+          checkOverflow(query, dtype)
+        }
+      }
+    }
+
+    withTempDir { dir =>
+      // Array values test
+      val dataTypes = Seq(
+        ("array_test.parquet", Seq(Int.MaxValue, Int.MinValue).toDF("a"), "integer"),
+        ("long_array_test.parquet", Seq(Long.MaxValue, Long.MinValue).toDF("a"), "long"),
+        ("short_array_test.parquet", Seq(Short.MaxValue, Short.MinValue).toDF("a"), ""),
+        ("byte_array_test.parquet", Seq(Byte.MaxValue, Byte.MinValue).toDF("a"), ""))
+
+      dataTypes.foreach { case (fileName, df, dtype) =>
+        val path = new Path(dir.toURI.toString, fileName).toString
+        df.write.mode("overwrite").parquet(path)
+        val query = "select a, round(a, -1) FROM t"
+        runArrayTest(query, dtype, path)
+      }
+    }
+  }
+
   test("Upper and Lower") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
