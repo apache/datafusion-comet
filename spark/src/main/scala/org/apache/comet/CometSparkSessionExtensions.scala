@@ -35,7 +35,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
@@ -437,9 +437,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: BaseAggregateExec
-            if op.isInstanceOf[HashAggregateExec] ||
-              op.isInstanceOf[ObjectHashAggregateExec] =>
+        case op: BaseAggregateExec if op.isInstanceOf[HashAggregateExec] =>
           val groupingExprs = op.groupingExpressions
           val aggExprs = op.aggregateExpressions
           val resultExpressions = op.resultExpressions
