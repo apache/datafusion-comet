@@ -762,6 +762,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case bloom_filter @ BloomFilterAggregate(child, numItems, numBits, _, _) =>
+        // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
+        // implementation details for Spark's ObjectHashAggregate.
         val childExpr = exprToProto(child, inputs, binding)
         val numItemsExpr = exprToProto(numItems, inputs, binding)
         val numBitsExpr = exprToProto(numBits, inputs, binding)
