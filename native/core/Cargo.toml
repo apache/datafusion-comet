@@ -126,3 +126,7 @@ harness = false
 [[bench]]
 name = "aggregate"
 harness = false
+
+[[bench]]
+name = "bloom_filter_agg"
+harness = false
