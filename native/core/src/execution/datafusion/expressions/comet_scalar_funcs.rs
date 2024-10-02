@@ -34,6 +34,16 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 macro_rules! make_comet_scalar_udf {
+    ($name:expr, $func:ident, $data_type:ident, $fail_on_error:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type)),
+        );
+        // TODO Check for overflow
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
     ($name:expr, $func:ident, $data_type:ident) => {{
         let scalar_func = CometScalarFunction::new(
             $name.to_string(),
@@ -59,6 +69,7 @@ pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,
+    _fail_on_error: &bool,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     match fun_name {
         "ceil" => {
@@ -72,7 +83,7 @@ pub fn create_comet_physical_fun(
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
         }
         "round" => {
-            make_comet_scalar_udf!("round", spark_round, data_type)
+            make_comet_scalar_udf!("round", spark_round, data_type, _fail_on_error)
         }
         "unscaled_value" => {
             let func = Arc::new(spark_unscaled_value);

@@ -775,10 +775,12 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let fail_on_error = false;
                 let fun_expr = create_comet_physical_fun(
                     "decimal_div",
                     data_type.clone(),
                     &self.session_ctx.state(),
+                    &fail_on_error,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     "decimal_div",
@@ -1872,6 +1874,7 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        let fail_on_error = &expr.fail_on_error;
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
@@ -1897,8 +1900,12 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr =
-            create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+        let fun_expr = create_comet_physical_fun(
+            fun_name,
+            data_type.clone(),
+            &self.session_ctx.state(),
+            fail_on_error,
+        )?;
 
         let args = args
             .into_iter()
