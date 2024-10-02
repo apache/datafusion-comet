@@ -114,7 +114,7 @@ impl Accumulator for SparkBloomFilter {
             if let ScalarValue::Int64(Some(value)) = v {
                 self.put_long(value);
             } else {
-                unreachable!("")
+                unreachable!()
             }
             Ok(())
         })

@@ -33,8 +33,6 @@ pub struct SparkBloomFilter {
     num_hash_functions: u32,
 }
 
-static DEFAULT_FPP: f64 = 0.03;
-
 pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
     cmp::max(
         1,
