@@ -18,7 +18,7 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use arrow::datatypes::DataType as ArrowDataType;
-use arrow_array::RecordBatch;
+use arrow_array::{Array, RecordBatch};
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -52,13 +52,15 @@ use crate::{
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
 use futures::stream::StreamExt;
+use itertools::Itertools;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use jni::sys::jsize;
 use tokio::runtime::Runtime;
 
-use crate::execution::operators::ScanExec;
+use crate::execution::operators::{InputBatch, ScanExec};
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -265,7 +267,7 @@ fn prepare_output(
     // schema_addrs: jlongArray,
     output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
-) -> CometResult<jlong> {
+) -> CometResult<jlongArray> {
     // let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     // let num_cols = env.get_array_length(&array_address_array)? as usize;
 
@@ -280,6 +282,15 @@ fn prepare_output(
 
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
+
+    // exec_context.scans.iter().for_each(|scan| {
+    //     match &*scan.batch.try_lock().unwrap() {
+    //         Some(InputBatch::Batch(addrs, size)) => {
+
+    //         }
+    //         _ => assert_eq!(num_rows, -1),
+    //     }
+    // });
 
     // if results.len() != num_cols {
     //     return Err(CometError::Internal(format!(
@@ -308,10 +319,23 @@ fn prepare_output(
     //     i += 1;
     // }
 
+    let mut vec = vec!(num_rows as i64);
+    results.iter().for_each(|array_ref| {
+        let data = array_ref.to_data();
+        let addrs = data.to_spark().unwrap();
+        // data.move_to_spark(addrs.0, addrs.1).unwrap();
+        vec.push(addrs.0);
+        vec.push(addrs.1);
+    });
+    let res = env.new_long_array(vec.len() as jsize)?;
+    env.set_long_array_region(&res, 0, &vec)
+        .expect("set long array region failed");
+
     // Update metrics
     update_metrics(env, exec_context)?;
 
-    Ok(num_rows as jlong)
+    // Ok(num_rows as jlong)
+    Ok(res.into_raw())
 }
 
 /// Pull the next input from JVM. Note that we cannot pull input batches in
@@ -339,7 +363,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     exec_context: jlong,
     // array_addrs: jlongArray,
     // schema_addrs: jlongArray,
-) -> jlong {
+) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
@@ -407,7 +431,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     }
 
-                    return Ok(-1);
+                    let res = env.new_long_array(1)?;
+                    let buf: [i64; 1] = [-1];
+                    env.set_long_array_region(&res, 0, &buf)
+                        .expect("set long array region failed");
+                    return Ok(res.into_raw());
                 }
                 // A poll pending means there are more than one blocking operators,
                 // we don't need go back-forth between JVM/Native. Just keeping polling.
