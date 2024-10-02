@@ -83,6 +83,7 @@ impl SparkBitArray {
 
     pub fn merge_bits(&mut self, other: &[u8]) {
         assert_eq!(self.byte_size(), other.len());
+        let mut bit_count: usize = 0;
         for i in zip(
             self.data.iter_mut(),
             other
@@ -90,8 +91,9 @@ impl SparkBitArray {
                 .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap())),
         ) {
             *i.0 |= i.1;
+            bit_count += i.0.count_ones() as usize;
         }
-        self.bit_count = self.data.iter().map(|x| x.count_ones() as usize).sum();
+        self.bit_count = bit_count;
     }
 }
 
