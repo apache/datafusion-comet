@@ -38,7 +38,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 
 ## Using a Published JAR File
 
-There are no published JAR files yet.
+Pre-built jar files are available in Maven central at https://central.sonatype.com/namespace/org.apache.datafusion
 
 ## Using a Published Source Release
 
@@ -46,7 +46,7 @@ Official source releases can be downloaded from https://dist.apache.org/repos/di
 
 ```console
 # Pick the latest version
-export COMET_VERSION=0.2.0
+export COMET_VERSION=0.3.0
 # Download the tarball
 curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
 # Unpack
