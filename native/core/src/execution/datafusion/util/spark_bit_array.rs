@@ -77,10 +77,6 @@ impl SparkBitArray {
         Vec::from(self.data.to_byte_slice())
     }
 
-    pub fn to_bytes_not_vec(&self) -> &[u8] {
-        self.data.to_byte_slice()
-    }
-
     pub fn data(&self) -> Vec<u64> {
         self.data.clone()
     }
@@ -95,6 +91,7 @@ impl SparkBitArray {
         ) {
             *i.0 |= i.1;
         }
+        self.bit_count = self.data.iter().map(|x| x.count_ones() as usize).sum();
     }
 }
 
@@ -219,7 +216,7 @@ mod test {
         assert_eq!(array1.cardinality(), fibs.len());
         assert_eq!(array2.cardinality(), primes.len());
 
-        array1.merge_bits(array2.to_bytes_not_vec());
+        array1.merge_bits(array2.to_bytes().as_slice());
 
         for n in fibs {
             assert!(array1.get(n));
@@ -228,5 +225,6 @@ mod test {
         for n in primes {
             assert!(array1.get(n));
         }
+        assert_eq!(array1.cardinality(), 60);
     }
 }
