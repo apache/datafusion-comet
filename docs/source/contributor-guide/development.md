@@ -63,6 +63,12 @@ generating protobuf message classes for the JVM side. It's only required to run 
 First make sure to install the Scala plugin in IntelliJ IDEA.
 After that, you can open the project in IntelliJ IDEA. The IDE should automatically detect the project structure and import as a Maven project.
 
+Comet uses generated source files that are too large for IntelliJ's default size limit for code inspections. To avoid IDE errors
+(missing definitions, etc.) caused by IntelliJ skipping these generated files, modify
+[IntelliJ's Platform Properties](https://intellij-support.jetbrains.com/hc/en-us/articles/206544869-Configuring-JVM-options-and-platform-properties)
+by going to `Help -> Edit Custom Properties...`. For example, adding `idea.max.intellisense.filesize=16384` increases the file
+size limit to 16 MB.
+
 ### CLion
 
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
