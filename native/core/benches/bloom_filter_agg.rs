@@ -45,9 +45,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     let partitions = &[batches];
     let c0: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c0", 0));
-    let num_items_sv = ScalarValue::Int64(Some(10 * num_rows as i64));
+    // spark.sql.optimizer.runtime.bloomFilter.expectedNumItems
+    let num_items_sv = ScalarValue::Int64(Some(1000000_i64));
     let num_items: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(num_items_sv));
-    let num_bits_sv = ScalarValue::Int64(Some((10 * num_rows * 8) as i64));
+    //spark.sql.optimizer.runtime.bloomFilter.numBits
+    let num_bits_sv = ScalarValue::Int64(Some(8388608_i64));
     let num_bits: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(num_bits_sv));
 
     let rt = Runtime::new().unwrap();
