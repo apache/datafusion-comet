@@ -404,6 +404,7 @@ message ScalarFunc {
   string func = 1;
   repeated Expr args = 2;
   DataType return_type = 3;
+  bool fail_on_error = 4;
 }
 
 message BitwiseAnd {
