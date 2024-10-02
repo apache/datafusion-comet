@@ -81,7 +81,7 @@ public abstract class NativeBase {
 
     // Try to load Comet library from the java.library.path.
     try {
-      System.loadLibrary(libraryToLoad);
+      System.loadLibrary(NATIVE_LIB_NAME);
       loaded = true;
     } catch (UnsatisfiedLinkError ex) {
       // Doesn't exist, so proceed to loading bundled library.
