@@ -86,8 +86,7 @@ impl SparkBloomFilter {
     /// Serializes a SparkBloomFilter to a byte array conforming to Spark's BloomFilter
     /// binary format version 1.
     pub fn spark_serialization(&self) -> Vec<u8> {
-        // TODO(Matt): There must be a more efficient way to do this, even with all of the
-        // endianness stuff.
+        // There might be a more efficient way to do this, even with all the endianness stuff.
         let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
         spark_bloom_filter.append(&mut self.num_hash_functions.to_be_bytes().to_vec());
         spark_bloom_filter.append(&mut (self.bits.word_size() as u32).to_be_bytes().to_vec());
@@ -95,6 +94,8 @@ impl SparkBloomFilter {
         for i in filter_state.iter_mut() {
             *i = i.to_be();
         }
+        // Does it make sense to do a std::mem::take of filter_state here? Unclear to me if a deep
+        // copy of filter_state as a Vec<u64> to a Vec<u8> is happening here.
         spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
         spark_bloom_filter
     }

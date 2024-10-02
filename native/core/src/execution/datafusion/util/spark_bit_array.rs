@@ -81,9 +81,12 @@ impl SparkBitArray {
         self.data.clone()
     }
 
+    // Combines SparkBitArrays, however other is a &[u8] because we anticipate to come from an
+    // Arrow ScalarValue::Binary which is a byte vector underneath, rather than a word vector.
     pub fn merge_bits(&mut self, other: &[u8]) {
         assert_eq!(self.byte_size(), other.len());
         let mut bit_count: usize = 0;
+        // For each word, merge the bits into self, and accumulate a new bit_count.
         for i in zip(
             self.data.iter_mut(),
             other

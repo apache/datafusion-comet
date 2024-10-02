@@ -129,8 +129,8 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        // TODO(Matt): There might be a more efficient way to do this by transmuting since calling
-        // state() on an Accumulator is considered destructive.
+        // There might be a more efficient way to do this by transmuting since calling state() on an
+        // Accumulator is considered destructive.
         let state_sv = ScalarValue::Binary(Some(self.state_as_bytes()));
         Ok(vec![state_sv])
     }
