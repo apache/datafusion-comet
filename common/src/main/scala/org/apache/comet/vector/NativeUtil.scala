@@ -22,6 +22,7 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
+import org.apache.arrow.c.CometArrayExporter.exportVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -93,7 +94,7 @@ class NativeUtil {
       // arrayAddrs: Array[Long],
       // schemaAddrs: Array[Long],
       batch: ColumnarBatch): Array[Long] = {
-    // val numRows = mutable.ArrayBuffer.empty[Int]
+    val numRows = mutable.ArrayBuffer.empty[Int]
     val builder = Array.newBuilder[Long]
     builder += batch.numRows()
 
@@ -102,29 +103,34 @@ class NativeUtil {
         case a: CometNativeVector =>
           builder += a.getArrayAddress
           builder += a.getSchemaAddress
-        // case a: CometVector =>
-        //   val valueVector = a.getValueVector
+        case a: CometVector =>
+          val valueVector = a.getValueVector
 
-        //   numRows += valueVector.getValueCount
+          numRows += valueVector.getValueCount
 
-        //   val provider = if (valueVector.getField.getDictionary != null) {
-        //     a.getDictionaryProvider
-        //   } else {
-        //     null
-        //   }
+          val provider = if (valueVector.getField.getDictionary != null) {
+            a.getDictionaryProvider
+          } else {
+            null
+          }
 
-        //   // The array and schema structures are allocated by native side.
-        //   // Don't need to deallocate them here.
-        //   val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
-        //   val arrowArray = ArrowArray.wrap(arrayAddrs(index))
-        //   exportVector(
-        //     allocator,
-        //     getFieldVector(valueVector, "export"),
-        //     provider,
-        //     arrowArray,
-        //     arrowSchema,
-        //     a.numNulls(),
-        //     a.dictValNumNulls())
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          // val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          // val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+
+          val arrowSchema = ArrowSchema.allocateNew(allocator)
+          val arrowArray = ArrowArray.allocateNew(allocator)
+          exportVector(
+            allocator,
+            getFieldVector(valueVector, "export"),
+            provider,
+            arrowArray,
+            arrowSchema,
+            a.numNulls(),
+            a.dictValNumNulls())
+          builder += arrowArray.memoryAddress()
+          builder += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -132,10 +138,10 @@ class NativeUtil {
       }
     }
 
-    // if (numRows.distinct.length > 1) {
-    //   throw new SparkException(
-    //     s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
-    // }
+    if (numRows.distinct.length > 1) {
+      throw new SparkException(
+        s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
+    }
 
     // `ColumnarBatch.numRows` might return a different number than the actual number of rows in
     // the Arrow arrays. For example, Iceberg column reader will skip deleted rows internally in

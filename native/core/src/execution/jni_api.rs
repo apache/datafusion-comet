@@ -53,11 +53,11 @@ use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use jni::sys::jsize;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
-use jni::sys::jsize;
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::{InputBatch, ScanExec};
@@ -319,7 +319,7 @@ fn prepare_output(
     //     i += 1;
     // }
 
-    let mut vec = vec!(num_rows as i64);
+    let mut vec = vec![num_rows as i64];
     results.iter().for_each(|array_ref| {
         let data = array_ref.to_data();
         let addrs = data.to_spark().unwrap();
