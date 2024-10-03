@@ -35,22 +35,42 @@ public class CometTaskMemoryManager {
 
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
+  private final boolean unifiedMemory;
+  private long available;
 
-  public CometTaskMemoryManager(long id) {
+  public CometTaskMemoryManager(long id, boolean unifiedMemory, long available) {
     this.id = id;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
+    this.unifiedMemory = unifiedMemory;
+    this.available = available;
   }
 
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
-    return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    if (unifiedMemory) {
+      return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    } else {
+      synchronized (this) {
+        if (size <= available) {
+          available -= size;
+          return size;
+        }
+      }
+      return 0;
+    }
   }
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
-    internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+    if (unifiedMemory) {
+      internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+    } else {
+      synchronized (this) {
+        available += size;
+      }
+    }
   }
 
   /**
