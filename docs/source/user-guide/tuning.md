@@ -75,7 +75,7 @@ Comet will automatically set `spark.executor.memoryOverhead` based on the `spark
 resource managers respect Apache Spark memory configuration before starting the containers.
 
 Note that there is currently a known issue where this will be inaccurate when using Native Memory Management because it
-does not take executor concurrency into account. The tracking issue for this is 
+does not take executor concurrency into account. The tracking issue for this is
 https://github.com/apache/datafusion-comet/issues/949.
 
 ## Shuffle
