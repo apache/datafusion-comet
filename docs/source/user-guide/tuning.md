@@ -59,30 +59,24 @@ Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
 
 ### Determining How Much Memory to Allocate
 
-Generally, increasing memory overhead will improve the performance of your queries.
-For example, some operators like `SortMergeJoin` and `HashAggregate` may require more memory to run.
-Once the memory is not enough, the operator will spill to disk, which will slow down the query.
+Generally, increasing memory overhead will improve query performance, especially for queries containing joins and
+aggregates.
 
-You can increase the amount of memory for Comet to use, if you see OOM error.
+Once a memory pool is exhausted, the native plan will start spilling to disk, which will slow down the query.
 
-## Memory Tuning using CometPlugin
+Insufficient memory allocation can also lead to out-of-memory (OOM) errors.
 
-Configuring memory for Spark and Comet might be a tedious task as it requires to tune Spark executor overhead memory
-and Comet memory overhead configs. Comet provides a Spark plugin `CometPlugin` which can be set up to your Spark
-application to help memory settings.
+## Configuring spark.executor.memoryOverhead
 
-For users running the Comet in clusters like Kubernetes or YARN, `CometPlugin` can also make the resource manager
-respect correctly Comet memory parameters `spark.comet.memory*`.
-It is needed to pass to the starting command line additional Spark configuration parameter `--conf spark.plugins=org.apache.spark.CometPlugin`
+In some environments, such as Kubernetes and YARN, it is important to correctly set `spark.executor.memoryOverhead` so
+that it is possible to allocate off-heap memory.
 
-The resource managers respects Apache Spark memory configuration before starting the containers.
-
-The `CometPlugin` plugin overrides `spark.executor.memoryOverhead` adding up the Comet memory configuration.
+Comet will automatically set `spark.executor.memoryOverhead` based on the `spark.comet.memory*` settings so that
+resource managers respect Apache Spark memory configuration before starting the containers.
 
 ## Shuffle
 
-Comet provides Comet shuffle features that can be used to improve the performance of your queries.
-The following sections describe the different shuffle options available in Comet.
+Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
 
 To enable Comet shuffle, set the following configuration in your Spark configuration:
 
@@ -105,20 +99,21 @@ Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mo
 `spark.comet.exec.shuffle.mode` to `auto` will let Comet choose the best shuffle mode based on the query plan. This
 is the default.
 
-#### Columnar Shuffle
+#### Columnar (JVM) Shuffle
 
-Comet Columnar shuffle is JVM-based and supports `HashPartitioning`,
-`RoundRobinPartitioning`, `RangePartitioning` and `SinglePartitioning`. This mode has the highest
-query coverage.
+Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
+`SinglePartitioning`. This mode has the highest query coverage.
 
-Columnar shuffle can be enabled by setting `spark.comet.exec.shuffle.mode` to `jvm`.
+Columnar shuffle can be enabled by setting `spark.comet.exec.shuffle.mode` to `jvm`. If this mode is explicitly set,
+then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
 #### Native Shuffle
 
-Comet also provides a fully native shuffle implementation that can be used to improve the performance.
-To enable native shuffle, just set `spark.comet.exec.shuffle.mode` to `native`
+Comet also provides a fully native shuffle implementation, which generally provides the best performance. However,
+native shuffle currently only supports `HashPartitioning` and `SinglePartitioning`.
 
-Native shuffle only supports `HashPartitioning` and `SinglePartitioning`.
+To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
+then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
 ## Metrics
 
