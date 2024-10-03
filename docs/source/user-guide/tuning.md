@@ -41,14 +41,14 @@ This option is automatically enabled when `spark.memory.offHeap.enabled=false`.
 
 Each native plan has a dedicated memory pool.
 
-By default, the size of each pool is `spark.comet.memory.overhead.factor` \* `spark.executor.memory`. The default value
-for `spark.comet.memory.overhead.factor` is 0.2.
+By default, the size of each pool is `spark.comet.memory.overhead.factor * spark.executor.memory`. The default value
+for `spark.comet.memory.overhead.factor` is `0.2`.
 
 It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
-be calculated with `spark.executor.cores` / `spark.task.cpus`.
+be calculated with `spark.executor.cores / spark.task.cpus`.
 
 For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
-4 _ `spark.comet.memory.overhead.factor` _ `spark.executor.memory`.
+`4 * spark.comet.memory.overhead.factor * spark.executor.memory`.
 
 It is also possible to set `spark.comet.memoryOverhead` to the desired size for each pool, rather than calculating
 it based on `spark.comet.memory.overhead.factor`.
@@ -73,6 +73,10 @@ that it is possible to allocate off-heap memory.
 
 Comet will automatically set `spark.executor.memoryOverhead` based on the `spark.comet.memory*` settings so that
 resource managers respect Apache Spark memory configuration before starting the containers.
+
+Note that there is currently a known issue where this will be inaccurate when using Native Memory Management because it
+does not take executor concurrency into account. The tracking issue for this is 
+https://github.com/apache/datafusion-comet/issues/949.
 
 ## Shuffle
 
