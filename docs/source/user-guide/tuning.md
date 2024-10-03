@@ -124,5 +124,4 @@ then any shuffle operations that cannot be supported in this mode will fall back
 Comet metrics are not directly comparable to Spark metrics in some cases.
 
 `CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds _per batch_ which can result in a large loss of precision. In one case we saw total scan time
-of 41 seconds reported as 23 seconds for example.
+milliseconds _per batch_ which can result in a large loss of precision, resulting in misleading timings.
