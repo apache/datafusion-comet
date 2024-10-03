@@ -55,11 +55,6 @@ public class CometNativeVector extends CometVector {
   }
 
   @Override
-  public int dictValNumNulls() {
-    return 0;
-  }
-
-  @Override
   public boolean hasNull() {
     return false;
   }

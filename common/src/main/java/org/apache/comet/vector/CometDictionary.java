@@ -110,10 +110,6 @@ public class CometDictionary implements AutoCloseable {
     return values.getUTF8String(index);
   }
 
-  public int numNulls() {
-    return values.numNulls();
-  }
-
   @Override
   public void close() {
     values.close();

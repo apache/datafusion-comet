@@ -239,11 +239,9 @@ public abstract class CometVector extends ColumnVector {
       int nullCount,
       int dictValNullCount) {
     if (vector instanceof StructVector) {
-      return new CometStructVector(
-          vector, useDecimal128, dictionaryProvider, nullCount, dictValNullCount);
+      return new CometStructVector(vector, useDecimal128, dictionaryProvider, nullCount);
     } else if (vector instanceof MapVector) {
-      return new CometMapVector(
-          vector, useDecimal128, dictionaryProvider, nullCount, dictValNullCount);
+      return new CometMapVector(vector, useDecimal128, dictionaryProvider, nullCount);
     } else if (vector instanceof ListVector) {
       return new CometListVector(vector, useDecimal128, dictionaryProvider, nullCount);
     } else {
@@ -283,6 +281,4 @@ public abstract class CometVector extends ColumnVector {
     return getVector(
         vector, useDecimal128, dictionaryProvider, vector.getNullCount(), dictValNullCount);
   }
-
-  public abstract int dictValNumNulls();
 }

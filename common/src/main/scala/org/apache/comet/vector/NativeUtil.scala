@@ -21,8 +21,7 @@ package org.apache.comet.vector
 
 import scala.collection.mutable
 
-import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider}
-import org.apache.arrow.c.CometArrayExporter.exportVector
+import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -121,14 +120,12 @@ class NativeUtil {
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
-          exportVector(
+          Data.exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
-            arrowSchema,
-            a.numNulls(),
-            a.dictValNumNulls())
+            arrowSchema)
           builder += arrowArray.memoryAddress()
           builder += arrowSchema.memoryAddress()
         case c =>

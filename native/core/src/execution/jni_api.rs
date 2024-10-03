@@ -283,15 +283,6 @@ fn prepare_output(
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    // exec_context.scans.iter().for_each(|scan| {
-    //     match &*scan.batch.try_lock().unwrap() {
-    //         Some(InputBatch::Batch(addrs, size)) => {
-
-    //         }
-    //         _ => assert_eq!(num_rows, -1),
-    //     }
-    // });
-
     // if results.len() != num_cols {
     //     return Err(CometError::Internal(format!(
     //         "Output column count mismatch: expected {num_cols}, got {}",

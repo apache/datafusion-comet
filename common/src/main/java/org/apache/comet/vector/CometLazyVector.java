@@ -38,9 +38,8 @@ public class CometLazyVector extends CometDelegateVector {
 
   @Override
   public ValueVector getValueVector() {
-    if (columnReader.readAllBatch()) {
-      setDelegate(columnReader.loadVector());
-    }
+    columnReader.readAllBatch();
+    setDelegate(columnReader.loadVector());
     return super.getValueVector();
   }
 
@@ -61,17 +60,15 @@ public class CometLazyVector extends CometDelegateVector {
 
   @Override
   public boolean hasNull() {
-    if (columnReader.readAllBatch()) {
-      setDelegate(columnReader.loadVector());
-    }
+    columnReader.readAllBatch();
+    setDelegate(columnReader.loadVector());
     return super.hasNull();
   }
 
   @Override
   public int numNulls() {
-    if (columnReader.readAllBatch()) {
-      setDelegate(columnReader.loadVector());
-    }
+    columnReader.readAllBatch();
+    setDelegate(columnReader.loadVector());
     return super.numNulls();
   }
 

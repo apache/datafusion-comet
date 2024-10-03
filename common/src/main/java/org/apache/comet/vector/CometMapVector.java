@@ -22,9 +22,7 @@ package org.apache.comet.vector;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
-import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
-import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarMap;
@@ -43,29 +41,18 @@ public class CometMapVector extends CometDecodedVector {
       ValueVector vector,
       boolean useDecimal128,
       DictionaryProvider dictionaryProvider,
-      int nullCount,
-      int dictValNullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount, dictValNullCount);
+      int nullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount);
 
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
 
     if (dataVector instanceof StructVector) {
-      DictionaryEncoding dictionaryEncoding = dataVector.getField().getDictionary();
-      int dDictValNullCount = 0;
-      if (dictionaryEncoding != null) {
-        Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        dDictValNullCount = dictionary.getVector().getNullCount();
-      }
       // TODO: getNullCount is slow, avoid calling it if possible
       this.dataColumnVector =
           new CometStructVector(
-              dataVector,
-              useDecimal128,
-              dictionaryProvider,
-              dataVector.getNullCount(),
-              dDictValNullCount);
+              dataVector, useDecimal128, dictionaryProvider, dataVector.getNullCount());
 
       if (dataColumnVector.children.size() != 2) {
         throw new RuntimeException(
@@ -96,14 +83,7 @@ public class CometMapVector extends CometDecodedVector {
     tp.splitAndTransfer(offset, length);
     ValueVector vector = tp.getTo();
 
-    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-    int dictValNullCount = 0;
-    if (dictionaryEncoding != null) {
-      Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-      dictValNullCount = dictionary.getVector().getNullCount();
-    }
     // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometMapVector(
-        tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount(), dictValNullCount);
+    return new CometMapVector(tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount());
   }
 }

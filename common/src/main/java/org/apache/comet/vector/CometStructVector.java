@@ -24,9 +24,7 @@ import java.util.List;
 
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.StructVector;
-import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
-import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 
@@ -39,9 +37,8 @@ public class CometStructVector extends CometDecodedVector {
       ValueVector vector,
       boolean useDecimal128,
       DictionaryProvider dictionaryProvider,
-      int nullCount,
-      int dictValNullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount, dictValNullCount);
+      int nullCount) {
+    super(vector, vector.getField(), useDecimal128, false, nullCount);
 
     StructVector structVector = ((StructVector) vector);
 
@@ -67,14 +64,7 @@ public class CometStructVector extends CometDecodedVector {
     tp.splitAndTransfer(offset, length);
     ValueVector vector = tp.getTo();
 
-    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-    int dictValNullCount = 0;
-    if (dictionaryEncoding != null) {
-      Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-      dictValNullCount = dictionary.getVector().getNullCount();
-    }
     // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometStructVector(
-        vector, useDecimal128, dictionaryProvider, vector.getNullCount(), dictValNullCount);
+    return new CometStructVector(vector, useDecimal128, dictionaryProvider, vector.getNullCount());
   }
 }

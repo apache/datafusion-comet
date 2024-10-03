@@ -93,14 +93,11 @@ public class LazyColumnReader extends ColumnReader {
   }
 
   /** Read all rows up to the `batchSize`. Expects no rows are skipped so far. */
-  public boolean readAllBatch() {
+  public void readAllBatch() {
     // All rows should be read without any skips so far
     assert (lastSkippedRowId == -1);
 
-    if (batchSize <= currentNumValues) return false;
-
     readBatch(batchSize - 1, 0);
-    return true;
   }
 
   /**

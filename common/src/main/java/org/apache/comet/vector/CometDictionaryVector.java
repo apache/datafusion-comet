@@ -54,8 +54,7 @@ public class CometDictionaryVector extends CometDecodedVector {
         values.getValueVector().getField(),
         useDecimal128,
         isUuid,
-        indices.numNulls(),
-        values.numNulls());
+        indices.numNulls());
     Preconditions.checkArgument(
         indices.valueVector instanceof IntVector, "'indices' should be a IntVector");
     this.values = values;
