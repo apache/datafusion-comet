@@ -272,18 +272,30 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#metrics">
-   Metrics
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#memory-tuning">
    Memory Tuning
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#unified-memory-management">
+     Unified Memory Management
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-memory-management">
+     Native Memory Management
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">
+     Determining How Much Memory to Allocate
+    </a>
+   </li>
+  </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#memory-tuning-using-cometplugin">
-   Memory Tuning using CometPlugin
+  <a class="reference internal nav-link" href="#configuring-spark-executor-memoryoverhead">
+   Configuring spark.executor.memoryOverhead
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -297,8 +309,13 @@ under the License.
     </a>
     <ul class="nav section-nav flex-column">
      <li class="toc-h4 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#columnar-shuffle">
-       Columnar Shuffle
+      <a class="reference internal nav-link" href="#auto-mode">
+       Auto Mode
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#columnar-jvm-shuffle">
+       Columnar (JVM) Shuffle
       </a>
      </li>
      <li class="toc-h4 nav-item toc-entry">
@@ -308,12 +325,12 @@ under the License.
      </li>
     </ul>
    </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#auto-mode">
-     Auto Mode
-    </a>
-   </li>
   </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#metrics">
+   Metrics
+  </a>
  </li>
 </ul>
 
@@ -364,38 +381,55 @@ under the License.
 <section id="tuning-guide">
 <h1>Tuning Guide<a class="headerlink" href="#tuning-guide" title="Link to this heading">¶</a></h1>
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
-<section id="metrics">
-<h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
-<p>Comet metrics are not directly comparable to Spark metrics in some cases.</p>
-<p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds <em>per batch</em> which can result in a large loss of precision. In one case we saw total scan time
-of 41 seconds reported as 23 seconds for example.</p>
-</section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
-<p>Comet currently doesn’t share the memory allocation from Spark but owns its own memory allocation.
-That’s said, Comet requires additional memory to be allocated. Comet provides some memory related configurations to help you tune the memory usage.</p>
-<p>By default, the amount of memory is <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> * <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>.
-The default value for <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> is 0.2. You can increase the factor to require more
-memory for Comet to use, if you see OOM error. Generally, increasing memory overhead will improve the performance of your queries.
-For example, some operators like <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> and <code class="docutils literal notranslate"><span class="pre">HashAggregate</span></code> may require more memory to run.
-Once the memory is not enough, the operator will spill to disk, which will slow down the query.</p>
-<p>Besides, you can also set the memory explicitly by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> to the desired value.
-Comet will allocate at least <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code> memory.</p>
-<p>If both <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> are set, the former will be used.</p>
+<p>Comet provides two options for memory management:</p>
+<ul class="simple">
+<li><p><strong>Unified Memory Management</strong> shares an off-heap memory pool between Spark and Comet. This is the recommended option.</p></li>
+<li><p><strong>Native Memory Management</strong> leverages DataFusion’s memory management for the native plans and allocates memory independently of Spark.</p></li>
+</ul>
+<section id="unified-memory-management">
+<h3>Unified Memory Management<a class="headerlink" href="#unified-memory-management" title="Link to this heading">¶</a></h3>
+<p>This option is automatically enabled when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>.</p>
+<p>Each executor will have a single memory pool which will be shared by all native plans being executed within that
+process, and by Spark itself. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
 </section>
-<section id="memory-tuning-using-cometplugin">
-<h2>Memory Tuning using CometPlugin<a class="headerlink" href="#memory-tuning-using-cometplugin" title="Link to this heading">¶</a></h2>
-<p>Configuring memory for Spark and Comet might be a tedious task as it requires to tune Spark executor overhead memory and Comet memory overhead configs. Comet provides a Spark plugin <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> which can be set up to your Spark application to help memory settings.</p>
-<p>For users running the Comet in clusters like Kubernetes or YARN, <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> can also make the resource manager respect correctly Comet memory parameters <code class="docutils literal notranslate"><span class="pre">spark.comet.memory*</span></code>.
-it is needed to pass to the starting command line additional Spark configuration parameter <code class="docutils literal notranslate"><span class="pre">--conf</span> <span class="pre">spark.plugins=org.apache.spark.CometPlugin</span></code></p>
-<p>The resource managers respects Apache Spark memory configuration before starting the containers.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> plugin overrides <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> adding up the Comet memory configuration.</p>
+<section id="native-memory-management">
+<h3>Native Memory Management<a class="headerlink" href="#native-memory-management" title="Link to this heading">¶</a></h3>
+<p>This option is automatically enabled when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=false</span></code>.</p>
+<p>Each native plan has a dedicated memory pool.</p>
+<p>By default, the size of each pool is <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory</span></code>. The default value
+for <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> is <code class="docutils literal notranslate"><span class="pre">0.2</span></code>.</p>
+<p>It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
+be calculated with <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span> <span class="pre">/</span> <span class="pre">spark.task.cpus</span></code>.</p>
+<p>For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
+<code class="docutils literal notranslate"><span class="pre">4</span> <span class="pre">*</span> <span class="pre">spark.comet.memory.overhead.factor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory</span></code>.</p>
+<p>It is also possible to set <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> to the desired size for each pool, rather than calculating
+it based on <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code>.</p>
+<p>If both <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> are set, the former will be used.</p>
+<p>Comet will allocate at least <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code> memory per pool.</p>
+</section>
+<section id="determining-how-much-memory-to-allocate">
+<h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">¶</a></h3>
+<p>Generally, increasing memory overhead will improve query performance, especially for queries containing joins and
+aggregates.</p>
+<p>Once a memory pool is exhausted, the native plan will start spilling to disk, which will slow down the query.</p>
+<p>Insufficient memory allocation can also lead to out-of-memory (OOM) errors.</p>
+</section>
+</section>
+<section id="configuring-spark-executor-memoryoverhead">
+<h2>Configuring spark.executor.memoryOverhead<a class="headerlink" href="#configuring-spark-executor-memoryoverhead" title="Link to this heading">¶</a></h2>
+<p>In some environments, such as Kubernetes and YARN, it is important to correctly set <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> so
+that it is possible to allocate off-heap memory.</p>
+<p>Comet will automatically set <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> based on the <code class="docutils literal notranslate"><span class="pre">spark.comet.memory*</span></code> settings so that
+resource managers respect Apache Spark memory configuration before starting the containers.</p>
+<p>Note that there is currently a known issue where this will be inaccurate when using Native Memory Management because it
+does not take executor concurrency into account. The tracking issue for this is
+https://github.com/apache/datafusion-comet/issues/949.</p>
 </section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h2>
-<p>Comet provides Comet shuffle features that can be used to improve the performance of your queries.
-The following sections describe the different shuffle options available in Comet.</p>
+<p>Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.</p>
 <p>To enable Comet shuffle, set the following configuration in your Spark configuration:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
@@ -404,32 +438,37 @@ The following sections describe the different shuffle options available in Comet
 <p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is a Spark static configuration which cannot be changed at runtime.
 It must be set before the Spark context is created. You can enable or disable Comet shuffle
 at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
-Once it is disabled, Comet will fallback to the default Spark shuffle manager.</p>
-<blockquote>
-<div><p><strong><em>NOTE:</em></strong> At the moment Comet Shuffle is not compatible with Spark AQE partition coalesce. To disable set <code class="docutils literal notranslate"><span class="pre">spark.sql.adaptive.coalescePartitions.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
-</div></blockquote>
+Once it is disabled, Comet will fall back to the default Spark shuffle manager.</p>
 <section id="shuffle-mode">
 <h3>Shuffle Mode<a class="headerlink" href="#shuffle-mode" title="Link to this heading">¶</a></h3>
 <p>Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.</p>
-<section id="columnar-shuffle">
-<h4>Columnar Shuffle<a class="headerlink" href="#columnar-shuffle" title="Link to this heading">¶</a></h4>
-<p>By default, once <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> is enabled, Comet uses JVM-based columnar shuffle
-to improve the performance of shuffle operations. Columnar shuffle supports HashPartitioning,
-RoundRobinPartitioning, RangePartitioning and SinglePartitioning. This mode has the highest
-query coverage.</p>
-<p>Columnar shuffle can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p>
+<section id="auto-mode">
+<h4>Auto Mode<a class="headerlink" href="#auto-mode" title="Link to this heading">¶</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">auto</span></code> will let Comet choose the best shuffle mode based on the query plan. This
+is the default.</p>
+</section>
+<section id="columnar-jvm-shuffle">
+<h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">¶</a></h4>
+<p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This mode has the highest query coverage.</p>
+<p>Columnar shuffle can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">jvm</span></code>. If this mode is explicitly set,
+then any shuffle operations that cannot be supported in this mode will fall back to Spark.</p>
 </section>
 <section id="native-shuffle">
 <h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">¶</a></h4>
-<p>Comet also provides a fully native shuffle implementation that can be used to improve the performance.
-To enable native shuffle, just set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">native</span></code></p>
-<p>Native shuffle only supports HashPartitioning and SinglePartitioning.</p>
+<p>Comet also provides a fully native shuffle implementation, which generally provides the best performance. However,
+native shuffle currently only supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>.</p>
+<p>To enable native shuffle, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">native</span></code>. If this mode is explicitly set,
+then any shuffle operations that cannot be supported in this mode will fall back to Spark.</p>
 </section>
 </section>
-<section id="auto-mode">
-<h3>Auto Mode<a class="headerlink" href="#auto-mode" title="Link to this heading">¶</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">auto</span></code> will let Comet choose the best shuffle mode based on the query plan.</p>
 </section>
+<section id="metrics">
+<h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
+<p>Comet metrics are not directly comparable to Spark metrics in some cases.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
+milliseconds <em>per batch</em> which can result in a large loss of precision. In one case we saw total scan time
+of 41 seconds reported as 23 seconds for example.</p>
 </section>
 </section>
 
