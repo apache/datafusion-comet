@@ -263,11 +263,6 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  protected static CometVector getVector(ValueVector vector, boolean useDecimal128) {
-    // TODO: getNullCount is slow, avoid calling it if possible
-    return getVector(vector, useDecimal128, null, vector.getNullCount(), 0);
-  }
-
   protected static CometVector getVector(
       ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
 

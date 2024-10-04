@@ -52,7 +52,7 @@ const STR_CLASS_NAME: &str = "java/lang/String";
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
-    pub arrays: Option<(Arc<FFI_ArrowArray>, Arc<FFI_ArrowSchema>)>,
+    pub arrays: Vec<(Arc<FFI_ArrowArray>, Arc<FFI_ArrowSchema>)>,
     last_data_page: Option<GlobalRef>,
 }
 
@@ -110,7 +110,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
                 use_decimal_128 != 0,
                 use_legacy_date_timestamp != 0,
             ),
-            arrays: None,
+            arrays: Vec::new(),
             last_data_page: None,
         };
         let res = Box::new(ctx);
@@ -549,7 +549,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
         unsafe {
             let arrow_array = Arc::from_raw(array as *const FFI_ArrowArray);
             let arrow_schema = Arc::from_raw(schema as *const FFI_ArrowSchema);
-            ctx.arrays = Some((arrow_array, arrow_schema));
+            ctx.arrays.push((arrow_array, arrow_schema));
 
             let res = env.new_long_array(2)?;
             let buf: [i64; 2] = [array, schema];
