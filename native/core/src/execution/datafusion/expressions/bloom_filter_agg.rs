@@ -136,6 +136,13 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
+        assert_eq!(
+            states.len(),
+            1,
+            "Expect one element in 'states' but found {}",
+            states.len()
+        );
+        assert_eq!(states[0].len(), 1);
         let state_sv = downcast_value!(states[0], BinaryArray);
         self.merge_filter(state_sv.value_data());
         Ok(())
