@@ -1105,7 +1105,8 @@ object CometSparkSessionExtensions extends Logging {
     try {
       // This will load the Comet native lib on demand, and if success, should set
       // `NativeBase.loaded` to true
-      NativeBase.isLoaded
+      NativeBase.load()
+      true
     } catch {
       case e: Throwable =>
         if (COMET_NATIVE_LOAD_REQUIRED.get(conf)) {
