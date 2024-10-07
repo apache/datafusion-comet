@@ -20,7 +20,9 @@
 package org.apache.spark;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.spark.internal.Logging;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
@@ -36,6 +38,7 @@ public class CometTaskMemoryManager {
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final boolean unifiedMemory;
+  private static AtomicBoolean initialized = new AtomicBoolean(false);
   private static long available = 0;
 
   public CometTaskMemoryManager(long id, boolean unifiedMemory, long available) {
@@ -44,11 +47,11 @@ public class CometTaskMemoryManager {
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
     this.unifiedMemory = unifiedMemory;
 
-    synchronized (CometTaskMemoryManager.class) {
-      if (CometTaskMemoryManager.available == 0) {
+    if (CometTaskMemoryManager.initialized.compareAndSet(false, true)) {
+      synchronized (CometTaskMemoryManager.class) {
+        // TODO use Spark logger
+        System.out.println("Initializing Comet memory pool to " + available + " bytes");
         CometTaskMemoryManager.available = available;
-      } else {
-        assert (CometTaskMemoryManager.available == available);
       }
     }
   }
@@ -59,8 +62,8 @@ public class CometTaskMemoryManager {
     if (unifiedMemory) {
       return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     } else {
-      synchronized (this) {
-        if (size <= available) {
+      synchronized (CometTaskMemoryManager.class) {
+        if (size <= CometTaskMemoryManager.available) {
           available -= size;
           return size;
         } else {
@@ -77,7 +80,7 @@ public class CometTaskMemoryManager {
     if (unifiedMemory) {
       internal.releaseExecutionMemory(size, nativeMemoryConsumer);
     } else {
-      synchronized (this) {
+      synchronized (CometTaskMemoryManager.class) {
         available += size;
       }
     }
