@@ -81,6 +81,7 @@ message Expr {
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
     ListExtract list_extract = 56;
+    GetArrayStructFields get_array_struct_fields = 57;
   }
 }
 
@@ -515,6 +516,11 @@ message ListExtract {
   Expr default_value = 3;
   bool one_based = 4;
   bool fail_on_error = 5;
+}
+
+message GetArrayStructFields {
+  Expr child = 1;
+  int32 ordinal = 2;
 }
 
 enum SortDirection {
