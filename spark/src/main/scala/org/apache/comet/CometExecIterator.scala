@@ -56,7 +56,7 @@ class CometExecIterator(
   private val plan = {
     val configs = createNativeConf
     val useUnifiedMemory =
-      SparkEnv.get.conf.get("spark.memory.offheap.enabled", "false").toBoolean
+      SparkEnv.get.conf.get("spark.memory.offHeap.enabled", "false").toBoolean
     val nativeMemPoolSize = CometSparkSessionExtensions.getCometMemoryOverhead(SparkEnv.get.conf)
     nativeLib.createPlan(
       id,
