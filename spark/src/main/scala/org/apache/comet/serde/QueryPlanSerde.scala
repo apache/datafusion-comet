@@ -2542,6 +2542,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case GetArrayStructFields(child, _, ordinal, _, _) =>
+          val childExpr = exprToProto(child, inputs, binding)
+
+          if (childExpr.isDefined) {
+            val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
+              .newBuilder()
+              .setChild(childExpr.get)
+              .setOrdinal(ordinal)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setGetArrayStructFields(arrayStructFieldsBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
+            None
+          }
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
