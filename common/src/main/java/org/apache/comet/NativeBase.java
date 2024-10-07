@@ -48,12 +48,16 @@ public abstract class NativeBase {
   private static boolean loaded = false;
   private static final String searchPattern = "libcomet-";
 
+  public static synchronized boolean isLoaded() {
+    return loaded;
+  }
+
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
   }
 
-  static synchronized void load() {
+  protected static synchronized void load() {
     if (loaded) {
       return;
     }
