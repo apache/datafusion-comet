@@ -51,7 +51,6 @@ use crate::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
-use datafusion_execution::memory_pool::MemoryPool;
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
@@ -61,13 +60,6 @@ use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
 use log::info;
-use once_cell::sync::Lazy;
-
-struct SharedMemoryPool {
-    pool: Option<Arc<Mutex<dyn MemoryPool>>>,
-}
-static SHARED_MEM_POOL: Lazy<Arc<Mutex<SharedMemoryPool>>> =
-    Lazy::new(|| Arc::new(Mutex::new(SharedMemoryPool { pool: None })));
 
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
