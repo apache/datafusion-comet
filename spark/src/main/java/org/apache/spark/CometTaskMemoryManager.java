@@ -63,9 +63,12 @@ public class CometTaskMemoryManager {
         if (size <= available) {
           available -= size;
           return size;
+        } else {
+          long allocated = available;
+          available = 0;
+          return allocated;
         }
       }
-      return 0;
     }
   }
 
