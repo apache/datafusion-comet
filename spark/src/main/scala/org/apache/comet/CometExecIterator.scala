@@ -21,7 +21,6 @@ package org.apache.comet
 
 import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
@@ -56,18 +55,16 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val configs = createNativeConf
+    val useUnifiedMemory =
+      SparkEnv.get.conf.get("spark.memory.offheap.enabled", "false").toBoolean
+    val nativeMemPoolSize = CometSparkSessionExtensions.getCometMemoryOverhead(SparkEnv.get.conf)
     nativeLib.createPlan(
       id,
       configs,
       cometBatchIterators,
       protobufQueryPlan,
       nativeMetrics,
-      new CometTaskMemoryManager(
-        id,
-        SQLConf.get.getConfString("spark.memory.offheap.enabled", "false").toBoolean,
-        // TODO need SparkConf to be able to call
-        // CometSparkSessionExtensions.getCometMemoryOverhead()
-        10 * 1024 * 1024 * 1024))
+      new CometTaskMemoryManager(id, useUnifiedMemory, nativeMemPoolSize))
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -81,7 +78,6 @@ class CometExecIterator(
     val result = new java.util.HashMap[String, String]()
     val conf = SparkEnv.get.conf
 
-    val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
     result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
     result.put("explain_native", String.valueOf(COMET_EXPLAIN_NATIVE_ENABLED.get()))

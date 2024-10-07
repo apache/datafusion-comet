@@ -36,14 +36,21 @@ public class CometTaskMemoryManager {
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final boolean unifiedMemory;
-  private long available;
+  private static long available = 0;
 
   public CometTaskMemoryManager(long id, boolean unifiedMemory, long available) {
     this.id = id;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
     this.unifiedMemory = unifiedMemory;
-    this.available = available;
+
+    synchronized (CometTaskMemoryManager.class) {
+      if (CometTaskMemoryManager.available == 0) {
+        CometTaskMemoryManager.available = available;
+      } else {
+        assert (CometTaskMemoryManager.available == available);
+      }
+    }
   }
 
   // Called by Comet native through JNI.

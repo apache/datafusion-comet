@@ -38,7 +38,6 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
-use std::sync::Mutex;
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
 use crate::{
