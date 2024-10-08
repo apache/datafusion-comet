@@ -46,11 +46,20 @@ Cloud Service Providers.
 
 ## Using a Published JAR File
 
-Pre-built jar files are available in Maven central at https://central.sonatype.com/namespace/org.apache.datafusion
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion).
+
+Here are the direct links for downloading the Comet jar file.
+
+- [Comet plugin for Spark 3.3 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.12/0.3.0/comet-spark-spark3.3_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.3 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.13/0.3.0/comet-spark-spark3.3_2.13-0.3.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.3.0/comet-spark-spark3.4_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.3.0/comet-spark-spark3.4_2.13-0.3.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.3.0/comet-spark-spark3.5_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.3.0/comet-spark-spark3.5_2.13-0.3.0.jar)
 
 ## Building from source
 
-Refer to the [Building from Source] guide for instructions from building Comet from source, either from official 
+Refer to the [Building from Source] guide for instructions from building Comet from source, either from official
 source releases, or from the latest code in the GitHub repository.
 
 [Building from Source]: source.md
@@ -127,6 +136,5 @@ Some cluster managers may require additional configuration, see <https://spark.a
 
 ### Memory tuning
 
-In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory 
+In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
 allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
-
