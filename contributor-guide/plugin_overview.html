@@ -119,6 +119,16 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/source.html">
+   Building From Source
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/kubernetes.html">
+   Kubernetes Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
   <a class="reference internal" href="../user-guide/datasources.html">
    Supported Data Sources
   </a>
@@ -393,12 +403,12 @@ until no more batches are available (meaning that all data has been processed by
 <p>The leaf nodes in the physical plan are always <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> and these operators consume batches of Arrow data that were
 prepared before the plan is executed. When <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> invokes <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code> it passes the memory
 addresses of these Arrow arrays to the native code.</p>
-<p><img alt="Diagram of Comet Native Execution" src="../_static/images/CometNativeExecution.drawio.png" /></p>
+<p><img alt="Diagram of Comet Native Execution" src="../_static/images/CometOverviewDetailed.drawio.svg" /></p>
 </section>
 <section id="end-to-end-flow">
 <h2>End to End Flow<a class="headerlink" href="#end-to-end-flow" title="Link to this heading">¶</a></h2>
 <p>The following diagram shows the end-to-end flow.</p>
-<p><img alt="Diagram of Comet Native Parquet Scan" src="../_static/images/CometNativeParquetScan.drawio.png" /></p>
+<p><img alt="Diagram of Comet Native Parquet Scan" src="../_static/images/CometNativeParquetReader.drawio.svg" /></p>
 </section>
 </section>
 

@@ -119,6 +119,16 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
+  <a class="reference internal" href="source.html">
+   Building From Source
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
   <a class="reference internal" href="datasources.html">
    Supported Data Sources
   </a>
@@ -277,13 +287,13 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#supported-apache-spark-versions">
-   Supported Apache Spark versions
+  <a class="reference internal nav-link" href="#feature-parity-with-apache-spark">
+   Feature Parity with Apache Spark
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#feature-parity-with-apache-spark">
-   Feature Parity with Apache Spark
+  <a class="reference internal nav-link" href="#getting-started">
+   Getting Started
   </a>
  </li>
 </ul>
@@ -334,8 +344,11 @@ under the License.
 -->
 <section id="comet-overview">
 <h1>Comet Overview<a class="headerlink" href="#comet-overview" title="Link to this heading">¶</a></h1>
-<p>Comet runs Spark SQL queries using the native Apache DataFusion runtime, which is
-typically faster and more resource efficient than JVM based runtimes.</p>
+<p>Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
+<a class="reference external" href="https://datafusion.apache.org">Apache DataFusion</a> query engine. Comet is designed to significantly enhance the
+performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
+Spark ecosystem without requiring any code changes.</p>
+<p>The following diagram provides an overview of Comet’s architecture.</p>
 <p><img alt="Comet Overview" src="../_images/comet-overview.png" /></p>
 <p>Comet aims to support:</p>
 <ul class="simple">
@@ -347,24 +360,8 @@ Filter/Project/Aggregation/Join/Exchange etc.</p></li>
 </ul>
 <section id="architecture">
 <h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h2>
-<p>The following diagram illustrates the architecture of Comet:</p>
+<p>The following diagram shows how Comet integrates with Apache Spark.</p>
 <p><img alt="Comet System Diagram" src="../_images/comet-system-diagram.png" /></p>
-</section>
-<section id="supported-apache-spark-versions">
-<h2>Supported Apache Spark versions<a class="headerlink" href="#supported-apache-spark-versions" title="Link to this heading">¶</a></h2>
-<p>Comet currently supports the following versions of Apache Spark:</p>
-<ul class="simple">
-<li><p>3.3.x</p></li>
-<li><p>3.4.x</p></li>
-<li><p>3.5.x</p></li>
-</ul>
-<p>Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.</p>
-<ul class="simple">
-<li><p>4.0.0-preview1</p></li>
-</ul>
-<p>Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
-Cloud Service Providers.</p>
 </section>
 <section id="feature-parity-with-apache-spark">
 <h2>Feature Parity with Apache Spark<a class="headerlink" href="#feature-parity-with-apache-spark" title="Link to this heading">¶</a></h2>
@@ -376,6 +373,10 @@ features and fallback to Spark engine.</p>
 <p>To achieve this, besides unit tests within Comet itself, we also re-use
 Spark SQL tests and make sure they all pass with Comet extension
 enabled.</p>
+</section>
+<section id="getting-started">
+<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h2>
+<p>Refer to the <a class="reference internal" href="installation.html"><span class="std std-doc">Comet Installation Guide</span></a> to get started.</p>
 </section>
 </section>
 
