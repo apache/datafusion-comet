@@ -137,7 +137,7 @@ pub fn spark_sha512(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionE
 // result of digest functions as hex string
 fn wrap_digest_result_as_hex_string(
     args: &[ColumnarValue],
-    digest: Arc<ScalarUDF>
+    digest: Arc<ScalarUDF>,
 ) -> Result<ColumnarValue, DataFusionError> {
     let value = digest.invoke(args)?;
     match value {
