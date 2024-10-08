@@ -22,7 +22,6 @@ package org.apache.spark;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.spark.internal.Logging;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
