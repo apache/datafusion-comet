@@ -2271,4 +2271,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("GetArrayStructFields") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          val df = spark.read
+            .parquet(path.toString)
+            .select(
+              array(struct(col("_2"), col("_3"), col("_4"), col("_8")), lit(null)).alias("arr"))
+          checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
+
+          val complex = spark.read
+            .parquet(path.toString)
+            .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
+
+          checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
+        }
+      }
+    }
+  }
 }
