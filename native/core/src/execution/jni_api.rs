@@ -51,6 +51,7 @@ use crate::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
+use datafusion_execution::memory_pool::FairSpillPool;
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
@@ -209,16 +210,11 @@ fn prepare_datafusion_session_context(
         rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
     } else {
         // Use the memory pool from DF
-        if conf.contains_key("memory_limit") {
-            let memory_limit = conf.get("memory_limit").unwrap().parse::<usize>()?;
-            let memory_fraction = conf
-                .get("memory_fraction")
-                .ok_or(CometError::Internal(
-                    "Config 'memory_fraction' is not specified from Comet JVM side".to_string(),
-                ))?
-                .parse::<f64>()?;
-            rt_config = rt_config.with_memory_limit(memory_limit, memory_fraction)
-        }
+        let memory_limit = conf
+            .get("memory_limit_per_core")
+            .unwrap()
+            .parse::<usize>()?;
+        rt_config = rt_config.with_memory_pool(Arc::new(FairSpillPool::new(memory_limit)));
     }
 
     // Get Datafusion configuration from Spark Execution context
