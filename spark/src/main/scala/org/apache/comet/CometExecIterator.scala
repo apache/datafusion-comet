@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -78,12 +78,16 @@ class CometExecIterator(
     val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     // Only enable unified memory manager when off-heap mode is enabled. Otherwise,
     // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-    // and `memory_fraction` below.
-    result.put(
-      "use_unified_memory_manager",
-      String.valueOf(conf.get("spark.memory.offHeap.enabled", "false")))
-    result.put("memory_limit", String.valueOf(maxMemory))
-    result.put("memory_fraction", String.valueOf(COMET_EXEC_MEMORY_FRACTION.get()))
+    val offHeapEnabled = conf.get("spark.memory.offHeap.enabled", "false").toBoolean
+    result.put("use_unified_memory_manager", String.valueOf(offHeapEnabled))
+    if (!offHeapEnabled) {
+      val numCores = conf.get("spark.executor.cores", "1").toFloat
+      val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
+      // example 16GB maxMemory * 16 cores with 4 cores per task results
+      // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
+      val memPerTask = maxMemory.toFloat * coresPerTask / numCores
+      result.put("memory_limit_per_task", String.valueOf(memPerTask.toInt))
+    }
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
     result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
     result.put("explain_native", String.valueOf(COMET_EXPLAIN_NATIVE_ENABLED.get()))
