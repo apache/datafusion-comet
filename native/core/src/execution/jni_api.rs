@@ -211,7 +211,7 @@ fn prepare_datafusion_session_context(
     } else {
         // Use the memory pool from DF
         let memory_limit = conf
-            .get("memory_limit_per_core")
+            .get("memory_limit_per_task")
             .unwrap()
             .parse::<usize>()?;
         rt_config = rt_config.with_memory_pool(Arc::new(FairSpillPool::new(memory_limit)));

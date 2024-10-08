@@ -81,8 +81,12 @@ class CometExecIterator(
     val offHeapEnabled = conf.get("spark.memory.offHeap.enabled", "false").toBoolean
     result.put("use_unified_memory_manager", String.valueOf(offHeapEnabled))
     if (!offHeapEnabled) {
-      val numCores = conf.get("spark.executor.cores", "1").toInt
-      result.put("memory_limit_per_core", String.valueOf(maxMemory / numCores))
+      val numCores = conf.get("spark.executor.cores", "1").toFloat
+      val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
+      // example 16GB maxMemory * 16 cores with 4 cores per task results
+      // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
+      val memPerTask = maxMemory.toFloat * coresPerTask / numCores
+      result.put("memory_limit_per_task", String.valueOf(memPerTask.toInt))
     }
     result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
     result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
