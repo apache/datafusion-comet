@@ -39,23 +39,18 @@ process, and by Spark itself. The size of the pool is specified by `spark.memory
 
 This option is automatically enabled when `spark.memory.offHeap.enabled=false`.
 
-Each native plan has a dedicated memory pool.
+Each executor will have a single memory pool which will be shared by all native plans being executed within that
+process. Unlike Unified Memory Management, this pool is not shared with Spark.
 
-By default, the size of each pool is `spark.comet.memory.overhead.factor * spark.executor.memory`. The default value
+By default, the size of this pool is `spark.comet.memory.overhead.factor * spark.executor.memory`. The default value
 for `spark.comet.memory.overhead.factor` is `0.2`.
-
-It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
-be calculated with `spark.executor.cores / spark.task.cpus`.
-
-For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
-`4 * spark.comet.memory.overhead.factor * spark.executor.memory`.
 
 It is also possible to set `spark.comet.memoryOverhead` to the desired size for each pool, rather than calculating
 it based on `spark.comet.memory.overhead.factor`.
 
 If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` are set, the former will be used.
 
-Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
+Comet will allocate at least `spark.comet.memory.overhead.min` memory per executor.
 
 ### Determining How Much Memory to Allocate
 
