@@ -17,15 +17,16 @@
 
 use std::sync::Arc;
 
+/// Utils for array vector, etc.
+use crate::errors::ExpressionError;
+use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
     error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
-
-/// Utils for array vector, etc.
-use crate::errors::ExpressionError;
-use crate::execution::operators::ExecutionError;
+use arrow_array::ffi::from_ffi_and_data_type;
+use arrow_schema::DataType;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {
@@ -48,7 +49,7 @@ impl From<ExpressionError> for ArrowError {
 pub trait SparkArrowConvert {
     /// Build Arrow Arrays from C data interface passed from Spark.
     /// It accepts a tuple (ArrowArray address, ArrowSchema address).
-    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError>
+    fn from_spark(addresses: (i64, i64), data_type: &DataType) -> Result<Self, ExecutionError>
     where
         Self: Sized;
 
@@ -61,7 +62,7 @@ pub trait SparkArrowConvert {
 }
 
 impl SparkArrowConvert for ArrayData {
-    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError> {
+    fn from_spark(addresses: (i64, i64), data_type: &DataType) -> Result<Self, ExecutionError> {
         let (array_ptr, schema_ptr) = addresses;
 
         let array_ptr = array_ptr as *mut FFI_ArrowArray;
@@ -79,7 +80,8 @@ impl SparkArrowConvert for ArrayData {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
 
-            from_ffi(array_data, &schema_data)?
+            from_ffi_and_data_type(array_data, data_type.clone())?
+            // from_ffi(array_data, &schema_data)?
         };
 
         // Align imported buffers from Java.

@@ -48,6 +48,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
+use datafusion_expr::type_coercion::functions::data_types;
 use jni::objects::{GlobalRef, JObject};
 use jni::objects::{JLongArray, JValueGen, ReleaseMode};
 use jni::sys::{jlongArray, jsize};
@@ -88,7 +89,7 @@ impl ScanExec {
         // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
         // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
-            ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?
+            ScanExec::get_next(exec_context_id, input_source.as_obj(), &data_types)?
         } else {
             InputBatch::EOF
         };
@@ -155,7 +156,7 @@ impl ScanExec {
             let next_batch = ScanExec::get_next(
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
+                &self.data_types,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -167,7 +168,8 @@ impl ScanExec {
     fn get_next(
         exec_context_id: i64,
         iter: &JObject,
-        num_cols: usize,
+        data_types: &Vec<DataType>,
+        // num_cols: usize,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -252,7 +254,8 @@ impl ScanExec {
         for i in 0..num_arrays {
             let array_ptr = unsafe { *(array_elements.add(i * 2)) };
             let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
-            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+            let data_type = &data_types[i];
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
 
@@ -280,6 +283,7 @@ fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
                     let datatype = ScanExec::unpack_dictionary_type(c.data_type());
                     // We don't use the field name. Put a placeholder.
                     if matches!(datatype, DataType::Dictionary(_, _)) {
+                        println!("!!!!");
                         Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
                     } else {
                         Field::new(format!("col_{}", idx), datatype, true)
