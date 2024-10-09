@@ -27,7 +27,9 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.InjectRuntimeFilter.{canBuildShuffledHashJoinLeft, canBuildShuffledHashJoinRight}
+import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
@@ -938,7 +940,38 @@ class CometSparkSessionExtensions
           plan
         }
       } else {
-        var newPlan = transform(normalizePlan(plan))
+
+        def getBuildSide(joinType: JoinType): Option[BuildSide] = {
+          val leftBuildable = canBuildShuffledHashJoinLeft(joinType)
+          val rightBuildable = canBuildShuffledHashJoinRight(joinType)
+          if (rightBuildable) {
+            Some(BuildRight)
+          } else if (leftBuildable) {
+            Some(BuildLeft)
+          } else {
+            None
+          }
+        }
+
+        val x = plan.transformUp {
+          case smj: SortMergeJoinExec if CometConf.COMET_REPLACE_SMJ.get() =>
+            getBuildSide(smj.joinType) match {
+              case Some(buildSide) =>
+                ShuffledHashJoinExec(
+                  smj.leftKeys,
+                  smj.rightKeys,
+                  smj.joinType,
+                  buildSide,
+                  smj.condition,
+                  smj.left,
+                  smj.right,
+                  smj.isSkewJoin)
+              case _ => plan
+            }
+          case _ => plan
+        }
+
+        var newPlan = transform(normalizePlan(x))
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
