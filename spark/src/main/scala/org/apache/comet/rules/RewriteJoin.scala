@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide
 import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
+
 import org.apache.comet.CometConf
 
 /**
@@ -33,11 +34,9 @@ import org.apache.comet.CometConf
 object RewriteJoin extends JoinSelectionHelper {
 
   private def getBuildSide(joinType: JoinType): Option[BuildSide] = {
-    val leftBuildable = canBuildShuffledHashJoinLeft(joinType)
-    val rightBuildable = canBuildShuffledHashJoinRight(joinType)
-    if (rightBuildable) {
+    if (canBuildShuffledHashJoinRight(joinType)) {
       Some(BuildRight)
-    } else if (leftBuildable) {
+    } else if (canBuildShuffledHashJoinLeft(joinType)) {
       Some(BuildLeft)
     } else {
       None
