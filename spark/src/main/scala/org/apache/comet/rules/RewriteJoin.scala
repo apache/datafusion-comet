@@ -24,8 +24,6 @@ import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
-import org.apache.comet.CometConf
-
 /**
  * Adapted from equivalent rule in Apache Gluten.
  *
