@@ -294,6 +294,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("SortMergeJoin without join filter") {
     withSQLConf(
+      CometConf.COMET_REPLACE_SMJ.key -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {

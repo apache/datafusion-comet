@@ -581,6 +581,7 @@ class CometExecSuite extends CometTestBase {
   test("Comet native metrics: SortMergeJoin") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_REPLACE_SMJ.key -> "false",
       "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       "spark.sql.join.preferSortMergeJoin" -> "true") {
@@ -1345,14 +1346,16 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bucketed table") {
-    val bucketSpec = Some(BucketSpec(8, Seq("i", "j"), Nil))
-    val bucketedTableTestSpecLeft = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
-    val bucketedTableTestSpecRight = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
+    withSQLConf(CometConf.COMET_REPLACE_SMJ.key -> "false") {
+      val bucketSpec = Some(BucketSpec(8, Seq("i", "j"), Nil))
+      val bucketedTableTestSpecLeft = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
+      val bucketedTableTestSpecRight = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
 
-    testBucketing(
-      bucketedTableTestSpecLeft = bucketedTableTestSpecLeft,
-      bucketedTableTestSpecRight = bucketedTableTestSpecRight,
-      joinCondition = joinCondition(Seq("i", "j")))
+      testBucketing(
+        bucketedTableTestSpecLeft = bucketedTableTestSpecLeft,
+        bucketedTableTestSpecRight = bucketedTableTestSpecRight,
+        joinCondition = joinCondition(Seq("i", "j")))
+    }
   }
 
   def withBucket(
