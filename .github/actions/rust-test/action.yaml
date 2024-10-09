@@ -62,5 +62,6 @@ runs:
     - name: Run Cargo test
       shell: bash
       run: |
+        ulimit -n 102400
         cd native
         RUST_BACKTRACE=1 cargo test
