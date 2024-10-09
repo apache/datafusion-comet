@@ -20,6 +20,7 @@
 package org.apache.spark;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
@@ -35,22 +36,53 @@ public class CometTaskMemoryManager {
 
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
+  private final boolean unifiedMemory;
+  private static AtomicBoolean initialized = new AtomicBoolean(false);
+  private static long available = 0;
 
-  public CometTaskMemoryManager(long id) {
+  public CometTaskMemoryManager(long id, boolean unifiedMemory, long available) {
     this.id = id;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
+    this.unifiedMemory = unifiedMemory;
+
+    if (CometTaskMemoryManager.initialized.compareAndSet(false, true)) {
+      synchronized (CometTaskMemoryManager.class) {
+        // TODO use Spark logger
+        System.out.println("Initializing Comet memory pool to " + available + " bytes");
+        CometTaskMemoryManager.available = available;
+      }
+    }
   }
 
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
-    return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    if (unifiedMemory) {
+      return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    } else {
+      synchronized (CometTaskMemoryManager.class) {
+        if (size <= CometTaskMemoryManager.available) {
+          available -= size;
+          return size;
+        } else {
+          long allocated = available;
+          available = 0;
+          return allocated;
+        }
+      }
+    }
   }
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
-    internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+    if (unifiedMemory) {
+      internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+    } else {
+      synchronized (CometTaskMemoryManager.class) {
+        available += size;
+      }
+    }
   }
 
   /**
