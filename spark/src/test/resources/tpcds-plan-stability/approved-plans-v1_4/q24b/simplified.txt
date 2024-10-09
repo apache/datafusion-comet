@@ -23,11 +23,9 @@ WholeStageCodegen (4)
                                             CometProject [ss_item_sk,ss_customer_sk,ss_net_paid,s_store_name,s_state,s_zip]
                                               CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_net_paid,s_store_sk,s_store_name,s_state,s_zip]
                                                 CometProject [ss_item_sk,ss_customer_sk,ss_store_sk,ss_net_paid]
-                                                  CometSortMergeJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,sr_item_sk,sr_ticket_number]
-                                                    CometSort [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid]
-                                                      ReusedExchange [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid] #3
-                                                    CometSort [sr_item_sk,sr_ticket_number]
-                                                      ReusedExchange [sr_item_sk,sr_ticket_number] #4
+                                                  CometHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,sr_item_sk,sr_ticket_number]
+                                                    ReusedExchange [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid] #3
+                                                    ReusedExchange [sr_item_sk,sr_ticket_number] #4
                                                 ReusedExchange [s_store_sk,s_store_name,s_state,s_zip] #5
                                             CometBroadcastExchange [i_item_sk,i_current_price,i_size,i_color,i_units,i_manager_id] #11
                                               CometFilter [i_item_sk,i_current_price,i_size,i_color,i_units,i_manager_id]
@@ -56,17 +54,15 @@ WholeStageCodegen (4)
                                         CometProject [ss_item_sk,ss_customer_sk,ss_net_paid,s_store_name,s_state,s_zip]
                                           CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_net_paid,s_store_sk,s_store_name,s_state,s_zip]
                                             CometProject [ss_item_sk,ss_customer_sk,ss_store_sk,ss_net_paid]
-                                              CometSortMergeJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,sr_item_sk,sr_ticket_number]
-                                                CometSort [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid]
-                                                  CometExchange [ss_ticket_number,ss_item_sk] #3
-                                                    CometProject [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid]
-                                                      CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,ss_sold_date_sk]
-                                                        CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,ss_sold_date_sk]
-                                                CometSort [sr_item_sk,sr_ticket_number]
-                                                  CometExchange [sr_ticket_number,sr_item_sk] #4
-                                                    CometProject [sr_item_sk,sr_ticket_number]
-                                                      CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
-                                                        CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
+                                              CometHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,sr_item_sk,sr_ticket_number]
+                                                CometExchange [ss_ticket_number,ss_item_sk] #3
+                                                  CometProject [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid]
+                                                    CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,ss_sold_date_sk]
+                                                      CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_paid,ss_sold_date_sk]
+                                                CometExchange [sr_ticket_number,sr_item_sk] #4
+                                                  CometProject [sr_item_sk,sr_ticket_number]
+                                                    CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
+                                                      CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                                             CometBroadcastExchange [s_store_sk,s_store_name,s_state,s_zip] #5
                                               CometProject [s_store_sk,s_store_name,s_state,s_zip]
                                                 CometFilter [s_store_sk,s_store_name,s_market_id,s_state,s_zip]
