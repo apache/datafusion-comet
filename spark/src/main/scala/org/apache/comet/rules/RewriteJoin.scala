@@ -21,13 +21,12 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.JoinType
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
-
 import org.apache.comet.CometConf
 
 /**
- * Based on equivalent rule in Apache Gluten.
+ * Adapted from equivalent rule in Apache Gluten.
  *
  * This rule replaces [[SortMergeJoinExec]] with [[ShuffledHashJoinExec]].
  */
@@ -45,6 +44,11 @@ object RewriteJoin extends JoinSelectionHelper {
     }
   }
 
+  private def removeSort(plan: SparkPlan) = plan match {
+    case _: SortExec => plan.children.head
+    case _ => plan
+  }
+
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec if CometConf.COMET_REPLACE_SMJ.get() =>
       getBuildSide(smj.joinType) match {
@@ -55,8 +59,8 @@ object RewriteJoin extends JoinSelectionHelper {
             smj.joinType,
             buildSide,
             smj.condition,
-            smj.left,
-            smj.right,
+            removeSort(smj.left),
+            removeSort(smj.right),
             smj.isSkewJoin)
         case _ => plan
       }
