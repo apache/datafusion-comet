@@ -49,7 +49,7 @@ object RewriteJoin extends JoinSelectionHelper {
   }
 
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
-    case smj: SortMergeJoinExec if CometConf.COMET_REPLACE_SMJ.get() =>
+    case smj: SortMergeJoinExec =>
       getBuildSide(smj.joinType) match {
         case Some(buildSide) =>
           ShuffledHashJoinExec(

@@ -939,11 +939,15 @@ class CometSparkSessionExtensions
           plan
         }
       } else {
-        val normalizedPlan = normalizePlan(plan)
+        val normalizedPlan = if (CometConf.COMET_REPLACE_SMJ.get()) {
+          normalizePlan(plan).transformUp { case p =>
+            RewriteJoin.rewrite(p)
+          }
+        } else {
+          normalizePlan(plan)
+        }
 
-        var newPlan = transform(normalizedPlan.transformUp { case p =>
-          RewriteJoin.rewrite(p)
-        })
+        var newPlan = transform(normalizedPlan)
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
