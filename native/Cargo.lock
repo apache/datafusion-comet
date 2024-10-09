@@ -892,6 +892,7 @@ dependencies = [
  "datafusion-expr",
  "datafusion-functions-nested",
  "datafusion-physical-expr",
+ "either",
  "flate2",
  "futures",
  "half",
