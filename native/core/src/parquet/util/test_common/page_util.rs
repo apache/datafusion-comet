@@ -122,7 +122,7 @@ impl DataPageBuilder for DataPageBuilderImpl {
         );
         self.encoding = Some(encoding);
         let mut encoder: Box<dyn Encoder<T>> =
-            get_encoder::<T>(encoding).expect("get_encoder() should be OK");
+            get_encoder::<T>(encoding, &self.desc).expect("get_encoder() should be OK");
         encoder.put(values).expect("put() should be OK");
         let encoded_values = encoder
             .flush_buffer()

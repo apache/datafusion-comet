@@ -241,7 +241,7 @@ fn prepare_datafusion_session_context(
         session_config = session_config.set_str(key, value);
     }
 
-    let runtime = RuntimeEnv::new(rt_config).unwrap();
+    let runtime = RuntimeEnv::try_new(rt_config).unwrap();
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
