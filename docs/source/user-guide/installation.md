@@ -46,7 +46,8 @@ Cloud Service Providers.
 
 ## Using a Published JAR File
 
-Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion).
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it 
+is currently necessary to build from source.
 
 Here are the direct links for downloading the Comet jar file.
 
