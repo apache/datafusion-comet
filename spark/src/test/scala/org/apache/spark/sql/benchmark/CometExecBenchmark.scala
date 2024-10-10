@@ -22,6 +22,9 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
+import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -222,6 +225,59 @@ object CometExecBenchmark extends CometBenchmarkBase {
     }
   }
 
+  // BloomFilterAgg takes an argument for the expected number of distinct values, which determines filter size and
+  // number of hash functions. We use the cardinality as a hint to the aggregate, otherwise the default Spark values
+  // make a big filter with a lot of hash functions.
+  def bloomFilterAggregate(values: Int, cardinality: Int): Unit = {
+    val benchmark =
+      new Benchmark(
+        s"BloomFilterAggregate Exec (cardinality $cardinality)",
+        values,
+        output = output)
+
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(dir, spark.sql(s"SELECT floor(rand() * $cardinality) as key FROM $tbl"))
+
+        val query =
+          s"SELECT bloom_filter_agg(cast(key as long), cast($cardinality as long)) FROM parquetV1Table"
+
+        benchmark.addCase("SQL Parquet - Spark (BloomFilterAgg)") { _ =>
+          spark.sql(query).noop()
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan) (BloomFilterAgg)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql(query).noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec) (BloomFilterAgg)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
+            spark.sql(query).noop()
+          }
+        }
+
+        benchmark.run()
+      }
+    }
+
+    spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
       subqueryExecBenchmark(v)
@@ -239,6 +295,12 @@ object CometExecBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
       sortExecBenchmark(v)
+    }
+
+    runBenchmarkWithTable("BloomFilterAggregate", 1024 * 1024 * 10) { v =>
+      for (card <- List(100, 1024, 1024 * 1024)) {
+        bloomFilterAggregate(v, card)
+      }
     }
   }
 }
