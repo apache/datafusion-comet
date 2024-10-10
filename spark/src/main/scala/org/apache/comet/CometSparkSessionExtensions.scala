@@ -55,6 +55,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -938,7 +939,15 @@ class CometSparkSessionExtensions
           plan
         }
       } else {
-        var newPlan = transform(normalizePlan(plan))
+        val normalizedPlan = if (CometConf.COMET_REPLACE_SMJ.get()) {
+          normalizePlan(plan).transformUp { case p =>
+            RewriteJoin.rewrite(p)
+          }
+        } else {
+          normalizePlan(plan)
+        }
+
+        var newPlan = transform(normalizedPlan)
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
