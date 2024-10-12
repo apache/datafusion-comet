@@ -2453,6 +2453,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case struct @ CreateNamedStruct(_) =>
+          if (struct.names.length != struct.names.distinct.length) {
+            withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
+            return None
+          }
+
           val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
 
           if (valExprs.forall(_.isDefined)) {
