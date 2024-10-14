@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -2057,6 +2057,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
+        }
+      }
+    }
+  }
+
+  test("named_struct with duplicate field names") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
+            classOf[ProjectExec])
         }
       }
     }

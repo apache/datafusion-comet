@@ -47,8 +47,6 @@ A few common commands are specified in project's `Makefile`:
   is useful when you want to test Comet local installation in another project
   such as Spark.
 - `make clean`: clean up the workspace
-- `bin/comet-spark-shell -d . -o spark/target/` run Comet spark shell for V1 datasources
-- `bin/comet-spark-shell -d . -o spark/target/ --conf spark.sql.sources.useV1SourceList=""` run Comet spark shell for V2 datasources
 
 ## Development Environment
 
