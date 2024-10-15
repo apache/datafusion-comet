@@ -18,6 +18,7 @@
 use arrow::{array::ArrayData, datatypes::DataType as ArrowDataType};
 
 use crate::common::{bit, CometBuffer};
+use crate::parquet::is_binary_type;
 
 const DEFAULT_ARRAY_LEN: usize = 4;
 
@@ -78,7 +79,7 @@ impl ParquetMutableVector {
         let validity_buffer = CometBuffer::new(validity_len);
 
         let mut value_capacity = capacity;
-        if Self::is_binary_type(&arrow_type) {
+        if is_binary_type(&arrow_type) {
             // Arrow offset array needs to have one extra slot
             value_capacity += 1;
         }
@@ -99,7 +100,7 @@ impl ParquetMutableVector {
             _ => {}
         }
 
-        if Self::is_binary_type(&arrow_type) {
+        if is_binary_type(&arrow_type) {
             // Setup the first offset which is always 0.
             let zero: u32 = 0;
             bit::memcpy_value(&zero, 4, &mut value_buffer);
@@ -130,7 +131,7 @@ impl ParquetMutableVector {
         self.num_values = 0;
         self.num_nulls = 0;
         self.validity_buffer.reset();
-        if Self::is_binary_type(&self.arrow_type) {
+        if is_binary_type(&self.arrow_type) {
             // Reset the first offset to 0
             let zero: u32 = 0;
             bit::memcpy_value(&zero, 4, &mut self.value_buffer);
@@ -152,7 +153,7 @@ impl ParquetMutableVector {
     #[inline]
     pub fn put_nulls(&mut self, n: usize) {
         // We need to update offset buffer for binary.
-        if Self::is_binary_type(&self.arrow_type) {
+        if is_binary_type(&self.arrow_type) {
             let mut offset = self.num_values * 4;
             let prev_offset_value = bit::read_u32(&self.value_buffer[offset..]);
             offset += 4;
@@ -208,7 +209,7 @@ impl ParquetMutableVector {
                 .null_bit_buffer(Some(self.validity_buffer.to_arrow()))
                 .null_count(self.num_nulls);
 
-            if Self::is_binary_type(&self.arrow_type) && self.dictionary.is_none() {
+            if is_binary_type(&self.arrow_type) && self.dictionary.is_none() {
                 let child = &mut self.children[0];
                 builder = builder.add_buffer(child.value_buffer.to_arrow());
             }
@@ -235,11 +236,6 @@ impl ParquetMutableVector {
             ArrowDataType::Binary | ArrowDataType::Utf8 => 32, // Only count offset size
             dt => panic!("Unsupported Arrow data type: {:?}", dt),
         }
-    }
-
-    #[inline]
-    fn is_binary_type(dt: &ArrowDataType) -> bool {
-        matches!(dt, ArrowDataType::Binary | ArrowDataType::Utf8)
     }
 
     #[inline]
