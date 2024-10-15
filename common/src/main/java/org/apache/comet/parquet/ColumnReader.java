@@ -26,7 +26,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.*;
-import org.apache.arrow.c.NativeUtil;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.page.DataPage;
@@ -157,12 +156,8 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometVector loadVector() {
-    long[] addrs = Native.currentBatch(nativeHandle);
-    ArrowArray array = ArrowArray.wrap(addrs[0]);
-    ArrowSchema schema = ArrowSchema.wrap(addrs[1]);
-    ArrowSchema.Snapshot snapshot = schema.snapshot();
-    String format = NativeUtil.toJavaString(snapshot.format);
-    currentVector = new CometNativeVector(null, useDecimal128, addrs[0], addrs[1]);
+    long address = Native.currentBatch(nativeHandle);
+    currentVector = new CometNativeVector(null, useDecimal128, address);
     return currentVector;
     /*
 

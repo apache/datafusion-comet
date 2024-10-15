@@ -100,8 +100,7 @@ class NativeUtil {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometNativeVector =>
-          builder += a.getArrayAddress
-          builder += a.getSchemaAddress
+          builder += a.getAddress
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -126,8 +125,6 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema)
-          builder += arrowArray.memoryAddress()
-          builder += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
