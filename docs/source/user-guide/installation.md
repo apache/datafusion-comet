@@ -19,73 +19,55 @@
 
 # Installing DataFusion Comet
 
+## Prerequisites
+
 Make sure the following requirements are met and software installed on your machine.
 
-## Supported Platforms
+### Supported Operating Systems
 
 - Linux
 - Apple OSX (Intel and Apple Silicon)
 
-## Requirements
+### Supported Spark Versions
 
-- [Apache Spark supported by Comet](overview.md#supported-apache-spark-versions)
-- JDK 8 and up
-- GLIBC 2.17 (Centos 7) and up
+Comet currently supports the following versions of Apache Spark:
+
+- 3.3.x (Java 8/11/17, Scala 2.12/2.13)
+- 3.4.x (Java 8/11/17, Scala 2.12/2.13)
+- 3.5.x (Java 8/11/17, Scala 2.12/2.13)
+
+Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
+use only and should not be used in production yet.
+
+- 4.0.0-preview1 (Java 17/21, Scala 2.13)
+
+Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
+Cloud Service Providers.
+
+## Using a Published JAR File
+
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it 
+is currently necessary to build from source.
+
+Here are the direct links for downloading the Comet jar file.
+
+- [Comet plugin for Spark 3.3 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.12/0.3.0/comet-spark-spark3.3_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.3 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.13/0.3.0/comet-spark-spark3.3_2.13-0.3.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.3.0/comet-spark-spark3.4_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.3.0/comet-spark-spark3.4_2.13-0.3.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.3.0/comet-spark-spark3.5_2.12-0.3.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.3.0/comet-spark-spark3.5_2.13-0.3.0.jar)
+
+## Building from source
+
+Refer to the [Building from Source] guide for instructions from building Comet from source, either from official
+source releases, or from the latest code in the GitHub repository.
+
+[Building from Source]: source.md
 
 ## Deploying to Kubernetes
 
 See the [Comet Kubernetes Guide](kubernetes.md) guide.
-
-## Using a Published JAR File
-
-Pre-built jar files are available in Maven central at https://central.sonatype.com/namespace/org.apache.datafusion
-
-## Using a Published Source Release
-
-Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
-
-```console
-# Pick the latest version
-export COMET_VERSION=0.3.0
-# Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
-# Unpack
-tar -xzf apache-datafusion-comet-$COMET_VERSION.tar.gz
-cd apache-datafusion-comet-$COMET_VERSION
-```
-
-Build
-
-```console
-make release-nogit PROFILES="-Pspark-3.4"
-```
-
-## Building from the GitHub repository
-
-Clone the repository:
-
-```console
-git clone https://github.com/apache/datafusion-comet.git
-```
-
-Build Comet for a specific Spark version:
-
-```console
-cd datafusion-comet
-make release PROFILES="-Pspark-3.4"
-```
-
-Note that the project builds for Scala 2.12 by default but can be built for Scala 2.13 using an additional profile:
-
-```console
-make release PROFILES="-Pspark-3.4 -Pscala-2.13"
-```
-
-To build Comet from the source distribution on an isolated environment without an access to `github.com` it is necessary to disable `git-commit-id-maven-plugin`, otherwise you will face errors that there is no access to the git during the build process. In that case you may use:
-
-```console
-make release-nogit PROFILES="-Pspark-3.4"
-```
 
 ## Run Spark Shell with Comet enabled
 
@@ -99,11 +81,10 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.enabled=true \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
     --conf spark.comet.explainFallback.enabled=true \
-    --conf spark.driver.memory=1g \
-    --conf spark.executor.memory=1g
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=16g \
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -142,20 +123,9 @@ WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts 
   - Execute InsertIntoHadoopFsRelationCommand is not supported
 ```
 
-### Enable Comet shuffle
+## Additional Configuration
 
-Comet shuffle feature is disabled by default. To enable it, please add related configs:
-
-```
---conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
---conf spark.comet.exec.shuffle.enabled=true
-```
-
-Above configs enable Comet native shuffle which only supports hash partition and single partition.
-Comet native shuffle doesn't support complex types yet.
-
-Comet doesn't have official release yet so currently the only way to test it is to build jar and include it in your
-Spark application. Depending on your deployment mode you may also need to set the driver & executor class path(s) to
+Depending on your deployment mode you may also need to set the driver & executor class path(s) to
 explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
 components which will then fail at runtime. For example:
 
@@ -165,11 +135,7 @@ components which will then fail at runtime. For example:
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
 
-To enable columnar shuffle which supports all partitioning and basic complex types, one more config is required:
-
-```
---conf spark.comet.exec.shuffle.mode=jvm
-```
-
 ### Memory tuning
-In addition to Apache Spark memory configuration parameters the Comet introduces own parameters to configure memory allocation for native execution. More [Comet Memory Tuning](./tuning.md)
+
+In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
+allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.

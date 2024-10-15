@@ -19,8 +19,14 @@
 
 # Comet Overview
 
-Comet runs Spark SQL queries using the native Apache DataFusion runtime, which is
-typically faster and more resource efficient than JVM based runtimes.
+Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
+[Apache DataFusion] query engine. Comet is designed to significantly enhance the
+performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
+Spark ecosystem without requiring any code changes.
+
+[Apache DataFusion]: https://datafusion.apache.org
+
+The following diagram provides an overview of Comet's architecture.
 
 ![Comet Overview](../_static/images/comet-overview.png)
 
@@ -34,25 +40,9 @@ Comet aims to support:
 
 ## Architecture
 
-The following diagram illustrates the architecture of Comet:
+The following diagram shows how Comet integrates with Apache Spark.
 
 ![Comet System Diagram](../_static/images/comet-system-diagram.png)
-
-## Supported Apache Spark versions
-
-Comet currently supports the following versions of Apache Spark:
-
-- 3.3.x
-- 3.4.x
-- 3.5.x
-
-Experimental support is provided for the following versions of Apache Spark and is intended for development/testing 
-use only and should not be used in production yet.
-
-- 4.0.0-preview1
-
-Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by 
-Cloud Service Providers. 
 
 ## Feature Parity with Apache Spark
 
@@ -65,3 +55,9 @@ features and fallback to Spark engine.
 To achieve this, besides unit tests within Comet itself, we also re-use
 Spark SQL tests and make sure they all pass with Comet extension
 enabled.
+
+## Getting Started
+
+Refer to the [Comet Installation Guide] to get started.
+
+[Comet Installation Guide]: installation.md
