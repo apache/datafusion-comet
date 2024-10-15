@@ -46,7 +46,6 @@ use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding};
 
 use self::util::jni::TypePromotionInfo;
-use arrow::datatypes::DataType as ArrowDataType;
 
 const STR_CLASS_NAME: &str = "java/lang/String";
 
@@ -593,9 +592,4 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_closeColumnReader(
 fn from_u8_slice(src: &mut [u8]) -> &mut [i8] {
     let raw_ptr = src.as_mut_ptr() as *mut i8;
     unsafe { std::slice::from_raw_parts_mut(raw_ptr, src.len()) }
-}
-
-#[inline]
-pub fn is_binary_type(dt: &ArrowDataType) -> bool {
-    matches!(dt, ArrowDataType::Binary | ArrowDataType::Utf8)
 }
