@@ -23,11 +23,14 @@ import org.apache.arrow.vector.ValueVector;
 import org.apache.spark.sql.types.DataType;
 
 public class CometNativeVector extends CometVector {
-  private final long address;
+  private final long arrayAddress;
+  private final long schemaAddress;
 
-  public CometNativeVector(DataType type, boolean useDecimal128, long address) {
+  public CometNativeVector(
+      DataType type, boolean useDecimal128, long arrayAddress, long schemaAddress) {
     super(type, useDecimal128);
-    this.address = address;
+    this.arrayAddress = arrayAddress;
+    this.schemaAddress = schemaAddress;
   }
 
   @Override
@@ -69,7 +72,11 @@ public class CometNativeVector extends CometVector {
   @Override
   public void close() {}
 
-  public long getAddress() {
-    return address;
+  public long getArrayAddress() {
+    return arrayAddress;
+  }
+
+  public long getSchemaAddress() {
+    return schemaAddress;
   }
 }

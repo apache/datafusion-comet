@@ -41,7 +41,6 @@ use jni::{
 
 use crate::execution::utils::SparkArrowConvert;
 use arrow::buffer::{Buffer, MutableBuffer};
-use arrow_data::ArrayData;
 use jni::objects::{JBooleanArray, JLongArray, JPrimitiveArray, ReleaseMode};
 use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding};
@@ -53,7 +52,7 @@ const STR_CLASS_NAME: &str = "java/lang/String";
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
-    pub arrays: Vec<Arc<ArrayData>>,
+    pub arrays: Vec<(Arc<FFI_ArrowArray>, Arc<FFI_ArrowSchema>)>,
     last_data_page: Option<GlobalRef>,
 }
 
@@ -540,25 +539,23 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
-) -> jlong {
+) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
         let ctx = get_context(handle)?;
         let reader = &mut ctx.column_reader;
         let data = reader.current_batch();
-        // let (array, schema) = data.to_spark()?;
+        let (array, schema) = data.to_spark()?;
 
         unsafe {
-            // let arrow_array = Arc::from_raw(array as *const FFI_ArrowArray);
-            // let arrow_schema = Arc::from_raw(schema as *const FFI_ArrowSchema);
-            let array_data = Arc::new(data);
-            ctx.arrays.push(array_data.clone());
-            Ok(Arc::into_raw(array_data) as i64)
+            let arrow_array = Arc::from_raw(array as *const FFI_ArrowArray);
+            let arrow_schema = Arc::from_raw(schema as *const FFI_ArrowSchema);
+            ctx.arrays.push((arrow_array, arrow_schema));
 
-            // let res = env.new_long_array(2)?;
-            // let buf: [i64; 2] = [array, schema];
-            // env.set_long_array_region(&res, 0, &buf)
-            //     .expect("set long array region failed");
-            // Ok(res.into_raw())
+            let res = env.new_long_array(2)?;
+            let buf: [i64; 2] = [array, schema];
+            env.set_long_array_region(&res, 0, &buf)
+                .expect("set long array region failed");
+            Ok(res.into_raw())
         }
     })
 }

@@ -195,7 +195,7 @@ public final class Native extends NativeBase {
    * @return a long array with 2 elements, the first is the address to native Arrow array, and the
    *     second is the address to the Arrow schema.
    */
-  public static native long currentBatch(long handle);
+  public static native long[] currentBatch(long handle);
 
   /** Set methods to set a constant value for the reader, so it'll return constant vectors */
   public static native void setNull(long handle);

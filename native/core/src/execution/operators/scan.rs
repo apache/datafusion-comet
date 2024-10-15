@@ -34,7 +34,7 @@ use crate::{
     jvm_bridge::{jni_call, JVMClasses},
 };
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow_array::{make_array, Array, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_array::{make_array, ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow_data::ffi::FFI_ArrowArray;
 use arrow_data::ArrayData;
 use arrow_schema::ffi::FFI_ArrowSchema;
@@ -238,37 +238,34 @@ impl ScanExec {
         }
 
         let array_num = addresses.len() - 1;
-        // if array_num % 2 != 0 {
-        //     return Err(CometError::Internal(format!(
-        //         "Invalid number of Arrow Array addresses: {}",
-        //         array_num
-        //     )));
-        // }
+        if array_num % 2 != 0 {
+            return Err(CometError::Internal(format!(
+                "Invalid number of Arrow Array addresses: {}",
+                array_num
+            )));
+        }
 
-        let num_arrays = array_num; // / 2;
+        let num_arrays = array_num / 2;
         let array_elements = unsafe { addresses.as_ptr().add(1) };
         // let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
         // for i in 0..num_cols {
         for i in 0..num_arrays {
-            // let array_ptr = unsafe { *(array_elements.add(i * 2)) };
-            // let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
+            let array_ptr = unsafe { *(array_elements.add(i * 2)) };
+            let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
             let data_type = &data_types[i];
-            // let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
-            let array_data_ptr = unsafe { *(array_elements.add(i)) } as *mut ArrayData;
-            let array_data =
-                unsafe { std::ptr::replace(array_data_ptr, ArrayData::new_empty(data_type)) };
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
 
             inputs.push(make_array(array_data));
 
             // Drop the Arcs to avoid memory leak
-            // unsafe {
-            //     Rc::from_raw(array_ptr as *const FFI_ArrowArray);
-            //     Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
-            // }
+            unsafe {
+                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
+                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+            }
         }
 
         Ok(InputBatch::new(inputs, Some(num_rows as usize)))
@@ -286,6 +283,7 @@ fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
                     let datatype = ScanExec::unpack_dictionary_type(c.data_type());
                     // We don't use the field name. Put a placeholder.
                     if matches!(datatype, DataType::Dictionary(_, _)) {
+                        println!("!!!!");
                         Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
                     } else {
                         Field::new(format!("col_{}", idx), datatype, true)

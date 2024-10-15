@@ -19,13 +19,19 @@
 
 package org.apache.comet.parquet;
 
+import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.ArrowSchema;
+import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.FieldVector;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.spark.sql.types.DataType;
 
-import org.apache.comet.vector.CometNativeVector;
+import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
+
+import static org.apache.comet.parquet.Utils.getNullCount;
 
 /** A metadata column reader that can be extended by {@link RowIndexColumnReader} etc. */
 public class MetadataColumnReader extends AbstractColumnReader {
@@ -46,15 +52,13 @@ public class MetadataColumnReader extends AbstractColumnReader {
   @Override
   public void readBatch(int total) {
     if (vector == null) {
-      long address = Native.currentBatch(nativeHandle);
-      vector = new CometNativeVector(null, useDecimal128, address);
-
-      // try (ArrowArray array = ArrowArray.wrap(addresses[0]);
-      //     ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-      //   int nullCount = getNullCount(array);
-      //   FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
-      //   vector = new CometPlainVector(fieldVector, useDecimal128, false, nullCount);
-      // }
+      long[] addresses = Native.currentBatch(nativeHandle);
+      try (ArrowArray array = ArrowArray.wrap(addresses[0]);
+          ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
+        int nullCount = getNullCount(array);
+        FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
+        vector = new CometPlainVector(fieldVector, useDecimal128, false, nullCount);
+      }
     }
     vector.setNumValues(total);
   }
