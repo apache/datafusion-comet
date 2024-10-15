@@ -258,6 +258,8 @@ impl ScanExec {
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
+            println!("^^^ {:?}", array_data.buffers().len());
+            println!("&&& {:?}", array_data.data_type());
 
             inputs.push(make_array(array_data));
 

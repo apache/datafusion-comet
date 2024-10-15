@@ -27,6 +27,7 @@ use arrow::{
 };
 use arrow_array::ffi::from_ffi_and_data_type;
 use arrow_schema::DataType;
+use crate::parquet::is_binary_type;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {
@@ -79,7 +80,12 @@ impl SparkArrowConvert for ArrayData {
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
+            println!("/// {:?}", array_data.num_buffers());
+            println!("??? {:?}", data_type);
 
+            if is_binary_type(data_type) && !matches!(data_type, DataType::Decimal128(_, _)) {
+                array_data.
+            }
             from_ffi_and_data_type(array_data, data_type.clone())?
             // from_ffi(array_data, &schema_data)?
         };
