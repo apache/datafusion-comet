@@ -55,6 +55,7 @@ use datafusion::{
     },
 };
 use datafusion_physical_expr::EquivalenceProperties;
+use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
@@ -1111,7 +1112,11 @@ async fn external_shuffle(
     );
 
     while let Some(batch) = input.next().await {
-        repartitioner.insert_batch(batch?).await?;
+        // Block on the repartitioner to insert the batch and shuffle the rows
+        // into the corresponding partition buffer.
+        // Otherwise, pull the next batch from the input stream might overwrite the
+        // current batch in the repartitioner.
+        block_on(repartitioner.insert_batch(batch?))?;
     }
     repartitioner.shuffle_write().await
 }
