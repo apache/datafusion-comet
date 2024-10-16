@@ -85,7 +85,7 @@ impl SparkArrowConvert for ArrayData {
             let a  = from_ffi_and_data_type(array_data, data_type.clone())?;
             // from_ffi(array_data, &schema_data)?
             if is_binary_type(data_type) /* && array_data.dictionary().is_none() */ {
-                println!("??? {:?}", data_type);
+                println!("????? {:?}", data_type);
                 println!("!!!!! {}", a.len());
                 println!("@@@@@ {}", a.buffers().len());
                 println!("##### {}", a.child_data().len());
