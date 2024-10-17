@@ -239,12 +239,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
     spark.sessionState.functionRegistry.registerFunction(
       funcId_bloom_filter_agg,
       new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
-      (children: Seq[Expression]) =>
-        children.size match {
-          case 1 => new BloomFilterAggregate(children.head)
-          case 2 => new BloomFilterAggregate(children.head, children(1))
-          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
-        })
+      (children: Seq[Expression]) => new BloomFilterAggregate(children.head, children(1)))
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -279,23 +274,23 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
-      subqueryExecBenchmark(v)
-    }
-
-    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
-      expandExecBenchmark(v)
-    }
-
-    runBenchmarkWithTable("Project + Filter", 1024 * 1024 * 10) { v =>
-      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
-        numericFilterExecBenchmark(v, fractionOfZeros)
-      }
-    }
-
-    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
-      sortExecBenchmark(v)
-    }
+//    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
+//      subqueryExecBenchmark(v)
+//    }
+//
+//    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
+//      expandExecBenchmark(v)
+//    }
+//
+//    runBenchmarkWithTable("Project + Filter", 1024 * 1024 * 10) { v =>
+//      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
+//        numericFilterExecBenchmark(v, fractionOfZeros)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
+//      sortExecBenchmark(v)
+//    }
 
     runBenchmarkWithTable("BloomFilterAggregate", 1024 * 1024 * 10) { v =>
       for (card <- List(100, 1024, 1024 * 1024)) {
