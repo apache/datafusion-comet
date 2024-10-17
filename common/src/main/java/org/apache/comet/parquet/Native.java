@@ -24,6 +24,13 @@ import java.nio.ByteBuffer;
 import org.apache.comet.NativeBase;
 
 public final class Native extends NativeBase {
+
+  static {
+    if (!isLoaded()) {
+      load();
+    }
+  }
+
   public static int[] readBatch(long handle, int batchSize) {
     return readBatch(handle, batchSize, 0);
   }
