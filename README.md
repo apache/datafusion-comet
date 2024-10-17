@@ -30,9 +30,11 @@ under the License.
 <img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
 
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
-[Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
+[Apache DataFusion] query engine. Comet is designed to significantly enhance the
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
+
+[Apache DataFusion]: https://datafusion.apache.org
 
 # Benefits of Using Comet
 

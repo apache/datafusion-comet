@@ -67,6 +67,8 @@ import org.apache.parquet.schema.MessageTypeParser;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
 
+import org.apache.comet.CometConf;
+
 import static org.apache.parquet.column.Encoding.*;
 import static org.apache.parquet.format.converter.ParquetMetadataConverter.MAX_STATS_SIZE;
 import static org.junit.Assert.*;
@@ -615,12 +617,12 @@ public class TestFileReader {
   @Test
   public void testWriteReadMergeScanRange() throws Throwable {
     Configuration conf = new Configuration();
-    conf.set(ReadOptions.COMET_IO_MERGE_RANGES, Boolean.toString(true));
+    conf.set(CometConf.COMET_IO_MERGE_RANGES().key(), Boolean.toString(true));
     // Set the merge range delta so small that ranges do not get merged
-    conf.set(ReadOptions.COMET_IO_MERGE_RANGES_DELTA, Integer.toString(1024));
+    conf.set(CometConf.COMET_IO_MERGE_RANGES_DELTA().key(), Integer.toString(1024));
     testReadWrite(conf, 2, 1024);
     // Set the merge range delta so large that all ranges get merged
-    conf.set(ReadOptions.COMET_IO_MERGE_RANGES_DELTA, Integer.toString(1024 * 1024));
+    conf.set(CometConf.COMET_IO_MERGE_RANGES_DELTA().key(), Integer.toString(1024 * 1024));
     testReadWrite(conf, 2, 1024);
   }
 

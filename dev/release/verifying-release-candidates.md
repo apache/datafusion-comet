@@ -37,6 +37,8 @@ make release-nogit
 We hope that users will verify the release beyond running this script by testing the release candidate with their
 existing Spark jobs and report any functional issues or performance regressions.
 
+The email announcing the vote should contain a link to pre-built jar files in a Maven staging repository.
+
 Another way of verifying the release is to follow the
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) and compare
 performance with the previous release.

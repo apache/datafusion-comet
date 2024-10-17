@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -2062,6 +2062,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("named_struct with duplicate field names") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
+            classOf[ProjectExec])
+        }
+      }
+    }
+  }
+
   test("to_json") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
@@ -2308,6 +2328,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 element_at(col("arr"), -1),
                 element_at(col("arr"), -2)))
           }
+        }
+      }
+    }
+  }
+
+  test("GetArrayStructFields") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          val df = spark.read
+            .parquet(path.toString)
+            .select(
+              array(struct(col("_2"), col("_3"), col("_4"), col("_8")), lit(null)).alias("arr"))
+          checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
+
+          val complex = spark.read
+            .parquet(path.toString)
+            .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
+
+          checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
         }
       }
     }
