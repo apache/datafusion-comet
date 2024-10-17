@@ -59,7 +59,6 @@ use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
-use tokio::task;
 
 use crate::{
     common::bit::ceil,
@@ -973,8 +972,7 @@ impl ShuffleRepartitioner {
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
-        )
-        .await?;
+        )?;
 
         timer.stop();
 
@@ -1045,7 +1043,7 @@ impl ShuffleRepartitioner {
 }
 
 /// consume the `buffered_partitions` and do spill into a single temp shuffle output file
-async fn spill_into(
+fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
@@ -1058,25 +1056,22 @@ async fn spill_into(
     }
     let path = path.to_owned();
 
-    task::spawn_blocking(move || {
-        let mut offsets = vec![0; num_output_partitions + 1];
-        let mut spill_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+    let mut offsets = vec![0; num_output_partitions + 1];
+    let mut spill_data = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?;
 
-        for i in 0..num_output_partitions {
-            offsets[i] = spill_data.stream_position()?;
-            spill_data.write_all(&output_batches[i])?;
-            output_batches[i].clear();
-        }
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = spill_data.stream_position()?;
-        Ok(offsets)
-    })
-    .await
-    .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?
+    for i in 0..num_output_partitions {
+        offsets[i] = spill_data.stream_position()?;
+        spill_data.write_all(&output_batches[i])?;
+        output_batches[i].clear();
+    }
+    // add one extra offset at last to ease partition length computation
+    offsets[num_output_partitions] = spill_data.stream_position()?;
+    Ok(offsets)
 }
 
 impl Debug for ShuffleRepartitioner {
