@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::util::spark_bit_array;
 use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
+use arrow_buffer::ToByteSlice;
 use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
+use std::cmp;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 
@@ -30,8 +33,29 @@ pub struct SparkBloomFilter {
     num_hash_functions: u32,
 }
 
-impl SparkBloomFilter {
-    pub fn new(buf: &[u8]) -> Self {
+pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
+    cmp::max(
+        1,
+        ((num_bits as f64 / expected_items as f64) * 2.0_f64.ln()).round() as i32,
+    )
+}
+
+impl From<(i32, i32)> for SparkBloomFilter {
+    /// Creates an empty SparkBloomFilter given number of hash functions and bits.
+    fn from((num_hash_functions, num_bits): (i32, i32)) -> Self {
+        let num_words = spark_bit_array::num_words(num_bits);
+        let bits = vec![0u64; num_words as usize];
+        Self {
+            bits: SparkBitArray::new(bits),
+            num_hash_functions: num_hash_functions as u32,
+        }
+    }
+}
+
+impl From<&[u8]> for SparkBloomFilter {
+    /// Creates a SparkBloomFilter from a serialized byte array conforming to Spark's BloomFilter
+    /// binary format version 1.
+    fn from(buf: &[u8]) -> Self {
         let mut offset = 0;
         let version = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
@@ -53,6 +77,25 @@ impl SparkBloomFilter {
             bits: SparkBitArray::new(bits),
             num_hash_functions: num_hash_functions as u32,
         }
+    }
+}
+
+impl SparkBloomFilter {
+    /// Serializes a SparkBloomFilter to a byte array conforming to Spark's BloomFilter
+    /// binary format version 1.
+    pub fn spark_serialization(&self) -> Vec<u8> {
+        // There might be a more efficient way to do this, even with all the endianness stuff.
+        let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
+        spark_bloom_filter.append(&mut self.num_hash_functions.to_be_bytes().to_vec());
+        spark_bloom_filter.append(&mut (self.bits.word_size() as u32).to_be_bytes().to_vec());
+        let mut filter_state: Vec<u64> = self.bits.data();
+        for i in filter_state.iter_mut() {
+            *i = i.to_be();
+        }
+        // Does it make sense to do a std::mem::take of filter_state here? Unclear to me if a deep
+        // copy of filter_state as a Vec<u64> to a Vec<u8> is happening here.
+        spark_bloom_filter.append(&mut Vec::from(filter_state.to_byte_slice()));
+        spark_bloom_filter
     }
 
     pub fn put_long(&mut self, item: i64) -> bool {
@@ -93,5 +136,18 @@ impl SparkBloomFilter {
             .iter()
             .map(|v| v.map(|x| self.might_contain_long(x)))
             .collect()
+    }
+
+    pub fn state_as_bytes(&self) -> Vec<u8> {
+        self.bits.to_bytes()
+    }
+
+    pub fn merge_filter(&mut self, other: &[u8]) {
+        assert_eq!(
+            other.len(),
+            self.bits.byte_size(),
+            "Cannot merge SparkBloomFilters with different lengths."
+        );
+        self.bits.merge_bits(other);
     }
 }
