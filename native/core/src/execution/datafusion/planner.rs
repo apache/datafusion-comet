@@ -97,7 +97,7 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, ListExtract,
-    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson, ToString as To_String
+    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson, ToString as To_String,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -2116,9 +2116,9 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, task::Poll};
-    use std::string::ToString;
     use futures::{poll, StreamExt};
+    use std::string::ToString;
+    use std::{sync::Arc, task::Poll};
 
     use arrow_array::{DictionaryArray, Int32Array, StringArray};
     use arrow_schema::DataType;

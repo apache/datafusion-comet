@@ -1330,65 +1330,67 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               None
             }
           }
+        case StructsToString(options, child, timezoneId) =>
+  if (options.nonEmpty) {
+    withInfo(expr, "StructsToString with options is not supported")
+    None
+  } else {
 
-       case StructsToString(child, timezoneId) =>
-         exprToProto(child, input, binding) match {
-           case Some(p) =>
-             val toString = ExprOuterClass.ToString
-               .newBuilder()
-               .setChild(p)
-               .setTimezone(timezoneId.getOrElse("UTC"))
-               .build()
-             Some(
-               ExprOuterClass.Expr
-                 .newBuilder()
-                 .setToString(toString)
-                 .build())
-           case _ =>
-             withInfo(expr, child)
-             None
-         }
+    def isSupportedType(dt: DataType): Boolean = {
+      dt match {
+        case StructType(fields) =>
+          fields.forall(f => isSupportedType(f.dataType))
+        case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+            DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+            DataTypes.DoubleType | DataTypes.StringType =>
+          true
+        case DataTypes.DateType | DataTypes.TimestampType =>
+          // TODO implement these types with tests for formatting options and timezone
+          false
+        case _: MapType | _: ArrayType =>
+          // Spark supports map and array in StructsToString but this is not yet
+          // implemented in Comet
+          false
+        case _ => false
+      }
+    }
 
-       def handleStructsToString(expr: Expression, child: Expression, timezoneId: Option[String]): Option[ExprOuterClass.Expr] = {
-         def isSupportedType(dt: DataType): Boolean = {
-           dt match {
-             case StructType(fields) =>
-               fields.forall(f => isSupportedType(f.dataType))
-             case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-                 DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-                 DataTypes.DoubleType | DataTypes.StringType | DataTypes.DateType |
-                 DataTypes.TimestampType =>
-               true
-             case _: MapType | _: ArrayType =>
-               true
-             case _ => false
-           }
-         }
+    val isSupported = child.dataType match {
+      case s: StructType =>
+        s.fields.forall(f => isSupportedType(f.dataType))
+      case _: MapType | _: ArrayType =>
+        // Spark supports map and array in StructsToString but this is not yet
+        // implemented in Comet
+        false
+      case _ =>
+        false
+    }
 
-         val isSupported = isSupportedType(child.dataType)
+    if (isSupported) {
+      exprToProto(child, input, binding) match {
+        case Some(p) =>
+          val toString = ExprOuterClass.ToString
+            .newBuilder()
+            .setChild(p)
+            .setTimezone(timezoneId.getOrElse("UTC"))
+            .setIgnoreNullFields(true)
+            .build()
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setToString(toString)
+              .build())
+        case _ =>
+          withInfo(expr, child)
+          None
+      }
+    } else {
+      withInfo(expr, "Unsupported data type", child)
+      None
+    }
+  }
 
-         if (isSupported) {
-           exprToProto(child, input, binding) match {
-             case Some(p) =>
-               val toString = ExprOuterClass.ToString
-                 .newBuilder()
-                 .setChild(p)
-                 .setTimezone(timezoneId.getOrElse("UTC"))
-                 .build()
-               Some(
-                 ExprOuterClass.Expr
-                   .newBuilder()
-                   .setToString(toString)
-                   .build())
-             case _ =>
-               withInfo(expr, child)
-               None
-           }
-         } else {
-           withInfo(expr, "Unsupported data type", child)
-           None
-         }
-       }
+
 
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {

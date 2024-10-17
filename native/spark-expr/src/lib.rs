@@ -32,9 +32,9 @@ mod structs;
 mod temporal;
 pub mod timezone;
 mod to_json;
+mod to_string;
 pub mod utils;
 mod xxhash64;
-mod to_string;
 
 pub use cast::{spark_cast, Cast};
 pub use error::{SparkError, SparkResult};

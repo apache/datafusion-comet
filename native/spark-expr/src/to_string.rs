@@ -16,17 +16,17 @@
 // under the License.
 
 use crate::{spark_cast, EvalMode};
+use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
 use datafusion_common::Result;
-use datafusion_expr::{ColumnarValue};
+use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::string::ToString as TOString;
 use std::sync::Arc;
-use arrow_array::builder::StringBuilder;
 
 /// to_string function
 #[derive(Debug, Hash)]
@@ -173,20 +173,20 @@ fn array_to_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef> {
             EvalMode::Legacy,
             timezone,
             false,
-        )?.into_array(arr.len()),
+        )?
+        .into_array(arr.len()),
     }
 }
-
 
 #[cfg(test)]
 mod test {
     use crate::to_string::struct_to_string;
-    use datafusion_common::Result;
+    use arrow_array::types::Int32Type;
     use arrow_array::{Array, PrimitiveArray, StringArray};
     use arrow_array::{ArrayRef, BooleanArray, Int32Array, StructArray};
     use arrow_schema::{DataType, Field};
+    use datafusion_common::Result;
     use std::sync::Arc;
-    use arrow_array::types::Int32Type;
 
     #[test]
     fn test_primitives() -> Result<()> {
