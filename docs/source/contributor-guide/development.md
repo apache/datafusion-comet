@@ -47,8 +47,6 @@ A few common commands are specified in project's `Makefile`:
   is useful when you want to test Comet local installation in another project
   such as Spark.
 - `make clean`: clean up the workspace
-- `bin/comet-spark-shell -d . -o spark/target/` run Comet spark shell for V1 datasources
-- `bin/comet-spark-shell -d . -o spark/target/ --conf spark.sql.sources.useV1SourceList=""` run Comet spark shell for V2 datasources
 
 ## Development Environment
 
@@ -62,6 +60,12 @@ generating protobuf message classes for the JVM side. It's only required to run 
 
 First make sure to install the Scala plugin in IntelliJ IDEA.
 After that, you can open the project in IntelliJ IDEA. The IDE should automatically detect the project structure and import as a Maven project.
+
+Comet uses generated source files that are too large for IntelliJ's default size limit for code inspections. To avoid IDE errors
+(missing definitions, etc.) caused by IntelliJ skipping these generated files, modify
+[IntelliJ's Platform Properties](https://intellij-support.jetbrains.com/hc/en-us/articles/206544869-Configuring-JVM-options-and-platform-properties)
+by going to `Help -> Edit Custom Properties...`. For example, adding `idea.max.intellisense.filesize=16384` increases the file
+size limit to 16 MB.
 
 ### CLion
 

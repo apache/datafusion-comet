@@ -44,7 +44,7 @@ jobs:
       - name: Extract Comet version
         id: extract_version
         run: |
-          # use the tag that triggered this workflow as the Comet version e.g. 0.3.0-rc1
+          # use the tag that triggered this workflow as the Comet version e.g. 0.4.0-rc1
           echo "COMET_VERSION=${GITHUB_REF##*/}" >> $GITHUB_ENV
       - name: Echo Comet version
         run: echo "The current Comet version is ${{ env.COMET_VERSION }}"
