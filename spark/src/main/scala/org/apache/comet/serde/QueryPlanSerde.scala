@@ -769,9 +769,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val numBitsExpr = exprToProto(numBits, inputs, binding)
         val dataType = serializeDataType(bloom_filter.dataType)
 
+        // TODO: Support more types
+        //  https://github.com/apache/datafusion-comet/issues/1023
         if (childExpr.isDefined &&
           child.dataType
-            .isInstanceOf[LongType] && // Spark 3.4 only supports Long, 3.5+ adds more types.
+            .isInstanceOf[LongType] &&
           numItemsExpr.isDefined &&
           numBitsExpr.isDefined &&
           dataType.isDefined) {
