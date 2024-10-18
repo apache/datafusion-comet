@@ -1015,6 +1015,7 @@ impl ShuffleRepartitioner {
                     // Cannot allocate enough memory for the array builders in the partition,
                     // spill partitions and retry.
                     self.spill().await?;
+                    self.reservation.free();
 
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
