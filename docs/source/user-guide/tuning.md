@@ -84,8 +84,8 @@ Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reason
 `ShuffledHashJoin` is very large then it could lead to OOM in Spark.
 
 Vectorized query engines tend to perform better with `ShuffledHashJoin`, so for best performance it is often preferable
-to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does provide spill-to-disk for
-`ShuffledHashJoin` so this should not result in OOM. However, `SortMergeJoin` may be faster in some cases. It is best
+to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does not yet provide spill-to-disk for
+`ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
 to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
