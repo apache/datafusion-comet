@@ -786,7 +786,6 @@ impl ShuffleRepartitioner {
                 let mut partition_starts = partition_ends;
                 partition_starts.push(input.num_rows());
 
-                let mut mem_diff = 0;
                 // For each interval of row indices of partition, taking rows from input batch and
                 // appending into output buffer.
                 for (partition_id, (&start, &end)) in partition_starts
@@ -795,7 +794,7 @@ impl ShuffleRepartitioner {
                     .enumerate()
                     .filter(|(_, (start, end))| start < end)
                 {
-                    mem_diff += self
+                    let mut mem_diff = self
                         .append_rows_to_partition(
                             input.columns(),
                             &shuffled_partition_ids[start..end],
@@ -818,8 +817,6 @@ impl ShuffleRepartitioner {
                         let mem_used = self.reservation.size();
                         let mem_decrease = mem_used.min(-mem_diff as usize);
                         self.reservation.shrink(mem_decrease);
-
-                        mem_diff += mem_decrease as isize;
                     }
                 }
             }
