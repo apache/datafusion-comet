@@ -2984,11 +2984,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        if (join.buildSide == BuildRight && join.joinType == LeftSemi) {
-          withInfo(join, "BuildRight with LeftSemi is not supported")
-          return None
-        }
-
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None

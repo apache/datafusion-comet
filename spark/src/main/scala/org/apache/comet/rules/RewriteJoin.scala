@@ -20,7 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
-import org.apache.spark.sql.catalyst.plans.JoinType
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftSemi}
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
@@ -49,6 +49,9 @@ object RewriteJoin extends JoinSelectionHelper {
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
       getBuildSide(smj.joinType) match {
+        case Some(BuildRight) if smj.joinType == LeftSemi =>
+          // TODO this was added as a workaround for TPC-DS q14 hanging and needs further investigation
+          plan
         case Some(buildSide) =>
           ShuffledHashJoinExec(
             smj.leftKeys,
