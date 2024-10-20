@@ -50,7 +50,8 @@ object RewriteJoin extends JoinSelectionHelper {
     case smj: SortMergeJoinExec =>
       getBuildSide(smj.joinType) match {
         case Some(BuildRight) if smj.joinType == LeftSemi =>
-          // TODO this was added as a workaround for TPC-DS q14 hanging and needs further investigation
+          // TODO this was added as a workaround for TPC-DS q14 hanging and needs
+          // further investigation
           plan
         case Some(buildSide) =>
           ShuffledHashJoinExec(
