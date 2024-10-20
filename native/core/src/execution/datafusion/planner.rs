@@ -1183,8 +1183,6 @@ impl PhysicalPlanner {
             .zip(right_join_exprs)
             .collect::<Vec<_>>();
 
-        println!("join_type[1] = {}", join_type);
-
         let join_type = match join_type.try_into() {
             Ok(JoinType::Inner) => DFJoinType::Inner,
             Ok(JoinType::LeftOuter) => DFJoinType::Left,
@@ -1201,8 +1199,6 @@ impl PhysicalPlanner {
                 )));
             }
         };
-
-        println!("join_type[2] = {}", join_type);
 
         // Handle join filter as DataFusion `JoinFilter` struct
         let join_filter = if let Some(expr) = condition {
