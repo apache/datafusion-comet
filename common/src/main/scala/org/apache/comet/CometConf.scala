@@ -45,6 +45,9 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -266,8 +269,7 @@ object CometConf extends ShimCometConf {
   val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
-        "for improved performance. See tuning guide for more information regarding stability of " +
-        "this feature.")
+        s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
