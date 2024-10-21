@@ -17,6 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
@@ -38,8 +39,6 @@ use jni::{
     JNIEnv,
 };
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -265,6 +264,7 @@ fn prepare_output(
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
     exec_context: &mut ExecutionContext,
+    metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
 ) -> CometResult<jlong> {
     let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
@@ -309,7 +309,7 @@ fn prepare_output(
     }
 
     // Update metrics
-    update_metrics(env, exec_context)?;
+    update_metrics(env, exec_context, metrics_jstrings)?;
 
     Ok(num_rows as jlong)
 }
@@ -345,6 +345,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         let exec_context = get_execution_context(exec_context);
 
         let exec_context_id = exec_context.id;
+
+        let mut metrics_jstrings: HashMap<String, Arc<GlobalRef>> = HashMap::new();
 
         // Initialize the execution stream.
         // Because we don't know if input arrays are dictionary-encoded when we create
@@ -391,13 +393,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         schema_addrs,
                         output?,
                         exec_context,
+                        &mut metrics_jstrings,
                     );
                 }
                 Poll::Ready(None) => {
                     // Reaches EOF of output.
 
                     // Update metrics
-                    update_metrics(&mut env, exec_context)?;
+                    update_metrics(&mut env, exec_context, &mut metrics_jstrings)?;
 
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
@@ -413,7 +416,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // we don't need go back-forth between JVM/Native. Just keeping polling.
                 Poll::Pending => {
                     // Update metrics
-                    update_metrics(&mut env, exec_context)?;
+                    update_metrics(&mut env, exec_context, &mut metrics_jstrings)?;
 
                     // Pull input batches
                     pull_input_batches(exec_context)?;
@@ -441,10 +444,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 }
 
 /// Updates the metrics of the query plan.
-fn update_metrics(env: &mut JNIEnv, exec_context: &ExecutionContext) -> CometResult<()> {
+fn update_metrics(
+    env: &mut JNIEnv,
+    exec_context: &ExecutionContext,
+    metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
+) -> CometResult<()> {
     let native_query = exec_context.root_op.as_ref().unwrap();
     let metrics = exec_context.metrics.as_obj();
-    update_comet_metric(env, metrics, native_query)
+    update_comet_metric(env, metrics, native_query, metrics_jstrings)
 }
 
 fn convert_datatype_arrays(
