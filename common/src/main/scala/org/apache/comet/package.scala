@@ -41,19 +41,20 @@ package object comet {
    * information is included to aid in future debugging efforts for releases.
    */
   private object CometBuildInfo extends Logging {
+    private val GIT_INFO_PROPS_FILENAME = "comet-git-info.properties"
 
     val props: Properties = {
       val props = new Properties()
       val resourceStream = Thread
         .currentThread()
         .getContextClassLoader
-        .getResourceAsStream("comet-git-info.properties")
+        .getResourceAsStream(GIT_INFO_PROPS_FILENAME)
       if (resourceStream != null) {
         try {
           props.load(resourceStream)
         } catch {
           case e: Exception =>
-            logError("Error loading properties from comet-git-info.properties", e)
+            logError(s"Error loading properties from $GIT_INFO_PROPS_FILENAME", e)
         } finally {
           if (resourceStream != null) {
             try {
@@ -65,7 +66,7 @@ package object comet {
           }
         }
       } else {
-        logWarning("Could not find comet-git-info.properties")
+        logWarning(s"Could not find $GIT_INFO_PROPS_FILENAME")
       }
       props
     }
