@@ -309,6 +309,11 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#optimizing-joins">
+   Optimizing Joins
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#shuffle">
    Shuffle
   </a>
@@ -437,6 +442,16 @@ resource managers respect Apache Spark memory configuration before starting the 
 does not take executor concurrency into account. The tracking issue for this is
 https://github.com/apache/datafusion-comet/issues/949.</p>
 </section>
+<section id="optimizing-joins">
+<h2>Optimizing Joins<a class="headerlink" href="#optimizing-joins" title="Link to this heading">¶</a></h2>
+<p>Spark often chooses <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> over <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> for stability reasons. If the build-side of a
+<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> is very large then it could lead to OOM in Spark.</p>
+<p>Vectorized query engines tend to perform better with <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, so for best performance it is often preferable
+to configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>. Comet does not yet provide spill-to-disk for
+<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
+to test with both for your specific workloads.</p>
+<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin=true</span></code>.</p>
+</section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h2>
 <p>Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.</p>
@@ -524,7 +539,7 @@ of 41 seconds reported as 23 seconds for example.</p>
     
     <div class="footer-item">
       <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.0.<br>
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
 </p>
     </div>
     
