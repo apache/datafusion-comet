@@ -72,7 +72,7 @@ fn evaluate_bloom_filter(
     let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
     match bloom_filter_bytes {
         ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
-            Ok(v.map(|v| SparkBloomFilter::new(v.as_bytes())))
+            Ok(v.map(|v| SparkBloomFilter::from(v.as_bytes())))
         }
         _ => internal_err!("Bloom filter expression should be evaluated as a scalar binary value"),
     }
