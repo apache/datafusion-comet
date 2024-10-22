@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::jvm_bridge::jni_new_global_ref;
 use crate::{
     errors::CometError,
     jvm_bridge::{jni_call, jni_new_string},
@@ -70,19 +71,25 @@ fn update_metrics(
 ) -> Result<(), CometError> {
     unsafe {
         for &(name, value) in metric_values {
+            // We maintain a map of metrics name -> jstring object to reduce the
+            // overhead of calling jni_NewStringUTF repeatedly.
             if let Some(map_global_ref) = metrics_jstrings.get(name) {
-                // Retrieve from cache
+                // Cache hit. Extract the jstring from the global ref.
                 let jobject = map_global_ref.as_obj();
                 let jstring = JString::from_raw(**jobject);
+                // Update the metrics using the jstring as a key.
                 jni_call!(env, comet_metric_node(metric_node).set(&jstring, value) -> ())?;
             } else {
+                // Cache miss. Allocate a new string, promote to global ref, and insert into cache.
                 let local_jstring = jni_new_string!(env, &name)?;
-                // Insert into cache.
-                let global_ref = env.new_global_ref(local_jstring)?;
-                metrics_jstrings.insert(name.to_string(), Arc::from(global_ref));
+                let global_ref = jni_new_global_ref!(env, local_jstring)?;
+                metrics_jstrings.insert(name.to_string(), Arc::new(global_ref));
+                // try_insert returns a reference to the inserted value to avoid the subsequent
+                // get on the kv pair that we just inserted, but it's still experimental.
                 let map_global_ref = metrics_jstrings.get(name).unwrap();
                 let jobject = map_global_ref.as_obj();
                 let jstring = JString::from_raw(**jobject);
+                // Update the metrics using the jstring as a key.
                 jni_call!(env, comet_metric_node(metric_node).set(&jstring, value) -> ())?;
             }
         }
