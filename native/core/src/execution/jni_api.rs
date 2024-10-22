@@ -347,6 +347,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
         let exec_context_id = exec_context.id;
 
+        // We maintain a map of metrics name -> jstring object to reduce the overhead of calling
+        // jni_NewStringUTF repeatedly.
         let mut metrics_jstrings: HashMap<String, Arc<GlobalRef>> = HashMap::new();
 
         // Initialize the execution stream.

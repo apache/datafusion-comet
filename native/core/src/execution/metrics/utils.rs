@@ -71,8 +71,7 @@ fn update_metrics(
 ) -> Result<(), CometError> {
     unsafe {
         for &(name, value) in metric_values {
-            // We maintain a map of metrics name -> jstring object to reduce the
-            // overhead of calling jni_NewStringUTF repeatedly.
+            // Perform a lookup in the jstrings cache.
             if let Some(map_global_ref) = metrics_jstrings.get(name) {
                 // Cache hit. Extract the jstring from the global ref.
                 let jobject = map_global_ref.as_obj();
