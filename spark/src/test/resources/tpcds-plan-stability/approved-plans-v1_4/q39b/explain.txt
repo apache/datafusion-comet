@@ -150,10 +150,10 @@ Results [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, stddev_samp(cast(inv_quan
 
 (22) Filter [codegen id : 10]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, stdev#23, mean#24]
-Condition : (CASE WHEN (mean#24 = 0.0) THEN false ELSE ((stdev#23 / mean#24) > 1.0) END AND CASE WHEN (mean#24 = 0.0) THEN false ELSE ((stdev#23 / mean#24) > 1.5) END)
+Condition : (CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#24)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#23 / mean#24))) > knownfloatingpointnormalized(normalizenanandzero(1.0))) END AND CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#24)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#23 / mean#24))) > knownfloatingpointnormalized(normalizenanandzero(1.5))) END)
 
 (23) Project [codegen id : 10]
-Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, CASE WHEN (mean#24 = 0.0) THEN null ELSE (stdev#23 / mean#24) END AS cov#25]
+Output [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#24)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN null ELSE (stdev#23 / mean#24) END AS cov#25]
 Input [5]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, stdev#23, mean#24]
 
 (24) Scan parquet spark_catalog.default.inventory
@@ -230,10 +230,10 @@ Results [5]: [w_warehouse_sk#32, i_item_sk#31, d_moy#35, stddev_samp(cast(inv_qu
 
 (39) Filter [codegen id : 9]
 Input [5]: [w_warehouse_sk#32, i_item_sk#31, d_moy#35, stdev#23, mean#24]
-Condition : CASE WHEN (mean#24 = 0.0) THEN false ELSE ((stdev#23 / mean#24) > 1.0) END
+Condition : CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#24)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN false ELSE (knownfloatingpointnormalized(normalizenanandzero((stdev#23 / mean#24))) > knownfloatingpointnormalized(normalizenanandzero(1.0))) END
 
 (40) Project [codegen id : 9]
-Output [5]: [w_warehouse_sk#32, i_item_sk#31, d_moy#35, mean#24 AS mean#46, CASE WHEN (mean#24 = 0.0) THEN null ELSE (stdev#23 / mean#24) END AS cov#47]
+Output [5]: [w_warehouse_sk#32, i_item_sk#31, d_moy#35, mean#24 AS mean#46, CASE WHEN (knownfloatingpointnormalized(normalizenanandzero(mean#24)) = knownfloatingpointnormalized(normalizenanandzero(0.0))) THEN null ELSE (stdev#23 / mean#24) END AS cov#47]
 Input [5]: [w_warehouse_sk#32, i_item_sk#31, d_moy#35, stdev#23, mean#24]
 
 (41) BroadcastExchange

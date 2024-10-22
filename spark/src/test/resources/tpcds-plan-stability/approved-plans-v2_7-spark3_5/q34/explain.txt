@@ -110,7 +110,7 @@ ReadSchema: struct<hd_demo_sk:int,hd_buy_potential:string,hd_dep_count:int,hd_ve
 
 (16) CometFilter
 Input [4]: [hd_demo_sk#12, hd_buy_potential#13, hd_dep_count#14, hd_vehicle_count#15]
-Condition : ((((isnotnull(hd_vehicle_count#15) AND ((hd_buy_potential#13 = >10000         ) OR (hd_buy_potential#13 = unknown        ))) AND (hd_vehicle_count#15 > 0)) AND CASE WHEN (hd_vehicle_count#15 > 0) THEN ((cast(hd_dep_count#14 as double) / cast(hd_vehicle_count#15 as double)) > 1.2) END) AND isnotnull(hd_demo_sk#12))
+Condition : ((((isnotnull(hd_vehicle_count#15) AND ((hd_buy_potential#13 = >10000         ) OR (hd_buy_potential#13 = unknown        ))) AND (hd_vehicle_count#15 > 0)) AND CASE WHEN (hd_vehicle_count#15 > 0) THEN (knownfloatingpointnormalized(normalizenanandzero((cast(hd_dep_count#14 as double) / cast(hd_vehicle_count#15 as double)))) > knownfloatingpointnormalized(normalizenanandzero(1.2))) END) AND isnotnull(hd_demo_sk#12))
 
 (17) CometProject
 Input [4]: [hd_demo_sk#12, hd_buy_potential#13, hd_dep_count#14, hd_vehicle_count#15]
