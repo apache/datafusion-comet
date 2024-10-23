@@ -101,6 +101,7 @@ message AggExpr {
     Variance variance = 13;
     Stddev stddev = 14;
     Correlation correlation = 15;
+    BloomFilterAgg bloomFilterAgg = 16;
   }
 }
 
@@ -189,6 +190,13 @@ message Correlation {
   Expr child1 = 1;
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
+}
+
+message BloomFilterAgg {
+  Expr child = 1;
+  Expr numItems = 2;
+  Expr numBits = 3;
   DataType datatype = 4;
 }
 

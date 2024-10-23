@@ -55,10 +55,10 @@ use datafusion::{
     },
 };
 use datafusion_physical_expr::EquivalenceProperties;
+use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
-use tokio::task;
 
 use crate::{
     common::bit::ceil,
@@ -786,7 +786,6 @@ impl ShuffleRepartitioner {
                 let mut partition_starts = partition_ends;
                 partition_starts.push(input.num_rows());
 
-                let mut mem_diff = 0;
                 // For each interval of row indices of partition, taking rows from input batch and
                 // appending into output buffer.
                 for (partition_id, (&start, &end)) in partition_starts
@@ -795,7 +794,7 @@ impl ShuffleRepartitioner {
                     .enumerate()
                     .filter(|(_, (start, end))| start < end)
                 {
-                    mem_diff += self
+                    let mut mem_diff = self
                         .append_rows_to_partition(
                             input.columns(),
                             &shuffled_partition_ids[start..end],
@@ -818,8 +817,6 @@ impl ShuffleRepartitioner {
                         let mem_used = self.reservation.size();
                         let mem_decrease = mem_used.min(-mem_diff as usize);
                         self.reservation.shrink(mem_decrease);
-
-                        mem_diff += mem_decrease as isize;
                     }
                 }
             }
@@ -972,8 +969,7 @@ impl ShuffleRepartitioner {
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
-        )
-        .await?;
+        )?;
 
         timer.stop();
 
@@ -1016,6 +1012,7 @@ impl ShuffleRepartitioner {
                     // Cannot allocate enough memory for the array builders in the partition,
                     // spill partitions and retry.
                     self.spill().await?;
+                    self.reservation.free();
 
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
@@ -1044,7 +1041,7 @@ impl ShuffleRepartitioner {
 }
 
 /// consume the `buffered_partitions` and do spill into a single temp shuffle output file
-async fn spill_into(
+fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
@@ -1057,25 +1054,22 @@ async fn spill_into(
     }
     let path = path.to_owned();
 
-    task::spawn_blocking(move || {
-        let mut offsets = vec![0; num_output_partitions + 1];
-        let mut spill_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
+    let mut offsets = vec![0; num_output_partitions + 1];
+    let mut spill_data = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?;
 
-        for i in 0..num_output_partitions {
-            offsets[i] = spill_data.stream_position()?;
-            spill_data.write_all(&output_batches[i])?;
-            output_batches[i].clear();
-        }
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = spill_data.stream_position()?;
-        Ok(offsets)
-    })
-    .await
-    .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?
+    for i in 0..num_output_partitions {
+        offsets[i] = spill_data.stream_position()?;
+        spill_data.write_all(&output_batches[i])?;
+        output_batches[i].clear();
+    }
+    // add one extra offset at last to ease partition length computation
+    offsets[num_output_partitions] = spill_data.stream_position()?;
+    Ok(offsets)
 }
 
 impl Debug for ShuffleRepartitioner {
@@ -1111,7 +1105,11 @@ async fn external_shuffle(
     );
 
     while let Some(batch) = input.next().await {
-        repartitioner.insert_batch(batch?).await?;
+        // Block on the repartitioner to insert the batch and shuffle the rows
+        // into the corresponding partition buffer.
+        // Otherwise, pull the next batch from the input stream might overwrite the
+        // current batch in the repartitioner.
+        block_on(repartitioner.insert_batch(batch?))?;
     }
     repartitioner.shuffle_write().await
 }
