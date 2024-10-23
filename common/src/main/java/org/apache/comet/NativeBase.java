@@ -46,7 +46,7 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
-  private static Throwable loadErr = null;
+  private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
 
   static {
