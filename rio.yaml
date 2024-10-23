@@ -642,18 +642,10 @@ builds:
         - ./mvnw versions:set -DnewVersion="$NEXT_VERSION"
         - PROFILES="${PROFILES}" make clean release
         - rm -rf apache-incubator-iceberg
-        # FIXME Temporarily clone entire repo and then use PR
-        #- git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
-        - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --branch ${ICEBERG_BRANCH}
+        - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
         - cd apache-incubator-iceberg
 
-        # FIXME .. and use PR
-        - BUILD_PARAM_PR_NUMBER=1215
-        - git fetch --force -q origin pull/${BUILD_PARAM_PR_NUMBER}/head:pr_${BUILD_PARAM_PR_NUMBER}
-        - git checkout pr_${BUILD_PARAM_PR_NUMBER}
-        - git log -n 1
-
-        -  sed -i -E "s|(com.apple.pie.comet:comet-(common\|spark)-spark${COMET_TAG} = )(.*)|\1${NEXT_VERSION}|g" versions.props
+        -  sed -i -E "s|(org.apache.comet:comet-spark-spark.*:).*|\1${NEXT_VERSION}\"|g" spark/v3.4/build.gradle
         - ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:test
     reports: &test_iceberg_reports
       junit:
@@ -700,7 +692,7 @@ builds:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4"
         COMET_TAG: 3.4_2.12
-        ICEBERG_BRANCH: apple-1.3.x
+        ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.12
         ICEBERG_SCALA_VERSION: 2.12
     build:
@@ -719,7 +711,7 @@ builds:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
         COMET_TAG: 3.4_2.13
-        ICEBERG_BRANCH: apple-1.3.x
+        ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.13
         ICEBERG_SCALA_VERSION: 2.13
     build:
