@@ -82,11 +82,9 @@ fn update_metrics(
                 // Cache miss. Allocate a new string, promote to global ref, and insert into cache.
                 let local_jstring = jni_new_string!(env, &name)?;
                 let global_ref = jni_new_global_ref!(env, local_jstring)?;
-                metrics_jstrings.insert(name.to_string(), Arc::new(global_ref));
-                // try_insert returns a reference to the inserted value to avoid the subsequent
-                // get on the kv pair that we just inserted, but it's still experimental.
-                let map_global_ref = metrics_jstrings.get(name).unwrap();
-                let jobject = map_global_ref.as_obj();
+                let arc_global_ref = Arc::new(global_ref);
+                metrics_jstrings.insert(name.to_string(), Arc::clone(&arc_global_ref));
+                let jobject = arc_global_ref.as_obj();
                 let jstring = JString::from_raw(**jobject);
                 // Update the metrics using the jstring as a key.
                 jni_call!(env, comet_metric_node(metric_node).set(&jstring, value) -> ())?;
