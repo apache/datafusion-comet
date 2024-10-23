@@ -46,15 +46,24 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
+  private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
 
   static {
-    if (!isLoaded()) {
+    try {
       load();
+    } catch (Throwable th) {
+      LOG.warn("Failed to load comet library", th);
+      // logging may not be initialized yet, so also write to stderr
+      System.err.println("Failed to load comet library: " + th.getMessage());
+      loadErr = th;
     }
   }
 
-  public static synchronized boolean isLoaded() {
+  public static synchronized boolean isLoaded() throws Throwable {
+    if (loadErr != null) {
+      throw loadErr;
+    }
     return loaded;
   }
 
