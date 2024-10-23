@@ -95,6 +95,10 @@ allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
 
+allowed_expr+="|^com/$"
+allowed_expr+="|^com/google/$"
+allowed_expr+="|^com/google/flatbuffers/.*$"
+
 allowed_expr+=")"
 declare -i bad_artifacts=0
 declare -a bad_contents

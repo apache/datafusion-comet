@@ -149,6 +149,22 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test(
+    "fall back to Spark when the partition spec and order spec are not the same for window function") {
+    withTempView("test") {
+      sql("""
+          |CREATE OR REPLACE TEMPORARY VIEW test_agg AS SELECT * FROM VALUES
+          | (1, true), (1, false),
+          |(2, true), (3, false), (4, true) AS test(k, v)
+          |""".stripMargin)
+
+      val df = sql("""
+          SELECT k, v, every(v) OVER (PARTITION BY k ORDER BY v) FROM test_agg
+          |""".stripMargin)
+      checkSparkAnswer(df)
+    }
+  }
+
   test("Native window operator should be CometUnaryExec") {
     withTempView("testData") {
       sql("""
@@ -164,11 +180,11 @@ class CometExecSuite extends CometTestBase {
           |(3, 1L, 1.0D, date("2017-08-01"), timestamp_seconds(1501545600), null)
           |AS testData(val, val_long, val_double, val_date, val_timestamp, cate)
           |""".stripMargin)
-      val df = sql("""
+      val df1 = sql("""
           |SELECT val, cate, count(val) OVER(PARTITION BY cate ORDER BY val ROWS CURRENT ROW)
           |FROM testData ORDER BY cate, val
           |""".stripMargin)
-      checkSparkAnswer(df)
+      checkSparkAnswer(df1)
     }
   }
 
@@ -210,6 +226,23 @@ class CometExecSuite extends CometTestBase {
         count("key").over(
           Window.partitionBy($"value").orderBy($"key").rangeBetween(-2147483649L, 0))),
       Seq(Row(1, 2), Row(1, 2), Row(2, 3), Row(2147483650L, 2), Row(2147483650L, 4), Row(3, 1)))
+  }
+
+  test("Window range frame with long boundary should not fail") {
+    val df =
+      Seq((1L, "1"), (1L, "1"), (2147483650L, "1"), (3L, "2"), (2L, "1"), (2147483650L, "2"))
+        .toDF("key", "value")
+
+    checkSparkAnswer(
+      df.select(
+        $"key",
+        count("key").over(
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(0, 2147483648L))))
+    checkSparkAnswer(
+      df.select(
+        $"key",
+        count("key").over(
+          Window.partitionBy($"value").orderBy($"key").rangeBetween(-2147483649L, 0))))
   }
 
   test("Unsupported window expression should fall back to Spark") {
@@ -1588,8 +1621,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SparkToColumnar over RangeExec directly is eliminated for row output") {
-    // TODO: Temporarily ignore until we can determine why 3.4.3 plans differ from 3.4.2
-    assume(spark.version.equals("3.4.2"), "This test runs only on 3.4.2")
     Seq("true", "false").foreach(aqe => {
       Seq(500, 900).foreach { batchSize =>
         withSQLConf(
@@ -1779,10 +1810,9 @@ class CometExecSuite extends CometTestBase {
           aggregateFunctions.foreach { function =>
             val queries = Seq(
               s"SELECT $function OVER() FROM t1",
-              // TODO: Range frame is not supported yet.
-              // s"SELECT $function OVER(order by _2) FROM t1",
-              // s"SELECT $function OVER(order by _2 desc) FROM t1",
-              // s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2) FROM t1",
+              s"SELECT $function OVER(order by _2 desc) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
               s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")

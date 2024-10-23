@@ -25,7 +25,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -875,12 +875,18 @@ class CometSparkSessionExtensions
           LessThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
         case LessThanOrEqual(left, right) =>
           LessThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
+        case Divide(left, right, evalMode) =>
+          Divide(left, normalizeNaNAndZero(right), evalMode)
+        case Remainder(left, right, evalMode) =>
+          Remainder(left, normalizeNaNAndZero(right), evalMode)
       }
     }
 
     def normalizeNaNAndZero(expr: Expression): Expression = {
       expr match {
         case _: KnownFloatingPointNormalized => expr
+        case FloatLiteral(f) if !f.equals(-0.0f) => expr
+        case DoubleLiteral(d) if !d.equals(-0.0d) => expr
         case _ =>
           expr.dataType match {
             case _: FloatType | _: DoubleType =>

@@ -949,8 +949,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Enabling ANSI will cause native engine failure, but as we cannot catch
     // native error now, we cannot test it here.
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      withParquetTable(Seq((1, 0, 1.0, 0.0)), "tbl") {
-        checkSparkAnswerAndOperator("SELECT _1 / _2, _3 / _4 FROM tbl")
+      withParquetTable(Seq((1, 0, 1.0, 0.0, -0.0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 / _2, _3 / _4, _3 / _5 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 % _2, _3 % _4, _3 % _5 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 / 0, _3 / 0.0, _3 / -0.0 FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 % 0, _3 % 0.0, _3 % -0.0 FROM tbl")
       }
     }
   }
@@ -2189,13 +2192,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
         // This ends up returning empty strings instead of nulls for the last element
-        // Fixed by https://github.com/apache/datafusion/commit/27304239ef79b50a443320791755bf74eed4a85d
-        // checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
         checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
         checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
         checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
-      // Fixed by https://github.com/apache/datafusion/commit/140f7cec78febd73d3db537a816badaaf567530a
-      // checkSparkAnswerAndOperator(df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
+        checkSparkAnswerAndOperator(
+          df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
       }
     }
   }

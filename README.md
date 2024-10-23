@@ -47,29 +47,36 @@ The following chart shows the time it takes to run the 22 TPC-H queries against 
 using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
 for details of the environment used for these benchmarks.
 
-When using Comet, the overall run time is reduced from 649 seconds to 433 seconds, a 1.5x speedup, with some queries
-showing a 2x-3x speedup.
+When using Comet, the overall run time is reduced from 616 seconds to 374 seconds, a 1.6x speedup, with query 1
+running 9x faster than Spark.
 
-Running the same queries with DataFusion standalone (without Spark) using the same number of cores results in a 3.9x 
+Running the same queries with DataFusion standalone (without Spark) using the same number of cores results in a 3.6x 
 speedup compared to Spark.
 
 Comet is not yet achieving full DataFusion speeds in all cases, but with future work we aim to provide a 2x-4x speedup 
 for a broader set of queries.
 
-![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_allqueries.png)
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
 
-![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_queries_compare.png)
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_compare.png)
 
-The following chart shows how much Comet currently accelerates each query from the benchmark. Performance optimization
-is an ongoing task, and we welcome contributions from the community to help achieve even greater speedups in the future.
+The following charts shows how much Comet currently accelerates each query from the benchmark.
 
-![](docs/source/_static/images/benchmark-results/2024-07-19/tpch_queries_speedup.png)
+### Relative speedup
+
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_speedup_rel.png)
+
+### Absolute speedup
+
+![](docs/source/_static/images/benchmark-results/0.3.0/tpch_queries_speedup_abs.png)
 
 These benchmarks can be reproduced in any environment using the documentation in the 
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
 you to run your own benchmarks.
+
+Results for our benchmark derived from TPC-DS are available in the [benchmarking guide](https://datafusion.apache.org/comet/contributor-guide/benchmark-results/tpc-ds.html).
 
 ## Use Commodity Hardware
 
@@ -100,6 +107,8 @@ To get started with Apache DataFusion Comet, follow the
 [installation instructions](https://datafusion.apache.org/comet/user-guide/installation.html). Join the
 [DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html) to connect
 with other users, ask questions, and share your experiences with Comet.
+
+Follow [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/user-guide/overview.html) to get more detailed information 
 
 ## Contributing
 

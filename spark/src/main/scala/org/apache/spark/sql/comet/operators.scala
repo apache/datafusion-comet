@@ -523,7 +523,7 @@ case class CometSortExec(
     CometMetricNode.baselineMetrics(sparkContext) ++
       Map(
         "spill_count" -> SQLMetrics.createMetric(sparkContext, "number of spills"),
-        "spilled_bytes" -> SQLMetrics.createNanoTimingMetric(sparkContext, "total spilled bytes"))
+        "spilled_bytes" -> SQLMetrics.createSizeMetric(sparkContext, "total spilled bytes"))
 }
 
 case class CometLocalLimitExec(

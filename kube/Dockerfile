@@ -21,7 +21,6 @@ USER root
 
 # Installing JDK11 as the image comes with JRE
 RUN apt update \
-    && apt install -y git \
     && apt install -y curl \
     && apt install -y openjdk-11-jdk \
     && apt clean
@@ -32,14 +31,38 @@ ENV RUSTFLAGS="-C debuginfo=line-tables-only -C incremental=false"
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 
+# copy source files to Docker image
+RUN mkdir /comet
+WORKDIR /comet
+
+# build native code first so that this layer can be re-used
+# if only Scala code gets modified
+COPY rust-toolchain.toml /comet/rust-toolchain.toml
+COPY native /comet/native
+RUN cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
+
+# copy the rest of the project
+COPY .mvn /comet/.mvn
+COPY mvnw /comet/mvnw
+COPY common /comet/common
+COPY dev /comet/dev
+COPY docs /comet/docs
+COPY fuzz-testing /comet/fuzz-testing
+COPY spark /comet/spark
+COPY spark-integration /comet/spark-integration
+COPY scalafmt.conf /comet/scalafmt.conf
+COPY .scalafix.conf /comet/.scalafix.conf
+COPY Makefile /comet/Makefile
+COPY pom.xml /comet/pom.xml
+
 # Pick the JDK instead of JRE to compile Comet
-RUN cd /opt \
-    && git clone https://github.com/apache/datafusion-comet.git \
-    && cd datafusion-comet \
-    && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
+RUN cd /comet \
+    && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
 FROM apache/spark:3.4.3
 ENV SPARK_VERSION=3.4
 ENV SCALA_VERSION=2.12
 USER root
-COPY --from=builder  /opt/datafusion-comet/spark/target/comet-spark-spark${SPARK_VERSION}_$SCALA_VERSION-0.1.0-SNAPSHOT.jar $SPARK_HOME/jars
+
+# note the use of a wildcard in the file name so that this works with both snapshot and final release versions
+COPY --from=builder  /comet/spark/target/comet-spark-spark${SPARK_VERSION}_$SCALA_VERSION-0.2.0*.jar $SPARK_HOME/jars

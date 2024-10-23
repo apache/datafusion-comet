@@ -28,7 +28,7 @@ under the License.
     <artifactId>apache</artifactId>
     <version>23</version>
   </parent>
-  <groupId>org.apache.comet</groupId>
+  <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
   <version>0.2.0.7-apple-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -185,7 +185,7 @@ under the License.
         <scope>${spark.maven.scope}</scope>
         <exclusions>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
           <exclusion>
@@ -348,7 +348,7 @@ under the License.
         <scope>test</scope>
         <exclusions>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
 
@@ -412,7 +412,7 @@ under the License.
             <artifactId>parquet-column</artifactId>
           </exclusion>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
 
@@ -435,7 +435,7 @@ under the License.
         <scope>test</scope>
         <exclusions>
           <exclusion>
-            <groupId>org.apache.comet</groupId>
+            <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
           <exclusion>
@@ -664,6 +664,8 @@ under the License.
         <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -741,6 +743,10 @@ under the License.
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
                 </args>
                 <javacArgs>
+<!--                  <javacArg>-source</javacArg>-->
+<!--                  <javacArg>${java.version}</javacArg>-->
+<!--                  <javacArg>-target</javacArg>-->
+<!--                  <javacArg>${java.version}</javacArg>-->
                   <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
                 </javacArgs>
                 <compilerPlugins>
@@ -891,6 +897,8 @@ under the License.
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.10.1</version>
           <configuration>
+<!--            <source>${java.version}</source>-->
+<!--            <target>${java.version}</target>-->
             <skipMain>true</skipMain>
             <skip>true</skip>
           </configuration>
@@ -1026,6 +1034,7 @@ under the License.
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
             <exclude>**/apache-spark/**</exclude>
+            <exclude>.dockerignore</exclude>
             <exclude>.cicd/**</exclude>
             <exclude>.git/**</exclude>
             <exclude>.github/**</exclude>
@@ -1059,7 +1068,7 @@ under the License.
             <exclude>docs/source/_static/images/**</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
-            <exclude>native/core/src/execution/generated/**</exclude>
+            <exclude>native/proto/src/generated/**</exclude>
           </excludes>
         </configuration>
       </plugin>

@@ -100,7 +100,7 @@ TakeOrderedAndProject (99)
                         +- ReusedExchange (90)
 
 
-(1) Scan parquet spark_catalog.default.store_sales
+(1) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
@@ -112,7 +112,7 @@ ReadSchema: struct<ss_store_sk:int,ss_ext_sales_price:decimal(7,2),ss_net_profit
 Input [4]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4]
 Condition : isnotnull(ss_store_sk#1)
 
-(3) Scan parquet spark_catalog.default.date_dim
+(3) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#6, d_date#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -140,7 +140,7 @@ Arguments: [ss_sold_date_sk#4], [d_date_sk#6], Inner, BuildRight
 Input [5]: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3, ss_sold_date_sk#4, d_date_sk#6]
 Arguments: [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3], [ss_store_sk#1, ss_ext_sales_price#2, ss_net_profit#3]
 
-(9) Scan parquet spark_catalog.default.store
+(9) CometScan parquet spark_catalog.default.store
 Output [1]: [s_store_sk#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -185,7 +185,7 @@ Functions [2]: [sum(UnscaledValue(ss_ext_sales_price#2)), sum(UnscaledValue(ss_n
 Aggregate Attributes [2]: [sum(UnscaledValue(ss_ext_sales_price#2))#13, sum(UnscaledValue(ss_net_profit#3))#14]
 Results [3]: [s_store_sk#8, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#2))#13,17,2) AS sales#15, MakeDecimal(sum(UnscaledValue(ss_net_profit#3))#14,17,2) AS profit#16]
 
-(18) Scan parquet spark_catalog.default.store_returns
+(18) CometScan parquet spark_catalog.default.store_returns
 Output [4]: [sr_store_sk#17, sr_return_amt#18, sr_net_loss#19, sr_returned_date_sk#20]
 Batched: true
 Location: InMemoryFileIndex []
@@ -256,7 +256,7 @@ Join condition: None
 Output [5]: [store channel AS channel#32, s_store_sk#8 AS id#33, sales#15, coalesce(returns#30, 0.00) AS returns#34, (profit#16 - coalesce(profit_loss#31, 0.00)) AS profit#35]
 Input [6]: [s_store_sk#8, sales#15, profit#16, s_store_sk#23, returns#30, profit_loss#31]
 
-(33) Scan parquet spark_catalog.default.catalog_sales
+(33) CometScan parquet spark_catalog.default.catalog_sales
 Output [4]: [cs_call_center_sk#36, cs_ext_sales_price#37, cs_net_profit#38, cs_sold_date_sk#39]
 Batched: true
 Location: InMemoryFileIndex []
@@ -300,7 +300,7 @@ Results [3]: [cs_call_center_sk#36, MakeDecimal(sum(UnscaledValue(cs_ext_sales_p
 Input [3]: [cs_call_center_sk#36, sales#48, profit#49]
 Arguments: IdentityBroadcastMode, [plan_id=5]
 
-(42) Scan parquet spark_catalog.default.catalog_returns
+(42) CometScan parquet spark_catalog.default.catalog_returns
 Output [3]: [cr_return_amount#50, cr_net_loss#51, cr_returned_date_sk#52]
 Batched: true
 Location: InMemoryFileIndex []
@@ -348,7 +348,7 @@ Join condition: None
 Output [5]: [catalog channel AS channel#63, cs_call_center_sk#36 AS id#64, sales#48, returns#61, (profit#49 - profit_loss#62) AS profit#65]
 Input [5]: [cs_call_center_sk#36, sales#48, profit#49, returns#61, profit_loss#62]
 
-(52) Scan parquet spark_catalog.default.web_sales
+(52) CometScan parquet spark_catalog.default.web_sales
 Output [4]: [ws_web_page_sk#66, ws_ext_sales_price#67, ws_net_profit#68, ws_sold_date_sk#69]
 Batched: true
 Location: InMemoryFileIndex []
@@ -372,7 +372,7 @@ Arguments: [ws_sold_date_sk#69], [d_date_sk#71], Inner, BuildRight
 Input [5]: [ws_web_page_sk#66, ws_ext_sales_price#67, ws_net_profit#68, ws_sold_date_sk#69, d_date_sk#71]
 Arguments: [ws_web_page_sk#66, ws_ext_sales_price#67, ws_net_profit#68], [ws_web_page_sk#66, ws_ext_sales_price#67, ws_net_profit#68]
 
-(57) Scan parquet spark_catalog.default.web_page
+(57) CometScan parquet spark_catalog.default.web_page
 Output [1]: [wp_web_page_sk#72]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_page]
@@ -417,7 +417,7 @@ Functions [2]: [sum(UnscaledValue(ws_ext_sales_price#67)), sum(UnscaledValue(ws_
 Aggregate Attributes [2]: [sum(UnscaledValue(ws_ext_sales_price#67))#77, sum(UnscaledValue(ws_net_profit#68))#78]
 Results [3]: [wp_web_page_sk#72, MakeDecimal(sum(UnscaledValue(ws_ext_sales_price#67))#77,17,2) AS sales#79, MakeDecimal(sum(UnscaledValue(ws_net_profit#68))#78,17,2) AS profit#80]
 
-(66) Scan parquet spark_catalog.default.web_returns
+(66) CometScan parquet spark_catalog.default.web_returns
 Output [4]: [wr_web_page_sk#81, wr_return_amt#82, wr_net_loss#83, wr_returned_date_sk#84]
 Batched: true
 Location: InMemoryFileIndex []
@@ -598,7 +598,7 @@ BroadcastExchange (104)
          +- CometScan parquet spark_catalog.default.date_dim (100)
 
 
-(100) Scan parquet spark_catalog.default.date_dim
+(100) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#6, d_date#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

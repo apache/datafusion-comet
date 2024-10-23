@@ -24,7 +24,7 @@ under the License.
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>org.apache.comet</groupId>
+    <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
     <version>0.2.0.7-apple-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
@@ -42,6 +42,12 @@ under the License.
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.comet</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.parquet</groupId>
@@ -103,6 +109,29 @@ under the License.
         </configuration>
       </plugin>
       <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>flatten-maven-plugin</artifactId>
+          <version>1.3.0</version>
+          <executions>
+              <!-- enable flattening -->
+              <execution>
+                  <id>flatten</id>
+                  <phase>process-resources</phase>
+                  <goals>
+                      <goal>flatten</goal>
+                  </goals>
+              </execution>
+              <!-- ensure proper cleanup -->
+              <execution>
+                  <id>flatten.clean</id>
+                  <phase>clean</phase>
+                  <goals>
+                      <goal>clean</goal>
+                  </goals>
+              </execution>
+          </executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <executions>
@@ -121,6 +150,7 @@ under the License.
                   <!-- We shade & relocation most of the Arrow classes, to prevent them from
                     conflicting with those in Spark -->
                   <include>org.apache.arrow:*</include>
+                  <include>com.google.flatbuffers:flatbuffers-java</include>
                 </includes>
               </artifactSet>
               <filters>
