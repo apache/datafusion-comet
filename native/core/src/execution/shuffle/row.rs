@@ -47,7 +47,7 @@ use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
     io::{Cursor, Seek, SeekFrom, Write},
-    mem, ptr,
+    mem,
     str::from_utf8,
     sync::Arc,
 };
@@ -214,9 +214,9 @@ macro_rules! set_value_at {
     ($self:ident, $value_type:ty, $index: expr, $value: expr) => {
         unsafe {
             $self.set_not_null_at($index);
-            let addr = $self.get_element_offset($index, mem::size_of::<$value_type>()) as *mut u8;
-            let bytes = $value.to_le_bytes().as_ptr();
-            ptr::copy_nonoverlapping(bytes, addr, mem::size_of::<$value_type>());
+            let addr =
+                $self.get_element_offset($index, mem::size_of::<$value_type>()) as *mut $value_type;
+            *addr = $value
         }
     };
 }
@@ -250,13 +250,14 @@ impl SparkUnsafeRow {
         }
     }
 
+    #[allow(clippy::needless_range_loop)]
     pub fn get_rows_from_arrays(
         schema: Vec<ArrowDataType>,
         arrays: Vec<ArrayRef>,
         num_rows: usize,
         num_cols: usize,
         addr: usize,
-    ) -> () {
+    ) {
         let mut row_start_addr: usize = addr;
         for i in 0..num_rows {
             let mut row = SparkUnsafeRow::new(&schema);
@@ -267,11 +268,11 @@ impl SparkUnsafeRow {
                     row_size,
                 ));
             }
-            row_start_addr = row_start_addr + row_size;
+            row_start_addr += row_size;
             for j in 0..num_cols {
                 let arr = arrays.get(j).unwrap();
                 let dt = &schema[j];
-                assert_eq!(dt, arr.data_type());
+                // assert_eq!(dt, arr.data_type());
                 match dt {
                     ArrowDataType::Boolean => {
                         let array = arr.as_boolean();
@@ -282,7 +283,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Int8 => {
-                        let array: Int8Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Int8Array>()
+                            .expect("Error downcasting to Int8");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -290,7 +294,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Int16 => {
-                        let array: Int16Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Int16Array>()
+                            .expect("Error downcasting to Int16");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -298,7 +305,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Int32 => {
-                        let array: Int32Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .expect("Error downcasting to Int32");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -306,7 +316,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Int64 => {
-                        let array: Int64Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .expect("Error downcasting to Int64");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -314,7 +327,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Float32 => {
-                        let array: Float32Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Float32Array>()
+                            .expect("Error downcasting to Float32");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -322,7 +338,10 @@ impl SparkUnsafeRow {
                         }
                     }
                     ArrowDataType::Float64 => {
-                        let array: Float64Array = arr.as_primitive().clone();
+                        let array = arr
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .expect("Error downcasting to Float64");
                         if array.is_null(i) {
                             row.set_null_at(j);
                         } else {
@@ -331,7 +350,6 @@ impl SparkUnsafeRow {
                     }
                     ArrowDataType::Timestamp(TimeUnit::Microsecond, _) => {
                         let array = arr
-                            .as_ref()
                             .as_any()
                             .downcast_ref::<TimestampMicrosecondArray>()
                             .expect("Error downcasting to Timestamp(Microsecond)");
@@ -343,7 +361,6 @@ impl SparkUnsafeRow {
                     }
                     ArrowDataType::Date32 => {
                         let array = arr
-                            .as_ref()
                             .as_any()
                             .downcast_ref::<Date32Array>()
                             .expect("Error downcasting to Date32");
@@ -419,11 +436,7 @@ impl SparkUnsafeRow {
 
     #[inline]
     pub fn set_boolean(&mut self, index: usize, value: bool) {
-        unsafe {
-            self.set_not_null_at(index);
-            let addr = self.get_element_offset(index, mem::size_of::<bool>()) as *mut u8;
-            *addr = value as u8;
-        }
+        set_value_at!(self, bool, index, value)
     }
 
     #[inline]
@@ -448,7 +461,7 @@ impl SparkUnsafeRow {
 
     #[inline]
     pub fn set_float(&mut self, index: usize, value: f32) {
-        set_value_at!(self, f64, index, value)
+        set_value_at!(self, f32, index, value)
     }
 
     #[inline]

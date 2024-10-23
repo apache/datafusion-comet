@@ -572,7 +572,9 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
 /// From a set of vectors and a block of native memory allocated by Spark, convert the vectors
 /// into a batch of SparkUnsafeRows. The unsafe rows are written to the memory block passed in
 /// Currently implemented only for boolean and numeric types.
-pub extern "system" fn Java_org_apache_comet_Native_getUnsafeRowsNative(
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_getUnsafeRowsNative(
     e: JNIEnv,
     _class: JClass,
     _base_object: JObject,
@@ -582,9 +584,6 @@ pub extern "system" fn Java_org_apache_comet_Native_getUnsafeRowsNative(
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        // SAFETY: JVM unsafe memory allocation is aligned with long.
-        // let long_array = env.new_long_array(2)?;
-
         let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
         let num_cols = env.get_array_length(&array_address_array)? as usize;
 
