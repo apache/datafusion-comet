@@ -31,9 +31,11 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
  * Benchmark to measure Comet execution performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometExecBenchmark` Results will be written to
- * "spark/benchmarks/CometExecBenchmark-**results.txt".
+ *
+ * <code> SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * benchmark-org\.apache\.spark\.sql\.benchmark\.CometExecBenchmark </code>
+ *
+ * Results will be written to "spark/benchmarks/CometExecBenchmark-**results.txt".
  */
 object CometExecBenchmark extends CometBenchmarkBase {
   override def getSparkSession: SparkSession = {
@@ -273,29 +275,68 @@ object CometExecBenchmark extends CometBenchmarkBase {
     spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
   }
 
+  def columnarToRowBenchmark(values: Int): Unit = {
+
+    withTempPath { dir =>
+      Seq("boolean", "tinyint", "smallint", "integer", "bigint", "float", "double").foreach {
+        valueType =>
+          {
+            val benchmark = new Benchmark("ColumnarToRowExec", values, output = output)
+            withTempTable("parquetV1Table") {
+              prepareTable(
+                dir,
+                spark.sql(s"SELECT cast(value as $valueType) as ${valueType}_field FROM $tbl"))
+
+              benchmark.addCase(s"Spark Columnar To Row - $valueType") { _ =>
+                withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                  spark.sql("select * from parquetV1Table ").noop()
+                }
+              }
+
+              benchmark.addCase(s"Comet Columnar To Row - $valueType") { _ =>
+                withSQLConf(
+                  CometConf.COMET_ENABLED.key -> "true",
+                  CometConf.COMET_EXEC_ENABLED.key -> "true",
+                  CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+                  CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+                  CometConf.COMET_EXEC_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
+                  spark.sql("select * from parquetV1Table").noop()
+                }
+              }
+              benchmark.run()
+            }
+          }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-//    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
-//      subqueryExecBenchmark(v)
-//    }
-//
-//    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
-//      expandExecBenchmark(v)
-//    }
-//
-//    runBenchmarkWithTable("Project + Filter", 1024 * 1024 * 10) { v =>
-//      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
-//        numericFilterExecBenchmark(v, fractionOfZeros)
-//      }
-//    }
-//
-//    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
-//      sortExecBenchmark(v)
-//    }
+    runBenchmarkWithTable("Subquery", 1024 * 1024 * 10) { v =>
+      subqueryExecBenchmark(v)
+    }
+
+    runBenchmarkWithTable("Expand", 1024 * 1024 * 10) { v =>
+      expandExecBenchmark(v)
+    }
+
+    runBenchmarkWithTable("Project + Filter", 1024 * 1024 * 10) { v =>
+      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
+        numericFilterExecBenchmark(v, fractionOfZeros)
+      }
+    }
+
+    runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
+      sortExecBenchmark(v)
+    }
 
     runBenchmarkWithTable("BloomFilterAggregate", 1024 * 1024 * 10) { v =>
       for (card <- List(100, 1024, 1024 * 1024)) {
         bloomFilterAggregate(v, card)
       }
+    }
+
+    runBenchmarkWithTable("ColumnToRow", 1024 * 1024 * 10) { v =>
+      columnarToRowBenchmark(v)
     }
   }
 }

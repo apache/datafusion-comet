@@ -22,7 +22,7 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{NullVector, VectorSchemaRoot}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
@@ -137,6 +137,33 @@ class NativeUtil {
   }
 
   /**
+   * Utility function to check if a batch has vectors with dictionary. Used by native operators
+   * that may not support dictionary to fallback to Spark
+   * @param batch
+   * @return
+   */
+  def hasDictionaryOrNullVector(batch: ColumnarBatch): Boolean = {
+    var index = 0;
+    val numCols = batch.numCols()
+    var hasDictionary = false
+    var hasNullVector = false
+    while (index < numCols && !hasDictionary) {
+      batch.column(index) match {
+        case vec: CometVector =>
+          val valueVector = vec.getValueVector
+          if (valueVector != null && valueVector.getField.getDictionary != null) {
+            hasDictionary = true
+          }
+          if (valueVector == null || valueVector.isInstanceOf[NullVector]) {
+            hasNullVector = true
+          }
+          index = index + 1
+      }
+    }
+    hasDictionary || hasNullVector
+  }
+
+  /**
    * Gets the next batch from native execution.
    *
    * @param numOutputCols
@@ -166,6 +193,21 @@ class NativeUtil {
       case flag =>
         throw new IllegalStateException(s"Invalid native flag: $flag")
     }
+  }
+
+  /**
+   * Export a columnarBatch, returning arrays of pointers (addresses) to the underlying arrays and
+   * schemas
+   * @param batch
+   * @return
+   *   arrayAddresses, schemaAddresses
+   */
+  def exportColumnarBatch(batch: ColumnarBatch): (Array[Long], Array[Long]) = {
+    val (arrays, schemas) = allocateArrowStructs(batch.numCols())
+    val arrayAddrs = arrays.map(_.memoryAddress())
+    val schemaAddrs = schemas.map(_.memoryAddress())
+    exportBatch(arrayAddrs, schemaAddrs, batch)
+    (arrayAddrs, schemaAddrs)
   }
 
   /**

@@ -235,7 +235,7 @@ case class CometScanExec(
   }
 
   protected override def doExecute(): RDD[InternalRow] = {
-    ColumnarToRowExec(this).doExecute()
+    CometColumnarToRowExec(this).doExecute()
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
@@ -262,7 +262,7 @@ case class CometScanExec(
   }
 
   override def executeCollect(): Array[InternalRow] = {
-    ColumnarToRowExec(this).executeCollect()
+    CometColumnarToRowExec(this).executeCollect()
   }
 
   override val nodeName: String =
