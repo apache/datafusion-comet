@@ -45,7 +45,8 @@ under the License.
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <java.version>11</java.version>
-    <maven.compiler.release>11</maven.compiler.release>
+    <maven.compiler.source>${java.version}</maven.compiler.source>
+    <maven.compiler.target>${java.version}</maven.compiler.target>
     <scala.version>2.12.17</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <scala.plugin.version>4.7.2</scala.plugin.version>
@@ -446,6 +447,10 @@ under the License.
             <groupId>org.apache.arrow</groupId>
             <artifactId>*</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
@@ -671,9 +676,6 @@ under the License.
 
     <profile>
       <id>scala-2.12</id>
-      <properties>
-        <!-- Scala 2.12 properites are the default -->
-      </properties>
     </profile>
 
     <profile>
@@ -899,6 +901,17 @@ under the License.
           <configuration>
 <!--            <source>${java.version}</source>-->
 <!--            <target>${java.version}</target>-->
+            <skipMain>true</skipMain>
+            <skip>true</skip>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.10.1</version>
+          <configuration>
+            <source>${java.version}</source>
+            <target>${java.version}</target>
             <skipMain>true</skipMain>
             <skip>true</skip>
           </configuration>

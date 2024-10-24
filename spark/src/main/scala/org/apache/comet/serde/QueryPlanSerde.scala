@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -760,6 +760,39 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, child1, child2)
           None
         }
+
+      case bloom_filter @ BloomFilterAggregate(child, numItems, numBits, _, _) =>
+        // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
+        // implementation details for Spark's ObjectHashAggregate.
+        val childExpr = exprToProto(child, inputs, binding)
+        val numItemsExpr = exprToProto(numItems, inputs, binding)
+        val numBitsExpr = exprToProto(numBits, inputs, binding)
+        val dataType = serializeDataType(bloom_filter.dataType)
+
+        // TODO: Support more types
+        //  https://github.com/apache/datafusion-comet/issues/1023
+        if (childExpr.isDefined &&
+          child.dataType
+            .isInstanceOf[LongType] &&
+          numItemsExpr.isDefined &&
+          numBitsExpr.isDefined &&
+          dataType.isDefined) {
+          val bloomFilterAggBuilder = ExprOuterClass.BloomFilterAgg.newBuilder()
+          bloomFilterAggBuilder.setChild(childExpr.get)
+          bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
+          bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
+          bloomFilterAggBuilder.setDatatype(dataType.get)
+
+          Some(
+            ExprOuterClass.AggExpr
+              .newBuilder()
+              .setBloomFilterAgg(bloomFilterAggBuilder)
+              .build())
+        } else {
+          withInfo(aggExpr, child, numItems, numBits)
+          None
+        }
+
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
@@ -2453,6 +2486,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case struct @ CreateNamedStruct(_) =>
+          if (struct.names.length != struct.names.distinct.length) {
+            withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
+            return None
+          }
+
           val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
 
           if (valExprs.forall(_.isDefined)) {
@@ -2539,6 +2577,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 .build())
           } else {
             withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
+            None
+          }
+
+        case GetArrayStructFields(child, _, ordinal, _, _) =>
+          val childExpr = exprToProto(child, inputs, binding)
+
+          if (childExpr.isDefined) {
+            val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
+              .newBuilder()
+              .setChild(childExpr.get)
+              .setOrdinal(ordinal)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setGetArrayStructFields(arrayStructFieldsBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
 

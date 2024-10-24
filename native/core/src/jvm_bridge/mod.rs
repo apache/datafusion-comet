@@ -339,7 +339,7 @@ fn get_throwable_message(
     throwable: &JThrowable,
 ) -> CometResult<String> {
     unsafe {
-        let message = env
+        let message: JString = env
             .call_method_unchecked(
                 throwable,
                 jvm_classes.throwable_get_message_method,
@@ -348,7 +348,11 @@ fn get_throwable_message(
             )?
             .l()?
             .into();
-        let message_str = env.get_string(&message)?.into();
+        let message_str = if !message.is_null() {
+            env.get_string(&message)?.into()
+        } else {
+            String::from("null")
+        };
 
         let cause: JThrowable = env
             .call_method_unchecked(

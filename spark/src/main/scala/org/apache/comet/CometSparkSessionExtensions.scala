@@ -25,11 +25,12 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
+import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
@@ -54,6 +55,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -101,7 +103,19 @@ class CometSparkSessionExtensions
         def isDynamicPruningFilter(e: Expression): Boolean =
           e.exists(_.isInstanceOf[PlanExpression[_]])
 
+        def hasMetadataCol(plan: SparkPlan): Boolean = {
+          plan.expressions.exists(_.exists {
+            case a: Attribute =>
+              a.isMetadataCol
+            case _ => false
+          })
+        }
+
         plan.transform {
+          case scan if hasMetadataCol(scan) =>
+            withInfo(scan, "Metadata column is not supported")
+            scan
+
           case scanExec: FileSourceScanExec
               if COMET_DPP_FALLBACK_ENABLED.get() &&
                 scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
@@ -439,7 +453,11 @@ class CometSparkSessionExtensions
 
         case op: BaseAggregateExec
             if op.isInstanceOf[HashAggregateExec] ||
-              op.isInstanceOf[ObjectHashAggregateExec] =>
+              op.isInstanceOf[ObjectHashAggregateExec] &&
+              // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+              // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+              // and final Spark aggregation.
+              isCometShuffleEnabled(conf) =>
           val groupingExprs = op.groupingExpressions
           val aggExprs = op.aggregateExpressions
           val resultExpressions = op.resultExpressions
@@ -451,8 +469,10 @@ class CometSparkSessionExtensions
             // Fallback to Spark nevertheless here.
             op
           } else {
+            // For a final mode HashAggregate, we only need to transform the HashAggregate
+            // if there is Comet partial aggregation.
             val sparkFinalMode = {
-              !modes.isEmpty && modes.head == Final && findPartialAgg(child).isEmpty
+              !modes.isEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
             }
 
             if (sparkFinalMode) {
@@ -843,13 +863,11 @@ class CometSparkSessionExtensions
     }
 
     def normalizePlan(plan: SparkPlan): SparkPlan = {
-      // NOTE that this differs from OSS Comet because we have to avoid normalizing
-      // columnar operators to avoid test failures
       plan.transformUp {
-        case p: ProjectExec if !p.supportsColumnar =>
+        case p: ProjectExec =>
           val newProjectList = p.projectList.map(normalize(_).asInstanceOf[NamedExpression])
           ProjectExec(newProjectList, p.child)
-        case f: FilterExec if !f.supportsColumnar =>
+        case f: FilterExec =>
           val newCondition = normalize(f.condition)
           FilterExec(newCondition, f.child)
       }
@@ -921,7 +939,15 @@ class CometSparkSessionExtensions
           plan
         }
       } else {
-        var newPlan = transform(normalizePlan(plan))
+        val normalizedPlan = if (CometConf.COMET_REPLACE_SMJ.get()) {
+          normalizePlan(plan).transformUp { case p =>
+            RewriteJoin.rewrite(p)
+          }
+        } else {
+          normalizePlan(plan)
+        }
+
+        var newPlan = transform(normalizedPlan)
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
@@ -997,13 +1023,15 @@ class CometSparkSessionExtensions
      * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate
      * with partial mode, it will return None.
      */
-    def findPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+    def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
       plan.collectFirst {
         case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
           Some(agg)
         case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-        case a: AQEShuffleReadExec => findPartialAgg(a.child)
-        case s: ShuffleQueryStageExec => findPartialAgg(s.plan)
+        case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+          None
+        case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
+        case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
       }.flatten
     }
 

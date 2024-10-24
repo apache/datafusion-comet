@@ -42,6 +42,8 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 
    Comet Overview <user-guide/overview>
    Installing Comet <user-guide/installation>
+   Building From Source <user-guide/source>
+   Kubernetes Guide <user-guide/kubernetes>
    Supported Data Sources <user-guide/datasources>
    Supported Data Types <user-guide/datatypes>
    Supported Operators <user-guide/operators>

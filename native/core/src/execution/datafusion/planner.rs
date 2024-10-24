@@ -28,6 +28,7 @@ use crate::{
                 avg::Avg,
                 avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
+                bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
                 correlation::Correlation,
@@ -96,8 +97,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, CreateNamedStruct, DateTruncExpr, GetStructField, HourExpr, IfExpr, ListExtract,
-    MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
+    ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -678,6 +679,15 @@ impl PhysicalPlanner {
                     default_value,
                     expr.one_based,
                     expr.fail_on_error,
+                )))
+            }
+            ExprStruct::GetArrayStructFields(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+                Ok(Arc::new(GetArrayStructFields::new(
+                    child,
+                    expr.ordinal as usize,
                 )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
@@ -1610,6 +1620,22 @@ impl PhysicalPlanner {
                     expr.null_on_divide_by_zero,
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
+            }
+            AggExprStruct::BloomFilterAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_items =
+                    self.create_expr(expr.num_items.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_bits =
+                    self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
+                    Arc::clone(&child),
+                    Arc::clone(&num_items),
+                    Arc::clone(&num_bits),
+                    "bloom_filter_agg",
+                    datatype,
+                ));
+                Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
         }
     }

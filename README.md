@@ -33,9 +33,11 @@ under the License.
 > This is the README for the open source version of Apache DataFusion Comet. The README for Apple's internal fork is located at [APPLE-README.md](APPLE-README.md).
 
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
-[Apache DataFusion](https://datafusion.apache.org) query engine. Comet is designed to significantly enhance the
+[Apache DataFusion] query engine. Comet is designed to significantly enhance the
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
+
+[Apache DataFusion]: https://datafusion.apache.org
 
 # Benefits of Using Comet
 

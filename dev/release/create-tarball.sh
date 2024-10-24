@@ -53,11 +53,6 @@ if [ "$#" -ne 2 ]; then
     exit
 fi
 
-if [[ -z "${GH_TOKEN}" ]]; then
-    echo "Please set personal github token through GH_TOKEN environment variable"
-    exit
-fi
-
 version=$1
 rc=$2
 tag="${version}-rc${rc}"
@@ -87,7 +82,8 @@ I would like to propose a release of Apache DataFusion Comet version ${version}.
 
 This release candidate is based on commit: ${release_hash} [1]
 The proposed release tarball and signatures are hosted at [2].
-The changelog is located at [3].
+Pre-built jar files are available in a Maven staging repository [3].
+The changelog is located at [4].
 
 Please download, verify checksums and signatures, run the unit tests, and vote
 on the release. The vote will be open for at least 72 hours.
@@ -107,7 +103,8 @@ Here is my vote:
 
 [1]: https://github.com/apache/datafusion-comet/tree/${release_hash}
 [2]: ${url}
-[3]: https://github.com/apache/datafusion-comet/blob/${release_hash}/CHANGELOG.md
+[3]: https://repository.apache.org/#nexus-search;quick~org.apache.datafusion
+[4]: https://github.com/apache/datafusion-comet/blob/${release_hash}/CHANGELOG.md
 MAIL
 echo "---------------------------------------------------------"
 
@@ -121,7 +118,7 @@ echo "Running rat license checker on ${tarball}"
 ${DEV_RELEASE_DIR}/run-rat.sh ${tarball}
 
 echo "Signing tarball and creating checksums"
-gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
+gpg --pinentry-mode loopback --armor --output ${tarball}.asc --detach-sig ${tarball}
 # create signing with relative path of tarball
 # so that they can be verified with a command such as
 #  shasum --check apache-datafusion-comet-0.1.0-rc1.tar.gz.sha512
