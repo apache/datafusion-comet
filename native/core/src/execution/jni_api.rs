@@ -87,6 +87,8 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
+    /// Map of metrics name -> jstring object to cache jni_NewStringUTF calls.
+    pub metrics_jstrings: HashMap<String, Arc<GlobalRef>>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -178,6 +180,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             session_ctx: Arc::new(session),
             debug_native,
             explain_native,
+            metrics_jstrings: HashMap::new(),
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -441,10 +444,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 }
 
 /// Updates the metrics of the query plan.
-fn update_metrics(env: &mut JNIEnv, exec_context: &ExecutionContext) -> CometResult<()> {
+fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
     let native_query = exec_context.root_op.as_ref().unwrap();
     let metrics = exec_context.metrics.as_obj();
-    update_comet_metric(env, metrics, native_query)
+    let metrics_jstrings = &mut exec_context.metrics_jstrings;
+    update_comet_metric(env, metrics, native_query, metrics_jstrings)
 }
 
 fn convert_datatype_arrays(
