@@ -772,8 +772,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         // TODO: Support more types
         //  https://github.com/apache/datafusion-comet/issues/1023
         if (childExpr.isDefined &&
-          child.dataType
-            .isInstanceOf[LongType] &&
+          (child.dataType
+            .isInstanceOf[LongType] ||
+            child.dataType
+              .isInstanceOf[IntegerType] ||
+            child.dataType
+              .isInstanceOf[ByteType] ||
+            child.dataType
+              .isInstanceOf[ShortType])
+          &&
           numItemsExpr.isDefined &&
           numBitsExpr.isDefined &&
           dataType.isDefined) {

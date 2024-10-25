@@ -112,10 +112,22 @@ impl Accumulator for SparkBloomFilter {
         (0..arr.len()).try_for_each(|index| {
             let v = ScalarValue::try_from_array(arr, index)?;
 
-            if let ScalarValue::Int64(Some(value)) = v {
-                self.put_long(value);
-            } else {
-                unreachable!()
+            match v {
+                ScalarValue::Int8(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int16(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int32(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int64(Some(value)) => {
+                    self.put_long(value);
+                }
+                _ => {
+                    unreachable!()
+                }
             }
             Ok(())
         })
