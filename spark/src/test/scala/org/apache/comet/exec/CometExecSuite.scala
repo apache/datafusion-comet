@@ -947,15 +947,11 @@ class CometExecSuite extends CometTestBase {
         .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
       "tbl") {
 
-      if (isSpark35Plus) {
-        Seq("tinyint", "short", "int", "long", "string").foreach { input_type =>
+      (if (isSpark35Plus) Seq("tinyint", "short", "int", "long", "string") else Seq("long"))
+        .foreach { input_type =>
           val df = sql(f"SELECT bloom_filter_agg(cast(_2 as $input_type)) FROM tbl")
           checkSparkAnswerAndOperator(df)
         }
-      } else {
-        val df = sql("SELECT bloom_filter_agg(cast(_2 as long)) FROM tbl")
-        checkSparkAnswerAndOperator(df)
-      }
     }
 
     spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
