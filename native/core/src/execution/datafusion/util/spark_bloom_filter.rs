@@ -115,7 +115,7 @@ impl SparkBloomFilter {
         bit_changed
     }
 
-    pub fn put_bgiinary(&mut self, item: &[u8]) -> bool {
+    pub fn put_binary(&mut self, item: &[u8]) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
         let h1 = spark_compatible_murmur3_hash(item, 0);
