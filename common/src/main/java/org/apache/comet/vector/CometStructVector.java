@@ -34,11 +34,8 @@ public class CometStructVector extends CometDecodedVector {
   final DictionaryProvider dictionaryProvider;
 
   public CometStructVector(
-      ValueVector vector,
-      boolean useDecimal128,
-      DictionaryProvider dictionaryProvider,
-      int nullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount);
+      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField(), useDecimal128);
 
     StructVector structVector = ((StructVector) vector);
 
@@ -62,9 +59,7 @@ public class CometStructVector extends CometDecodedVector {
   public CometVector slice(int offset, int length) {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
-    ValueVector vector = tp.getTo();
 
-    // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometStructVector(vector, useDecimal128, dictionaryProvider, vector.getNullCount());
+    return new CometStructVector(tp.getTo(), useDecimal128, dictionaryProvider);
   }
 }

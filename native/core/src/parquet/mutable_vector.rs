@@ -218,7 +218,18 @@ impl ParquetMutableVector {
                 builder = builder.add_child_data(d.get_array_data());
             }
 
-            builder.build_unchecked()
+            let a = builder.build_unchecked();
+            // if is_binary_type(&self.arrow_type) && self.dictionary.is_none() {
+            println!(
+                "AAAAA {:?} {:?} {:?} {:?} {:?}",
+                a.data_type(),
+                self.arrow_type,
+                a.buffers().len(),
+                self.children.len(),
+                self.dictionary.is_some()
+            );
+            // }
+            a
         }
     }
 

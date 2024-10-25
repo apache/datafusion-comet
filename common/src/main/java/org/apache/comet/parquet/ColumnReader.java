@@ -157,6 +157,9 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometVector loadVector() {
+    if (currentVector != null) {
+      currentVector.close();
+    }
     long[] addrs = Native.currentBatch(nativeHandle);
     ArrowArray array = ArrowArray.wrap(addrs[0]);
     ArrowSchema schema = ArrowSchema.wrap(addrs[1]);
@@ -205,13 +208,11 @@ public class ColumnReader extends AbstractColumnReader {
 
     try (ArrowArray array = ArrowArray.wrap(addresses[0]);
         ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-      int nullCount = getNullCount(array);
-      int dictValNullCount = getDictValNullCount(array);
       FieldVector vector = importer.importVector(array, schema);
 
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128, false, nullCount);
+      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
 
       // Update whether the current vector contains any null values. This is used in the following
       // batch(s) to determine whether we can skip loading the native vector.
@@ -235,8 +236,7 @@ public class ColumnReader extends AbstractColumnReader {
       // release the previous dictionary vector and create a new one.
       Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
       CometPlainVector dictionaryVector =
-          new CometPlainVector(
-              arrowDictionary.getVector(), useDecimal128, isUuid, dictValNullCount);
+          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
       if (dictionary != null) {
         dictionary.setDictionaryVector(dictionaryVector);
       } else {
@@ -246,6 +246,9 @@ public class ColumnReader extends AbstractColumnReader {
       currentVector =
           new CometDictionaryVector(
               cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
+
+      currentVector =
+          new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
       return currentVector;
     }
 

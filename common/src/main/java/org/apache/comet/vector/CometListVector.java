@@ -34,11 +34,8 @@ public class CometListVector extends CometDecodedVector {
   final DictionaryProvider dictionaryProvider;
 
   public CometListVector(
-      ValueVector vector,
-      boolean useDecimal128,
-      DictionaryProvider dictionaryProvider,
-      int nullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount);
+      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField(), useDecimal128);
 
     this.listVector = ((ListVector) vector);
     this.dataVector = listVector.getDataVector();
@@ -58,9 +55,7 @@ public class CometListVector extends CometDecodedVector {
   public CometVector slice(int offset, int length) {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
-    ValueVector vector = tp.getTo();
 
-    // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometListVector(vector, useDecimal128, dictionaryProvider, vector.getNullCount());
+    return new CometListVector(tp.getTo(), useDecimal128, dictionaryProvider);
   }
 }

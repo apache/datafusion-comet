@@ -38,21 +38,15 @@ public class CometMapVector extends CometDecodedVector {
   final ColumnVector values;
 
   public CometMapVector(
-      ValueVector vector,
-      boolean useDecimal128,
-      DictionaryProvider dictionaryProvider,
-      int nullCount) {
-    super(vector, vector.getField(), useDecimal128, false, nullCount);
+      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField(), useDecimal128);
 
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
 
     if (dataVector instanceof StructVector) {
-      // TODO: getNullCount is slow, avoid calling it if possible
-      this.dataColumnVector =
-          new CometStructVector(
-              dataVector, useDecimal128, dictionaryProvider, dataVector.getNullCount());
+      this.dataColumnVector = new CometStructVector(dataVector, useDecimal128, dictionaryProvider);
 
       if (dataColumnVector.children.size() != 2) {
         throw new RuntimeException(
@@ -81,9 +75,7 @@ public class CometMapVector extends CometDecodedVector {
   public CometVector slice(int offset, int length) {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
-    ValueVector vector = tp.getTo();
 
-    // TODO: getNullCount is slow, avoid calling it if possible
-    return new CometMapVector(tp.getTo(), useDecimal128, dictionaryProvider, vector.getNullCount());
+    return new CometMapVector(tp.getTo(), useDecimal128, dictionaryProvider);
   }
 }

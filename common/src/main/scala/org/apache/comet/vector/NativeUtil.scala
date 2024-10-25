@@ -29,7 +29,6 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.parquet.Utils.{getDictValNullCount, getNullCount}
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -204,17 +203,13 @@ class NativeUtil {
     (0 until arrays.length).foreach { i =>
       val arrowSchema = schemas(i)
       val arrowArray = arrays(i)
-      val nullCount = getNullCount(arrowArray)
-      val dictValNullCount = getDictValNullCount(arrowArray)
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
       arrayVectors += CometVector.getVector(
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
-        dictionaryProvider,
-        nullCount,
-        dictValNullCount)
+        dictionaryProvider)
     }
     arrayVectors.toSeq
   }

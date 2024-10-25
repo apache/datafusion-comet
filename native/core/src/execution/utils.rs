@@ -20,6 +20,7 @@ use std::sync::Arc;
 /// Utils for array vector, etc.
 use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
+use crate::parquet::is_binary_type;
 use arrow::{
     array::ArrayData,
     error::ArrowError,
@@ -27,7 +28,6 @@ use arrow::{
 };
 use arrow_array::ffi::from_ffi_and_data_type;
 use arrow_schema::DataType;
-use crate::parquet::is_binary_type;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {
@@ -80,11 +80,12 @@ impl SparkArrowConvert for ArrayData {
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
-            // println!("/// {:?}", array_data.num_buffers());
 
-            let a  = from_ffi_and_data_type(array_data, data_type.clone())?;
+            let a = from_ffi_and_data_type(array_data, data_type.clone())?;
             // from_ffi(array_data, &schema_data)?
-            if is_binary_type(data_type) /* && array_data.dictionary().is_none() */ {
+            if is_binary_type(data_type)
+            /* && array_data.dictionary().is_none() */
+            {
                 println!("????? {:?}", data_type);
                 println!("!!!!! {}", a.len());
                 println!("@@@@@ {}", a.buffers().len());
