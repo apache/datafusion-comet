@@ -946,32 +946,12 @@ class CometExecSuite extends CometTestBase {
       (0 until 100)
         .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
       "tbl") {
-      val df = sql("SELECT bloom_filter_agg(cast(_2 as tinyint)) FROM tbl")
-      checkSparkAnswerAndOperator(df)
-    }
 
-    withParquetTable(
-      (0 until 100)
-        .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
-      "tbl") {
-      val df = sql("SELECT bloom_filter_agg(cast(_2 as short)) FROM tbl")
-      checkSparkAnswerAndOperator(df)
-    }
+      Seq("tinyint", "short", "int", "long").foreach { input_type =>
+        val df = sql(f"SELECT bloom_filter_agg(cast(_2 as $input_type)) FROM tbl")
+        checkSparkAnswerAndOperator(df)
 
-    withParquetTable(
-      (0 until 100)
-        .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
-      "tbl") {
-      val df = sql("SELECT bloom_filter_agg(cast(_2 as int)) FROM tbl")
-      checkSparkAnswerAndOperator(df)
-    }
-
-    withParquetTable(
-      (0 until 100)
-        .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
-      "tbl") {
-      val df = sql("SELECT bloom_filter_agg(cast(_2 as long)) FROM tbl")
-      checkSparkAnswerAndOperator(df)
+      }
     }
 
     spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
