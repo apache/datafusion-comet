@@ -125,6 +125,9 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Int64(Some(value)) => {
                     self.put_long(value);
                 }
+                ScalarValue::Utf8(Some(value)) => {
+                    self.put_binary(value.as_bytes());
+                }
                 _ => {
                     unreachable!()
                 }
