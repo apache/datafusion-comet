@@ -81,17 +81,14 @@ impl SparkArrowConvert for ArrayData {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
 
-            let a = from_ffi_and_data_type(array_data, data_type.clone())?;
+            let data_type = if array_data.dictionary().is_some() {
+                DataType::Dictionary(
+                    Box::new(DataType::Int32),
+                    Box::new(data_type.clone())
+                )
+            } else { data_type.clone() };
+            from_ffi_and_data_type(array_data, data_type)?
             // from_ffi(array_data, &schema_data)?
-            if is_binary_type(data_type)
-            /* && array_data.dictionary().is_none() */
-            {
-                println!("????? {:?}", data_type);
-                println!("!!!!! {}", a.len());
-                println!("@@@@@ {}", a.buffers().len());
-                println!("##### {}", a.child_data().len());
-            }
-            a
         };
 
         // Align imported buffers from Java.

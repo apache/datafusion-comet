@@ -203,7 +203,7 @@ impl ParquetMutableVector {
             } else {
                 self.arrow_type.clone()
             };
-            let mut builder = ArrayData::builder(data_type)
+            let mut builder = ArrayData::builder(data_type.clone())
                 .len(self.num_values)
                 .add_buffer(self.value_buffer.to_arrow())
                 .null_bit_buffer(Some(self.validity_buffer.to_arrow()))
@@ -218,18 +218,7 @@ impl ParquetMutableVector {
                 builder = builder.add_child_data(d.get_array_data());
             }
 
-            let a = builder.build_unchecked();
-            // if is_binary_type(&self.arrow_type) && self.dictionary.is_none() {
-            println!(
-                "AAAAA {:?} {:?} {:?} {:?} {:?}",
-                a.data_type(),
-                self.arrow_type,
-                a.buffers().len(),
-                self.children.len(),
-                self.dictionary.is_some()
-            );
-            // }
-            a
+            builder.build_unchecked()
         }
     }
 
