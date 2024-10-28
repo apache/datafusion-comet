@@ -97,6 +97,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)
     val datetimeRebaseModeInRead = parquetOptions.datetimeRebaseModeInRead
     val parquetFilterPushDown = sqlConf.parquetFilterPushDown
+    val hasNativeOperations = options.getOrElse("HAS_NATIVE_OPERATIONS", "false").toBoolean
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
@@ -146,7 +147,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
         datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
+        JavaConverters.mapAsJavaMap(metrics),
+        hasNativeOperations)
       val iter = new RecordReaderIterator(batchReader)
       try {
         batchReader.init()

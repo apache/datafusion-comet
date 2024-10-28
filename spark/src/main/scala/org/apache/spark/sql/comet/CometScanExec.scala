@@ -167,9 +167,10 @@ case class CometScanExec(
        |""".stripMargin
   }
 
-  lazy val inputRDD: RDD[InternalRow] = {
+  private def inputRDD(hasNativeOperations: Boolean = false): RDD[InternalRow] = {
     val options = relation.options +
-      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
+      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString) +
+      ("HAS_NATIVE_OPERATIONS" -> hasNativeOperations.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =
       relation.fileFormat.buildReaderWithPartitionValues(
         sparkSession = relation.sparkSession,
@@ -195,7 +196,7 @@ case class CometScanExec(
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
-    inputRDD :: Nil
+    inputRDD() :: Nil
   }
 
   /** Helper for computing total number and size of files in selected partitions. */
@@ -239,25 +240,27 @@ case class CometScanExec(
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val hasNativeOperations = true // TODO
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
-      new Iterator[ColumnarBatch] {
+    inputRDD(hasNativeOperations).asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal {
+      batches =>
+        new Iterator[ColumnarBatch] {
 
-        override def hasNext: Boolean = {
-          // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
-          val startNs = System.nanoTime()
-          val res = batches.hasNext
-          scanTime += System.nanoTime() - startNs
-          res
-        }
+          override def hasNext: Boolean = {
+            // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
+            val startNs = System.nanoTime()
+            val res = batches.hasNext
+            scanTime += System.nanoTime() - startNs
+            res
+          }
 
-        override def next(): ColumnarBatch = {
-          val batch = batches.next()
-          numOutputRows += batch.numRows()
-          batch
+          override def next(): ColumnarBatch = {
+            val batch = batches.next()
+            numOutputRows += batch.numRows()
+            batch
+          }
         }
-      }
     }
   }
 

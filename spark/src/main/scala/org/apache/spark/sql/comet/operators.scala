@@ -119,21 +119,19 @@ object CometExec {
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
-      numOutputCols: Int,
       nativePlan: Operator): CometExecIterator = {
-    getCometIterator(inputs, numOutputCols, nativePlan, CometMetricNode(Map.empty))
+    getCometIterator(inputs, nativePlan, CometMetricNode(Map.empty))
   }
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
-      numOutputCols: Int,
       nativePlan: Operator,
       nativeMetrics: CometMetricNode): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-    new CometExecIterator(newIterId, inputs, numOutputCols, bytes, nativeMetrics)
+    new CometExecIterator(newIterId, inputs, bytes, nativeMetrics)
   }
 
   /**
@@ -215,12 +213,8 @@ abstract class CometNativeExec extends CometExec {
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
         def createCometExecIter(inputs: Seq[Iterator[ColumnarBatch]]): CometExecIterator = {
-          val it = new CometExecIterator(
-            CometExec.newIterId,
-            inputs,
-            output.length,
-            serializedPlanCopy,
-            nativeMetrics)
+          val it =
+            new CometExecIterator(CometExec.newIterId, inputs, serializedPlanCopy, nativeMetrics)
 
           setSubqueries(it.id, this)
 

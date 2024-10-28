@@ -32,10 +32,18 @@ public class Utils {
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLazyMaterialization) {
+      boolean useLazyMaterialization,
+      boolean hasNativeOperations) {
     // TODO: support `useLegacyDateTimestamp` for Iceberg
     return getColumnReader(
-        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
+        type,
+        descriptor,
+        importer,
+        batchSize,
+        useDecimal128,
+        useLazyMaterialization,
+        true,
+        hasNativeOperations);
   }
 
   public static ColumnReader getColumnReader(
@@ -45,13 +53,20 @@ public class Utils {
       int batchSize,
       boolean useDecimal128,
       boolean useLazyMaterialization,
-      boolean useLegacyDateTimestamp) {
-    if (useLazyMaterialization && supportLazyMaterialization(type)) {
+      boolean useLegacyDateTimestamp,
+      boolean hasNativeOperations) {
+    if (useLazyMaterialization && !hasNativeOperations && supportLazyMaterialization(type)) {
       return new LazyColumnReader(
           type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
     } else {
       return new ColumnReader(
-          type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
+          type,
+          descriptor,
+          importer,
+          batchSize,
+          useDecimal128,
+          useLegacyDateTimestamp,
+          hasNativeOperations);
     }
   }
 

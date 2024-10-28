@@ -137,7 +137,8 @@ case class CometParquetPartitionReaderFactory(
         datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
+        JavaConverters.mapAsJavaMap(metrics),
+        false)
       val taskContext = Option(TaskContext.get)
       taskContext.foreach(_.addTaskCompletionListener[Unit](_ => cometReader.close()))
       return cometReader

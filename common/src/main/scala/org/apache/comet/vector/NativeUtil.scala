@@ -109,9 +109,6 @@ class NativeUtil {
             null
           }
 
-          // The array and schema structures are allocated by native side.
-          // Don't need to deallocate them here.
-
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
           Data.exportVector(
@@ -145,14 +142,12 @@ class NativeUtil {
   /**
    * Gets the next batch from native execution.
    *
-   * @param numOutputCols
-   *   The number of output columns
    * @param func
    *   The function to call to get the next batch
    * @return
    *   The number of row of the next batch, or None if there are no more batches
    */
-  def getNextBatch(numOutputCols: Int, func: () => Array[Long]): Option[ColumnarBatch] = {
+  def getNextBatch(func: () => Array[Long]): Option[ColumnarBatch] = {
     val cometBatchElements = func()
     val result = cometBatchElements(0)
     val arrayBuilder = Array.newBuilder[ArrowArray]
@@ -171,8 +166,8 @@ class NativeUtil {
       case numRows =>
         val cometVectors = importVector(arrays, schemas)
         Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
-      case flag =>
-        throw new IllegalStateException(s"Invalid native flag: $flag")
+      // case flag =>
+      //   throw new IllegalStateException(s"Invalid native flag: $flag")
     }
   }
 

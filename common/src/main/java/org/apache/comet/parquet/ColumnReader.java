@@ -27,6 +27,9 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.*;
 import org.apache.arrow.c.NativeUtil;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.dictionary.Dictionary;
+import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.page.DataPage;
@@ -34,6 +37,7 @@ import org.apache.parquet.column.page.DataPageV1;
 import org.apache.parquet.column.page.DataPageV2;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReader;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
@@ -78,17 +82,21 @@ public class ColumnReader extends AbstractColumnReader {
 
   private final CometSchemaImporter importer;
 
+  private final boolean hasNativeOperations;
+
   public ColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLegacyDateTimestamp) {
+      boolean useLegacyDateTimestamp,
+      boolean hasNativeOperations) {
     super(type, descriptor, useDecimal128, useLegacyDateTimestamp);
     assert batchSize > 0 : "Batch size must be positive, found " + batchSize;
     this.batchSize = batchSize;
     this.importer = importer;
+    this.hasNativeOperations = hasNativeOperations;
     initNative();
   }
 
@@ -157,17 +165,18 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometVector loadVector() {
-    if (currentVector != null) {
-      currentVector.close();
+    if (hasNativeOperations) {
+      if (currentVector != null) {
+        currentVector.close();
+      }
+      long[] addrs = Native.currentBatch(nativeHandle);
+      ArrowArray array = ArrowArray.wrap(addrs[0]);
+      ArrowSchema schema = ArrowSchema.wrap(addrs[1]);
+      ArrowSchema.Snapshot snapshot = schema.snapshot();
+      String format = NativeUtil.toJavaString(snapshot.format);
+      currentVector = new CometNativeVector(null, useDecimal128, addrs[0], addrs[1]);
+      return currentVector;
     }
-    long[] addrs = Native.currentBatch(nativeHandle);
-    ArrowArray array = ArrowArray.wrap(addrs[0]);
-    ArrowSchema schema = ArrowSchema.wrap(addrs[1]);
-    ArrowSchema.Snapshot snapshot = schema.snapshot();
-    String format = NativeUtil.toJavaString(snapshot.format);
-    currentVector = new CometNativeVector(null, useDecimal128, addrs[0], addrs[1]);
-    return currentVector;
-    /*
 
     // Only re-use Comet vector iff:
     //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
@@ -251,8 +260,6 @@ public class ColumnReader extends AbstractColumnReader {
           new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
       return currentVector;
     }
-
-     */
   }
 
   protected void readPage() {

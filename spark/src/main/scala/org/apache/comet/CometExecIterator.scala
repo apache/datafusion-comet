@@ -43,7 +43,6 @@ import org.apache.comet.vector.NativeUtil
 class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
-    numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode)
     extends Iterator[ColumnarBatch] {
@@ -100,12 +99,10 @@ class CometExecIterator(
     result
   }
 
-  def getNextBatch(): Option[ColumnarBatch] = {
-    nativeUtil.getNextBatch(
-      numOutputCols,
-      () => {
-        nativeLib.executePlan(plan)
-      })
+  private def getNextBatch: Option[ColumnarBatch] = {
+    nativeUtil.getNextBatch(() => {
+      nativeLib.executePlan(plan)
+    })
   }
 
   override def hasNext: Boolean = {
@@ -115,7 +112,7 @@ class CometExecIterator(
       return true
     }
 
-    nextBatch = getNextBatch()
+    nextBatch = getNextBatch
 
     if (nextBatch.isEmpty) {
       close()
