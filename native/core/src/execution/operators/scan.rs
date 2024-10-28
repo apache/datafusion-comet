@@ -48,10 +48,9 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-use datafusion_expr::type_coercion::functions::data_types;
 use jni::objects::{GlobalRef, JObject};
-use jni::objects::{JLongArray, JValueGen, ReleaseMode};
-use jni::sys::{jlongArray, jsize};
+use jni::objects::{JLongArray, ReleaseMode};
+use jni::sys::jlongArray;
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
 /// scan or the result of reading a broadcast or shuffle exchange.
@@ -169,7 +168,6 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         data_types: &Vec<DataType>,
-        // num_cols: usize,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -185,37 +183,8 @@ impl ScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
-        // let mut array_addrs = Vec::with_capacity(num_cols);
-        // let mut schema_addrs = Vec::with_capacity(num_cols);
-
-        // for _ in 0..num_cols {
-        //     let arrow_array = Rc::new(FFI_ArrowArray::empty());
-        //     let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
-        //     let (array_ptr, schema_ptr) = (
-        //         Rc::into_raw(arrow_array) as i64,
-        //         Rc::into_raw(arrow_schema) as i64,
-        //     );
-
-        //     array_addrs.push(array_ptr);
-        //     schema_addrs.push(schema_ptr);
-        // }
-
-        // Prepare the java array parameters
-        // let long_array_addrs = env.new_long_array(num_cols as jsize)?;
-        // let long_schema_addrs = env.new_long_array(num_cols as jsize)?;
-
-        // env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
-        // env.set_long_array_region(&long_schema_addrs, 0, &schema_addrs)?;
-
-        // let array_obj = JObject::from(long_array_addrs);
-        // let schema_obj = JObject::from(long_schema_addrs);
-
-        // let array_obj = JValueGen::Object(array_obj.as_ref());
-        // let schema_obj = JValueGen::Object(schema_obj.as_ref());
-
         let batch_object: JObject = unsafe {
             jni_call!(&mut env,
-        //comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
             comet_batch_iterator(iter).next() -> JObject)?
         };
 
@@ -247,7 +216,6 @@ impl ScanExec {
 
         let num_arrays = array_num / 2;
         let array_elements = unsafe { addresses.as_ptr().add(1) };
-        // let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
         // for i in 0..num_cols {

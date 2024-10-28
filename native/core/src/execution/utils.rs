@@ -20,11 +20,10 @@ use std::sync::Arc;
 /// Utils for array vector, etc.
 use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
-use crate::parquet::is_binary_type;
 use arrow::{
     array::ArrayData,
     error::ArrowError,
-    ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
+    ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use arrow_array::ffi::from_ffi_and_data_type;
 use arrow_schema::DataType;
@@ -79,16 +78,13 @@ impl SparkArrowConvert for ArrayData {
         // about memory leak.
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
-            let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
 
             let data_type = if array_data.dictionary().is_some() {
-                DataType::Dictionary(
-                    Box::new(DataType::Int32),
-                    Box::new(data_type.clone())
-                )
-            } else { data_type.clone() };
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(data_type.clone()))
+            } else {
+                data_type.clone()
+            };
             from_ffi_and_data_type(array_data, data_type)?
-            // from_ffi(array_data, &schema_data)?
         };
 
         // Align imported buffers from Java.

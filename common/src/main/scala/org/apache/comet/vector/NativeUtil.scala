@@ -88,10 +88,7 @@ class NativeUtil {
    *   an exported batches object containing an array containing number of rows + pairs of memory
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportBatch(
-      // arrayAddrs: Array[Long],
-      // schemaAddrs: Array[Long],
-      batch: ColumnarBatch): Array[Long] = {
+  def exportBatch(batch: ColumnarBatch): Array[Long] = {
     val numRows = mutable.ArrayBuffer.empty[Int]
     val builder = Array.newBuilder[Long]
     builder += batch.numRows()
@@ -114,8 +111,6 @@ class NativeUtil {
 
           // The array and schema structures are allocated by native side.
           // Don't need to deallocate them here.
-          // val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
-          // val arrowArray = ArrowArray.wrap(arrayAddrs(index))
 
           val arrowSchema = ArrowSchema.allocateNew(allocator)
           val arrowArray = ArrowArray.allocateNew(allocator)
@@ -158,12 +153,6 @@ class NativeUtil {
    *   The number of row of the next batch, or None if there are no more batches
    */
   def getNextBatch(numOutputCols: Int, func: () => Array[Long]): Option[ColumnarBatch] = {
-    // val (arrays, schemas) = allocateArrowStructs(numOutputCols)
-
-    // val arrayAddrs = arrays.map(_.memoryAddress())
-    // val schemaAddrs = schemas.map(_.memoryAddress())
-
-    // val result = func(arrayAddrs, schemaAddrs)
     val cometBatchElements = func()
     val result = cometBatchElements(0)
     val arrayBuilder = Array.newBuilder[ArrowArray]

@@ -46,7 +46,7 @@ public class Utils {
       boolean useDecimal128,
       boolean useLazyMaterialization,
       boolean useLegacyDateTimestamp) {
-    if (useLazyMaterialization && supportLazyMaterialization(type) && false) {
+    if (useLazyMaterialization && supportLazyMaterialization(type)) {
       return new LazyColumnReader(
           type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
     } else {

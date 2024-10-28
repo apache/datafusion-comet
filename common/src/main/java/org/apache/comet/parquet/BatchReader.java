@@ -242,8 +242,11 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
             (Boolean) CometConf.COMET_USE_DECIMAL_128().defaultValue().get());
     useLazyMaterialization =
         conf.getBoolean(
-            CometConf.COMET_USE_LAZY_MATERIALIZATION().key(),
-            (Boolean) CometConf.COMET_USE_LAZY_MATERIALIZATION().defaultValue().get());
+                CometConf.COMET_USE_LAZY_MATERIALIZATION().key(),
+                (Boolean) CometConf.COMET_USE_LAZY_MATERIALIZATION().defaultValue().get())
+            && !conf.getBoolean(
+                CometConf.COMET_EXEC_ENABLED().key(),
+                (Boolean) CometConf.COMET_EXEC_ENABLED().defaultValue().get());
 
     long start = file.start();
     long length = file.length();
