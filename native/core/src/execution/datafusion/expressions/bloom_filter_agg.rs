@@ -62,7 +62,17 @@ impl BloomFilterAgg {
         assert!(matches!(data_type, DataType::Binary));
         Self {
             name: name.into(),
-            signature: Signature::exact(vec![DataType::Int64], Volatility::Immutable),
+            signature: Signature::uniform(
+                1,
+                vec![
+                    DataType::Int8,
+                    DataType::Int16,
+                    DataType::Int32,
+                    DataType::Int64,
+                    DataType::Utf8,
+                ],
+                Volatility::Immutable,
+            ),
             expr,
             num_items: extract_i32_from_literal(num_items),
             num_bits: extract_i32_from_literal(num_bits),

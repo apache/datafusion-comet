@@ -770,6 +770,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val dataType = serializeDataType(bloom_filter.dataType)
 
         if (childExpr.isDefined &&
+          (child.dataType
+            .isInstanceOf[ByteType] ||
+            child.dataType
+              .isInstanceOf[ShortType] ||
+            child.dataType
+              .isInstanceOf[IntegerType] ||
+            child.dataType
+              .isInstanceOf[LongType] ||
+            child.dataType
+              .isInstanceOf[StringType]) &&
           numItemsExpr.isDefined &&
           numBitsExpr.isDefined &&
           dataType.isDefined) {
