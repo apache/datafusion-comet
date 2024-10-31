@@ -42,6 +42,8 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * To enable this plugin, set the config "spark.plugins" to `org.apache.spark.CometPlugin`.
  */
 class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPlugin {
+  private val EXECUTOR_MEMORY_DEFAULT = "1g"
+
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
 
@@ -53,7 +55,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
       } else {
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-        val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key)
+        val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
         val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
         val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
