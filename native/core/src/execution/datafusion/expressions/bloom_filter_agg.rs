@@ -62,7 +62,17 @@ impl BloomFilterAgg {
         assert!(matches!(data_type, DataType::Binary));
         Self {
             name: name.into(),
-            signature: Signature::exact(vec![DataType::Int64], Volatility::Immutable),
+            signature: Signature::uniform(
+                1,
+                vec![
+                    DataType::Int8,
+                    DataType::Int16,
+                    DataType::Int32,
+                    DataType::Int64,
+                    DataType::Utf8,
+                ],
+                Volatility::Immutable,
+            ),
             expr,
             num_items: extract_i32_from_literal(num_items),
             num_bits: extract_i32_from_literal(num_bits),
@@ -112,10 +122,25 @@ impl Accumulator for SparkBloomFilter {
         (0..arr.len()).try_for_each(|index| {
             let v = ScalarValue::try_from_array(arr, index)?;
 
-            if let ScalarValue::Int64(Some(value)) = v {
-                self.put_long(value);
-            } else {
-                unreachable!()
+            match v {
+                ScalarValue::Int8(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int16(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int32(Some(value)) => {
+                    self.put_long(value as i64);
+                }
+                ScalarValue::Int64(Some(value)) => {
+                    self.put_long(value);
+                }
+                ScalarValue::Utf8(Some(value)) => {
+                    self.put_binary(value.as_bytes());
+                }
+                _ => {
+                    unreachable!()
+                }
             }
             Ok(())
         })
