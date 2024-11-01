@@ -64,6 +64,7 @@ case class CometScanExec(
     extends DataSourceScanExec
     with ShimCometScanExec
     with CometPlan {
+  private var hasNativeOperations = false
 
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
@@ -167,7 +168,7 @@ case class CometScanExec(
        |""".stripMargin
   }
 
-  private def inputRDD(hasNativeOperations: Boolean = false): RDD[InternalRow] = {
+  lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +
       (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString) +
       ("HAS_NATIVE_OPERATIONS" -> hasNativeOperations.toString)
@@ -196,7 +197,7 @@ case class CometScanExec(
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
-    inputRDD() :: Nil
+    inputRDD :: Nil
   }
 
   /** Helper for computing total number and size of files in selected partitions. */
@@ -239,28 +240,30 @@ case class CometScanExec(
     ColumnarToRowExec(this).doExecute()
   }
 
+  def prepareForNativeExec(): Unit = {
+    this.hasNativeOperations = true
+  }
+
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val hasNativeOperations = true // TODO
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD(hasNativeOperations).asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal {
-      batches =>
-        new Iterator[ColumnarBatch] {
+    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
+      new Iterator[ColumnarBatch] {
 
-          override def hasNext: Boolean = {
-            // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
-            val startNs = System.nanoTime()
-            val res = batches.hasNext
-            scanTime += System.nanoTime() - startNs
-            res
-          }
-
-          override def next(): ColumnarBatch = {
-            val batch = batches.next()
-            numOutputRows += batch.numRows()
-            batch
-          }
+        override def hasNext: Boolean = {
+          // The `FileScanRDD` returns an iterator which scans the file during the `hasNext` call.
+          val startNs = System.nanoTime()
+          val res = batches.hasNext
+          scanTime += System.nanoTime() - startNs
+          res
         }
+
+        override def next(): ColumnarBatch = {
+          val batch = batches.next()
+          numOutputRows += batch.numRows()
+          batch
+        }
+      }
     }
   }
 
