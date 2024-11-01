@@ -48,7 +48,7 @@ pub trait DataPageBuilder {
 ///   - add_def_levels()
 ///   - add_values() for normal data page / add_indices() for dictionary data page
 ///   - consume()
-/// in order to populate and obtain a data page.
+///     in order to populate and obtain a data page.
 pub struct DataPageBuilderImpl {
     desc: ColumnDescPtr,
     encoding: Option<Encoding>,

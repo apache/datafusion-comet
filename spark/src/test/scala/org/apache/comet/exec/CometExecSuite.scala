@@ -64,6 +64,25 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("TopK operator should return correct results on dictionary column with nulls") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      withTable("test_data") {
+        val tableDF = spark.sparkContext
+          .parallelize(Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")), 3)
+          .toDF("c1", "c2", "c3")
+        tableDF
+          .coalesce(1)
+          .sortWithinPartitions("c1")
+          .writeTo("test_data")
+          .using("parquet")
+          .create()
+
+        val df = sql("SELECT * FROM test_data ORDER BY c1 LIMIT 3")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("DPP fallback") {
     withTempDir { path =>
       // create test data
