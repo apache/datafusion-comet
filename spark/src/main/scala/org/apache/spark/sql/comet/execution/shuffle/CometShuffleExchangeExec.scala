@@ -92,6 +92,7 @@ case class CometShuffleExchangeExec(
 
   @transient lazy val inputRDD: RDD[_] = if (shuffleType == CometNativeShuffle) {
     // CometNativeShuffle assumes that the input plan is Comet plan.
+    CometExec.prepareScanForNativeExec(child)
     child.executeColumnar()
   } else if (shuffleType == CometColumnarShuffle) {
     // CometColumnarShuffle assumes that the input plan is row-based plan from Spark.
