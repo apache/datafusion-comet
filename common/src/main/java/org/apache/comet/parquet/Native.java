@@ -192,10 +192,10 @@ public final class Native extends NativeBase {
    * Returns the current batch constructed via 'readBatch'
    *
    * @param handle the handle to the native Parquet column reader
-   * @return a long array with 2 elements, the first is the address to native Arrow array, and the
-   *     second is the address to the Arrow schema.
+   * @param arrayAddr the memory address to the ArrowArray struct
+   * @param schemaAddr the memory address to the ArrowSchema struct
    */
-  public static native long[] currentBatch(long handle);
+  public static native void currentBatch(long handle, long arrayAddr, long schemaAddr);
 
   /** Set methods to set a constant value for the reader, so it'll return constant vectors */
   public static native void setNull(long handle);
