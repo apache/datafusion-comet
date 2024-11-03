@@ -1,0 +1,77 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Build package
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Operating system: ubuntu-latest, ubuntu-24.04, ubuntu-22.04, ubuntu-20.04, windows-latest, windows-2022, windows-2019, macos-latest, macos-15, macos-14, macos-13 or macos-12'
+        required: true
+        default: 'ubuntu-22.04'
+      rust:
+        description: 'Rust version: stable, nightly or beta'
+        required: true
+        default: 'stable'
+      jdk:
+        description: 'JDK version: 8, 11, 17 or 21'
+        required: true
+        default: '8'
+      profiles:
+        description: 'Additional build profiles: -Pspark-3.5 -Pscala-2.12'
+        required: true
+        default: '-Pspark-3.5'
+
+jobs:
+  build:
+    name: Build package
+    runs-on: ${{ github.event.inputs.os }}
+    container:
+      image: amd64/rust
+    env:
+      JAVA_VERSION: ${{ github.event.inputs.jdk }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ github.event.inputs.rust }}
+          jdk-version: ${{ github.event.inputs.jdk }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-rust-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-maven-
+      - name: Build Comet
+        run: make release PROFILES="${{ github.event.inputs.profiles }}"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: comet-spark-package
+          path: spark/target/comet-spark-*.jar
+          if-no-files-found: error
