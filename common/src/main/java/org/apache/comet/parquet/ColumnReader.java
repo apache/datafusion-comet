@@ -26,7 +26,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.*;
-import org.apache.arrow.c.NativeUtil;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
@@ -45,6 +46,7 @@ import org.apache.comet.vector.*;
 
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
+  protected final BufferAllocator ALLOCATOR = new RootAllocator();
 
   /**
    * The current Comet vector holding all the values read by this column reader. Owned by this
@@ -83,6 +85,9 @@ public class ColumnReader extends AbstractColumnReader {
   private final CometSchemaImporter importer;
 
   private final boolean hasNativeOperations;
+
+  private ArrowArray array = null;
+  private ArrowSchema schema = null;
 
   public ColumnReader(
       DataType type,
@@ -169,12 +174,15 @@ public class ColumnReader extends AbstractColumnReader {
       if (currentVector != null) {
         currentVector.close();
       }
-      long[] addrs = Native.currentBatch(nativeHandle);
-      ArrowArray array = ArrowArray.wrap(addrs[0]);
-      ArrowSchema schema = ArrowSchema.wrap(addrs[1]);
-      ArrowSchema.Snapshot snapshot = schema.snapshot();
-      String format = NativeUtil.toJavaString(snapshot.format);
-      currentVector = new CometNativeVector(null, useDecimal128, addrs[0], addrs[1]);
+
+      array = ArrowArray.allocateNew(ALLOCATOR);
+      schema = ArrowSchema.allocateNew(ALLOCATOR);
+
+      long arrayAddr = array.memoryAddress();
+      long schemaAddr = schema.memoryAddress();
+
+      Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
+      currentVector = new CometNativeVector(null, useDecimal128, arrayAddr, schemaAddr);
       return currentVector;
     }
 
@@ -213,53 +221,56 @@ public class ColumnReader extends AbstractColumnReader {
     boolean isUuid =
         logicalTypeAnnotation instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
 
-    long[] addresses = Native.currentBatch(nativeHandle);
+    array = ArrowArray.allocateNew(ALLOCATOR);
+    schema = ArrowSchema.allocateNew(ALLOCATOR);
 
-    try (ArrowArray array = ArrowArray.wrap(addresses[0]);
-        ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-      FieldVector vector = importer.importVector(array, schema);
+    long arrayAddr = array.memoryAddress();
+    long schemaAddr = schema.memoryAddress();
 
-      DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
+    Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
 
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+    FieldVector vector = importer.importVector(array, schema);
 
-      // Update whether the current vector contains any null values. This is used in the following
-      // batch(s) to determine whether we can skip loading the native vector.
-      hadNull = cometVector.hasNull();
+    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
 
-      if (dictionaryEncoding == null) {
-        if (dictionary != null) {
-          // This means the column was using dictionary encoding but now has fall-back to plain
-          // encoding, on the native side. Setting 'dictionary' to null here, so we can use it as
-          // a condition to check if we can re-use vector later.
-          dictionary = null;
-        }
-        // Either the column is not dictionary encoded, or it was using dictionary encoding but
-        // a new data page has switched back to use plain encoding. For both cases we should
-        // return plain vector.
-        currentVector = cometVector;
-        return currentVector;
-      }
+    CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
 
-      // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
-      // release the previous dictionary vector and create a new one.
-      Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
-      CometPlainVector dictionaryVector =
-          new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
+    // Update whether the current vector contains any null values. This is used in the following
+    // batch(s) to determine whether we can skip loading the native vector.
+    hadNull = cometVector.hasNull();
+
+    if (dictionaryEncoding == null) {
       if (dictionary != null) {
-        dictionary.setDictionaryVector(dictionaryVector);
-      } else {
-        dictionary = new CometDictionary(dictionaryVector);
+        // This means the column was using dictionary encoding but now has fall-back to plain
+        // encoding, on the native side. Setting 'dictionary' to null here, so we can use it as
+        // a condition to check if we can re-use vector later.
+        dictionary = null;
       }
-
-      currentVector =
-          new CometDictionaryVector(
-              cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
-
-      currentVector =
-          new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
+      // Either the column is not dictionary encoded, or it was using dictionary encoding but
+      // a new data page has switched back to use plain encoding. For both cases we should
+      // return plain vector.
+      currentVector = cometVector;
       return currentVector;
     }
+
+    // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
+    // release the previous dictionary vector and create a new one.
+    Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
+    CometPlainVector dictionaryVector =
+        new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
+    if (dictionary != null) {
+      dictionary.setDictionaryVector(dictionaryVector);
+    } else {
+      dictionary = new CometDictionary(dictionaryVector);
+    }
+
+    currentVector =
+        new CometDictionaryVector(
+            cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
+
+    currentVector =
+        new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
+    return currentVector;
   }
 
   protected void readPage() {

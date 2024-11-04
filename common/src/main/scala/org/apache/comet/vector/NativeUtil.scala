@@ -163,11 +163,11 @@ class NativeUtil {
       case -1 =>
         // EOF
         None
-      case numRows =>
+      case numRows if numRows >= 0 =>
         val cometVectors = importVector(arrays, schemas)
         Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
-      // case flag =>
-      //   throw new IllegalStateException(s"Invalid native flag: $flag")
+      case flag =>
+        throw new IllegalStateException(s"Invalid native flag: $flag")
     }
   }
 
