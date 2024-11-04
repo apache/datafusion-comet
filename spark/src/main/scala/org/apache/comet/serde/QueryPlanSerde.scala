@@ -1090,7 +1090,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Equal.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1109,7 +1109,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.NotEqual.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1128,7 +1128,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.EqualNullSafe.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1147,7 +1147,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.NotEqualNullSafe.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1166,7 +1166,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.GreaterThan.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1185,7 +1185,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.GreaterThanEqual.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1204,7 +1204,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.LessThan.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1223,7 +1223,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.LessThanEqual.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1376,7 +1376,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             val rightExpr = exprToProtoInternal(right, inputs)
 
             if (leftExpr.isDefined && rightExpr.isDefined) {
-              val builder = ExprOuterClass.Like.newBuilder()
+              val builder = ExprOuterClass.BinaryExpr.newBuilder()
               builder.setLeft(leftExpr.get)
               builder.setRight(rightExpr.get)
 
@@ -1417,7 +1417,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.RLike.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1435,7 +1435,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.StartsWith.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1454,7 +1454,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.EndsWith.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1473,7 +1473,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Contains.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1709,7 +1709,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.And.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -1728,7 +1728,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Or.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -2181,7 +2181,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseAnd.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -2217,7 +2217,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseOr.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -2236,7 +2236,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(right, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseXor.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -2262,7 +2262,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(rightExpression, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseShiftRight.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
@@ -2288,7 +2288,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val rightExpr = exprToProtoInternal(rightExpression, inputs)
 
           if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseShiftLeft.newBuilder()
+            val builder = ExprOuterClass.BinaryExpr.newBuilder()
             builder.setLeft(leftExpr.get)
             builder.setRight(rightExpr.get)
 
