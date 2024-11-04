@@ -2150,6 +2150,7 @@ mod tests {
     use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
 
     use crate::execution::operators::ExecutionError;
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
         spark_expression::{self, literal},
@@ -2388,7 +2389,7 @@ mod tests {
         };
 
         let expr = spark_expression::Expr {
-            expr_struct: Some(Eq(Box::new(spark_expression::BinaryExpr {
+            expr_struct: Some(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
                 left: Some(Box::new(left)),
                 right: Some(Box::new(right)),
             }))),
