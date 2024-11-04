@@ -115,6 +115,23 @@ impl SparkBloomFilter {
         bit_changed
     }
 
+    pub fn put_binary(&mut self, item: &[u8]) -> bool {
+        // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
+        // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
+        let h1 = spark_compatible_murmur3_hash(item, 0);
+        let h2 = spark_compatible_murmur3_hash(item, h1);
+        let bit_size = self.bits.bit_size() as i32;
+        let mut bit_changed = false;
+        for i in 1..=self.num_hash_functions {
+            let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
+            if combined_hash < 0 {
+                combined_hash = !combined_hash;
+            }
+            bit_changed |= self.bits.set((combined_hash % bit_size) as usize)
+        }
+        bit_changed
+    }
+
     pub fn might_contain_long(&self, item: i64) -> bool {
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
         let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);

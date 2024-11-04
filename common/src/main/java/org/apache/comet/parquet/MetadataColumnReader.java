@@ -64,6 +64,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
       FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
       vector = new CometPlainVector(fieldVector, useDecimal128);
     }
+
     vector.setNumValues(total);
   }
 
