@@ -73,7 +73,8 @@ public final class CometShuffleMemoryAllocator extends MemoryConsumer {
     return INSTANCE;
   }
 
-  CometShuffleMemoryAllocator(SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
+  public CometShuffleMemoryAllocator(
+      SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
     this.pageSize = pageSize;
     this.totalMemory =
