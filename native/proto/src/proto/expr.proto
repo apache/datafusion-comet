@@ -28,10 +28,10 @@ message Expr {
   oneof expr_struct {
     Literal literal = 2;
     BoundReference bound = 3;
-    Add add = 4;
-    Subtract subtract = 5;
-    Multiply multiply = 6;
-    Divide divide = 7;
+    MathExpr add = 4;
+    MathExpr subtract = 5;
+    MathExpr multiply = 6;
+    MathExpr divide = 7;
     Cast cast = 8;
     BinaryExpr eq = 9;
     BinaryExpr neq = 10;
@@ -39,13 +39,13 @@ message Expr {
     BinaryExpr gt_eq = 12;
     BinaryExpr lt = 13;
     BinaryExpr lt_eq = 14;
-    IsNull is_null = 15;
-    IsNotNull is_not_null = 16;
+    UnaryExpr is_null = 15;
+    UnaryExpr is_not_null = 16;
     BinaryExpr and = 17;
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    StringSpace string_space = 21;
+    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
@@ -61,10 +61,10 @@ message Expr {
     BinaryExpr bitwiseAnd = 34;
     BinaryExpr bitwiseOr = 35;
     BinaryExpr bitwiseXor = 36;
-    Remainder remainder = 37;
+    MathExpr remainder = 37;
     CaseWhen caseWhen = 38;
     In in = 39;
-    Not not = 40;
+    UnaryExpr not = 40;
     UnaryMinus unary_minus = 41;
     BinaryExpr bitwiseShiftRight = 42;
     BinaryExpr bitwiseShiftLeft = 43;
@@ -72,7 +72,7 @@ message Expr {
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
-    BitwiseNot bitwiseNot = 48;
+    UnaryExpr bitwiseNot = 48;
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
@@ -220,35 +220,7 @@ message Literal {
    bool is_null = 12;
 }
 
-message Add {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Subtract {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Multiply {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Divide {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Remainder {
+message MathExpr {
   Expr left = 1;
   Expr right = 2;
   bool fail_on_error = 3;
@@ -274,11 +246,7 @@ message BinaryExpr {
   Expr right = 2;
 }
 
-message IsNull {
-  Expr child = 1;
-}
-
-message IsNotNull {
+message UnaryExpr {
   Expr child = 1;
 }
 
@@ -303,10 +271,6 @@ message Substring {
   Expr child = 1;
   int32 start = 2;
   int32 len = 3;
-}
-
-message StringSpace {
-  Expr child = 1;
 }
 
 message ToJson {
@@ -368,10 +332,6 @@ message NormalizeNaNAndZero {
   DataType datatype = 2;
 }
 
-message Not {
-  Expr child = 1;
-}
-
 message UnaryMinus {
   Expr child = 1;
   bool fail_on_error = 2;
@@ -392,10 +352,6 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
-}
-
-message BitwiseNot {
-  Expr child = 1;
 }
 
 message Abs {
