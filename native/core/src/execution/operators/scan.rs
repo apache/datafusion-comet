@@ -167,7 +167,7 @@ impl ScanExec {
     fn get_next(
         exec_context_id: i64,
         iter: &JObject,
-        data_types: &Vec<DataType>,
+        data_types: &[DataType],
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -218,11 +218,9 @@ impl ScanExec {
         let array_elements = unsafe { addresses.as_ptr().add(1) };
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
-        // for i in 0..num_cols {
-        for i in 0..num_arrays {
+        for (i, data_type) in data_types.iter().enumerate().take(num_arrays) {
             let array_ptr = unsafe { *(array_elements.add(i * 2)) };
             let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
-            let data_type = &data_types[i];
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
