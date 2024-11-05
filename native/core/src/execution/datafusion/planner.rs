@@ -874,7 +874,7 @@ impl PhysicalPlanner {
                     .collect();
 
                 let num_agg = agg.agg_exprs.len();
-                let aggr_expr = agg_exprs?.into_iter().map(|arg| Arc::new(arg)).collect();
+                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
                 let aggregate = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
