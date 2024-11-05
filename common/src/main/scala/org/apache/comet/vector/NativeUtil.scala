@@ -88,7 +88,10 @@ class NativeUtil {
    *   an exported batches object containing an array containing number of rows + pairs of memory
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportBatch(batch: ColumnarBatch): Array[Long] = {
+  def exportBatch(
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      batch: ColumnarBatch): Array[Long] = {
     val numRows = mutable.ArrayBuffer.empty[Int]
     val builder = Array.newBuilder[Long]
     builder += batch.numRows()
@@ -109,16 +112,16 @@ class NativeUtil {
             null
           }
 
-          val arrowSchema = ArrowSchema.allocateNew(allocator)
-          val arrowArray = ArrowArray.allocateNew(allocator)
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
           Data.exportVector(
             allocator,
             getFieldVector(valueVector, "export"),
             provider,
             arrowArray,
             arrowSchema)
-          builder += arrowArray.memoryAddress()
-          builder += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -142,22 +145,22 @@ class NativeUtil {
   /**
    * Gets the next batch from native execution.
    *
+   * @param numOutputCols
+   *   The number of output columns
    * @param func
    *   The function to call to get the next batch
    * @return
    *   The number of row of the next batch, or None if there are no more batches
    */
-  def getNextBatch(func: () => Array[Long]): Option[ColumnarBatch] = {
-    val cometBatchElements = func()
-    val result = cometBatchElements(0)
-    val arrayBuilder = Array.newBuilder[ArrowArray]
-    val schemaBuilder = Array.newBuilder[ArrowSchema]
-    for (i <- 1 until cometBatchElements.length by 2) {
-      arrayBuilder += ArrowArray.wrap(cometBatchElements(i))
-      schemaBuilder += ArrowSchema.wrap(cometBatchElements(i + 1))
-    }
-    val arrays = arrayBuilder.result()
-    val schemas = schemaBuilder.result()
+  def getNextBatch(
+      numOutputCols: Int,
+      func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
+    val (arrays, schemas) = allocateArrowStructs(numOutputCols)
+
+    val arrayAddrs = arrays.map(_.memoryAddress())
+    val schemaAddrs = schemas.map(_.memoryAddress())
+
+    val result = func(arrayAddrs, schemaAddrs)
 
     result match {
       case -1 =>

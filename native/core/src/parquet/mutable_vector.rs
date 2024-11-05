@@ -202,7 +202,7 @@ impl ParquetMutableVector {
             } else {
                 self.arrow_type.clone()
             };
-            let mut builder = ArrayData::builder(data_type.clone())
+            let mut builder = ArrayData::builder(data_type)
                 .len(self.num_values)
                 .add_buffer(self.value_buffer.to_arrow())
                 .null_bit_buffer(Some(self.validity_buffer.to_arrow()))

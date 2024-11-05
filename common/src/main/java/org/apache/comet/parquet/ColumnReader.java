@@ -44,7 +44,12 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
-import org.apache.comet.vector.*;
+import org.apache.comet.vector.CometDecodedVector;
+import org.apache.comet.vector.CometDictionary;
+import org.apache.comet.vector.CometDictionaryVector;
+import org.apache.comet.vector.CometNativeVector;
+import org.apache.comet.vector.CometPlainVector;
+import org.apache.comet.vector.CometVector;
 
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);

@@ -55,6 +55,7 @@ public class Utils {
       boolean useLazyMaterialization,
       boolean useLegacyDateTimestamp,
       boolean hasNativeOperations) {
+    // Native exec requires to materialize everything first, use non-lazy reader for native exec
     if (useLazyMaterialization && !hasNativeOperations && supportLazyMaterialization(type)) {
       return new LazyColumnReader(
           type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);

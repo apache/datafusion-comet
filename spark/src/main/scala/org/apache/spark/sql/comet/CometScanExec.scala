@@ -45,6 +45,7 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
+import org.apache.comet.parquet.CometParquetFileFormat.HAS_NATIVE_OPERATIONS
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -171,7 +172,7 @@ case class CometScanExec(
   lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +
       (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString) +
-      ("HAS_NATIVE_OPERATIONS" -> hasNativeOperations.toString)
+      (HAS_NATIVE_OPERATIONS -> hasNativeOperations.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =
       relation.fileFormat.buildReaderWithPartitionValues(
         sparkSession = relation.sparkSession,

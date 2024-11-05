@@ -83,7 +83,7 @@ case class CometTakeOrderedAndProjectExec(
               CometExecUtils
                 .getTopKNativePlan(child.output, sortOrder, child, limit)
                 .get
-            CometExec.getCometIterator(Seq(iter), topK)
+            CometExec.getCometIterator(Seq(iter), child.output.length, topK)
           }
         }
 
@@ -103,7 +103,7 @@ case class CometTakeOrderedAndProjectExec(
         val topKAndProjection = CometExecUtils
           .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit)
           .get
-        val it = CometExec.getCometIterator(Seq(iter), topKAndProjection)
+        val it = CometExec.getCometIterator(Seq(iter), output.length, topKAndProjection)
         setSubqueries(it.id, this)
 
         Option(TaskContext.get()).foreach { context =>

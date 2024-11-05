@@ -76,6 +76,10 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     ColumnarToRowExec(this).doExecute()
   }
 
+  def prepareForNativeExec(): Unit = {
+    // TODO: utilize this to avoid import and export Arrow arrays
+  }
+
   override def executeCollect(): Array[InternalRow] = {
     ColumnarToRowExec(this).executeCollect()
   }

@@ -65,7 +65,7 @@ class Native extends NativeBase {
    * @return
    *   the number of rows, if -1, it means end of the output.
    */
-  @native def executePlan(plan: Long): Array[Long]
+  @native def executePlan(plan: Long, arrayAddrs: Array[Long], schemaAddrs: Array[Long]): Long
 
   /**
    * Release and drop the native query plan object and context object.

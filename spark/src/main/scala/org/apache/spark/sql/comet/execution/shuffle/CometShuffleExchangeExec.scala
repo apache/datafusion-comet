@@ -488,6 +488,7 @@ class CometShuffleWriteProcessor(
 
     val cometIter = CometExec.getCometIterator(
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
+      outputAttributes.length,
       nativePlan,
       nativeMetrics)
 
