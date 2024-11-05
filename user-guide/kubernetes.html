@@ -346,8 +346,8 @@ under the License.
 <h1>Comet Kubernetes Support<a class="headerlink" href="#comet-kubernetes-support" title="Link to this heading">¶</a></h1>
 <section id="comet-docker-images">
 <h2>Comet Docker Images<a class="headerlink" href="#comet-docker-images" title="Link to this heading">¶</a></h2>
-<p>Run the following command from the root of this repository to build the Comet Docker image, or use a published
-Docker image from https://github.com/orgs/apache/packages?repo_name=datafusion-comet</p>
+<p>Run the following command from the root of this repository to build the Comet Docker image, or use a <a class="reference external" href="https://github.com/orgs/apache/packages?repo_name=datafusion-comet">published
+Docker image</a></p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>apache/datafusion-comet<span class="w"> </span>-f<span class="w"> </span>kube/Dockerfile<span class="w"> </span>.
 </pre></div>
 </div>
@@ -399,7 +399,7 @@ spec:
 <span class="w">    </span><span class="s2">&quot;spark.comet.cast.allowIncompatible&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.mode&quot;</span>:<span class="w"> </span><span class="s2">&quot;auto&quot;</span>
-<span class="w">    </span><span class="s2">&quot;conf spark.shuffle.manager&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.shuffle.manager&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager&quot;</span>
 <span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.4.3
 <span class="w">  </span>driver:
 <span class="w">    </span>labels:
@@ -426,7 +426,7 @@ spec:
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>--namespace<span class="o">=</span>spark-operator
 </pre></div>
 </div>
-<p>More info on Kube Spark operator https://www.kubeflow.org/docs/components/spark-operator/getting-started/</p>
+<p>More info on <a class="reference external" href="https://www.kubeflow.org/docs/components/spark-operator/getting-started/">Kube Spark operator</a></p>
 </section>
 </section>
 
