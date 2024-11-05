@@ -78,7 +78,7 @@ public final class CometShuffleMemoryAllocator extends MemoryConsumer {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
     this.pageSize = pageSize;
     this.totalMemory =
-        CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());
+        CometSparkSessionExtensions$.MODULE$.getCometPerShuffleMemorySize(conf, SQLConf.get());
   }
 
   public synchronized long acquireMemory(long size) {

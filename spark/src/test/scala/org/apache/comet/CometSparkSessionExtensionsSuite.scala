@@ -127,7 +127,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
     val sqlConf = new SQLConf
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "512m")
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.key, "0.5")
 
     assert(
       CometSparkSessionExtensions
@@ -138,7 +138,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
     val sqlConf = new SQLConf
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "10g")
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.key, "10.0")
     assert(
       CometSparkSessionExtensions
         .getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(1024))

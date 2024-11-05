@@ -1295,10 +1295,8 @@ object CometSparkSessionExtensions extends Logging {
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
     val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
-    val cometShuffleMemoryFromConf = COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.get(conf)
 
-    val shuffleMemorySize =
-      cometShuffleMemoryFromConf.getOrElse((overheadFactor * cometMemoryOverhead).toLong)
+    val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {
       logWarning(
         s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
@@ -1306,6 +1304,27 @@ object CometSparkSessionExtensions extends Logging {
       ByteUnit.MiB.toBytes(cometMemoryOverhead)
     } else {
       ByteUnit.MiB.toBytes(shuffleMemorySize)
+    }
+  }
+
+  /** Calculates required shuffle memory size in bytes per shuffle operator for Comet. */
+  def getCometPerShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf): Long = {
+    (getCometShuffleMemorySize(sparkConf, conf).toFloat /
+      numDriverOrExecutorCores(sparkConf)).toLong
+  }
+
+  def numDriverOrExecutorCores(conf: SparkConf): Int = {
+    def convertToInt(threads: String): Int = {
+      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
+    }
+    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+    val master = conf.get("spark.master")
+    master match {
+      case "local" => 1
+      case LOCAL_N_REGEX(threads) => convertToInt(threads)
+      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
+      case _ => conf.get("spark.executor.cores", "1").toInt
     }
   }
 

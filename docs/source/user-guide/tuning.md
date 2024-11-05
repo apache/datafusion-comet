@@ -57,6 +57,15 @@ If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` ar
 
 Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
 
+## Shuffle Memory Management
+
+When Comet performs a columnar JVM shuffle (rather than a native shuffle) then memory is allocated independently of the 
+Unified or Native Memory Management approach.
+
+By default, the amount of executor memory allocated for JVM shuffle is 
+`spark.comet.columnar.shuffle.memory.factor * spark.executor.memory`. The default value for 
+`spark.comet.columnar.shuffle.memory.factor` is `1.0`.
+
 ### Determining How Much Memory to Allocate
 
 Generally, increasing memory overhead will improve query performance, especially for queries containing joins and

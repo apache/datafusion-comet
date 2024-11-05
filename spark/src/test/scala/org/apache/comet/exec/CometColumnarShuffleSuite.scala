@@ -58,7 +58,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         CometConf.COMET_EXEC_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key -> "1536m") {
+        CometConf.COMET_MEMORY_OVERHEAD.key -> "1536m",
+        CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.key -> "1.0") {
         testFun
       }
     }

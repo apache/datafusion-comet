@@ -215,7 +215,7 @@ object CometConf extends ShimCometConf {
     "spark.comet.memory.overhead.factor")
     .doc(
       "Fraction of executor memory to be allocated as additional non-heap memory per executor " +
-        "process for Comet. Default value is 0.2.")
+        "process for Comet.")
     .doubleConf
     .checkValue(
       factor => factor > 0,
@@ -323,31 +323,17 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
-  val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
-    conf("spark.comet.columnar.shuffle.memorySize")
-      .doc(
-        "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
-          "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
-          "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
-          "flushed to disk immediately. If this is not configured, Comet will use " +
-          "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
-          "shuffle memory size. If final calculated value is larger than Comet memory " +
-          "overhead, Comet will use Comet memory overhead as shuffle memory size.")
-      .bytesConf(ByteUnit.MiB)
-      .createOptional
-
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
       .doc(
         "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
           "Comet memory size is specified by `spark.comet.memoryOverhead` or " +
-          "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`. " +
-          "By default, this config is 1.0.")
+          "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`.")
       .doubleConf
       .checkValue(
         factor => factor > 0,
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
-      .createWithDefault(1.0)
+      .createWithDefault(0.2)
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
