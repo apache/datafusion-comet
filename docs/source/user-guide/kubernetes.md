@@ -21,8 +21,8 @@
 
 ## Comet Docker Images
 
-Run the following command from the root of this repository to build the Comet Docker image, or use a published
-Docker image from https://github.com/orgs/apache/packages?repo_name=datafusion-comet
+Run the following command from the root of this repository to build the Comet Docker image, or use a [published
+Docker image](https://github.com/orgs/apache/packages?repo_name=datafusion-comet)
 
 ```shell
 docker build -t apache/datafusion-comet -f kube/Dockerfile .
@@ -78,7 +78,7 @@ spec:
     "spark.comet.cast.allowIncompatible": "true"
     "spark.comet.exec.shuffle.enabled": "true"
     "spark.comet.exec.shuffle.mode": "auto"
-    "conf spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+    "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
   sparkVersion: 3.4.3
   driver:
     labels:
@@ -106,4 +106,4 @@ Check application status
 ```bash
 kubectl describe sparkapplication --namespace=spark-operator
 ```
-More info on Kube Spark operator https://www.kubeflow.org/docs/components/spark-operator/getting-started/
+More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)
