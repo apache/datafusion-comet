@@ -2388,7 +2388,7 @@ mod tests {
         };
 
         let expr = spark_expression::Expr {
-            expr_struct: Some(Eq(Box::new(spark_expression::Equal {
+            expr_struct: Some(Eq(Box::new(spark_expression::BinaryExpr {
                 left: Some(Box::new(left)),
                 right: Some(Box::new(right)),
             }))),
