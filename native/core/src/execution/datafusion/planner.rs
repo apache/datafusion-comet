@@ -111,6 +111,7 @@ use datafusion_expr::{
 };
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
+use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -873,11 +874,12 @@ impl PhysicalPlanner {
                     .collect();
 
                 let num_agg = agg.agg_exprs.len();
+                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
                 let aggregate = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
-                        agg_exprs?,
+                        aggr_expr,
                         vec![None; num_agg], // no filter expressions
                         Arc::clone(&child),
                         Arc::clone(&schema),
@@ -935,7 +937,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
-                    Arc::new(SortExec::new(exprs?, child).with_fetch(fetch)),
+                    Arc::new(SortExec::new(LexOrdering::new(exprs?), child).with_fetch(fetch)),
                 ))
             }
             OpStruct::Scan(scan) => {

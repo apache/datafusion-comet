@@ -121,7 +121,7 @@ fn create_aggregate(
         AggregateExec::try_new(
             mode,
             PhysicalGroupBy::new_single(vec![]),
-            vec![aggr_expr],
+            vec![aggr_expr.into()],
             vec![None],
             scan,
             Arc::clone(schema),
