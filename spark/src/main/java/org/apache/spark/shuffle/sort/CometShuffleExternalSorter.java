@@ -137,7 +137,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       ShuffleWriteMetricsReporter writeMetrics,
       StructType schema) {
     this.allocator =
-        CometShuffleMemoryAllocator.getInstance(
+        new CometShuffleMemoryAllocator(
             conf,
             memoryManager,
             Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()));

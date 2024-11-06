@@ -325,21 +325,20 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
     conf("spark.comet.columnar.shuffle.memorySize")
-      .doc(
-        "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
-          "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
-          "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
-          "flushed to disk immediately. If this is not configured, Comet will use " +
-          "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
-          "shuffle memory size. If final calculated value is larger than Comet memory " +
-          "overhead, Comet will use Comet memory overhead as shuffle memory size.")
+      .doc("The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
+        "Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm` " +
+        "or `auto`. Once allocated memory size reaches this config, the current batch will be " +
+        "flushed to disk immediately. If this is not configured, Comet will use " +
+        "`spark.comet.columnar.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
+        "shuffle memory size. If final calculated value is larger than Comet memory " +
+        "overhead, Comet will use Comet memory overhead as shuffle memory size.")
       .bytesConf(ByteUnit.MiB)
       .createOptional
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
       .doc(
-        "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
+        "Fraction of Comet memory to be allocated per shuffle in the executor process. " +
           "Comet memory size is specified by `spark.comet.memoryOverhead` or " +
           "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`. " +
           "By default, this config is 1.0.")
