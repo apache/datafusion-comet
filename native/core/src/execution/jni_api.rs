@@ -202,27 +202,9 @@ fn prepare_datafusion_session_context(
 
     let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
 
-    // Check if we are using unified memory manager integrated with Spark. Default to false if not
-    // set.
-    let use_unified_memory_manager = parse_bool(conf, "use_unified_memory_manager")?;
-
-    if use_unified_memory_manager {
-        // Set Comet memory pool for native
-        let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-        rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
-    } else {
-        // Use the memory pool from DF
-        if conf.contains_key("memory_limit") {
-            let memory_limit = conf.get("memory_limit").unwrap().parse::<usize>()?;
-            let memory_fraction = conf
-                .get("memory_fraction")
-                .ok_or(CometError::Internal(
-                    "Config 'memory_fraction' is not specified from Comet JVM side".to_string(),
-                ))?
-                .parse::<f64>()?;
-            rt_config = rt_config.with_memory_limit(memory_limit, memory_fraction)
-        }
-    }
+    // Set Comet memory pool for native
+    let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+    rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
 
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
