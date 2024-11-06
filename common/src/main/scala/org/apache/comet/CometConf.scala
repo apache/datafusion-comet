@@ -333,7 +333,7 @@ object CometConf extends ShimCometConf {
       .checkValue(
         factor => factor > 0,
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
-      .createWithDefault(0.2)
+      .createWithDefault(1.0)
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
