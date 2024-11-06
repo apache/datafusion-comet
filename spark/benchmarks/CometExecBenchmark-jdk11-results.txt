@@ -1,0 +1,12 @@
+================================================================================================
+ColumnToRow
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.24+8-post-Ubuntu-1ubuntu322.04 on Linux 6.8.0-47-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+ColumnarToRowExec:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark Columnar To Row - integer                      52             61          16        201.5           5.0       1.0X
+Comet Columnar To Row - integer                      56             76          18        187.2           5.3       0.9X
+
+
