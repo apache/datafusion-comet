@@ -28,8 +28,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -749,7 +749,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
-        .asInstanceOf[ColumnarToRowExec]
+        .asInstanceOf[CometColumnarToRowExec]
         .child
         .asInstanceOf[InputAdapter]
         .child
