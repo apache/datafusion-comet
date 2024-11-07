@@ -32,8 +32,14 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
+use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
+use datafusion_common::{
+    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
+};
+use datafusion_expr::ColumnarValue;
+use datafusion_physical_expr::PhysicalExpr;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -42,12 +48,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-use arrow_array::builder::StringBuilder;
-use datafusion_common::{
-    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
-};
-use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr::PhysicalExpr;
 
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
@@ -712,7 +712,7 @@ fn cast_array(
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
         (DataType::Struct(_), DataType::Utf8) => {
-            Ok(casts_struct_to_string(&array.as_struct(), &timezone)?)
+            Ok(casts_struct_to_string(array.as_struct(), &timezone)?)
         }
         _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
             // use DataFusion cast only when we know that it is compatible with Spark
@@ -811,26 +811,23 @@ fn is_datafusion_spark_compatible(
 }
 
 fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResult<ArrayRef> {
-    // get field names
-    let field_names: Vec<String> = array
-        .fields()
-        .iter()
-        .map(|f| f.name().to_string())
-        .collect();
     // cast each field to a string
     let string_arrays: Vec<ArrayRef> = array
         .columns()
         .iter()
-        .map(|arr| spark_cast(ColumnarValue::Array(arr.clone()), &DataType::Utf8, EvalMode::Legacy, timezone, true).and_then(|cv| cv.into_array(arr.len())))
-        .collect::<DataFusionResult<Vec<_>>>()?;
-    let string_arrays: Vec<&StringArray> = string_arrays
-        .iter()
         .map(|arr| {
-            arr.as_any()
-                .downcast_ref::<StringArray>()
-                .expect("string array")
+            spark_cast(
+                ColumnarValue::Array(Arc::clone(arr)),
+                &DataType::Utf8,
+                EvalMode::Legacy,
+                timezone,
+                true,
+            )
+            .and_then(|cv| cv.into_array(arr.len()))
         })
-        .collect();
+        .collect::<DataFusionResult<Vec<_>>>()?;
+    let string_arrays: Vec<&StringArray> =
+        string_arrays.iter().map(|arr| arr.as_string()).collect();
     // build the struct string containing entries in the format `"field_name":field_value`
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut str = String::with_capacity(array.len() * 16);
@@ -841,26 +838,16 @@ fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResu
             str.clear();
             let mut any_fields_written = false;
             str.push('{');
-            for col_index in 0..string_arrays.len() {
-                if !string_arrays[col_index].is_null(row_index) {
-                    if any_fields_written {
-                        str.push(',');
-                    }
-                    // quoted field name
-                    str.push('"');
-                    str.push_str(&field_names[col_index]);
-                    str.push_str("\":");
-                    // value
-                    let string_value = string_arrays[col_index].value(row_index);
-                    // if is_string[col_index] {
-                    //     json.push('"');
-                    //     json.push_str(string_value);
-                    //     json.push('"');
-                    // } else {
-                        str.push_str(string_value);
-                    // }
-                    any_fields_written = true;
+            for field in &string_arrays {
+                if any_fields_written {
+                    str.push_str(", ");
                 }
+                if field.is_null(row_index) {
+                    str.push_str("null");
+                } else {
+                    str.push_str(field.value(row_index));
+                }
+                any_fields_written = true;
             }
             str.push('}');
             builder.append_value(&str);
@@ -2320,7 +2307,7 @@ mod tests {
 
     #[test]
     fn test_cast_struct_to_utf8() {
-        let a: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4), Some(5)]));
         let b: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
         let c: ArrayRef = Arc::new(StructArray::from(vec![
             (Arc::new(Field::new("a", DataType::Int32, true)), a),
@@ -2332,13 +2319,14 @@ mod tests {
             EvalMode::Legacy,
             "UTC".to_owned(),
             false,
-        ).unwrap();
+        )
+        .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(5, string_array.len());
-        assert_eq!(r#"{"a":1,"b":a}"#, string_array.value(0));
-        assert_eq!(r#"{"a":2,"b":b}"#, string_array.value(0));
-        assert_eq!(r#"{"a":3,"b":c}"#, string_array.value(0));
-        assert_eq!(r#"{"a":4,"b":d}"#, string_array.value(0));
-        assert_eq!(r#"{"a":5,"b":a}"#, string_array.value(0));
+        assert_eq!(r#"{1, a}"#, string_array.value(0));
+        assert_eq!(r#"{2, b}"#, string_array.value(1));
+        assert_eq!(r#"{null, c}"#, string_array.value(2));
+        assert_eq!(r#"{4, d}"#, string_array.value(3));
+        assert_eq!(r#"{5, e}"#, string_array.value(4));
     }
 }
