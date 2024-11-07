@@ -511,8 +511,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 //          checkSparkAnswerAndOperator(
 //            "SELECT CAST(struct(_12, _15, _16, _17) as string) FROM tbl")
           // dates & timestamps
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
           // named struct
           checkSparkAnswerAndOperator(
             "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")

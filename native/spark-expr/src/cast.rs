@@ -2307,7 +2307,13 @@ mod tests {
 
     #[test]
     fn test_cast_struct_to_utf8() {
-        let a: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4), Some(5)]));
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            Some(4),
+            Some(5),
+        ]));
         let b: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
         let c: ArrayRef = Arc::new(StructArray::from(vec![
             (Arc::new(Field::new("a", DataType::Int32, true)), a),
