@@ -1275,8 +1275,14 @@ object CometSparkSessionExtensions extends Logging {
       .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
 
     val minimum = ConfigHelpers
-      .byteFromString(sparkConf.get(COMET_MEMORY_OVERHEAD_MIN_MIB.key, "384"), ByteUnit.MiB)
-    val overheadFactor = sparkConf.getDouble(COMET_MEMORY_OVERHEAD_FACTOR.key, 0.2)
+      .byteFromString(
+        sparkConf.get(
+          COMET_MEMORY_OVERHEAD_MIN_MIB.key,
+          COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString),
+        ByteUnit.MiB)
+    val overheadFactor = sparkConf.getDouble(
+      COMET_MEMORY_OVERHEAD_FACTOR.key,
+      COMET_MEMORY_OVERHEAD_FACTOR.defaultValue.get)
 
     val overHeadMemFromConf = sparkConf
       .getOption(COMET_MEMORY_OVERHEAD.key)
