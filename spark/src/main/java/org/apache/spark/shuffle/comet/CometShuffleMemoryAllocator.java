@@ -21,10 +21,14 @@ package org.apache.spark.shuffle.comet;
 
 import java.io.IOException;
 
+import org.apache.spark.SparkConf;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.unsafe.memory.MemoryBlock;
+import org.apache.spark.util.Utils;
+
+import org.apache.comet.CometConf$;
 
 /**
  * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
@@ -32,20 +36,35 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
  * memory allocation to the `TaskMemoryManager`. This requires that the `TaskMemoryManager` is
  * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
  */
-public final class CometShuffleMemoryAllocator extends MemoryConsumer {
-  private static CometShuffleMemoryAllocator INSTANCE;
+public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
+  private static CometShuffleMemoryAllocatorTrait INSTANCE;
 
-  public static synchronized CometShuffleMemoryAllocator getInstance(
-      TaskMemoryManager taskMemoryManager, long pageSize) {
-    if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
-      throw new IllegalArgumentException(
-          "CometShuffleMemoryAllocator should be used with off-heap "
-              + "memory mode, but got "
-              + taskMemoryManager.getTungstenMemoryMode());
-    }
+  /**
+   * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
+   * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
+   * created. For Spark tests, this returns `CometTestShuffleMemoryAllocator` which is a test-only
+   * allocator that should not be used in production.
+   */
+  public static synchronized CometShuffleMemoryAllocatorTrait getInstance(
+      SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
+    boolean isSparkTesting = Utils.isTesting();
+    boolean useUnifiedMemAllocator =
+        (boolean)
+            CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
 
     if (INSTANCE == null) {
-      INSTANCE = new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
+      if (isSparkTesting && !useUnifiedMemAllocator) {
+        INSTANCE = new CometTestShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+      } else {
+        if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
+          throw new IllegalArgumentException(
+              "CometShuffleMemoryAllocator should be used with off-heap "
+                  + "memory mode, but got "
+                  + taskMemoryManager.getTungstenMemoryMode());
+        }
+
+        INSTANCE = new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
+      }
     }
 
     return INSTANCE;
