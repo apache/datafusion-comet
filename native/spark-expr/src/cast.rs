@@ -788,6 +788,7 @@ fn is_datafusion_spark_compatible(
                 | DataType::Float64
                 | DataType::Decimal128(_, _)
                 | DataType::Decimal256(_, _)
+                | DataType::Utf8 // note that there can be formatting differences
         ),
         DataType::Utf8 if allow_incompat => matches!(
             to_type,

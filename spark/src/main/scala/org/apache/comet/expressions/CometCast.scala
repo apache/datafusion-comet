@@ -76,7 +76,7 @@ object CometCast {
       case (DataTypes.StringType, _) =>
         canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>
-        canCastToString(fromType)
+        canCastToString(fromType, timeZoneId, evalMode)
       case (DataTypes.TimestampType, _) =>
         canCastFromTimestamp(toType)
       case (_: DecimalType, _) =>
@@ -137,7 +137,10 @@ object CometCast {
     }
   }
 
-  private def canCastToString(fromType: DataType): SupportLevel = {
+  private def canCastToString(
+      fromType: DataType,
+      timeZoneId: Option[String],
+      evalMode: CometEvalMode.Value): SupportLevel = {
     fromType match {
       case DataTypes.BooleanType => Compatible()
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
@@ -151,10 +154,21 @@ object CometCast {
             "There can be differences in precision. " +
               "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
               "instead of 1.4E-45"))
+      case _: DecimalType =>
+        Compatible()
       case DataTypes.BinaryType =>
         // https://github.com/apache/datafusion-comet/issues/377
         Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
-      case _: StructType =>
+      case StructType(fields) =>
+        for (field <- fields) {
+          isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
+            case s: Incompatible =>
+              return s
+            case Unsupported =>
+              return Unsupported
+            case _ =>
+          }
+        }
         Compatible()
       case _ => Unsupported
     }

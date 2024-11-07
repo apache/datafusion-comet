@@ -471,8 +471,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.LongType)
   }
 
-  ignore("cast DecimalType(10,2) to StringType") {
-    // input: 0E-18, expected: 0E-18, actual: 0.000000000000000000
+  test("cast DecimalType(10,2) to StringType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
@@ -497,27 +496,26 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          // primitives
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          // TODO: unsigned integers
-//          checkSparkAnswerAndOperator(
-//            "SELECT CAST(struct(_9, _10, _11) as string) FROM tbl")
-          // TODO binary
-//          checkSparkAnswerAndOperator(
-//            "SELECT CAST(struct(_13, _14) as string) FROM tbl")
-          // TODO decimals
-//          checkSparkAnswerAndOperator(
-//            "SELECT CAST(struct(_12, _15, _16, _17) as string) FROM tbl")
-          // dates & timestamps
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
-          // named struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
-          // nested struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+        withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+          withParquetTable(path.toString, "tbl") {
+            // primitives
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+            // unsigned integers
+            // checkSparkAnswerAndOperator(
+            //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
+            // decimals
+//            checkSparkAnswerAndOperator(
+//              "SELECT CAST(struct(_15, _16, _17) as string) FROM tbl")
+            // dates & timestamps
+            checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+            // named struct
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+            // nested struct
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+          }
         }
       }
     }
