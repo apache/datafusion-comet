@@ -1282,12 +1282,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case StringSpace(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setStringSpace(expr)
-              .build()
-          }
+          createUnaryExpr(
+            child,
+            inputs,
+            (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
         case Hour(child, timeZoneId) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1422,20 +1420,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case IsNull(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIsNull(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNull(unaryExpr))
 
         case IsNotNull(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIsNotNull(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
         case IsNaN(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1930,12 +1918,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case BitwiseNot(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseNot(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
 
         case BitwiseOr(left, right) =>
           createBinaryExpr(left, right, inputs).map { builder =>
@@ -2001,12 +1984,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           in(expr, value, list, inputs, true)
 
         case Not(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setNot(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setNot(unaryExpr))
 
         case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -2289,14 +2267,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
     def createUnaryExpr(
         child: Expression,
-        inputs: Seq[Attribute]): Option[ExprOuterClass.UnaryExpr] = {
+        inputs: Seq[Attribute],
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
       val childExpr = exprToProtoInternal(child, inputs)
       if (childExpr.isDefined) {
+        val inner = ExprOuterClass.UnaryExpr
+          .newBuilder()
+          .setChild(childExpr.get)
+          .build()
         Some(
-          ExprOuterClass.UnaryExpr
-            .newBuilder()
-            .setChild(childExpr.get)
-            .build())
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
       } else {
         withInfo(expr, child)
         None
