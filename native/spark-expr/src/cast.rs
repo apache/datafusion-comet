@@ -32,7 +32,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::DictionaryArray;
+use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
 use std::str::FromStr;
 use std::{
@@ -42,7 +42,7 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
+use arrow_array::builder::StringBuilder;
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
@@ -711,6 +711,9 @@ fn cast_array(
         {
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
+        (DataType::Struct(_), DataType::Utf8) => {
+            Ok(casts_struct_to_string(&array.as_struct(), &timezone)?)
+        }
         _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
@@ -805,6 +808,65 @@ fn is_datafusion_spark_compatible(
         }
         _ => false,
     }
+}
+
+fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResult<ArrayRef> {
+    // get field names
+    let field_names: Vec<String> = array
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
+    // cast each field to a string
+    let string_arrays: Vec<ArrayRef> = array
+        .columns()
+        .iter()
+        .map(|arr| spark_cast(ColumnarValue::Array(arr.clone()), &DataType::Utf8, EvalMode::Legacy, timezone, true).and_then(|cv| cv.into_array(arr.len())))
+        .collect::<DataFusionResult<Vec<_>>>()?;
+    let string_arrays: Vec<&StringArray> = string_arrays
+        .iter()
+        .map(|arr| {
+            arr.as_any()
+                .downcast_ref::<StringArray>()
+                .expect("string array")
+        })
+        .collect();
+    // build the struct string containing entries in the format `"field_name":field_value`
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let mut any_fields_written = false;
+            str.push('{');
+            for col_index in 0..string_arrays.len() {
+                if !string_arrays[col_index].is_null(row_index) {
+                    if any_fields_written {
+                        str.push(',');
+                    }
+                    // quoted field name
+                    str.push('"');
+                    str.push_str(&field_names[col_index]);
+                    str.push_str("\":");
+                    // value
+                    let string_value = string_arrays[col_index].value(row_index);
+                    // if is_string[col_index] {
+                    //     json.push('"');
+                    //     json.push_str(string_value);
+                    //     json.push('"');
+                    // } else {
+                        str.push_str(string_value);
+                    // }
+                    any_fields_written = true;
+                }
+            }
+            str.push('}');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
@@ -1879,7 +1941,7 @@ fn trim_end(s: &str) -> &str {
 mod tests {
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow_array::StringArray;
-    use arrow_schema::TimeUnit;
+    use arrow_schema::{Field, TimeUnit};
     use std::str::FromStr;
 
     use super::*;
@@ -2254,5 +2316,29 @@ mod tests {
             false,
         );
         assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_cast_struct_to_utf8() {
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        let b: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
+        let c: ArrayRef = Arc::new(StructArray::from(vec![
+            (Arc::new(Field::new("a", DataType::Int32, true)), a),
+            (Arc::new(Field::new("b", DataType::Utf8, true)), b),
+        ]));
+        let string_array = cast_array(
+            c,
+            &DataType::Utf8,
+            EvalMode::Legacy,
+            "UTC".to_owned(),
+            false,
+        ).unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(5, string_array.len());
+        assert_eq!(r#"{"a":1,"b":a}"#, string_array.value(0));
+        assert_eq!(r#"{"a":2,"b":b}"#, string_array.value(0));
+        assert_eq!(r#"{"a":3,"b":c}"#, string_array.value(0));
+        assert_eq!(r#"{"a":4,"b":d}"#, string_array.value(0));
+        assert_eq!(r#"{"a":5,"b":a}"#, string_array.value(0));
     }
 }

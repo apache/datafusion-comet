@@ -19,7 +19,7 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructType}
 
 sealed trait SupportLevel
 
@@ -154,6 +154,8 @@ object CometCast {
       case DataTypes.BinaryType =>
         // https://github.com/apache/datafusion-comet/issues/377
         Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
+      case _: StructType =>
+        Compatible()
       case _ => Unsupported
     }
   }

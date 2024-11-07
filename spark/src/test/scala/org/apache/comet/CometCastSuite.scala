@@ -24,6 +24,7 @@ import java.io.File
 import scala.util.Random
 import scala.util.matching.Regex
 
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -487,6 +488,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
         gen.generateStrings(dataSize, "truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
     castTest(testValues, DataTypes.BooleanType)
+  }
+
+  // Complex Types
+
+  test("cast StructType to StringType") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+//          checkSparkAnswerAndOperator(
+//            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+        }
+      }
+    }
   }
 
   private val castStringToIntegralInputs: Seq[String] = Seq(
