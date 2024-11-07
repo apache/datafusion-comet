@@ -134,7 +134,7 @@ public abstract class SpillWriter {
         || pageCursor + required > currentPage.getBaseOffset() + currentPage.size()) {
       // TODO: try to find space in previous pages
       try {
-        currentPage = allocator.allocatePage(required);
+        currentPage = allocator.allocate(required);
       } catch (SparkOutOfMemoryError error) {
         try {
           // Cannot allocate enough memory, spill
@@ -155,7 +155,7 @@ public abstract class SpillWriter {
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
-      currentPage = allocator.allocatePage(required);
+      currentPage = allocator.allocate(required);
     } catch (SparkOutOfMemoryError e) {
       logger.error("Unable to acquire {} bytes of memory", required);
       throw e;

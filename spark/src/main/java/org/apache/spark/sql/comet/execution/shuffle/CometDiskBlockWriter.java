@@ -137,7 +137,6 @@ public final class CometDiskBlockWriter {
       ExecutorService threadPool) {
     this.allocator =
         CometShuffleMemoryAllocator.getInstance(
-            conf,
             taskMemoryManager,
             Math.min(MAXIMUM_PAGE_SIZE_BYTES, taskMemoryManager.pageSizeBytes()));
     this.nativeLib = new Native();
@@ -435,12 +434,17 @@ public final class CometDiskBlockWriter {
               }
             });
 
+        long totalFreed = 0;
         for (CometDiskBlockWriter writer : currentWriters) {
           // Force to spill the writer in a synchronous way, otherwise, we may not be able to
           // acquire enough memory.
+          long used = writer.getActiveMemoryUsage();
+
           writer.doSpill(true);
 
-          if (allocator.getAvailableMemory() >= required) {
+          totalFreed += used;
+
+          if (totalFreed >= required) {
             break;
           }
         }

@@ -138,7 +138,6 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       StructType schema) {
     this.allocator =
         CometShuffleMemoryAllocator.getInstance(
-            conf,
             memoryManager,
             Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()));
     this.blockManager = blockManager;
