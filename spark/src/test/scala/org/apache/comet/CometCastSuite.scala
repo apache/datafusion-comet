@@ -489,35 +489,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
-  // Complex Types
-
-  test("cast StructType to StringType") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          // primitives
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          // unsigned ints (_9, _10, _11, _12) not supported since Java only has signed types
-          // checkSparkAnswerAndOperator(
-          //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
-          // decimals (_16 intentionally excluded due to formatting difference with scientific notation)
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
-          // dates & timestamps
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
-          // named struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
-          // nested struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
-        }
-      }
-    }
-  }
-
   private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",
@@ -877,6 +848,35 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to DateType") {
     castTest(generateTimestamps(), DataTypes.DateType)
+  }
+
+  // Complex Types
+
+  test("cast StructType to StringType") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          // primitives
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+          // unsigned ints (_9, _10, _11, _12) not supported since Java only has signed types
+          // checkSparkAnswerAndOperator(
+          //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
+          // decimals (_16 intentionally excluded due to formatting difference with scientific notation)
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
+          // dates & timestamps
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+          // named struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+          // nested struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+        }
+      }
+    }
   }
 
   private def generateFloats(): DataFrame = {
