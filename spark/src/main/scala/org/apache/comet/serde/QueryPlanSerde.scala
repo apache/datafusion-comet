@@ -2265,6 +2265,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       }
     }
 
+    /**
+     * Creates a UnaryExpr by calling exprToProtoInternal for the provided child expression and
+     * then invokes the supplied function to wrap this UnaryExpr in a top-level Expr.
+     *
+     * @param child
+     *   Spark expression
+     * @param inputs
+     *   Inputs to the expression
+     * @param f
+     *   Function that accepts an Expr.Builder and a UnaryExpr and builds the specific top-level
+     *   Expr
+     * @return
+     *   Some(Expr) or None if not supported
+     */
     def createUnaryExpr(
         child: Expression,
         inputs: Seq[Attribute],
@@ -2272,10 +2286,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         : Option[ExprOuterClass.Expr] = {
       val childExpr = exprToProtoInternal(child, inputs)
       if (childExpr.isDefined) {
+        // create the generic UnaryExpr message
         val inner = ExprOuterClass.UnaryExpr
           .newBuilder()
           .setChild(childExpr.get)
           .build()
+        // call the user-supplied function to wrap UnaryExpr in a top-level Expr
+        // such as Expr.IsNull or Expr.IsNotNull
         Some(
           f(
             ExprOuterClass.Expr
