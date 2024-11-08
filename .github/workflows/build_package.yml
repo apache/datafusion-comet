@@ -39,7 +39,7 @@ on:
       profiles:
         description: 'Additional build profiles: -Pspark-3.5 -Pscala-2.12'
         required: true
-        default: '-Pspark-3.5'
+        default: ''
 
 jobs:
   build:
