@@ -99,7 +99,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   public void close() {
     if (nativeHandle != 0) {
       LOG.debug("Closing the column reader");
-      Native.closeColumnReader(nativeHandle);
+      // Native.closeColumnReader(nativeHandle);
       nativeHandle = 0;
     }
   }
