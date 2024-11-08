@@ -24,6 +24,7 @@ import java.io.File
 import scala.util.Random
 import scala.util.matching.Regex
 
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -470,8 +471,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.LongType)
   }
 
-  ignore("cast DecimalType(10,2) to StringType") {
-    // input: 0E-18, expected: 0E-18, actual: 0.000000000000000000
+  test("cast DecimalType(10,2) to StringType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
@@ -848,6 +848,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to DateType") {
     castTest(generateTimestamps(), DataTypes.DateType)
+  }
+
+  // Complex Types
+
+  test("cast StructType to StringType") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          // primitives
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+          // TODO: enable tests for unsigned ints (_9, _10, _11, _12) once
+          //  https://github.com/apache/datafusion-comet/issues/1067 is resolved
+          // checkSparkAnswerAndOperator(
+          //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
+          // decimals
+          // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
+          // dates & timestamps
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+          // named struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+          // nested struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+        }
+      }
+    }
   }
 
   private def generateFloats(): DataFrame = {
