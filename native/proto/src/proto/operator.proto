@@ -52,6 +52,9 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  string path = 3;
+  string required_schema = 4;
+  string data_schema = 5;
 }
 
 message Projection {

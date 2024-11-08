@@ -29,12 +29,13 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -3150,6 +3151,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           // Sink operators don't have children
           result.clearChildren()
+
+          op match {
+            case cometScan: CometScanExec =>
+              // scalastyle:off println
+//              System.out.println(op.simpleStringWithNodeId())
+//              System.out.println(scanTypes.asJava) // Spark types for output.
+//              System.out.println(cometScan.output) // This is the names of the output columns.
+//              System.out.println(cometScan.requiredSchema); // This is the projected columns.
+//              System.out.println(
+//                cometScan.dataFilters
+//              ); // This is the filter expressions that have been pushed down.
+//              System.out.println(cometScan.relation.location.inputFiles(0))
+//              System.out.println(cometScan.partitionFilters);
+//              System.out.println(cometScan.relation.partitionSchema)
+//              System.out.println(cometScan.metadata);
+
+//              System.out.println("requiredSchema:")
+//              cometScan.requiredSchema.fields.foreach(field => {
+//                System.out.println(field.dataType)
+//              })
+
+//              System.out.println("relation.dataSchema:")
+//              cometScan.relation.dataSchema.fields.foreach(field => {
+//                System.out.println(field.dataType)
+//              })
+              // scalastyle:on println
+
+              val requiredSchemaParquet =
+                new SparkToParquetSchemaConverter(conf).convert(cometScan.requiredSchema)
+              val dataSchemaParquet =
+                new SparkToParquetSchemaConverter(conf).convert(cometScan.relation.dataSchema)
+
+              scanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
+              scanBuilder.setDataSchema(dataSchemaParquet.toString)
+              scanBuilder.setPath(cometScan.relation.location.inputFiles(0))
+            case _ =>
+              scanBuilder.setPath("")
+          }
 
           Some(result.setScan(scanBuilder).build())
         } else {

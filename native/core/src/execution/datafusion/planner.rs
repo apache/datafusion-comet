@@ -84,6 +84,10 @@ use datafusion::{
 };
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use datafusion::datasource::file_format::FileFormat;
+use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -105,6 +109,7 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{
     AggregateUDF, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
@@ -114,8 +119,11 @@ use datafusion_physical_expr::window::WindowExpr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
+use object_store::path::Path;
+use parquet::schema::parser::parse_message_type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use url::Url;
 
 // For clippy error on type_complexity.
 type ExecResult<T> = Result<T, ExecutionError>;
@@ -940,6 +948,64 @@ impl PhysicalPlanner {
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+
+                if scan.source == "CometScan parquet  (unknown)" {
+                    let data_schema = parse_message_type(&*scan.data_schema).unwrap();
+                    let required_schema = parse_message_type(&*scan.required_schema).unwrap();
+                    println!("data_schema: {:?}", data_schema);
+                    println!("required_schema: {:?}", required_schema);
+
+                    let data_schema_descriptor =
+                        parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
+                    let data_schema_arrow = parquet::arrow::schema::parquet_to_arrow_schema(
+                        &data_schema_descriptor,
+                        None,
+                    )
+                    .unwrap();
+                    println!("data_schema_arrow: {:?}", data_schema_arrow);
+
+                    let required_schema_descriptor =
+                        parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
+                    let required_schema_arrow = parquet::arrow::schema::parquet_to_arrow_schema(
+                        &required_schema_descriptor,
+                        None,
+                    )
+                    .unwrap();
+                    println!("required_schema_arrow: {:?}", required_schema_arrow);
+
+                    assert!(!required_schema_arrow.fields.is_empty());
+
+                    let mut projection_vector: Vec<usize> =
+                        Vec::with_capacity(required_schema_arrow.fields.len());
+                    // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
+                    required_schema_arrow.fields.iter().for_each(|field| {
+                        projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
+                    });
+                    println!("projection_vector: {:?}", projection_vector);
+
+                    assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+
+                    let object_store_url = ObjectStoreUrl::local_filesystem();
+                    let path = Url::parse(&*scan.path).unwrap();
+
+                    let object_store = object_store::local::LocalFileSystem::new();
+                    // register the object store with the runtime environment
+                    let url = Url::try_from("file://").unwrap();
+                    self.session_ctx
+                        .runtime_env()
+                        .register_object_store(&url, Arc::new(object_store));
+
+                    let file = PartitionedFile::from_path(path.path().to_string())?;
+
+                    let file_scan_config =
+                        FileScanConfig::new(object_store_url, Arc::new(data_schema_arrow))
+                            .with_file(file)
+                            .with_projection(Some(projection_vector));
+
+                    let builder = ParquetExecBuilder::new(file_scan_config);
+                    let scan = builder.build();
+                    return Ok((vec![], Arc::new(scan)));
+                }
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
