@@ -119,7 +119,6 @@ use datafusion_physical_expr::window::WindowExpr;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
-use object_store::path::Path;
 use parquet::schema::parser::parse_message_type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
@@ -957,11 +956,13 @@ impl PhysicalPlanner {
 
                     let data_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
-                    let data_schema_arrow = parquet::arrow::schema::parquet_to_arrow_schema(
-                        &data_schema_descriptor,
-                        None,
-                    )
-                    .unwrap();
+                    let data_schema_arrow = Arc::new(
+                        parquet::arrow::schema::parquet_to_arrow_schema(
+                            &data_schema_descriptor,
+                            None,
+                        )
+                        .unwrap(),
+                    );
                     println!("data_schema_arrow: {:?}", data_schema_arrow);
 
                     let required_schema_descriptor =
@@ -985,6 +986,31 @@ impl PhysicalPlanner {
 
                     assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
 
+                    // Convert the Spark expressions to Physical expressions
+                    let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
+                        .data_filters
+                        .iter()
+                        .map(|expr| self.create_expr(expr, data_schema_arrow.clone()))
+                        .collect();
+
+                    // Create a conjunctive form of the vector because ParquetExecBuilder takes
+                    // a single expression
+                    let data_filters = data_filters?;
+                    let test_data_filters = data_filters
+                        .clone()
+                        .into_iter()
+                        .reduce(|left, right| {
+                            Arc::new(BinaryExpr::new(
+                                left,
+                                datafusion::logical_expr::Operator::And,
+                                right,
+                            ))
+                        })
+                        .unwrap();
+
+                    println!("data_filters: {:?}", data_filters);
+                    println!("test_data_filters: {:?}", test_data_filters);
+
                     let object_store_url = ObjectStoreUrl::local_filesystem();
                     let path = Url::parse(&*scan.path).unwrap();
 
@@ -998,11 +1024,12 @@ impl PhysicalPlanner {
                     let file = PartitionedFile::from_path(path.path().to_string())?;
 
                     let file_scan_config =
-                        FileScanConfig::new(object_store_url, Arc::new(data_schema_arrow))
+                        FileScanConfig::new(object_store_url, data_schema_arrow.clone())
                             .with_file(file)
                             .with_projection(Some(projection_vector));
 
-                    let builder = ParquetExecBuilder::new(file_scan_config);
+                    let builder =
+                        ParquetExecBuilder::new(file_scan_config).with_predicate(test_data_filters);
                     let scan = builder.build();
                     return Ok((vec![], Arc::new(scan)));
                 }

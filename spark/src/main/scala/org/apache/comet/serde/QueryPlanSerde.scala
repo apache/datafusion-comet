@@ -3157,11 +3157,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               // scalastyle:off println
 //              System.out.println(op.simpleStringWithNodeId())
 //              System.out.println(scanTypes.asJava) // Spark types for output.
-//              System.out.println(cometScan.output) // This is the names of the output columns.
+              System.out.println(cometScan.output) // This is the names of the output columns.
 //              System.out.println(cometScan.requiredSchema); // This is the projected columns.
-//              System.out.println(
-//                cometScan.dataFilters
-//              ); // This is the filter expressions that have been pushed down.
+              System.out.println(
+                cometScan.dataFilters
+              ); // This is the filter expressions that have been pushed down.
+
+              val dataFilters = cometScan.dataFilters.map(exprToProto(_, cometScan.output))
+              scanBuilder.addAllDataFilters(dataFilters.map(_.get).asJava)
 //              System.out.println(cometScan.relation.location.inputFiles(0))
 //              System.out.println(cometScan.partitionFilters);
 //              System.out.println(cometScan.relation.partitionSchema)

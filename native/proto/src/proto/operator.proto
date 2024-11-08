@@ -55,6 +55,7 @@ message Scan {
   string path = 3;
   string required_schema = 4;
   string data_schema = 5;
+  repeated spark.spark_expression.Expr data_filters = 6;
 }
 
 message Projection {
