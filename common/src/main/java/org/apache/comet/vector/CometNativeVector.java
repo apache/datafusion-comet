@@ -19,18 +19,20 @@
 
 package org.apache.comet.vector;
 
+import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.spark.sql.types.DataType;
 
 public class CometNativeVector extends CometVector {
-  private final long arrayAddress;
-  private final long schemaAddress;
+  private final ArrowArray array;
+  private final ArrowSchema schema;
 
   public CometNativeVector(
-      DataType type, boolean useDecimal128, long arrayAddress, long schemaAddress) {
+      DataType type, boolean useDecimal128, ArrowArray array, ArrowSchema schema) {
     super(type, useDecimal128);
-    this.arrayAddress = arrayAddress;
-    this.schemaAddress = schemaAddress;
+    this.array = array;
+    this.schema = schema;
   }
 
   @Override
@@ -73,10 +75,10 @@ public class CometNativeVector extends CometVector {
   public void close() {}
 
   public long getArrayAddress() {
-    return arrayAddress;
+    return array.memoryAddress();
   }
 
   public long getSchemaAddress() {
-    return schemaAddress;
+    return schema.memoryAddress();
   }
 }

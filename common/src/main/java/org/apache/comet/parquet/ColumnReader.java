@@ -189,7 +189,7 @@ public class ColumnReader extends AbstractColumnReader {
       long schemaAddr = schema.memoryAddress();
 
       Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
-      currentVector = new CometNativeVector(null, useDecimal128, arrayAddr, schemaAddr);
+      currentVector = new CometNativeVector(null, useDecimal128, array, schema);
       return currentVector;
     }
 
