@@ -155,7 +155,11 @@ object CometCast {
               "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
               "instead of 1.4E-45"))
       case _: DecimalType =>
-        Compatible()
+        // https://github.com/apache/datafusion-comet/issues/1068
+        Compatible(
+          Some(
+            "There can be formatting differences in some case due to Spark using " +
+              "scientific notation where Comet does not"))
       case DataTypes.BinaryType =>
         // https://github.com/apache/datafusion-comet/issues/377
         Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))

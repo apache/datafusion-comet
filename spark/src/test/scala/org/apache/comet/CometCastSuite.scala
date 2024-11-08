@@ -865,7 +865,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           //  https://github.com/apache/datafusion-comet/issues/1067 is resolved
           // checkSparkAnswerAndOperator(
           //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
-          // decimals (_16 intentionally excluded due to formatting difference with scientific notation)
+          // decimals
+          // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
           checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
           // dates & timestamps
           checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
