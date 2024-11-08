@@ -1730,6 +1730,36 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar override node name for columnar input") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .toDF("key", "value")
+        .write
+        .mode("overwrite")
+        .parquet("/tmp/test")
+      val df = spark.read.parquet("/tmp/test")
+      val rowDf = df.toDF()
+      rowDf.collect()
+
+      val planAfter = rowDf.queryExecution.executedPlan
+      assert(planAfter.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
+      val adaptivePlan = planAfter.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+      val nodeNames = adaptivePlan.collect { case c: CometSparkToColumnarExec =>
+        c.nodeName
+      }
+      assert(nodeNames.length == 1)
+      assert(nodeNames.head == "CometSparkColumnarToColumnar")
+    }
+  }
+
   test("aggregate window function for all types") {
     val numValues = 2048
 
