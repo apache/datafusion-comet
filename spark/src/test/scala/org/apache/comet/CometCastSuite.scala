@@ -861,7 +861,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // primitives
           checkSparkAnswerAndOperator(
             "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          // TODO: enable tests for unsigned ints (_9, _10, _11, _12)
+          // TODO: enable tests for unsigned ints (_9, _10, _11, _12) once
+          //  https://github.com/apache/datafusion-comet/issues/1067 is resolved
           // checkSparkAnswerAndOperator(
           //   "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
           // decimals (_16 intentionally excluded due to formatting difference with scientific notation)
