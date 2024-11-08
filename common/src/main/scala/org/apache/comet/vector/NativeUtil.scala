@@ -122,6 +122,8 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema)
+          builder += arrowArray.memoryAddress()
+          builder += arrowSchema.memoryAddress()
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +

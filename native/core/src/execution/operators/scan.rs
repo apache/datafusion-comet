@@ -48,9 +48,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-use jni::objects::{GlobalRef, JObject};
-use jni::objects::{JLongArray, ReleaseMode};
-use jni::sys::jlongArray;
+use jni::objects::{GlobalRef, JLongArray, JObject, JValueGen, ReleaseMode};
+use jni::sys::{jlongArray, jsize};
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
 /// scan or the result of reading a broadcast or shuffle exchange.
@@ -183,9 +182,38 @@ impl ScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
+        let num_cols = data_types.len();
+        let mut array_addrs = Vec::with_capacity(num_cols);
+        let mut schema_addrs = Vec::with_capacity(num_cols);
+
+        for _ in 0..num_cols {
+            let arrow_array = Rc::new(FFI_ArrowArray::empty());
+            let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
+            let (array_ptr, schema_ptr) = (
+                Rc::into_raw(arrow_array) as i64,
+                Rc::into_raw(arrow_schema) as i64,
+            );
+
+            array_addrs.push(array_ptr);
+            schema_addrs.push(schema_ptr);
+        }
+
+        // Prepare the java array parameters
+        let long_array_addrs = env.new_long_array(num_cols as jsize)?;
+        let long_schema_addrs = env.new_long_array(num_cols as jsize)?;
+
+        env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
+        env.set_long_array_region(&long_schema_addrs, 0, &schema_addrs)?;
+
+        let array_obj = JObject::from(long_array_addrs);
+        let schema_obj = JObject::from(long_schema_addrs);
+
+        let array_obj = JValueGen::Object(array_obj.as_ref());
+        let schema_obj = JValueGen::Object(schema_obj.as_ref());
+
         let batch_object: JObject = unsafe {
             jni_call!(&mut env,
-            comet_batch_iterator(iter).next() -> JObject)?
+            comet_batch_iterator(iter).next(array_obj, schema_obj) -> JObject)?
         };
 
         if batch_object.is_null() {
