@@ -932,26 +932,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
-          createMathExpression(left, right, inputs, add.dataType, getFailOnError(add)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setAdd(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            add.dataType,
+            getFailOnError(add),
+            (builder, mathExpr) => builder.setAdd(mathExpr))
 
         case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(add, s"Unsupported datatype ${left.dataType}")
           None
 
         case sub @ Subtract(left, right, _) if supportedDataType(left.dataType) =>
-          createMathExpression(left, right, inputs, sub.dataType, getFailOnError(sub)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setSubtract(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            sub.dataType,
+            getFailOnError(sub),
+            (builder, mathExpr) => builder.setSubtract(mathExpr))
 
         case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(sub, s"Unsupported datatype ${left.dataType}")
@@ -959,13 +959,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case mul @ Multiply(left, right, _)
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-          createMathExpression(left, right, inputs, mul.dataType, getFailOnError(mul)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setMultiply(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            mul.dataType,
+            getFailOnError(mul),
+            (builder, mathExpr) => builder.setMultiply(mathExpr))
 
         case mul @ Multiply(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -983,13 +983,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // For now, use NullIf to swap zeros with nulls.
           val rightExpr = nullIfWhenPrimitive(right)
 
-          createMathExpression(left, rightExpr, inputs, div.dataType, getFailOnError(div)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setDivide(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            div.dataType,
+            getFailOnError(div),
+            (builder, mathExpr) => builder.setDivide(mathExpr))
 
         case div @ Divide(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -1004,13 +1004,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
           val rightExpr = nullIfWhenPrimitive(right)
 
-          createMathExpression(left, rightExpr, inputs, rem.dataType, getFailOnError(rem)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setRemainder(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            rem.dataType,
+            getFailOnError(rem),
+            (builder, mathExpr) => builder.setRemainder(mathExpr))
 
         case rem @ Remainder(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -2294,14 +2294,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       val leftExpr = exprToProtoInternal(left, inputs)
       val rightExpr = exprToProtoInternal(right, inputs)
       if (leftExpr.isDefined && rightExpr.isDefined) {
-        // create the generic UnaryExpr message
+        // create the generic BinaryExpr message
         val inner = ExprOuterClass.BinaryExpr
           .newBuilder()
           .setLeft(leftExpr.get)
           .setRight(rightExpr.get)
           .build()
         // call the user-supplied function to wrap BinaryExpr in a top-level Expr
-        // such as Expr.Add or Expr.Or
+        // such as Expr.And or Expr.Or
         Some(
           f(
             ExprOuterClass.Expr
@@ -2318,11 +2318,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         right: Expression,
         inputs: Seq[Attribute],
         dataType: DataType,
-        failOnError: Boolean): Option[ExprOuterClass.MathExpr] = {
+        failOnError: Boolean,
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
       val leftExpr = exprToProtoInternal(left, inputs)
       val rightExpr = exprToProtoInternal(right, inputs)
 
       if (leftExpr.isDefined && rightExpr.isDefined) {
+        // create the generic MathExpr message
         val builder = ExprOuterClass.MathExpr.newBuilder()
         builder.setLeft(leftExpr.get)
         builder.setRight(rightExpr.get)
@@ -2330,7 +2333,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         serializeDataType(dataType).foreach { t =>
           builder.setReturnType(t)
         }
-        Some(builder.build())
+        val inner = builder.build()
+        // call the user-supplied function to wrap MathExpr in a top-level Expr
+        // such as Expr.Add or Expr.Divide
+        Some(
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
       } else {
         withInfo(expr, left, right)
         None
