@@ -961,17 +961,19 @@ impl PhysicalPlanner {
                             &data_schema_descriptor,
                             None,
                         )
-                        .unwrap()
+                        .unwrap(),
                     );
                     println!("data_schema_arrow: {:?}", data_schema_arrow);
 
                     let required_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
-                    let required_schema_arrow = Arc::new(parquet::arrow::schema::parquet_to_arrow_schema(
-                        &required_schema_descriptor,
-                        None,
-                    )
-                    .unwrap());
+                    let required_schema_arrow = Arc::new(
+                        parquet::arrow::schema::parquet_to_arrow_schema(
+                            &required_schema_descriptor,
+                            None,
+                        )
+                        .unwrap(),
+                    );
                     println!("required_schema_arrow: {:?}", required_schema_arrow);
 
                     assert!(!required_schema_arrow.fields.is_empty());
@@ -1031,7 +1033,7 @@ impl PhysicalPlanner {
                         .collect();
 
                     let file_scan_config =
-                        FileScanConfig::new(object_store_url, data_schema_arrow.clone())
+                        FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
                             .with_file_groups(vec![files])
                             .with_projection(Some(projection_vector));
 
