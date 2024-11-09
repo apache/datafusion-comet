@@ -67,6 +67,8 @@ struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
+    /// The number of partitions
+    pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
     pub root_op: Option<Arc<dyn ExecutionPlan>>,
     /// The input sources for the DataFusion plan
@@ -102,6 +104,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     config_object: JObject,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
+    partition_count: jint,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
 ) -> jlong {
@@ -170,6 +173,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let exec_context = Box::new(ExecutionContext {
             id,
             spark_plan,
+            partition_count: partition_count as usize,
             root_op: None,
             scans: vec![],
             input_sources,
@@ -340,6 +344,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
     exec_context: jlong,
+    partition_id: jint,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
 ) -> jlong {
@@ -358,6 +363,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
+                exec_context.partition_count,
             )?;
 
             exec_context.root_op = Some(Arc::clone(&root_op));
@@ -374,11 +380,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let plan = exec_context.root_op.as_ref().unwrap();
 
             println!(
-                "Executing partition 0 of {}",
+                "Executing partition {} of {}",
+                partition_id,
                 plan.output_partitioning().partition_count()
             );
 
-            let stream = plan.execute(0, task_ctx)?;
+            let stream = plan.execute(partition_id as usize, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
             // Pull input batches

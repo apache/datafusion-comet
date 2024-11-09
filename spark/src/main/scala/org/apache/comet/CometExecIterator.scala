@@ -55,11 +55,13 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val configs = createNativeConf
+    TaskContext.get().numPartitions()
     nativeLib.createPlan(
       id,
       configs,
       cometBatchIterators,
       protobufQueryPlan,
+      TaskContext.get().numPartitions(),
       nativeMetrics,
       new CometTaskMemoryManager(id))
   }
@@ -104,7 +106,7 @@ class CometExecIterator(
     nativeUtil.getNextBatch(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
-        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+        nativeLib.executePlan(plan, TaskContext.get().partitionId(), arrayAddrs, schemaAddrs)
       })
   }
 
