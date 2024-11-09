@@ -77,6 +77,15 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_FULL_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.native.scan.enabled")
+    .doc(
+      "Whether to enable the fully native scan. When this is turned on, Spark will use Comet to " +
+        "read supported data sources (currently only Parquet is supported natively)." +
+        " By default, this config is true.")
+    .booleanConf
+    .createWithDefault(true)
+
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .doc(
