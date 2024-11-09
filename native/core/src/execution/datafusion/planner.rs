@@ -84,7 +84,6 @@ use datafusion::{
 };
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
-use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
@@ -104,6 +103,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
     ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
 };
+use datafusion_common::config::TableParquetOptions;
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -1028,8 +1028,13 @@ impl PhysicalPlanner {
                             .with_file(file)
                             .with_projection(Some(projection_vector));
 
-                    let builder =
-                        ParquetExecBuilder::new(file_scan_config).with_predicate(test_data_filters);
+                    let mut table_parquet_options = TableParquetOptions::new();
+                    table_parquet_options.global.pushdown_filters = true;
+                    table_parquet_options.global.reorder_filters = true;
+
+                    let builder = ParquetExecBuilder::new(file_scan_config)
+                        .with_predicate(test_data_filters)
+                        .with_table_parquet_options(table_parquet_options);
                     let scan = builder.build();
                     return Ok((vec![], Arc::new(scan)));
                 }
