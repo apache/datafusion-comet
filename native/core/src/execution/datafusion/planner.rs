@@ -700,7 +700,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let return_type = left.data_type(&input_schema)?;
                 let args = vec![left, right];
-                let datafusion_array_append = Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
+                let datafusion_array_append =
+                    Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
                 let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     "array_append",
                     datafusion_array_append,
