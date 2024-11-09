@@ -2235,6 +2235,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
+        case ArrayInsert(srcArrayExpr, posExpr, itemExpr, legacyNegativeIndex) =>
+          val srcExprProto = exprToProto(srcArrayExpr, inputs, binding)
+          val posExprProto = exprToProto(posExpr, inputs, binding)
+          val itemExprProto = exprToProto(itemExpr, inputs, binding)
+          if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
+            val arrayInsertBuilder = ExprOuterClass.ArrayInsert
+              .newBuilder()
+              .setSrcArrayExpr(srcExprProto.get)
+              .setPosExpr(posExprProto.get)
+              .setItemExpr(itemExprProto.get)
+              .setLegacyNegativeIndex(legacyNegativeIndex)
+
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setArrayInsert(arrayInsertBuilder)
+                .build()
+            )
+          } else {
+            withInfo(expr, "unsupported arguments for ArrayInsert", srcArrayExpr, posExpr, itemExpr)
+            None
+          }
+
         case ElementAt(child, ordinal, defaultValue, failOnError)
             if child.dataType.isInstanceOf[ArrayType] =>
           val childExpr = exprToProto(child, inputs, binding)

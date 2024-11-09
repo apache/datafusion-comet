@@ -82,6 +82,7 @@ message Expr {
     ToJson to_json = 55;
     ListExtract list_extract = 56;
     GetArrayStructFields get_array_struct_fields = 57;
+    ArrayInsert array_insert = 58;
   }
 }
 
@@ -400,6 +401,15 @@ enum SortDirection {
 enum NullOrdering {
   NullsFirst = 0;
   NullsLast = 1;
+}
+
+// Array functions
+message ArrayInsert {
+  Expr src_array_expr = 1;
+  Expr pos_expr = 2;
+  Expr item_expr = 3;
+  bool legacy_negative_index = 4;
+  DataType element_type = 5;
 }
 
 message DataType {
