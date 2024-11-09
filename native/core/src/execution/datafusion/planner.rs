@@ -961,17 +961,17 @@ impl PhysicalPlanner {
                             &data_schema_descriptor,
                             None,
                         )
-                        .unwrap(),
+                        .unwrap()
                     );
                     println!("data_schema_arrow: {:?}", data_schema_arrow);
 
                     let required_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
-                    let required_schema_arrow = parquet::arrow::schema::parquet_to_arrow_schema(
+                    let required_schema_arrow = Arc::new(parquet::arrow::schema::parquet_to_arrow_schema(
                         &required_schema_descriptor,
                         None,
                     )
-                    .unwrap();
+                    .unwrap());
                     println!("required_schema_arrow: {:?}", required_schema_arrow);
 
                     assert!(!required_schema_arrow.fields.is_empty());
@@ -990,7 +990,7 @@ impl PhysicalPlanner {
                     let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                         .data_filters
                         .iter()
-                        .map(|expr| self.create_expr(expr, Arc::clone(&data_schema_arrow)))
+                        .map(|expr| self.create_expr(expr, Arc::clone(&required_schema_arrow)))
                         .collect();
 
                     // Create a conjunctive form of the vector because ParquetExecBuilder takes
