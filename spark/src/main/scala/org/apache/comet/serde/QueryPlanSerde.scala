@@ -2258,6 +2258,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
+        case ArrayAppend(left, right) =>
+          val leftExpr = exprToProto(left, inputs, binding)
+          val rightExpr = exprToProto(right, inputs, binding)
+
+          val optExpr = scalarExprToProto("array_append", leftExpr, rightExpr)
+          optExprWithInfo(optExpr, expr, left, right)
 
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
