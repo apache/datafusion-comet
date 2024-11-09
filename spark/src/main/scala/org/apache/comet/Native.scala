@@ -50,6 +50,7 @@ class Native extends NativeBase {
       configMap: Map[String, String],
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
+      partitionCount: Int,
       metrics: CometMetricNode,
       taskMemoryManager: CometTaskMemoryManager): Long
 
@@ -65,7 +66,11 @@ class Native extends NativeBase {
    * @return
    *   the number of rows, if -1, it means end of the output.
    */
-  @native def executePlan(plan: Long, arrayAddrs: Array[Long], schemaAddrs: Array[Long]): Long
+  @native def executePlan(
+      plan: Long,
+      partitionId: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long]): Long
 
   /**
    * Release and drop the native query plan object and context object.

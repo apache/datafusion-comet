@@ -826,12 +826,13 @@ impl PhysicalPlanner {
         &'a self,
         spark_plan: &'a Operator,
         inputs: &mut Vec<Arc<GlobalRef>>,
+        partition_count: usize,
     ) -> Result<(Vec<ScanExec>, Arc<dyn ExecutionPlan>), ExecutionError> {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
                     .project_list
                     .iter()
@@ -845,7 +846,7 @@ impl PhysicalPlanner {
             }
             OpStruct::Filter(filter) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
@@ -853,7 +854,7 @@ impl PhysicalPlanner {
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
@@ -918,13 +919,13 @@ impl PhysicalPlanner {
             OpStruct::Limit(limit) => {
                 assert!(children.len() == 1);
                 let num = limit.limit;
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 Ok((scans, Arc::new(LocalLimitExec::new(child, num as usize))))
             }
             OpStruct::Sort(sort) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
                     .sort_orders
@@ -998,17 +999,14 @@ impl PhysicalPlanner {
                     // Create a conjunctive form of the vector because ParquetExecBuilder takes
                     // a single expression
                     let data_filters = data_filters?;
-                    let test_data_filters = data_filters
-                        .clone()
-                        .into_iter()
-                        .reduce(|left, right| {
+                    let test_data_filters =
+                        data_filters.clone().into_iter().reduce(|left, right| {
                             Arc::new(BinaryExpr::new(
                                 left,
                                 datafusion::logical_expr::Operator::And,
                                 right,
                             ))
-                        })
-                        .unwrap();
+                        });
 
                     println!("data_filters: {:?}", data_filters);
                     println!("test_data_filters: {:?}", test_data_filters);
@@ -1032,18 +1030,30 @@ impl PhysicalPlanner {
                         .map(|path| PartitionedFile::from_path(path.path().to_string()).unwrap())
                         .collect();
 
+                    // partition the files
+                    // TODO really should partition the row groups
+
+                    let mut file_groups = vec![vec![]; partition_count];
+                    files.iter().enumerate().for_each(|(idx, file)| {
+                        file_groups[idx % partition_count].push(file.clone());
+                    });
+
                     let file_scan_config =
                         FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                            .with_file_groups(vec![files])
+                            .with_file_groups(file_groups)
                             .with_projection(Some(projection_vector));
 
                     let mut table_parquet_options = TableParquetOptions::new();
                     table_parquet_options.global.pushdown_filters = true;
                     table_parquet_options.global.reorder_filters = true;
 
-                    let builder = ParquetExecBuilder::new(file_scan_config)
-                        .with_predicate(test_data_filters)
+                    let mut builder = ParquetExecBuilder::new(file_scan_config)
                         .with_table_parquet_options(table_parquet_options);
+
+                    if let Some(filter) = test_data_filters {
+                        builder = builder.with_predicate(filter);
+                    }
+
                     let scan = builder.build();
                     return Ok((vec![], Arc::new(scan)));
                 }
@@ -1072,7 +1082,7 @@ impl PhysicalPlanner {
             }
             OpStruct::ShuffleWriter(writer) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let partitioning = self
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
@@ -1089,7 +1099,7 @@ impl PhysicalPlanner {
             }
             OpStruct::Expand(expand) => {
                 assert!(children.len() == 1);
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let mut projections = vec![];
                 let mut projection = vec![];
@@ -1147,6 +1157,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
+                    partition_count,
                 )?;
 
                 let sort_options = join
@@ -1185,6 +1196,7 @@ impl PhysicalPlanner {
                     &join.right_join_keys,
                     join.join_type,
                     &join.condition,
+                    partition_count,
                 )?;
 
                 // HashJoinExec may cache the input batch internally. We need
@@ -1217,7 +1229,7 @@ impl PhysicalPlanner {
                 Ok((scans, hash_join))
             }
             OpStruct::Window(wnd) => {
-                let (scans, child) = self.create_plan(&children[0], inputs)?;
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let input_schema = child.schema();
                 let sort_exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = wnd
                     .order_by_list
@@ -1269,10 +1281,11 @@ impl PhysicalPlanner {
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
+        partition_count: usize,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
         assert!(children.len() == 2);
-        let (mut left_scans, left) = self.create_plan(&children[0], inputs)?;
-        let (mut right_scans, right) = self.create_plan(&children[1], inputs)?;
+        let (mut left_scans, left) = self.create_plan(&children[0], inputs, partition_count)?;
+        let (mut right_scans, right) = self.create_plan(&children[1], inputs, partition_count)?;
 
         left_scans.append(&mut right_scans);
 

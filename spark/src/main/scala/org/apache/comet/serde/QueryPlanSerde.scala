@@ -3189,13 +3189,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               scanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
               scanBuilder.setDataSchema(dataSchemaParquet.toString)
 
-              // TODO this is not correct yet .. we really need to know how many partitions Spark is expecting
-              //  and then split the files / row groups up across that number of partitions
               cometScan.relation.location.inputFiles.foreach { f =>
                 scanBuilder.addPath(f)
               }
             case _ =>
-            // scanBuilder.setPath("")
           }
 
           Some(result.setScan(scanBuilder).build())
