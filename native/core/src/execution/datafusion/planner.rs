@@ -103,6 +103,7 @@ use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
     ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
 };
+use datafusion_common::config::TableParquetOptions;
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -949,8 +950,8 @@ impl PhysicalPlanner {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 if scan.source == "CometScan parquet  (unknown)" {
-                    let data_schema = parse_message_type(&*scan.data_schema).unwrap();
-                    let required_schema = parse_message_type(&*scan.required_schema).unwrap();
+                    let data_schema = parse_message_type(&scan.data_schema).unwrap();
+                    let required_schema = parse_message_type(&scan.required_schema).unwrap();
                     println!("data_schema: {:?}", data_schema);
                     println!("required_schema: {:?}", required_schema);
 
@@ -967,11 +968,13 @@ impl PhysicalPlanner {
 
                     let required_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
-                    let required_schema_arrow = parquet::arrow::schema::parquet_to_arrow_schema(
-                        &required_schema_descriptor,
-                        None,
-                    )
-                    .unwrap();
+                    let required_schema_arrow = Arc::new(
+                        parquet::arrow::schema::parquet_to_arrow_schema(
+                            &required_schema_descriptor,
+                            None,
+                        )
+                        .unwrap(),
+                    );
                     println!("required_schema_arrow: {:?}", required_schema_arrow);
 
                     assert!(!required_schema_arrow.fields.is_empty());
@@ -990,7 +993,7 @@ impl PhysicalPlanner {
                     let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                         .data_filters
                         .iter()
-                        .map(|expr| self.create_expr(expr, data_schema_arrow.clone()))
+                        .map(|expr| self.create_expr(expr, Arc::clone(&required_schema_arrow)))
                         .collect();
 
                     // Create a conjunctive form of the vector because ParquetExecBuilder takes
@@ -1039,12 +1042,17 @@ impl PhysicalPlanner {
                     });
 
                     let file_scan_config =
-                        FileScanConfig::new(object_store_url, data_schema_arrow.clone())
+                        FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
                             .with_file_groups(file_groups)
                             .with_projection(Some(projection_vector));
 
-                    let builder =
-                        ParquetExecBuilder::new(file_scan_config).with_predicate(test_data_filters);
+                    let mut table_parquet_options = TableParquetOptions::new();
+                    table_parquet_options.global.pushdown_filters = true;
+                    table_parquet_options.global.reorder_filters = true;
+
+                    let builder = ParquetExecBuilder::new(file_scan_config)
+                        .with_predicate(test_data_filters)
+                        .with_table_parquet_options(table_parquet_options);
                     let scan = builder.build();
                     return Ok((vec![], Arc::new(scan)));
                 }
