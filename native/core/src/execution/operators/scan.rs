@@ -241,14 +241,23 @@ impl ScanExec {
                 array_num
             )));
         }
-
         let num_arrays = array_num / 2;
         let array_elements = unsafe { addresses.as_ptr().add(1) };
-        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_arrays);
 
-        for (i, data_type) in data_types.iter().enumerate().take(num_arrays) {
-            let array_ptr = unsafe { *(array_elements.add(i * 2)) };
-            let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
+        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
+        for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
+            let array_ptr = array_addrs[i];
+            let schema_ptr = schema_addrs[i];
+            if num_arrays > 0 {
+                let array_data = ArrayData::from_spark(
+                    (
+                        unsafe { *(array_elements.add(i * 2)) },
+                        unsafe { *(array_elements.add(i * 2 + 1)) },
+                    ),
+                    data_type)?;
+                array_data.move_to_spark(array_ptr, schema_ptr)?;
+            };
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
