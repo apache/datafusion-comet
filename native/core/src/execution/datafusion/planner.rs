@@ -999,17 +999,14 @@ impl PhysicalPlanner {
                     // Create a conjunctive form of the vector because ParquetExecBuilder takes
                     // a single expression
                     let data_filters = data_filters?;
-                    let test_data_filters = data_filters
-                        .clone()
-                        .into_iter()
-                        .reduce(|left, right| {
+                    let test_data_filters =
+                        data_filters.clone().into_iter().reduce(|left, right| {
                             Arc::new(BinaryExpr::new(
                                 left,
                                 datafusion::logical_expr::Operator::And,
                                 right,
                             ))
-                        })
-                        .unwrap();
+                        });
 
                     println!("data_filters: {:?}", data_filters);
                     println!("test_data_filters: {:?}", test_data_filters);
@@ -1050,9 +1047,13 @@ impl PhysicalPlanner {
                     table_parquet_options.global.pushdown_filters = true;
                     table_parquet_options.global.reorder_filters = true;
 
-                    let builder = ParquetExecBuilder::new(file_scan_config)
-                        .with_predicate(test_data_filters)
+                    let mut builder = ParquetExecBuilder::new(file_scan_config)
                         .with_table_parquet_options(table_parquet_options);
+
+                    if let Some(filter) = test_data_filters {
+                        builder = builder.with_predicate(filter);
+                    }
+
                     let scan = builder.build();
                     return Ok((vec![], Arc::new(scan)));
                 }
