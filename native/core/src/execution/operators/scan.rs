@@ -234,6 +234,8 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
+        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
         let array_num = addresses.len() - 1;
         if array_num % 2 != 0 {
             return Err(CometError::Internal(format!(
@@ -241,33 +243,40 @@ impl ScanExec {
                 array_num
             )));
         }
-        let num_arrays = array_num / 2;
-        let array_elements = unsafe { addresses.as_ptr().add(1) };
 
-        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+        if array_num == 0 {
+            for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
+                let array_ptr = array_addrs[i];
+                let schema_ptr = schema_addrs[i];
+                let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
-        for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
-            let array_ptr = array_addrs[i];
-            let schema_ptr = schema_addrs[i];
-            if num_arrays > 0 {
-                let array_data = ArrayData::from_spark(
-                    (unsafe { *(array_elements.add(i * 2)) }, unsafe {
-                        *(array_elements.add(i * 2 + 1))
-                    }),
-                    data_type,
-                )?;
-                array_data.move_to_spark(array_ptr, schema_ptr)?;
-            };
-            let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
+                // TODO: validate array input data
 
-            // TODO: validate array input data
+                inputs.push(make_array(array_data));
 
-            inputs.push(make_array(array_data));
+                // Drop the Arcs to avoid memory leak
+                unsafe {
+                    Rc::from_raw(array_ptr as *const FFI_ArrowArray);
+                    Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+                }
+            }
+        } else {
+            let array_elements = unsafe { addresses.as_ptr().add(1) };
 
-            // Drop the Arcs to avoid memory leak
-            unsafe {
-                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
-                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+            for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
+                let array_ptr = unsafe { *(array_elements.add(i * 2)) };
+                let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
+                let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
+
+                // TODO: validate array input data
+
+                inputs.push(make_array(array_data));
+
+                // Drop the Arcs to avoid memory leak
+                unsafe {
+                    Rc::from_raw(array_addrs[i] as *const FFI_ArrowArray);
+                    Rc::from_raw(schema_addrs[i] as *const FFI_ArrowSchema);
+                }
             }
         }
 
