@@ -251,11 +251,11 @@ impl ScanExec {
             let schema_ptr = schema_addrs[i];
             if num_arrays > 0 {
                 let array_data = ArrayData::from_spark(
-                    (
-                        unsafe { *(array_elements.add(i * 2)) },
-                        unsafe { *(array_elements.add(i * 2 + 1)) },
-                    ),
-                    data_type)?;
+                    (unsafe { *(array_elements.add(i * 2)) }, unsafe {
+                        *(array_elements.add(i * 2 + 1))
+                    }),
+                    data_type,
+                )?;
                 array_data.move_to_spark(array_ptr, schema_ptr)?;
             };
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
