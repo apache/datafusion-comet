@@ -46,11 +46,11 @@ public class CometBatchIterator {
    * @param schemaAddrs The addresses of the ArrowSchema structures.
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
-  public long[] next(long[] arrayAddrs, long[] schemaAddrs) {
+  public int next(long[] arrayAddrs, long[] schemaAddrs) {
     boolean hasBatch = input.hasNext();
 
     if (!hasBatch) {
-      return new long[] {-1};
+      return -1;
     }
 
     return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());

@@ -78,7 +78,13 @@ impl SparkArrowConvert for ArrayData {
         // about memory leak.
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
+            let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
 
+            let dt = DataType::try_from(&schema_data)?;
+            let data_type = match dt {
+                DataType::FixedSizeBinary(_) => &dt,
+                _ => data_type
+            };
             let data_type = if array_data.dictionary().is_some() {
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(data_type.clone()))
             } else {

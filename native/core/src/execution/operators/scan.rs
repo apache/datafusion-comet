@@ -48,8 +48,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-use jni::objects::{GlobalRef, JLongArray, JObject, JValueGen, ReleaseMode};
-use jni::sys::{jlongArray, jsize};
+use jni::objects::{GlobalRef, JObject, JValueGen};
+use jni::sys::jsize;
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
 /// scan or the result of reading a broadcast or shuffle exchange.
@@ -211,24 +211,9 @@ impl ScanExec {
         let array_obj = JValueGen::Object(array_obj.as_ref());
         let schema_obj = JValueGen::Object(schema_obj.as_ref());
 
-        let batch_object: JObject = unsafe {
-            jni_call!(&mut env,
-            comet_batch_iterator(iter).next(array_obj, schema_obj) -> JObject)?
+        let num_rows: i32 = unsafe {
+            jni_call!(&mut env, comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
         };
-
-        if batch_object.is_null() {
-            return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null batch object. Plan id: {}",
-                exec_context_id
-            ))));
-        }
-
-        let batch_object = unsafe { JLongArray::from_raw(batch_object.as_raw() as jlongArray) };
-
-        let addresses = unsafe { env.get_array_elements(&batch_object, ReleaseMode::NoCopyBack)? };
-
-        // First element is the number of rows.
-        let num_rows = unsafe { *addresses.as_ptr() as i64 };
 
         if num_rows == -1 {
             return Ok(InputBatch::EOF);
@@ -236,47 +221,19 @@ impl ScanExec {
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
 
-        let array_num = addresses.len() - 1;
-        if array_num % 2 != 0 {
-            return Err(CometError::Internal(format!(
-                "Invalid number of Arrow Array addresses: {}",
-                array_num
-            )));
-        }
+        for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
+            let array_ptr = array_addrs[i];
+            let schema_ptr = schema_addrs[i];
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
-        if array_num == 0 {
-            for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
-                let array_ptr = array_addrs[i];
-                let schema_ptr = schema_addrs[i];
-                let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
+            // TODO: validate array input data
 
-                // TODO: validate array input data
+            inputs.push(make_array(array_data));
 
-                inputs.push(make_array(array_data));
-
-                // Drop the Arcs to avoid memory leak
-                unsafe {
-                    Rc::from_raw(array_ptr as *const FFI_ArrowArray);
-                    Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
-                }
-            }
-        } else {
-            let array_elements = unsafe { addresses.as_ptr().add(1) };
-
-            for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
-                let array_ptr = unsafe { *(array_elements.add(i * 2)) };
-                let schema_ptr = unsafe { *(array_elements.add(i * 2 + 1)) };
-                let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
-
-                // TODO: validate array input data
-
-                inputs.push(make_array(array_data));
-
-                // Drop the Arcs to avoid memory leak
-                unsafe {
-                    Rc::from_raw(array_addrs[i] as *const FFI_ArrowArray);
-                    Rc::from_raw(schema_addrs[i] as *const FFI_ArrowSchema);
-                }
+            // Drop the Arcs to avoid memory leak
+            unsafe {
+                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
+                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
 

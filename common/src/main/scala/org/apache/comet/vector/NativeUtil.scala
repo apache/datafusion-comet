@@ -91,7 +91,7 @@ class NativeUtil {
   def exportBatch(
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
-      batch: ColumnarBatch): Array[Long] = {
+      batch: ColumnarBatch): Int = {
     val numRows = mutable.ArrayBuffer.empty[Int]
     val builder = Array.newBuilder[Long]
     builder += batch.numRows()
@@ -99,8 +99,10 @@ class NativeUtil {
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometNativeVector =>
-          builder += a.getArrayAddress
-          builder += a.getSchemaAddress
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          arrowArray.save(a.getArray.snapshot())
+          arrowSchema.save(a.getSchema.snapshot())
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -138,8 +140,7 @@ class NativeUtil {
     // the Arrow arrays. For example, Iceberg column reader will skip deleted rows internally in
     // its `CometVector` implementation. The `ColumnarBatch` returned by the reader will report
     // logical number of rows which is less than actual number of rows due to row deletion.
-
-    builder.result()
+    numRows.headOption.getOrElse(batch.numRows())
   }
 
   /**

@@ -74,11 +74,11 @@ public class CometNativeVector extends CometVector {
   @Override
   public void close() {}
 
-  public long getArrayAddress() {
-    return array.memoryAddress();
+  public ArrowArray getArray() {
+    return array;
   }
 
-  public long getSchemaAddress() {
-    return schema.memoryAddress();
+  public ArrowSchema getSchema() {
+    return schema;
   }
 }
