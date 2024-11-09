@@ -322,8 +322,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
     conf("spark.comet.columnar.shuffle.memorySize")
+      .internal()
       .doc(
-        "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
+        "Test-only config. This is only used to test Comet shuffle with Spark tests. " +
+          "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
           "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
           "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
           "flushed to disk immediately. If this is not configured, Comet will use " +
@@ -335,8 +337,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
+      .internal()
       .doc(
-        "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
+        "Test-only config. This is only used to test Comet shuffle with Spark tests. " +
+          "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
           "Comet memory size is specified by `spark.comet.memoryOverhead` or " +
           "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`.")
       .doubleConf
