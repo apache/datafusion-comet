@@ -1038,7 +1038,7 @@ impl PhysicalPlanner {
 
                     let mut file_groups = vec![vec![]; partition_count];
                     files.iter().enumerate().for_each(|(idx, file)| {
-                        file_groups[partition_count % idx].push(file.clone());
+                        file_groups[idx % partition_count].push(file.clone());
                     });
 
                     let file_scan_config =
