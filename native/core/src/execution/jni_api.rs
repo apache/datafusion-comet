@@ -17,8 +17,10 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
+use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -38,8 +40,6 @@ use jni::{
     JNIEnv,
 };
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -370,11 +370,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             let task_ctx = exec_context.session_ctx.task_ctx();
-            let stream = exec_context
-                .root_op
-                .as_ref()
-                .unwrap()
-                .execute(0, task_ctx)?;
+
+            let plan = exec_context.root_op.as_ref().unwrap();
+
+            println!(
+                "Executing partition 0 of {}",
+                plan.output_partitioning().partition_count()
+            );
+
+            let stream = plan.execute(0, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
             // Pull input batches

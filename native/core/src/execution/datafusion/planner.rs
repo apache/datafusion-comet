@@ -1012,7 +1012,11 @@ impl PhysicalPlanner {
                     println!("test_data_filters: {:?}", test_data_filters);
 
                     let object_store_url = ObjectStoreUrl::local_filesystem();
-                    let path = Url::parse(&scan.path).unwrap();
+                    let paths: Vec<Url> = scan
+                        .path
+                        .iter()
+                        .map(|path| Url::parse(path).unwrap())
+                        .collect();
 
                     let object_store = object_store::local::LocalFileSystem::new();
                     // register the object store with the runtime environment
@@ -1021,11 +1025,14 @@ impl PhysicalPlanner {
                         .runtime_env()
                         .register_object_store(&url, Arc::new(object_store));
 
-                    let file = PartitionedFile::from_path(path.path().to_string())?;
+                    let files: Vec<PartitionedFile> = paths
+                        .iter()
+                        .map(|path| PartitionedFile::from_path(path.path().to_string()).unwrap())
+                        .collect();
 
                     let file_scan_config =
-                        FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                            .with_file(file)
+                        FileScanConfig::new(object_store_url, data_schema_arrow.clone())
+                            .with_file_groups(vec![files])
                             .with_projection(Some(projection_vector));
 
                     let mut table_parquet_options = TableParquetOptions::new();
