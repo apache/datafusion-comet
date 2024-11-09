@@ -949,8 +949,8 @@ impl PhysicalPlanner {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 if scan.source == "CometScan parquet  (unknown)" {
-                    let data_schema = parse_message_type(&*scan.data_schema).unwrap();
-                    let required_schema = parse_message_type(&*scan.required_schema).unwrap();
+                    let data_schema = parse_message_type(&scan.data_schema).unwrap();
+                    let required_schema = parse_message_type(&scan.required_schema).unwrap();
                     println!("data_schema: {:?}", data_schema);
                     println!("required_schema: {:?}", required_schema);
 
@@ -990,7 +990,7 @@ impl PhysicalPlanner {
                     let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                         .data_filters
                         .iter()
-                        .map(|expr| self.create_expr(expr, data_schema_arrow.clone()))
+                        .map(|expr| self.create_expr(expr, Arc::clone(&data_schema_arrow)))
                         .collect();
 
                     // Create a conjunctive form of the vector because ParquetExecBuilder takes
@@ -1012,7 +1012,7 @@ impl PhysicalPlanner {
                     println!("test_data_filters: {:?}", test_data_filters);
 
                     let object_store_url = ObjectStoreUrl::local_filesystem();
-                    let path = Url::parse(&*scan.path).unwrap();
+                    let path = Url::parse(&scan.path).unwrap();
 
                     let object_store = object_store::local::LocalFileSystem::new();
                     // register the object store with the runtime environment
@@ -1024,7 +1024,7 @@ impl PhysicalPlanner {
                     let file = PartitionedFile::from_path(path.path().to_string())?;
 
                     let file_scan_config =
-                        FileScanConfig::new(object_store_url, data_schema_arrow.clone())
+                        FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
                             .with_file(file)
                             .with_projection(Some(projection_vector));
 
