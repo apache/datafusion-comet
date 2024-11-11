@@ -15,8 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{array::{as_large_list_array, as_list_array, Capacities, MutableArrayData}, buffer::{NullBuffer, OffsetBuffer}, datatypes::ArrowNativeType, record_batch::RecordBatch};
-use arrow_array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait, StructArray};
+use arrow::{
+    array::{as_primitive_array, Capacities, MutableArrayData},
+    buffer::{NullBuffer, OffsetBuffer},
+    datatypes::ArrowNativeType,
+    record_batch::RecordBatch,
+};
+use arrow_array::{
+    make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait,
+    StructArray,
+};
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
@@ -26,7 +34,10 @@ use datafusion_common::{
 };
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
-    any::Any, fmt::{Display, Formatter}, hash::{Hash, Hasher}, sync::Arc
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    hash::{Hash, Hasher},
+    sync::Arc,
 };
 #[derive(Debug, Hash)]
 pub struct ListExtract {
@@ -442,67 +453,109 @@ impl PhysicalExpr for ArrayInsert {
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         match self.src_array_expr.data_type(input_schema)? {
             DataType::List(field) => Ok(DataType::List(field)),
-            DataType::LargeList(field) => Ok(DataType::LargeList(field))
-            data_type => Err(DataFusionError::Internal(format!("Unexpected data type in ArrayInsert: {:?}", data_type)))
+            DataType::LargeList(field) => Ok(DataType::LargeList(field)),
+            data_type => Err(DataFusionError::Internal(format!(
+                "Unexpected data type in ArrayInsert: {:?}",
+                data_type
+            ))),
         }
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        todo!()
+        self.src_array_expr.nullable(input_schema)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let pos_value = self.pos_expr.evaluate(batch)?.into_array(batch.num_rows())?;
+        let pos_value = self
+            .pos_expr
+            .evaluate(batch)?
+            .into_array(batch.num_rows())?;
         // Check that index value is integer-like
         match pos_value.data_type() {
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {}
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => {}
             data_type => {
-                return Err(DataFusionError::Internal(format!("Unexpected index data type in ArrayInsert: {:?}", data_type)))
-                }
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected index data type in ArrayInsert: {:?}",
+                    data_type
+                )))
+            }
         }
 
         // Check that src array is actually an array and get it's value type
-        let src_value = self.src_array_expr.evaluate(batch)?.into_array(batch.num_rows())?;
+        let src_value = self
+            .src_array_expr
+            .evaluate(batch)?
+            .into_array(batch.num_rows())?;
         let src_element_type = match src_value.data_type() {
             DataType::List(field) => field.data_type(),
             DataType::LargeList(field) => field.data_type(),
             data_type => {
-                return Err(DataFusionError::Internal(format!("Unexpected src array type in ArrayInsert: {:?}", data_type)))
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected src array type in ArrayInsert: {:?}",
+                    data_type
+                )))
             }
         };
 
         // Check that inserted value has the same type as an array
-        let item_value = self.item_expr.evaluate(batch)?.into_array(batch.num_rows())?;
+        let item_value = self
+            .item_expr
+            .evaluate(batch)?
+            .into_array(batch.num_rows())?;
         if item_value.data_type() != src_element_type {
-            return Err(DataFusionError::Internal(format!("Type mismatch in ArrayInsert: array type is {:?} but item type is {:?}", src_element_type, item_value.data_type())))
+            return Err(DataFusionError::Internal(format!(
+                "Type mismatch in ArrayInsert: array type is {:?} but item type is {:?}",
+                src_element_type,
+                item_value.data_type()
+            )));
         }
 
         match src_value.data_type() {
             DataType::List(_) => {
-                let list_array = as_list_array(&src_value);
+                let list_array = as_list_array(&src_value)?;
                 array_insert(list_array, &pos_value, &item_value)
-            },
+            }
             DataType::LargeList(_) => {
-                let list_array = as_large_list_array(&src_value);
+                let list_array = as_large_list_array(&src_value)?;
                 array_insert(list_array, &pos_value, &item_value)
-            },
-            _ => unreachable!() // This case is checked already
+            }
+            _ => unreachable!(), // This case is checked already
         }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        todo!()
+        vec![&self.src_array_expr, &self.pos_expr, &self.item_expr]
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        todo!()
+        match children.len() {
+            3 => Ok(Arc::new(ArrayInsert::new(
+                Arc::clone(&children[0]),
+                Arc::clone(&children[1]),
+                Arc::clone(&children[2]),
+                self.legacy_negative_index,
+            ))),
+            _ => internal_err!("ArrayInsert should have exactly three childrens"),
+        }
     }
 
     fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+        let mut s = _state;
+        self.src_array_expr.hash(&mut s);
+        self.pos_expr.hash(&mut s);
+        self.item_expr.hash(&mut s);
+        self.legacy_negative_index.hash(&mut s);
+        self.hash(&mut s);
     }
 }
 
@@ -512,37 +565,38 @@ fn array_insert<O: OffsetSizeTrait>(
     pos_array: &ArrayRef,
 ) -> DataFusionResult<ColumnarValue> {
     // TODO: support spark's legacy mode!
-    
-    // Heavily inspired by 
+
+    // Heavily inspired by
     // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
-    
+
     let values = list_array.values();
     let offsets = list_array.offsets();
     let values_data = values.to_data();
     let item_data = items_array.to_data();
     let new_capacity = Capacities::Array(values_data.len() + item_data.len());
 
-    let mut mutable_values = MutableArrayData::with_capacities(vec![&values_data, &item_data], false, new_capacity);
+    let mut mutable_values =
+        MutableArrayData::with_capacities(vec![&values_data, &item_data], true, new_capacity);
 
     let mut new_offsets = vec![O::usize_as(0)];
     let mut new_nulls = Vec::<bool>::with_capacity(list_array.len());
 
-    let pos_data = pos_array.to_data();
+    let pos_data: &Int32Array = as_primitive_array(&pos_array); // TODO: How to make it works in generic version?
 
-    for (i, offset_window) in offsets.windows(2).enumerate() {
+    for (row_index, offset_window) in offsets.windows(2).enumerate() {
         let start = offset_window[0].as_usize();
         let end = offset_window[1].as_usize();
-        let pos = pos_data.buffers()[0][i].as_usize();
-        let is_item_null = items_array.is_null(i);
+        let pos = (pos_data.values()[row_index] - 1).as_usize(); // Spark uses indexes started from one
+        let is_item_null = items_array.is_null(row_index);
 
-        mutable_values.extend(0, start, pos);
-        mutable_values.extend(1, i, i + 1);
-        mutable_values.extend(0, pos, end);
+        mutable_values.extend(0, start, start + pos);
+        mutable_values.extend(1, row_index, row_index + 1);
+        mutable_values.extend(0, start + pos, end);
         if is_item_null {
             if start == end {
                 new_nulls.push(false)
             } else {
-                if values.is_null(i) {
+                if values.is_null(row_index) {
                     new_nulls.push(false)
                 } else {
                     new_nulls.push(true)
@@ -551,15 +605,20 @@ fn array_insert<O: OffsetSizeTrait>(
         } else {
             new_nulls.push(true)
         }
-        new_offsets.push(offsets[i] + O::usize_as(end - start + 1));
+        new_offsets.push(new_offsets[row_index] + O::usize_as(end - start + 1));
     }
 
-    let data = mutable_values.freeze();
+    let data = make_array(mutable_values.freeze());
+    let data_type = match list_array.data_type() {
+        DataType::List(field) => field.data_type(),
+        DataType::LargeList(field) => field.data_type(),
+        _ => unreachable!()
+    };
     let new_array = GenericListArray::<O>::try_new(
-            Arc::new(Field::new("item", list_array.data_type().to_owned(), true)), 
-            OffsetBuffer::new(new_offsets.into()), 
-            make_array(data),
-            Some(NullBuffer::new(new_nulls.into())) 
+        Arc::new(Field::new("item", data_type.clone(), true)),
+        OffsetBuffer::new(new_offsets.into()),
+        data,
+        Some(NullBuffer::new(new_nulls.into())),
     )?;
 
     Ok(ColumnarValue::Array(Arc::new(new_array)))
@@ -579,7 +638,12 @@ impl PartialEq<dyn Any> for ArrayInsert {
     fn eq(&self, other: &dyn Any) -> bool {
         down_cast_any_ref(other)
             .downcast_ref::<Self>()
-            .map(|x| self.src_array_expr.eq(&x.src_array_expr) && self.pos_expr.eq(&x.pos_expr) && self.item_expr.eq(&x.item_expr) && self.legacy_negative_index.eq(&x.legacy_negative_index))
+            .map(|x| {
+                self.src_array_expr.eq(&x.src_array_expr)
+                    && self.pos_expr.eq(&x.pos_expr)
+                    && self.item_expr.eq(&x.item_expr)
+                    && self.legacy_negative_index.eq(&x.legacy_negative_index)
+            })
             .unwrap_or(false)
     }
 }
@@ -589,10 +653,10 @@ mod test {
     use crate::list::{array_insert, list_extract, zero_based_index};
 
     use arrow::datatypes::Int32Type;
-    use arrow_array::{Array, Int32Array, ListArray};
+    use arrow_array::{Array, ArrayRef, Int32Array, ListArray};
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::ColumnarValue;
-    use std::{ops::Deref, sync::Arc};
+    use std::sync::Arc;
 
     #[test]
     fn test_list_extract_default_value() -> Result<()> {
@@ -633,24 +697,33 @@ mod test {
 
     #[test]
     fn test_array_insert() -> Result<()> {
-    let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
-        Some(vec![Some(1), Some(2), Some(3)]),
-        Some(vec![Some(4), Some(5)]),
-        None,
-    ]);
-    let positions = Int32Array::from(vec![1, 0, 0]);
-    let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+        // Test inserting an item into a list array
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(4), Some(5)]),
+            None,
+        ]);
 
-    let ColumnarValue::Array(result) = array_insert(&list, &Arc::new(items), &Arc::new(positions))? else {
-        unreachable!()
-    };
+        let positions = Int32Array::from(vec![2, 1, 1]);
+        let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
 
-    let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
-        Some(vec![Some(1), Some(10), Some(2), Some(3)]),
-        Some(vec![Some(20), Some(4), Some(5)]),
-        None,
-    ]);
+        let ColumnarValue::Array(result) = array_insert(
+            &list,
+            &(Arc::new(items) as ArrayRef),
+            &(Arc::new(positions) as ArrayRef),
+        )?
+        else {
+            unreachable!()
+        };
 
-    assert_eq!(result.to_data(), expected.to_data());
-    Ok(())    }
+        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(10), Some(2), Some(3)]),
+            Some(vec![Some(20), Some(4), Some(5)]),
+            Some(vec![Some(30)]),
+        ]);
+
+        assert_eq!(&result.to_data(), &expected.to_data());
+
+        Ok(())
+    }
 }

@@ -2251,10 +2251,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               ExprOuterClass.Expr
                 .newBuilder()
                 .setArrayInsert(arrayInsertBuilder)
-                .build()
-            )
+                .build())
           } else {
-            withInfo(expr, "unsupported arguments for ArrayInsert", srcArrayExpr, posExpr, itemExpr)
+            withInfo(
+              expr,
+              "unsupported arguments for ArrayInsert",
+              srcArrayExpr,
+              posExpr,
+              itemExpr)
             None
           }
 

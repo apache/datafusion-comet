@@ -409,7 +409,6 @@ message ArrayInsert {
   Expr pos_expr = 2;
   Expr item_expr = 3;
   bool legacy_negative_index = 4;
-  DataType element_type = 5;
 }
 
 message DataType {
