@@ -2259,11 +2259,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
         case ArrayAppend(left, right) =>
-          val leftExpr = exprToProto(left, inputs, binding)
-          val rightExpr = exprToProto(right, inputs, binding)
-
-          val optExpr = scalarExprToProto("array_append", leftExpr, rightExpr)
-          optExprWithInfo(optExpr, expr, left, right)
+          createBinaryExpr(left, right, inputs).map { builder =>
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setArrayAppend(builder)
+              .build()
+          }
 
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)

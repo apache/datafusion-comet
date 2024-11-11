@@ -699,17 +699,27 @@ impl PhysicalPlanner {
                 let right =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let return_type = left.data_type(&input_schema)?;
-                let args = vec![left, right];
+                let args = vec![Arc::clone(&left), right];
                 let datafusion_array_append =
                     Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
-                let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                let array_append_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     "array_append",
                     datafusion_array_append,
                     args,
                     return_type,
                 ));
 
-                Ok(scalar_expr)
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(left));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_append_expr),
+                )
+                .unwrap();
+                Ok(Arc::new(case_expr))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

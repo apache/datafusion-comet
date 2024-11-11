@@ -2315,6 +2315,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("array_append") {
+    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -2328,6 +2329,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select(array_append(array(col("_6"), col("_7")), 6.5)))
         checkSparkAnswerAndOperator(df.select(array_append(array(col("_8")), "test")))
         checkSparkAnswerAndOperator(df.select(array_append(array(col("_19")), col("_19"))))
+        checkSparkAnswerAndOperator(
+          df.select(array_append(expr("CASE WHEN _2=_3 THEN array(_4) END"), col("_4"))))
       }
     }
   }
