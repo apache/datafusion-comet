@@ -592,14 +592,10 @@ fn array_insert<O: OffsetSizeTrait>(
         mutable_values.extend(1, row_index, row_index + 1);
         mutable_values.extend(0, start + pos, end);
         if is_item_null {
-            if start == end {
+            if (start == end) || (values.is_null(row_index)) {
                 new_nulls.push(false)
             } else {
-                if values.is_null(row_index) {
-                    new_nulls.push(false)
-                } else {
-                    new_nulls.push(true)
-                }
+                new_nulls.push(true)
             }
         } else {
             new_nulls.push(true)
