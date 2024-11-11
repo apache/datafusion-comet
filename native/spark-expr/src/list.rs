@@ -469,19 +469,14 @@ impl PhysicalExpr for ArrayInsert {
             .pos_expr
             .evaluate(batch)?
             .into_array(batch.num_rows())?;
-        // Check that index value is integer-like
+
+        // Spark supports only IntegerType (Int32):
+        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
         match pos_value.data_type() {
-            DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64 => {}
+            DataType::Int32 => {}
             data_type => {
                 return Err(DataFusionError::Internal(format!(
-                    "Unexpected index data type in ArrayInsert: {:?}",
+                    "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
                     data_type
                 )))
             }
@@ -563,7 +558,7 @@ fn array_insert<O: OffsetSizeTrait>(
     items_array: &ArrayRef,
     pos_array: &ArrayRef,
 ) -> DataFusionResult<ColumnarValue> {
-    // TODO: support spark's legacy mode!
+    // TODO: support spark's legacy mode and negative indices!
 
     // Heavily inspired by
     // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
@@ -580,7 +575,7 @@ fn array_insert<O: OffsetSizeTrait>(
     let mut new_offsets = vec![O::usize_as(0)];
     let mut new_nulls = Vec::<bool>::with_capacity(list_array.len());
 
-    let pos_data: &Int32Array = as_primitive_array(&pos_array); // TODO: How to make it works in generic version?
+    let pos_data: &Int32Array = as_primitive_array(&pos_array); // Spark supports only i32 for positions
 
     for (row_index, offset_window) in offsets.windows(2).enumerate() {
         let start = offset_window[0].as_usize();
