@@ -819,6 +819,12 @@ fn is_datafusion_spark_compatible(
     }
 }
 
+/// Cast between struct types based on logic in
+/// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
+///
+/// This can change the types of fields within the struct as well as drop struct fields. The
+/// `from_type` and `to_type` do not need to have the same number of fields, but the `from_type`
+/// must have at least as many fields as the `to_type`.
 fn cast_struct_to_struct(
     array: &StructArray,
     from_type: &DataType,
