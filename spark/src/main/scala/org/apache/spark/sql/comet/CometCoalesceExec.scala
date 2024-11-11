@@ -39,7 +39,6 @@ case class CometCoalesceExec(
     extends CometExec
     with UnaryExecNode {
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    CometExec.prepareScanForNativeExec(child)
     val rdd = child.executeColumnar()
     if (numPartitions == 1 && rdd.getNumPartitions < 1) {
       // Make sure we don't output an RDD with 0 partitions, when claiming that we have a
