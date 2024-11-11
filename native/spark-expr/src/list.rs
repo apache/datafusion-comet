@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{array::{Capacities, MutableArrayData}, buffer::{NullBuffer, OffsetBuffer}, datatypes::ArrowNativeType, record_batch::RecordBatch};
+use arrow::{array::{as_large_list_array, as_list_array, Capacities, MutableArrayData}, buffer::{NullBuffer, OffsetBuffer}, datatypes::ArrowNativeType, record_batch::RecordBatch};
 use arrow_array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait, StructArray};
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
@@ -476,7 +476,18 @@ impl PhysicalExpr for ArrayInsert {
         if item_value.data_type() != src_element_type {
             return Err(DataFusionError::Internal(format!("Type mismatch in ArrayInsert: array type is {:?} but item type is {:?}", src_element_type, item_value.data_type())))
         }
-        todo!()
+
+        match src_value.data_type() {
+            DataType::List(_) => {
+                let list_array = as_list_array(&src_value);
+                array_insert(list_array, &pos_value, &item_value)
+            },
+            DataType::LargeList(_) => {
+                let list_array = as_large_list_array(&src_value);
+                array_insert(list_array, &pos_value, &item_value)
+            },
+            _ => unreachable!() // This case is checked already
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -554,15 +565,34 @@ fn array_insert<O: OffsetSizeTrait>(
     Ok(ColumnarValue::Array(Arc::new(new_array)))
 }
 
+impl Display for ArrayInsert {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ArrayInsert [array: {:?}, pos: {:?}, item: {:?}]",
+            self.src_array_expr, self.pos_expr, self.item_expr
+        )
+    }
+}
+
+impl PartialEq<dyn Any> for ArrayInsert {
+    fn eq(&self, other: &dyn Any) -> bool {
+        down_cast_any_ref(other)
+            .downcast_ref::<Self>()
+            .map(|x| self.src_array_expr.eq(&x.src_array_expr) && self.pos_expr.eq(&x.pos_expr) && self.item_expr.eq(&x.item_expr) && self.legacy_negative_index.eq(&x.legacy_negative_index))
+            .unwrap_or(false)
+    }
+}
 
 #[cfg(test)]
 mod test {
-    use crate::list::{list_extract, zero_based_index};
+    use crate::list::{array_insert, list_extract, zero_based_index};
 
     use arrow::datatypes::Int32Type;
     use arrow_array::{Array, Int32Array, ListArray};
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::ColumnarValue;
+    use std::{ops::Deref, sync::Arc};
 
     #[test]
     fn test_list_extract_default_value() -> Result<()> {
@@ -600,4 +630,27 @@ mod test {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_array_insert() -> Result<()> {
+    let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+        Some(vec![Some(1), Some(2), Some(3)]),
+        Some(vec![Some(4), Some(5)]),
+        None,
+    ]);
+    let positions = Int32Array::from(vec![1, 0, 0]);
+    let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+
+    let ColumnarValue::Array(result) = array_insert(&list, &Arc::new(items), &Arc::new(positions))? else {
+        unreachable!()
+    };
+
+    let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+        Some(vec![Some(1), Some(10), Some(2), Some(3)]),
+        Some(vec![Some(20), Some(4), Some(5)]),
+        None,
+    ]);
+
+    assert_eq!(result.to_data(), expected.to_data());
+    Ok(())    }
 }
