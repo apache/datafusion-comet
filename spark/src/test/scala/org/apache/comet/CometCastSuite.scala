@@ -888,8 +888,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
-            "SELECT CAST(struct(_1, _2) as " +
-              "struct<_1:string, _2:string>) FROM tbl")
+            "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +
+              "struct<_1:string, _2:string, _3:string, _4:string>) FROM tbl")
         }
       }
     }
