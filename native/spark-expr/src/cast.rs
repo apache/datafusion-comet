@@ -834,20 +834,20 @@ fn cast_struct_to_struct(
     allow_incompat: bool,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
-        (DataType::Struct(f), DataType::Struct(t)) => {
-            assert!(t.len() <= f.len());
-            let mut foo: Vec<(Arc<Field>, ArrayRef)> = vec![];
-            for i in 0..t.len() {
-                let x = spark_cast(
+        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            assert!(to_fields.len() <= from_fields.len());
+            let mut cast_fields: Vec<(Arc<Field>, ArrayRef)> = vec![];
+            for i in 0..to_fields.len() {
+                let cast_field = spark_cast(
                     ColumnarValue::Array(array.column(i).clone()),
-                    &t[i].data_type(),
+                    &to_fields[i].data_type(),
                     eval_mode,
                     timezone,
                     allow_incompat,
                 )?;
-                foo.push((t[i].clone(), x.into_array(array.len())?));
+                cast_fields.push((to_fields[i].clone(), cast_field.into_array(array.len())?));
             }
-            Ok(Arc::new(StructArray::from(foo)))
+            Ok(Arc::new(StructArray::from(cast_fields)))
         }
         _ => unreachable!(),
     }
