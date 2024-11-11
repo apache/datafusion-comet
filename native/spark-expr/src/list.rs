@@ -22,8 +22,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_array::{
-    make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait,
-    StructArray,
+    make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait, StructArray,
 };
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
@@ -612,7 +611,7 @@ fn array_insert<O: OffsetSizeTrait>(
     let data_type = match list_array.data_type() {
         DataType::List(field) => field.data_type(),
         DataType::LargeList(field) => field.data_type(),
-        _ => unreachable!()
+        _ => unreachable!(),
     };
     let new_array = GenericListArray::<O>::try_new(
         Arc::new(Field::new("item", data_type.clone(), true)),
