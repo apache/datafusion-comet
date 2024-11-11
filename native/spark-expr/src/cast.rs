@@ -836,7 +836,7 @@ fn cast_struct_to_struct(
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
             assert!(to_fields.len() <= from_fields.len());
-            let mut cast_fields: Vec<(Arc<Field>, ArrayRef)> = vec![];
+            let mut cast_fields: Vec<(Arc<Field>, ArrayRef)> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
                 let cast_field = cast_array(
                     Arc::clone(array.column(i)),
