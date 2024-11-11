@@ -34,7 +34,7 @@ use arrow::{
 };
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
@@ -714,6 +714,14 @@ fn cast_array(
         (DataType::Struct(_), DataType::Utf8) => {
             Ok(casts_struct_to_string(array.as_struct(), &timezone)?)
         }
+        (DataType::Struct(_), DataType::Struct(_)) => Ok(cast_struct_to_struct(
+            array.as_struct(),
+            from_type,
+            to_type,
+            eval_mode,
+            &timezone,
+            allow_incompat,
+        )?),
         _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
@@ -808,6 +816,34 @@ fn is_datafusion_spark_compatible(
             matches!(to_type, DataType::Utf8)
         }
         _ => false,
+    }
+}
+
+fn cast_struct_to_struct(
+    array: &StructArray,
+    from_type: &DataType,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+    timezone: &str,
+    allow_incompat: bool,
+) -> DataFusionResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::Struct(f), DataType::Struct(t)) => {
+            assert!(t.len() <= f.len());
+            let mut foo: Vec<(Arc<Field>, ArrayRef)> = vec![];
+            for i in 0..t.len() {
+                let x = spark_cast(
+                    ColumnarValue::Array(array.column(i).clone()),
+                    &t[i].data_type(),
+                    eval_mode,
+                    timezone,
+                    allow_incompat,
+                )?;
+                foo.push((t[i].clone(), x.into_array(array.len())?));
+            }
+            Ok(Arc::new(StructArray::from(foo)))
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -1929,7 +1965,7 @@ fn trim_end(s: &str) -> &str {
 mod tests {
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow_array::StringArray;
-    use arrow_schema::{Field, TimeUnit};
+    use arrow_schema::{Field, Fields, TimeUnit};
     use std::str::FromStr;
 
     use super::*;
@@ -2335,5 +2371,38 @@ mod tests {
         assert_eq!(r#"{null, c}"#, string_array.value(2));
         assert_eq!(r#"{4, d}"#, string_array.value(3));
         assert_eq!(r#"{5, e}"#, string_array.value(4));
+    }
+
+    #[test]
+    fn test_cast_struct_to_struct() {
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            Some(4),
+            Some(5),
+        ]));
+        let b: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
+        let c: ArrayRef = Arc::new(StructArray::from(vec![
+            (Arc::new(Field::new("a", DataType::Int32, true)), a),
+            (Arc::new(Field::new("b", DataType::Utf8, true)), b),
+        ]));
+        let fields = Fields::from(vec![
+            Field::new("a", DataType::Utf8, true),
+            Field::new("b", DataType::Utf8, true),
+        ]);
+        let x = spark_cast(
+            ColumnarValue::Array(c),
+            &DataType::Struct(fields),
+            EvalMode::Legacy,
+            "UTC",
+            false,
+        )
+        .unwrap();
+        if let ColumnarValue::Array(cast_array) = x {
+            assert_eq!(5, cast_array.len());
+        } else {
+            unreachable!()
+        }
     }
 }
