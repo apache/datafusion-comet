@@ -103,7 +103,6 @@ object CometCast {
             case other =>
               return other
           }
-          Compatible()
         }
         Compatible()
       case _ => Unsupported

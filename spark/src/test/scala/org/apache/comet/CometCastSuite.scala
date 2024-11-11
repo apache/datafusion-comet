@@ -881,6 +881,20 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StructType to StructType") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(struct(_1, _2) as " +
+              "struct<_1:string, _2:string>) FROM tbl")
+        }
+      }
+    }
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
