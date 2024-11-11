@@ -39,6 +39,7 @@ trait DataTypeSupport {
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
     case t: DataType if t.typeName == "timestamp_ntz" => true
+    case _: StructType => true
     case _ => false
   }
 
