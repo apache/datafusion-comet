@@ -2387,11 +2387,12 @@ mod tests {
             (Arc::new(Field::new("a", DataType::Int32, true)), a),
             (Arc::new(Field::new("b", DataType::Utf8, true)), b),
         ]));
+        // change type of "a" from Int32 to Utf8
         let fields = Fields::from(vec![
             Field::new("a", DataType::Utf8, true),
             Field::new("b", DataType::Utf8, true),
         ]);
-        let x = spark_cast(
+        let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
             EvalMode::Legacy,
@@ -2399,8 +2400,45 @@ mod tests {
             false,
         )
         .unwrap();
-        if let ColumnarValue::Array(cast_array) = x {
+        if let ColumnarValue::Array(cast_array) = cast_array {
             assert_eq!(5, cast_array.len());
+            let a = cast_array.as_struct().column(0).as_string::<i32>();
+            assert_eq!("1", a.value(0));
+        } else {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn test_cast_struct_to_struct_drop_column() {
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            None,
+            Some(4),
+            Some(5),
+        ]));
+        let b: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
+        let c: ArrayRef = Arc::new(StructArray::from(vec![
+            (Arc::new(Field::new("a", DataType::Int32, true)), a),
+            (Arc::new(Field::new("b", DataType::Utf8, true)), b),
+        ]));
+        // change type of "a" from Int32 to Utf8 and drop "b"
+        let fields = Fields::from(vec![Field::new("a", DataType::Utf8, true)]);
+        let cast_array = spark_cast(
+            ColumnarValue::Array(c),
+            &DataType::Struct(fields),
+            EvalMode::Legacy,
+            "UTC",
+            false,
+        )
+        .unwrap();
+        if let ColumnarValue::Array(cast_array) = cast_array {
+            assert_eq!(5, cast_array.len());
+            let struct_array = cast_array.as_struct();
+            assert_eq!(1, struct_array.columns().len());
+            let a = struct_array.column(0).as_string::<i32>();
+            assert_eq!("1", a.value(0));
         } else {
             unreachable!()
         }
