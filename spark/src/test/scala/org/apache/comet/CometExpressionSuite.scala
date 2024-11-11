@@ -2207,12 +2207,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = spark
           .range(5)
           // Add both a null struct and null inner value
-          .select(
-            when(
-              col("id") > 1,
-              struct(
-                when(col("id") > 2, col("id")).alias("id")))
-              .alias("nested1"))
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested1"))
 
         df.write.parquet(dir.toString())
       }
@@ -2230,8 +2226,50 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO need more work to get this one passing
-  ignore("get_struct_field with DataFusion ParquetExec - select subset of struct") {
+  test("get_struct_field with DataFusion ParquetExec - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("parquet").foreach { v1List =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+          val df = spark.read.parquet(dir.toString())
+
+          // TODO this currently fails with the following error from DataFusion
+          // Cannot cast file schema field nested1 of type
+          // Struct([Field { name: "id", ... }, Field { name: "nested2", data_type: Struct([Field { name: "id", ... }]), ... }])
+          // to table schema field of type
+          // Struct([Field { name: "id", ... }])
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
+
+
+          // TODO
+//          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        }
+      }
+    }
+  }
+
+  // TODO this is not using DataFusion's ParquetExec
+  ignore("get_struct_field with DataFusion ParquetExec - read entire struct") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2258,10 +2296,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           val df = spark.read.parquet(dir.toString())
           checkSparkAnswerAndOperator(df.select("nested1"))
-
-
-//          checkSparkAnswerAndOperator(df.select("nested1.id"))
-//          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
         }
       }
     }
