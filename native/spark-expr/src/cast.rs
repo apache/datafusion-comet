@@ -821,10 +821,6 @@ fn is_datafusion_spark_compatible(
 
 /// Cast between struct types based on logic in
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
-///
-/// This can change the types of fields within the struct as well as drop struct fields. The
-/// `from_type` and `to_type` do not need to have the same number of fields, but the `from_type`
-/// must have at least as many fields as the `to_type`.
 fn cast_struct_to_struct(
     array: &StructArray,
     from_type: &DataType,
@@ -835,7 +831,6 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            assert!(to_fields.len() <= from_fields.len());
             let mut cast_fields: Vec<(Arc<Field>, ArrayRef)> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
                 let cast_field = cast_array(
