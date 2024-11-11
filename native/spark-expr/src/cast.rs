@@ -719,7 +719,7 @@ fn cast_array(
             from_type,
             to_type,
             eval_mode,
-            &timezone,
+            timezone,
             allow_incompat,
         )?),
         _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
@@ -830,7 +830,7 @@ fn cast_struct_to_struct(
     from_type: &DataType,
     to_type: &DataType,
     eval_mode: EvalMode,
-    timezone: &str,
+    timezone: String,
     allow_incompat: bool,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
@@ -838,14 +838,14 @@ fn cast_struct_to_struct(
             assert!(to_fields.len() <= from_fields.len());
             let mut cast_fields: Vec<(Arc<Field>, ArrayRef)> = vec![];
             for i in 0..to_fields.len() {
-                let cast_field = spark_cast(
-                    ColumnarValue::Array(array.column(i).clone()),
-                    &to_fields[i].data_type(),
+                let cast_field = cast_array(
+                    Arc::clone(array.column(i)),
+                    to_fields[i].data_type(),
                     eval_mode,
-                    timezone,
+                    timezone.clone(),
                     allow_incompat,
                 )?;
-                cast_fields.push((to_fields[i].clone(), cast_field.into_array(array.len())?));
+                cast_fields.push((Arc::clone(&to_fields[i]), cast_field));
             }
             Ok(Arc::new(StructArray::from(cast_fields)))
         }
