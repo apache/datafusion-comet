@@ -34,7 +34,11 @@ import org.apache.comet.vector.CometVector;
 /** A metadata column reader that can be extended by {@link RowIndexColumnReader} etc. */
 public class MetadataColumnReader extends AbstractColumnReader {
   private final BufferAllocator allocator = new RootAllocator();
+
   private CometVector vector;
+
+  private ArrowArray array = null;
+  private ArrowSchema schema = null;
 
   public MetadataColumnReader(DataType type, ColumnDescriptor descriptor, boolean useDecimal128) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
@@ -50,13 +54,17 @@ public class MetadataColumnReader extends AbstractColumnReader {
   @Override
   public void readBatch(int total) {
     if (vector == null) {
-      long[] addresses = Native.currentBatch(nativeHandle);
-      try (ArrowArray array = ArrowArray.wrap(addresses[0]);
-          ArrowSchema schema = ArrowSchema.wrap(addresses[1])) {
-        FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
-        vector = new CometPlainVector(fieldVector, useDecimal128);
-      }
+      array = ArrowArray.allocateNew(allocator);
+      schema = ArrowSchema.allocateNew(allocator);
+
+      long arrayAddr = array.memoryAddress();
+      long schemaAddr = schema.memoryAddress();
+
+      Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
+      FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
+      vector = new CometPlainVector(fieldVector, useDecimal128);
     }
+
     vector.setNumValues(total);
   }
 
