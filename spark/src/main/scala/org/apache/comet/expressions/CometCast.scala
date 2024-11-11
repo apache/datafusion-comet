@@ -95,6 +95,17 @@ object CometCast {
         canCastFromFloat(toType)
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
+      case (from_struct: StructType, to_struct: StructType) =>
+        from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+          isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
+            case Compatible(_) =>
+            // all good
+            case other =>
+              return other
+          }
+          Compatible()
+        }
+        Compatible()
       case _ => Unsupported
     }
   }
