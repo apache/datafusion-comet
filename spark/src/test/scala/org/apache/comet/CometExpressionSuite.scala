@@ -2253,19 +2253,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           val df = spark.read.parquet(dir.toString())
 
-          // TODO this currently fails with the following error from DataFusion
-          // Cannot cast file schema field nested1 of type
-          // Struct([Field { name: "id", ... }, Field { name: "nested2", data_type: Struct([Field { name: "id", ... }]), ... }])
-          // to table schema field of type
-          // Struct([Field { name: "id", ... }])
-          //checkSparkAnswerAndOperator(df.select("nested1.id"))
-
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
 
           checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
 
-
-          // TODO
-          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          //checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
         }
       }
     }

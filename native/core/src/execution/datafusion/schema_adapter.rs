@@ -17,12 +17,12 @@
 
 //! Custom schema adapter that uses Spark-compatible casts
 
-use arrow_schema::{Schema, SchemaRef};
-use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use std::sync::Arc;
 use arrow::compute::{can_cast_types, cast};
 use arrow_array::{new_null_array, RecordBatch, RecordBatchOptions};
+use arrow_schema::{DataType, Schema, SchemaRef};
+use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_common::plan_err;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
 pub struct CometSchemaAdapterFactory {}
@@ -91,18 +91,26 @@ impl SchemaAdapter for CometSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.projected_table_schema.fields().find(file_field.name())
             {
-                match can_cast_types(file_field.data_type(), table_field.data_type()) {
-                    true => {
+                // workaround for struct casting
+                match (file_field.data_type(), table_field.data_type()) {
+                    // TODO need to use Comet cast logic to determine which casts are supported,
+                    // but for now just add a hack to support casting between struct types
+                    (DataType::Struct(_), DataType::Struct(_)) => {
                         field_mappings[table_idx] = Some(projection.len());
                         projection.push(file_idx);
                     }
-                    false => {
-                        return plan_err!(
-                            "Cannot cast file schema field {} of type {:?} to table schema field of type {:?}",
-                            file_field.name(),
-                            file_field.data_type(),
-                            table_field.data_type()
-                        )
+                    _ => {
+                        if can_cast_types(file_field.data_type(), table_field.data_type()) {
+                            field_mappings[table_idx] = Some(projection.len());
+                            projection.push(file_idx);
+                        } else {
+                            return plan_err!(
+                                "Cannot cast file schema field {} of type {:?} to table schema field of type {:?}",
+                                file_field.name(),
+                                file_field.data_type(),
+                                table_field.data_type()
+                            );
+                        }
                     }
                 }
             }
@@ -117,7 +125,6 @@ impl SchemaAdapter for CometSchemaAdapter {
             projection,
         ))
     }
-
 }
 
 // TODO SchemaMapping is public in DataFusion, but its fields are not. It would be
@@ -209,10 +216,7 @@ impl SchemaMapper for SchemaMapping {
     /// Unlike `map_batch` this method also preserves the columns that
     /// may not appear in the final output (`projected_table_schema`) but may
     /// appear in push down predicates
-    fn map_partial_batch(
-        &self,
-        batch: RecordBatch,
-    ) -> datafusion_common::Result<RecordBatch> {
+    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
         let batch_cols = batch.columns().to_vec();
         let schema = batch.schema();
 
@@ -247,10 +251,8 @@ impl SchemaMapper for SchemaMapping {
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
-        let schema =
-            Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+        let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
 }
-
