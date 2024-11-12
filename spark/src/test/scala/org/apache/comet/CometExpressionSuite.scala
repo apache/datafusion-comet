@@ -2320,18 +2320,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        val df = spark.read.parquet(path.toString)
-        checkSparkAnswerAndOperator(df.select(array_append(array(col("_1")), false)))
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        checkSparkAnswerAndOperator(spark.sql("Select array_append(array(_1),false) from t1"))
         checkSparkAnswerAndOperator(
-          df.select(array_append(array(col("_2"), col("_3"), col("_4")), 4)))
+          spark.sql("SELECT array_append(array(_2, _3, _4), 4) FROM t1"))
         checkSparkAnswerAndOperator(
-          df.select(array_append(array(col("_2"), col("_3"), col("_4")), null)))
-        checkSparkAnswerAndOperator(df.select(array_append(array(col("_6"), col("_7")), 6.5)))
-        checkSparkAnswerAndOperator(df.select(array_append(array(col("_8")), "test")))
-        checkSparkAnswerAndOperator(df.select(array_append(array(col("_19")), col("_19"))))
+          spark.sql("SELECT array_append(array(_2, _3, _4), null) FROM t1"));
         checkSparkAnswerAndOperator(
-          df.select(array_append(expr("CASE WHEN _2=_3 THEN array(_4) END"), col("_4"))))
+          spark.sql("SELECT array_append(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_8), 'test') FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_19), _19) FROM t1"));
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
+
     }
   }
 }

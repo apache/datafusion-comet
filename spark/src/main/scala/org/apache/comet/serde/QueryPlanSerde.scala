@@ -2258,14 +2258,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
-        case ArrayAppend(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
+        case _ if expr.prettyName == "array_append" =>
+          createBinaryExpr(expr.children(0), expr.children(1), inputs).map { builder =>
             ExprOuterClass.Expr
               .newBuilder()
               .setArrayAppend(builder)
               .build()
           }
-
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
