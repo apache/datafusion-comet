@@ -140,7 +140,6 @@ object CometExec {
    * Executes this Comet operator and serialized output ColumnarBatch into bytes.
    */
   def getByteArrayRdd(cometPlan: CometPlan): RDD[(Long, ChunkedByteBuffer)] = {
-    prepareScanForNativeExec(cometPlan)
     cometPlan.executeColumnar().mapPartitionsInternal { iter =>
       Utils.serializeBatches(iter)
     }
