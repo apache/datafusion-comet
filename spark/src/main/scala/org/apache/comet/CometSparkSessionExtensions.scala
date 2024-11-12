@@ -199,22 +199,6 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
-              if CometNativeScanExec.isSchemaSupported(requiredSchema)
-                && CometNativeScanExec.isSchemaSupported(partitionSchema)
-                && COMET_FULL_NATIVE_SCAN_ENABLED.get =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometNativeScanExec(scanExec, session)
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
               if CometScanExec.isSchemaSupported(requiredSchema)
                 && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
@@ -1221,8 +1205,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   def isCometScan(op: SparkPlan): Boolean = {
-    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec] ||
-    op.isInstanceOf[CometNativeScanExec]
+    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {

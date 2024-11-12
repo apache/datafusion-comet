@@ -36,7 +36,7 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometNativeScanExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ExtendedMode, InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -172,7 +172,7 @@ abstract class CometTestBase
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
     val wrapped = wrapCometSparkToColumnar(plan)
     wrapped.foreach {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec =>
+      case _: CometScanExec | _: CometBatchScanExec =>
       case _: CometSinkPlaceHolder | _: CometScanWrapper =>
       case _: CometSparkToColumnarExec =>
       case _: CometExec | _: CometShuffleExchangeExec =>
