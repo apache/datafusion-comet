@@ -2257,13 +2257,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
 
-          //checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
+          // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
         }
       }
     }
   }
 
-  // TODO this is not using DataFusion's ParquetExec
+  // TODO this is not using DataFusion's ParquetExec for some reason
   ignore("get_struct_field with DataFusion ParquetExec - read entire struct") {
     withTempPath { dir =>
       // create input file with Comet disabled

@@ -17,11 +17,13 @@
 
 //! Custom schema adapter that uses Spark-compatible casts
 
-use arrow::compute::{can_cast_types, cast};
-use arrow_array::{new_null_array, RecordBatch, RecordBatchOptions};
+use arrow::compute::can_cast_types;
+use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
+use datafusion_comet_spark_expr::{spark_cast, EvalMode};
 use datafusion_common::plan_err;
+use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
@@ -91,6 +93,12 @@ impl SchemaAdapter for CometSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.projected_table_schema.fields().find(file_field.name())
             {
+                println!(
+                    "SchemaAdapter cast from {} to {}",
+                    file_field.data_type(),
+                    table_field.data_type()
+                );
+
                 // workaround for struct casting
                 match (file_field.data_type(), table_field.data_type()) {
                     // TODO need to use Comet cast logic to determine which casts are supported,
@@ -127,8 +135,9 @@ impl SchemaAdapter for CometSchemaAdapter {
     }
 }
 
-// TODO SchemaMapping is public in DataFusion, but its fields are not. It would be
-// good to fix that so we don't have to duplicate the code here.
+// TODO SchemaMapping is mostly copied from DataFusion but calls spark_cast
+// instead of arrow cast - can we reduce the amount of code copied here and make
+// the DataFusion version more extensible?
 
 /// The SchemaMapping struct holds a mapping from the file schema to the table
 /// schema and any necessary type conversions.
@@ -197,7 +206,17 @@ impl SchemaMapper for SchemaMapping {
                     || Ok(new_null_array(field.data_type(), batch_rows)),
                     // However, if it does exist in both, then try to cast it to the correct output
                     // type
-                    |batch_idx| cast(&batch_cols[batch_idx], field.data_type()),
+                    |batch_idx| {
+                        spark_cast(
+                            ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
+                            field.data_type(),
+                            // TODO need to pass in configs here
+                            EvalMode::Legacy,
+                            "UTC",
+                            false,
+                        )?
+                        .into_array(batch_rows)
+                    },
                 )
             })
             .collect::<datafusion_common::Result<Vec<_>, _>>()?;
@@ -239,9 +258,16 @@ impl SchemaMapper for SchemaMapping {
                     .map(|table_field| {
                         // try to cast it into the correct output type. we don't want to ignore this
                         // error, though, so it's propagated.
-                        cast(batch_col, table_field.data_type())
-                            // and if that works, return the field and column.
-                            .map(|new_col| (new_col, table_field.clone()))
+                        spark_cast(
+                            ColumnarValue::Array(Arc::clone(batch_col)),
+                            table_field.data_type(),
+                            // TODO need to pass in configs here
+                            EvalMode::Legacy,
+                            "UTC",
+                            false,
+                        )?.into_array(batch_col.len())
+                        // and if that works, return the field and column.
+                        .map(|new_col| (new_col, table_field.clone()))
                     })
             })
             .collect::<Result<Vec<_>, _>>()?

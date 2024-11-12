@@ -2873,9 +2873,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case _: DeserializeToObjectExec =>
-        None
-
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
