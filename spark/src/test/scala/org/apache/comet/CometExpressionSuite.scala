@@ -2258,11 +2258,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // Struct([Field { name: "id", ... }, Field { name: "nested2", data_type: Struct([Field { name: "id", ... }]), ... }])
           // to table schema field of type
           // Struct([Field { name: "id", ... }])
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
+          //checkSparkAnswerAndOperator(df.select("nested1.id"))
+
+
+          checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
 
 
           // TODO
-//          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
         }
       }
     }

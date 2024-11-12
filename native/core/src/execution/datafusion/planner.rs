@@ -84,6 +84,7 @@ use datafusion::{
 };
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::datafusion::schema_adapter::CometSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
@@ -1050,7 +1051,10 @@ impl PhysicalPlanner {
                     table_parquet_options.global.reorder_filters = true;
 
                     let mut builder = ParquetExecBuilder::new(file_scan_config)
-                        .with_table_parquet_options(table_parquet_options);
+                        .with_table_parquet_options(table_parquet_options)
+                        .with_schema_adapter_factory(
+                            Arc::new(CometSchemaAdapterFactory::default()),
+                        );
 
                     if let Some(filter) = test_data_filters {
                         builder = builder.with_predicate(filter);
