@@ -641,7 +641,6 @@ case class CometUnionExec(
     extends CometExec {
   override def doExecuteColumnar(): RDD[ColumnarBatch] =
     sparkContext.union(children.map { child =>
-      CometExec.prepareScanForNativeExec(child)
       child.executeColumnar()
     })
 
