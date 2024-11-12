@@ -51,8 +51,8 @@ import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionRe
  * [[FileSourceScanExec]],
  */
 case class CometNativeScanExec(
-    override val output: Seq[Attribute],
     @transient relation: HadoopFsRelation,
+    override val output: Seq[Attribute],
     requiredSchema: StructType,
     partitionFilters: Seq[Expression],
     optionalBucketSet: Option[BitSet],
@@ -451,8 +451,8 @@ case class CometNativeScanExec(
 
   override def doCanonicalize(): CometNativeScanExec = {
     CometNativeScanExec(
-      output,
       relation,
+      output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
       QueryPlan.normalizePredicates(
         filterUnusedDynamicPruningExpressions(partitionFilters),
@@ -493,8 +493,8 @@ object CometNativeScanExec extends DataTypeSupport {
     val newArgs = mapProductIterator(scanExec, transform(_))
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometNativeScanExec(
-      wrapped.output,
       wrapped.relation,
+      wrapped.output,
       wrapped.requiredSchema,
       wrapped.partitionFilters,
       wrapped.optionalBucketSet,
