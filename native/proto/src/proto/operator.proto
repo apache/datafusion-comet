@@ -43,10 +43,19 @@ message Operator {
     SortMergeJoin sort_merge_join = 108;
     HashJoin hash_join = 109;
     Window window = 110;
+    NativeScan native_scan = 111;
   }
 }
 
 message Scan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
+  // is purely for informational purposes when viewing native query plans in
+  // debug mode.
+  string source = 2;
+}
+
+message NativeScan {
   repeated spark.spark_expression.DataType fields = 1;
   // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
   // is purely for informational purposes when viewing native query plans in
