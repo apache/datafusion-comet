@@ -717,8 +717,7 @@ impl PhysicalPlanner {
                     None,
                     vec![(is_null_expr, null_literal_expr)],
                     Some(array_append_expr),
-                )
-                .unwrap();
+                )?;
                 Ok(Arc::new(case_expr))
             }
             expr => Err(ExecutionError::GeneralError(format!(
