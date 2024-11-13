@@ -2319,10 +2319,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-        val df = spark.read
-          .parquet(path.toString)
-          .select(array_insert(array(col("_4"), lit(null)), lit(1), lit(1)).alias("arr"))
-        checkSparkAnswerAndOperator(df.select("arr"))
+        if (spark.version >= "3.4.0") {
+          val df = spark.read
+            .parquet(path.toString)
+            .withColumn("arr", array(col("_4"), lit(null)))
+            .select(expr("array_insert(arr, 1, 1)").alias("arrInsertResult"))
+          checkSparkAnswerAndOperator(df.select("arrInsertResult"))
+        }
       })
   }
 }
