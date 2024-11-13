@@ -35,6 +35,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.FileScanRDD
 import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2495,6 +2496,30 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           val dataFilters = scan.dataFilters.map(exprToProto(_, scan.output))
           nativeScanBuilder.addAllDataFilters(dataFilters.map(_.get).asJava)
+
+          // Eventually we'll want to modify CometNativeScan to generate the file partitions
+          // for us without instantiating the RDD.
+          val file_partitions = scan.inputRDD.asInstanceOf[FileScanRDD].filePartitions;
+          System.out.println(f"Spark file_partitions: $file_partitions");
+          file_partitions.foreach(partition => {
+            val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+            partition.files.foreach(file => {
+              //                  val file_string = file.toString()
+              //                  System.out.println(f"file: $file_string")
+              //                  val file_uri = file.pathUri
+              //                  System.out.println(f"file_uri: $file_uri")
+              //                  val file_path = file.toPath
+              //                  System.out.println(f"file_path: $file_path")
+              val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+              fileBuilder
+                .setFilePath(file.pathUri.toString)
+                .setStart(file.start)
+                .setLength(file.length)
+                .setFileSize(file.fileSize)
+              partitionBuilder.addPartitionedFile(fileBuilder.build())
+            })
+            nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+          })
 
           val requiredSchemaParquet =
             new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
