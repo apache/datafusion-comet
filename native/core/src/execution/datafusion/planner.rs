@@ -949,8 +949,8 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = parse_message_type(&*scan.data_schema).unwrap();
-                let required_schema = parse_message_type(&*scan.required_schema).unwrap();
+                let data_schema = parse_message_type(&scan.data_schema).unwrap();
+                let required_schema = parse_message_type(&scan.required_schema).unwrap();
 
                 let data_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -997,13 +997,6 @@ impl PhysicalPlanner {
                     ))
                 });
 
-                let object_store_url = ObjectStoreUrl::local_filesystem();
-                let paths: Vec<Url> = scan
-                    .path
-                    .iter()
-                    .map(|path| Url::parse(path).unwrap())
-                    .collect();
-
                 let object_store = object_store::local::LocalFileSystem::new();
                 // register the object store with the runtime environment
                 let url = Url::try_from("file://").unwrap();
@@ -1011,50 +1004,34 @@ impl PhysicalPlanner {
                     .runtime_env()
                     .register_object_store(&url, Arc::new(object_store));
 
-                let files: Vec<PartitionedFile> = paths
-                    .iter()
-                    .map(|path| PartitionedFile::from_path(path.path().to_string()).unwrap())
-                    .collect();
-
-                // partition the files
-                // TODO really should partition the row groups
-
-                let mut file_groups = vec![vec![]; partition_count];
-                files.iter().enumerate().for_each(|(idx, file)| {
-                    file_groups[idx % partition_count].push(file.clone());
+                // Generate file groups
+                let mut file_groups: Vec<Vec<PartitionedFile>> =
+                    Vec::with_capacity(partition_count);
+                scan.file_partitions.iter().for_each(|partition| {
+                    let mut files = Vec::with_capacity(partition.partitioned_file.len());
+                    partition.partitioned_file.iter().for_each(|file| {
+                        assert!(file.start + file.length <= file.file_size);
+                        files.push(PartitionedFile::new_with_range(
+                            Url::parse(file.file_path.as_ref())
+                                .unwrap()
+                                .path()
+                                .to_string(),
+                            file.file_size as u64,
+                            file.start,
+                            file.start + file.length,
+                        ));
+                    });
+                    file_groups.push(files);
                 });
 
-                println!["Native file_groups: {:?}", file_groups];
-
-                let mut file_groups2: Vec<Vec<PartitionedFile>> =
-                    Vec::with_capacity(partition_count);
-                scan.file_partitions
-                    .iter()
-                    .enumerate()
-                    .for_each(|(idx, partition)| {
-                        let mut files = Vec::with_capacity(partition.partitioned_file.len());
-                        partition.partitioned_file.iter().for_each(|file| {
-                            files.push(PartitionedFile::new_with_range(
-                                Url::parse(file.file_path.as_ref())
-                                    .unwrap()
-                                    .path()
-                                    .to_string(),
-                                file.file_size as u64,
-                                file.start,
-                                file.start + file.length,
-                            ));
-                        });
-                        file_groups2.push(files);
-                    });
-
-                println!["Native file_groups2: {:?}", file_groups2];
-
+                let object_store_url = ObjectStoreUrl::local_filesystem();
                 let file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                        .with_file_groups(file_groups2)
+                        .with_file_groups(file_groups)
                         .with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
+                // TODO: Maybe these are configs?
                 table_parquet_options.global.pushdown_filters = true;
                 table_parquet_options.global.reorder_filters = true;
 
@@ -1066,7 +1043,7 @@ impl PhysicalPlanner {
                 }
 
                 let scan = builder.build();
-                return Ok((vec![], Arc::new(scan)));
+                Ok((vec![], Arc::new(scan)))
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
