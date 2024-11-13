@@ -28,51 +28,51 @@ message Expr {
   oneof expr_struct {
     Literal literal = 2;
     BoundReference bound = 3;
-    Add add = 4;
-    Subtract subtract = 5;
-    Multiply multiply = 6;
-    Divide divide = 7;
+    MathExpr add = 4;
+    MathExpr subtract = 5;
+    MathExpr multiply = 6;
+    MathExpr divide = 7;
     Cast cast = 8;
-    Equal eq = 9;
-    NotEqual neq = 10;
-    GreaterThan gt = 11;
-    GreaterThanEqual gt_eq = 12;
-    LessThan lt = 13;
-    LessThanEqual lt_eq = 14;
-    IsNull is_null = 15;
-    IsNotNull is_not_null = 16;
-    And and = 17;
-    Or or = 18;
+    BinaryExpr eq = 9;
+    BinaryExpr neq = 10;
+    BinaryExpr gt = 11;
+    BinaryExpr gt_eq = 12;
+    BinaryExpr lt = 13;
+    BinaryExpr lt_eq = 14;
+    UnaryExpr is_null = 15;
+    UnaryExpr is_not_null = 16;
+    BinaryExpr and = 17;
+    BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    StringSpace string_space = 21;
+    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
     CheckOverflow check_overflow = 25;
-    Like like = 26;
-    StartsWith startsWith = 27;
-    EndsWith endsWith = 28;
-    Contains contains = 29;
-    RLike rlike = 30;
+    BinaryExpr like = 26;
+    BinaryExpr startsWith = 27;
+    BinaryExpr endsWith = 28;
+    BinaryExpr contains = 29;
+    BinaryExpr rlike = 30;
     ScalarFunc scalarFunc = 31;
-    EqualNullSafe eqNullSafe = 32;
-    NotEqualNullSafe neqNullSafe = 33;
-    BitwiseAnd bitwiseAnd = 34;
-    BitwiseOr bitwiseOr = 35;
-    BitwiseXor bitwiseXor = 36;
-    Remainder remainder = 37;
+    BinaryExpr eqNullSafe = 32;
+    BinaryExpr neqNullSafe = 33;
+    BinaryExpr bitwiseAnd = 34;
+    BinaryExpr bitwiseOr = 35;
+    BinaryExpr bitwiseXor = 36;
+    MathExpr remainder = 37;
     CaseWhen caseWhen = 38;
     In in = 39;
-    Not not = 40;
+    UnaryExpr not = 40;
     UnaryMinus unary_minus = 41;
-    BitwiseShiftRight bitwiseShiftRight = 42;
-    BitwiseShiftLeft bitwiseShiftLeft = 43;
+    BinaryExpr bitwiseShiftRight = 42;
+    BinaryExpr bitwiseShiftLeft = 43;
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
-    BitwiseNot bitwiseNot = 48;
+    UnaryExpr bitwiseNot = 48;
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
@@ -220,35 +220,7 @@ message Literal {
    bool is_null = 12;
 }
 
-message Add {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Subtract {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Multiply {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Divide {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
-message Remainder {
+message MathExpr {
   Expr left = 1;
   Expr right = 2;
   bool fail_on_error = 3;
@@ -269,61 +241,12 @@ message Cast {
   bool allow_incompat = 5;
 }
 
-message Equal {
+message BinaryExpr {
   Expr left = 1;
   Expr right = 2;
 }
 
-message NotEqual {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message EqualNullSafe {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message NotEqualNullSafe {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message GreaterThan {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message GreaterThanEqual {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message LessThan {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message LessThanEqual {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message And {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message Or {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message IsNull {
-  Expr child = 1;
-}
-
-message IsNotNull {
+message UnaryExpr {
   Expr child = 1;
 }
 
@@ -348,10 +271,6 @@ message Substring {
   Expr child = 1;
   int32 start = 2;
   int32 len = 3;
-}
-
-message StringSpace {
-  Expr child = 1;
 }
 
 message ToJson {
@@ -384,60 +303,10 @@ message CheckOverflow {
   bool fail_on_error = 3;
 }
 
-message Like {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message RLike {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message StartsWith {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message EndsWith {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message Contains {
-  Expr left = 1;
-  Expr right = 2;
-}
-
 message ScalarFunc {
   string func = 1;
   repeated Expr args = 2;
   DataType return_type = 3;
-}
-
-message BitwiseAnd {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message BitwiseOr {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message BitwiseXor {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message BitwiseShiftRight {
-  Expr left = 1;
-  Expr right = 2;
-}
-
-message BitwiseShiftLeft {
-  Expr left = 1;
-  Expr right = 2;
 }
 
 message CaseWhen {
@@ -463,10 +332,6 @@ message NormalizeNaNAndZero {
   DataType datatype = 2;
 }
 
-message Not {
-  Expr child = 1;
-}
-
 message UnaryMinus {
   Expr child = 1;
   bool fail_on_error = 2;
@@ -487,10 +352,6 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
-}
-
-message BitwiseNot {
-  Expr child = 1;
 }
 
 message Abs {

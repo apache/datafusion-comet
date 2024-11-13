@@ -536,7 +536,7 @@ mod tests {
         let aggregate = Arc::new(AggregateExec::try_new(
             AggregateMode::Partial,
             PhysicalGroupBy::new_single(vec![(c0, "c0".to_string())]),
-            vec![aggr_expr],
+            vec![aggr_expr.into()],
             vec![None], // no filter expressions
             scan,
             Arc::clone(&schema),

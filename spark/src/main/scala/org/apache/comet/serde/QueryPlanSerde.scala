@@ -932,54 +932,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val addBuilder = ExprOuterClass.Add.newBuilder()
-            addBuilder.setLeft(leftExpr.get)
-            addBuilder.setRight(rightExpr.get)
-            addBuilder.setFailOnError(getFailOnError(add))
-            serializeDataType(add.dataType).foreach { t =>
-              addBuilder.setReturnType(t)
-            }
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setAdd(addBuilder)
-                .build())
-          } else {
-            withInfo(add, left, right)
-            None
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            add.dataType,
+            getFailOnError(add),
+            (builder, mathExpr) => builder.setAdd(mathExpr))
 
         case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(add, s"Unsupported datatype ${left.dataType}")
           None
 
         case sub @ Subtract(left, right, _) if supportedDataType(left.dataType) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Subtract.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-            builder.setFailOnError(getFailOnError(sub))
-            serializeDataType(sub.dataType).foreach { t =>
-              builder.setReturnType(t)
-            }
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setSubtract(builder)
-                .build())
-          } else {
-            withInfo(sub, left, right)
-            None
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            sub.dataType,
+            getFailOnError(sub),
+            (builder, mathExpr) => builder.setSubtract(mathExpr))
 
         case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(sub, s"Unsupported datatype ${left.dataType}")
@@ -987,27 +959,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case mul @ Multiply(left, right, _)
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Multiply.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-            builder.setFailOnError(getFailOnError(mul))
-            serializeDataType(mul.dataType).foreach { t =>
-              builder.setReturnType(t)
-            }
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setMultiply(builder)
-                .build())
-          } else {
-            withInfo(mul, left, right)
-            None
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            mul.dataType,
+            getFailOnError(mul),
+            (builder, mathExpr) => builder.setMultiply(mathExpr))
 
         case mul @ Multiply(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -1020,30 +978,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case div @ Divide(left, right, _)
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
           // Datafusion now throws an exception for dividing by zero
           // See https://github.com/apache/arrow-datafusion/pull/6792
           // For now, use NullIf to swap zeros with nulls.
-          val rightExpr = exprToProtoInternal(nullIfWhenPrimitive(right), inputs)
+          val rightExpr = nullIfWhenPrimitive(right)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Divide.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-            builder.setFailOnError(getFailOnError(div))
-            serializeDataType(div.dataType).foreach { t =>
-              builder.setReturnType(t)
-            }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            div.dataType,
+            getFailOnError(div),
+            (builder, mathExpr) => builder.setDivide(mathExpr))
 
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setDivide(builder)
-                .build())
-          } else {
-            withInfo(div, left, right)
-            None
-          }
         case div @ Divide(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
             withInfo(div, s"Unsupported datatype ${left.dataType}")
@@ -1055,27 +1002,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case rem @ Remainder(left, right, _)
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(nullIfWhenPrimitive(right), inputs)
+          val rightExpr = nullIfWhenPrimitive(right)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Remainder.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-            builder.setFailOnError(getFailOnError(rem))
-            serializeDataType(rem.dataType).foreach { t =>
-              builder.setReturnType(t)
-            }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            rem.dataType,
+            getFailOnError(rem),
+            (builder, mathExpr) => builder.setRemainder(mathExpr))
 
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setRemainder(builder)
-                .build())
-          } else {
-            withInfo(rem, left, right)
-            None
-          }
         case rem @ Remainder(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
             withInfo(rem, s"Unsupported datatype ${left.dataType}")
@@ -1086,156 +1022,60 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Equal.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setEq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEq(binaryExpr))
 
         case Not(EqualTo(left, right)) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.NotEqual.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setNeq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setNeq(binaryExpr))
 
         case EqualNullSafe(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.EqualNullSafe.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setEqNullSafe(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
 
         case Not(EqualNullSafe(left, right)) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.NotEqualNullSafe.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setNeqNullSafe(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
         case GreaterThan(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.GreaterThan.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setGt(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setGt(binaryExpr))
 
         case GreaterThanOrEqual(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.GreaterThanEqual.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setGtEq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setGtEq(binaryExpr))
 
         case LessThan(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.LessThan.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setLt(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setLt(binaryExpr))
 
         case LessThanOrEqual(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.LessThanEqual.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setLtEq(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
         case Literal(value, dataType)
             if supportedDataType(dataType, allowStruct = value == null) =>
@@ -1372,23 +1212,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
-            val leftExpr = exprToProtoInternal(left, inputs)
-            val rightExpr = exprToProtoInternal(right, inputs)
-
-            if (leftExpr.isDefined && rightExpr.isDefined) {
-              val builder = ExprOuterClass.Like.newBuilder()
-              builder.setLeft(leftExpr.get)
-              builder.setRight(rightExpr.get)
-
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setLike(builder)
-                  .build())
-            } else {
-              withInfo(expr, left, right)
-              None
-            }
+            createBinaryExpr(
+              left,
+              right,
+              inputs,
+              (builder, binaryExpr) => builder.setLike(binaryExpr))
           } else {
             // TODO custom escape char
             withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
@@ -1413,96 +1241,38 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               return None
           }
 
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.RLike.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setRlike(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
         case StartsWith(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.StartsWith.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setStartsWith(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
 
         case EndsWith(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.EndsWith.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setEndsWith(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
 
         case Contains(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Contains.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setContains(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setContains(binaryExpr))
 
         case StringSpace(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-
-          if (childExpr.isDefined) {
-            val builder = ExprOuterClass.StringSpace.newBuilder()
-            builder.setChild(childExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setStringSpace(builder)
-                .build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+          createUnaryExpr(
+            child,
+            inputs,
+            (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
         case Hour(child, timeZoneId) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1637,38 +1407,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case IsNull(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-
-          if (childExpr.isDefined) {
-            val castBuilder = ExprOuterClass.IsNull.newBuilder()
-            castBuilder.setChild(childExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setIsNull(castBuilder)
-                .build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNull(unaryExpr))
 
         case IsNotNull(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-
-          if (childExpr.isDefined) {
-            val castBuilder = ExprOuterClass.IsNotNull.newBuilder()
-            castBuilder.setChild(childExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setIsNotNull(castBuilder)
-                .build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
         case IsNaN(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1705,42 +1447,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case And(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.And.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setAnd(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setAnd(binaryExpr))
 
         case Or(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.Or.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setOr(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setOr(binaryExpr))
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
@@ -2177,81 +1895,30 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case BitwiseAnd(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseAnd.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseAnd(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
         case BitwiseNot(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-
-          if (childExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseNot.newBuilder()
-            builder.setChild(childExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseNot(builder)
-                .build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
 
         case BitwiseOr(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseOr.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseOr(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
 
         case BitwiseXor(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
-          val rightExpr = exprToProtoInternal(right, inputs)
-
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseXor.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseXor(builder)
-                .build())
-          } else {
-            withInfo(expr, left, right)
-            None
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
 
         case ShiftRight(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
           // DataFusion bitwise shift right expression requires
           // same data type between left and right side
           val rightExpression = if (left.dataType == LongType) {
@@ -2259,25 +1926,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           } else {
             right
           }
-          val rightExpr = exprToProtoInternal(rightExpression, inputs)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseShiftRight.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseShiftRight(builder)
-                .build())
-          } else {
-            withInfo(expr, left, rightExpression)
-            None
-          }
+          createBinaryExpr(
+            left,
+            rightExpression,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseShiftRight(binaryExpr))
 
         case ShiftLeft(left, right) =>
-          val leftExpr = exprToProtoInternal(left, inputs)
           // DataFusion bitwise shift right expression requires
           // same data type between left and right side
           val rightExpression = if (left.dataType == LongType) {
@@ -2285,23 +1941,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           } else {
             right
           }
-          val rightExpr = exprToProtoInternal(rightExpression, inputs)
 
-          if (leftExpr.isDefined && rightExpr.isDefined) {
-            val builder = ExprOuterClass.BitwiseShiftLeft.newBuilder()
-            builder.setLeft(leftExpr.get)
-            builder.setRight(rightExpr.get)
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBitwiseShiftLeft(builder)
-                .build())
-          } else {
-            withInfo(expr, left, rightExpression)
-            None
-          }
-
+          createBinaryExpr(
+            left,
+            rightExpression,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseShiftLeft(binaryExpr))
         case In(value, list) =>
           in(expr, value, list, inputs, false)
 
@@ -2318,19 +1963,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           in(expr, value, list, inputs, true)
 
         case Not(child) =>
-          val childExpr = exprToProtoInternal(child, inputs)
-          if (childExpr.isDefined) {
-            val builder = ExprOuterClass.Not.newBuilder()
-            builder.setChild(childExpr.get)
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setNot(builder)
-                .build())
-          } else {
-            withInfo(expr, child)
-            None
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setNot(unaryExpr))
 
         case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -2608,6 +2241,109 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
+      }
+    }
+
+    /**
+     * Creates a UnaryExpr by calling exprToProtoInternal for the provided child expression and
+     * then invokes the supplied function to wrap this UnaryExpr in a top-level Expr.
+     *
+     * @param child
+     *   Spark expression
+     * @param inputs
+     *   Inputs to the expression
+     * @param f
+     *   Function that accepts an Expr.Builder and a UnaryExpr and builds the specific top-level
+     *   Expr
+     * @return
+     *   Some(Expr) or None if not supported
+     */
+    def createUnaryExpr(
+        child: Expression,
+        inputs: Seq[Attribute],
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
+      val childExpr = exprToProtoInternal(child, inputs)
+      if (childExpr.isDefined) {
+        // create the generic UnaryExpr message
+        val inner = ExprOuterClass.UnaryExpr
+          .newBuilder()
+          .setChild(childExpr.get)
+          .build()
+        // call the user-supplied function to wrap UnaryExpr in a top-level Expr
+        // such as Expr.IsNull or Expr.IsNotNull
+        Some(
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
+      } else {
+        withInfo(expr, child)
+        None
+      }
+    }
+
+    def createBinaryExpr(
+        left: Expression,
+        right: Expression,
+        inputs: Seq[Attribute],
+        f: (
+            ExprOuterClass.Expr.Builder,
+            ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
+      val leftExpr = exprToProtoInternal(left, inputs)
+      val rightExpr = exprToProtoInternal(right, inputs)
+      if (leftExpr.isDefined && rightExpr.isDefined) {
+        // create the generic BinaryExpr message
+        val inner = ExprOuterClass.BinaryExpr
+          .newBuilder()
+          .setLeft(leftExpr.get)
+          .setRight(rightExpr.get)
+          .build()
+        // call the user-supplied function to wrap BinaryExpr in a top-level Expr
+        // such as Expr.And or Expr.Or
+        Some(
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
+      } else {
+        withInfo(expr, left, right)
+        None
+      }
+    }
+
+    def createMathExpression(
+        left: Expression,
+        right: Expression,
+        inputs: Seq[Attribute],
+        dataType: DataType,
+        failOnError: Boolean,
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
+      val leftExpr = exprToProtoInternal(left, inputs)
+      val rightExpr = exprToProtoInternal(right, inputs)
+
+      if (leftExpr.isDefined && rightExpr.isDefined) {
+        // create the generic MathExpr message
+        val builder = ExprOuterClass.MathExpr.newBuilder()
+        builder.setLeft(leftExpr.get)
+        builder.setRight(rightExpr.get)
+        builder.setFailOnError(failOnError)
+        serializeDataType(dataType).foreach { t =>
+          builder.setReturnType(t)
+        }
+        val inner = builder.build()
+        // call the user-supplied function to wrap MathExpr in a top-level Expr
+        // such as Expr.Add or Expr.Divide
+        Some(
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
+      } else {
+        withInfo(expr, left, right)
+        None
       }
     }
 
