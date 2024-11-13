@@ -2313,4 +2313,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("array_append") {
+    // array append has been added in Spark 3.4 and in Spark 4.0 it gets written to ArrayInsert
+    assume(isSpark34Plus && !isSpark40Plus)
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        checkSparkAnswerAndOperator(spark.sql("Select array_append(array(_1),false) from t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_append(array(_2, _3, _4), 4) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_append(array(_2, _3, _4), null) FROM t1"));
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_append(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_8), 'test') FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_19), _19) FROM t1"));
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+      }
+
+    }
+  }
 }
