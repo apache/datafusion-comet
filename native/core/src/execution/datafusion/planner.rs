@@ -949,13 +949,8 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
-
-                println!("NATIVE: SCAN: {:?}", scan);
                 let data_schema = parse_message_type(&*scan.data_schema).unwrap();
                 let required_schema = parse_message_type(&*scan.required_schema).unwrap();
-                println!("data_schema: {:?}", data_schema);
-                println!("required_schema: {:?}", required_schema);
 
                 let data_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -963,7 +958,6 @@ impl PhysicalPlanner {
                     parquet::arrow::schema::parquet_to_arrow_schema(&data_schema_descriptor, None)
                         .unwrap(),
                 );
-                println!("data_schema_arrow: {:?}", data_schema_arrow);
 
                 let required_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
@@ -974,8 +968,6 @@ impl PhysicalPlanner {
                     )
                     .unwrap(),
                 );
-                println!("required_schema_arrow: {:?}", required_schema_arrow);
-
                 assert!(!required_schema_arrow.fields.is_empty());
 
                 let mut projection_vector: Vec<usize> =
@@ -984,7 +976,6 @@ impl PhysicalPlanner {
                 required_schema_arrow.fields.iter().for_each(|field| {
                     projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
                 });
-                println!("projection_vector: {:?}", projection_vector);
 
                 assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
 
@@ -1005,9 +996,6 @@ impl PhysicalPlanner {
                         right,
                     ))
                 });
-
-                println!("data_filters: {:?}", data_filters);
-                println!("test_data_filters: {:?}", test_data_filters);
 
                 let object_store_url = ObjectStoreUrl::local_filesystem();
                 let paths: Vec<Url> = scan
@@ -2300,7 +2288,7 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         scans[0].set_input_batch(input_batch);
 
         let session_ctx = SessionContext::new();
@@ -2381,7 +2369,7 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         scans[0].set_input_batch(input_batch);
@@ -2453,7 +2441,7 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         let scan = &mut scans[0];
         scan.set_input_batch(InputBatch::EOF);
