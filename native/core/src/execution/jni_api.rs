@@ -20,7 +20,6 @@
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -378,12 +377,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let task_ctx = exec_context.session_ctx.task_ctx();
 
             let plan = exec_context.root_op.as_ref().unwrap();
-
-            println!(
-                "Executing partition {} of {}",
-                partition_id,
-                plan.output_partitioning().partition_count()
-            );
 
             let stream = plan.execute(partition_id as usize, task_ctx)?;
             exec_context.stream = Some(stream);
