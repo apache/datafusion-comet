@@ -2500,16 +2500,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // Eventually we'll want to modify CometNativeScan to generate the file partitions
           // for us without instantiating the RDD.
           val file_partitions = scan.inputRDD.asInstanceOf[FileScanRDD].filePartitions;
-          System.out.println(f"Spark file_partitions: $file_partitions");
           file_partitions.foreach(partition => {
             val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
             partition.files.foreach(file => {
-              //                  val file_string = file.toString()
-              //                  System.out.println(f"file: $file_string")
-              //                  val file_uri = file.pathUri
-              //                  System.out.println(f"file_uri: $file_uri")
-              //                  val file_path = file.toPath
-              //                  System.out.println(f"file_path: $file_path")
               val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
               fileBuilder
                 .setFilePath(file.pathUri.toString)
