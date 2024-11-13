@@ -2544,7 +2544,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("array_append") {
-    assume(isSpark34Plus)
+    // array append has been added in Spark 3.4 and in Spark 4.0 it gets written to ArrayInsert
+    assume(isSpark34Plus && !isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
