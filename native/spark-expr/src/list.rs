@@ -601,9 +601,9 @@ fn array_insert<O: OffsetSizeTrait>(
         let is_item_null = items_array.is_null(row_index);
 
         if pos == 0 {
-            return Err(DataFusionError::Internal(format!(
-                "Position for array_insert should be greter or less than zero"
-            )));
+            return Err(DataFusionError::Internal(
+                "Position for array_insert should be greter or less than zero".to_string(),
+            ));
         }
 
         if (pos > 0) || ((-pos).as_usize() < (start - end + 1)) {
