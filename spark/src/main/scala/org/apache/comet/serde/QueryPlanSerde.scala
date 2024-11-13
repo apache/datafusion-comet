@@ -2521,9 +2521,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
           nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
-          scan.relation.location.inputFiles.foreach { f =>
-            nativeScanBuilder.addPath(f)
-          }
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
