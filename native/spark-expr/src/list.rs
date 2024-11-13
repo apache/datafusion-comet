@@ -38,6 +38,12 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
+
+// 2147483632 == java.lang.Integer.MAX_VALUE - 15
+// It is a value of ByteArrayUtils.MAX_ROUNDED_ARRAY_LENGTH
+// https://github.com/apache/spark/blob/master/common/utils/src/main/java/org/apache/spark/unsafe/array/ByteArrayUtils.java
+const MAX_ROUNDED_ARRAY_LENGTH: usize = 2147483632;
+
 #[derive(Debug, Hash)]
 pub struct ListExtract {
     child: Arc<dyn PhysicalExpr>,
@@ -514,11 +520,21 @@ impl PhysicalExpr for ArrayInsert {
         match src_value.data_type() {
             DataType::List(_) => {
                 let list_array = as_list_array(&src_value)?;
-                array_insert(list_array, &pos_value, &item_value)
+                array_insert(
+                    list_array,
+                    &pos_value,
+                    &item_value,
+                    self.legacy_negative_index,
+                )
             }
             DataType::LargeList(_) => {
                 let list_array = as_large_list_array(&src_value)?;
-                array_insert(list_array, &pos_value, &item_value)
+                array_insert(
+                    list_array,
+                    &pos_value,
+                    &item_value,
+                    self.legacy_negative_index,
+                )
             }
             _ => unreachable!(), // This case is checked already
         }
@@ -557,10 +573,11 @@ fn array_insert<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     items_array: &ArrayRef,
     pos_array: &ArrayRef,
+    legacy_mode: bool,
 ) -> DataFusionResult<ColumnarValue> {
     // TODO: support spark's legacy mode and negative indices!
 
-    // Heavily inspired by
+    // The code is based on the implementation of array_append from DataFusion
     // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
 
     let values = list_array.values();
@@ -578,14 +595,59 @@ fn array_insert<O: OffsetSizeTrait>(
     let pos_data: &Int32Array = as_primitive_array(&pos_array); // Spark supports only i32 for positions
 
     for (row_index, offset_window) in offsets.windows(2).enumerate() {
+        let pos = pos_data.values()[row_index];
         let start = offset_window[0].as_usize();
         let end = offset_window[1].as_usize();
-        let pos = (pos_data.values()[row_index] - 1).as_usize(); // Spark uses indexes started from one
         let is_item_null = items_array.is_null(row_index);
 
-        mutable_values.extend(0, start, start + pos);
-        mutable_values.extend(1, row_index, row_index + 1);
-        mutable_values.extend(0, start + pos, end);
+        if pos == 0 {
+            return Err(DataFusionError::Internal(format!(
+                "Position for array_insert should be greter or less than zero"
+            )));
+        }
+
+        if (pos > 0) || ((-pos).as_usize() < (start - end + 1)) {
+            let new_array_len = std::cmp::max(end - start + 1, pos.as_usize());
+            if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
+                return Err(DataFusionError::Internal(format!(
+                    "Max array length in Spark is {:?}, but got {:?}",
+                    MAX_ROUNDED_ARRAY_LENGTH, new_array_len
+                )));
+            }
+
+            let corrected_pos = if pos > 0 {
+                (pos - 1).as_usize()
+            } else {
+                (pos + if legacy_mode { 0 } else { 1 }).as_usize() + (end - start + 1)
+            };
+            if corrected_pos < end {
+                mutable_values.extend(0, start, start + corrected_pos);
+                mutable_values.extend(1, row_index, row_index + 1);
+                mutable_values.extend(0, start + corrected_pos, end);
+            } else {
+                mutable_values.extend(0, start, end);
+                mutable_values.extend_nulls(new_array_len - (end - start + 1));
+                mutable_values.extend(1, row_index, row_index + 1);
+            }
+            new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
+        } else {
+            // This comment is takes from the Apache Spark source code as is:
+            // special case- if the new position is negative but larger than the current array size
+            // place the new item at start of array, place the current array contents at the end
+            // and fill the newly created array elements inbetween with a null
+            let base_offset = if legacy_mode { 1 } else { 0 };
+            let new_array_len = (-pos + base_offset).as_usize();
+            if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
+                return Err(DataFusionError::Internal(format!(
+                    "Max array length in Spark is {:?}, but got {:?}",
+                    MAX_ROUNDED_ARRAY_LENGTH, new_array_len
+                )));
+            }
+            mutable_values.extend(1, row_index, row_index + 1);
+            mutable_values.extend_nulls(new_array_len - 1 - (start - end + 1));
+            mutable_values.extend(0, new_array_len - (start - end + 1), new_array_len);
+            new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
+        }
         if is_item_null {
             if (start == end) || (values.is_null(row_index)) {
                 new_nulls.push(false)
@@ -595,7 +657,6 @@ fn array_insert<O: OffsetSizeTrait>(
         } else {
             new_nulls.push(true)
         }
-        new_offsets.push(new_offsets[row_index] + O::usize_as(end - start + 1));
     }
 
     let data = make_array(mutable_values.freeze());
@@ -701,6 +762,7 @@ mod test {
             &list,
             &(Arc::new(items) as ArrayRef),
             &(Arc::new(positions) as ArrayRef),
+            false,
         )?
         else {
             unreachable!()

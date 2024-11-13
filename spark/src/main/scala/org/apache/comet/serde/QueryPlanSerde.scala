@@ -2235,10 +2235,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             None
           }
 
-        case ArrayInsert(srcArrayExpr, posExpr, itemExpr, legacyNegativeIndex) =>
-          val srcExprProto = exprToProto(srcArrayExpr, inputs, binding)
-          val posExprProto = exprToProto(posExpr, inputs, binding)
-          val itemExprProto = exprToProto(itemExpr, inputs, binding)
+        case expr if expr.prettyName == "array_insert" => {
+          val srcExprProto = exprToProto(expr.children(0), inputs, binding)
+          val posExprProto = exprToProto(expr.children(1), inputs, binding)
+          val itemExprProto = exprToProto(expr.children(2), inputs, binding)
+          val legacyNegativeIndex =
+            SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
           if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
             val arrayInsertBuilder = ExprOuterClass.ArrayInsert
               .newBuilder()
@@ -2256,11 +2258,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(
               expr,
               "unsupported arguments for ArrayInsert",
-              srcArrayExpr,
-              posExpr,
-              itemExpr)
+              expr.children(0),
+              expr.children(1),
+              expr.children(2))
             None
           }
+        }
 
         case ElementAt(child, ordinal, defaultValue, failOnError)
             if child.dataType.isInstanceOf[ArrayType] =>
