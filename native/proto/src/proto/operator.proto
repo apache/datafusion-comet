@@ -47,6 +47,19 @@ message Operator {
   }
 }
 
+message SparkPartitionedFile {
+  string file_path = 1;
+  int64 start = 2;
+  int64 length = 3;
+  int64 file_size = 4;
+}
+
+// This name and the one above are not great, but they correspond to the (unfortunate) Spark names.
+// I prepended "Spark" since I think there's a name collision on the native side, but we can revisit.
+message SparkFilePartition {
+  repeated SparkPartitionedFile partitioned_file = 1;
+}
+
 message Scan {
   repeated spark.spark_expression.DataType fields = 1;
   // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
@@ -61,10 +74,10 @@ message NativeScan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
-  repeated string path = 3;
-  string required_schema = 4;
-  string data_schema = 5;
-  repeated spark.spark_expression.Expr data_filters = 6;
+  string required_schema = 3;
+  string data_schema = 4;
+  repeated spark.spark_expression.Expr data_filters = 5;
+  repeated SparkFilePartition file_partitions = 6;
 }
 
 message Projection {
