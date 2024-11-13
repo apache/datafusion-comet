@@ -522,8 +522,8 @@ impl PhysicalExpr for ArrayInsert {
                 let list_array = as_list_array(&src_value)?;
                 array_insert(
                     list_array,
-                    &pos_value,
                     &item_value,
+                    &pos_value,
                     self.legacy_negative_index,
                 )
             }
@@ -531,8 +531,8 @@ impl PhysicalExpr for ArrayInsert {
                 let list_array = as_large_list_array(&src_value)?;
                 array_insert(
                     list_array,
-                    &pos_value,
                     &item_value,
+                    &pos_value,
                     self.legacy_negative_index,
                 )
             }
@@ -575,8 +575,6 @@ fn array_insert<O: OffsetSizeTrait>(
     pos_array: &ArrayRef,
     legacy_mode: bool,
 ) -> DataFusionResult<ColumnarValue> {
-    // TODO: support spark's legacy mode and negative indices!
-
     // The code is based on the implementation of array_append from DataFusion
     // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
 
@@ -606,8 +604,13 @@ fn array_insert<O: OffsetSizeTrait>(
             ));
         }
 
-        if (pos > 0) || ((-pos).as_usize() < (start - end + 1)) {
-            let new_array_len = std::cmp::max(end - start + 1, pos.as_usize());
+        if (pos > 0) || ((-pos).as_usize() < (end - start + 1)) {
+            let corrected_pos = if pos > 0 {
+                (pos - 1).as_usize()
+            } else {
+                end - start - (-pos).as_usize() + if legacy_mode { 0 } else { 1 }
+            };
+            let new_array_len = std::cmp::max(end - start + 1, corrected_pos);
             if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
                 return Err(DataFusionError::Internal(format!(
                     "Max array length in Spark is {:?}, but got {:?}",
@@ -615,11 +618,6 @@ fn array_insert<O: OffsetSizeTrait>(
                 )));
             }
 
-            let corrected_pos = if pos > 0 {
-                (pos - 1).as_usize()
-            } else {
-                (pos + if legacy_mode { 0 } else { 1 }).as_usize() + (end - start + 1)
-            };
             if corrected_pos < end {
                 mutable_values.extend(0, start, start + corrected_pos);
                 mutable_values.extend(1, row_index, row_index + 1);
@@ -644,8 +642,8 @@ fn array_insert<O: OffsetSizeTrait>(
                 )));
             }
             mutable_values.extend(1, row_index, row_index + 1);
-            mutable_values.extend_nulls(new_array_len - 1 - (start - end + 1));
-            mutable_values.extend(0, new_array_len - (start - end + 1), new_array_len);
+            mutable_values.extend_nulls(new_array_len - (end - start + 1));
+            mutable_values.extend(0, new_array_len - (end - start + 1), new_array_len);
             new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
         }
         if is_item_null {
@@ -772,6 +770,70 @@ mod test {
             Some(vec![Some(1), Some(10), Some(2), Some(3)]),
             Some(vec![Some(20), Some(4), Some(5)]),
             Some(vec![Some(30)]),
+        ]);
+
+        assert_eq!(&result.to_data(), &expected.to_data());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_array_insert_negative_index() -> Result<()> {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(4), Some(5)]),
+            None,
+        ]);
+
+        let positions = Int32Array::from(vec![-2, -1, -1]);
+        let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+
+        let ColumnarValue::Array(result) = array_insert(
+            &list,
+            &(Arc::new(items) as ArrayRef),
+            &(Arc::new(positions) as ArrayRef),
+            false,
+        )?
+        else {
+            unreachable!()
+        };
+
+        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(10), Some(3)]),
+            Some(vec![Some(4), Some(5), Some(20)]),
+            Some(vec![Some(30)]),
+        ]);
+
+        assert_eq!(&result.to_data(), &expected.to_data());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_array_insert_legacy_mode() -> Result<()> {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(4), Some(5)]),
+            None,
+        ]);
+
+        let positions = Int32Array::from(vec![-1, -1, -1]);
+        let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+
+        let ColumnarValue::Array(result) = array_insert(
+            &list,
+            &(Arc::new(items) as ArrayRef),
+            &(Arc::new(positions) as ArrayRef),
+            true,
+        )?
+        else {
+            unreachable!()
+        };
+
+        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(10), Some(3)]),
+            Some(vec![Some(4), Some(20), Some(5)]),
+            Some(vec![Some(30), None]),
         ]);
 
         assert_eq!(&result.to_data(), &expected.to_data());

@@ -2322,9 +2322,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         if (spark.version >= "3.4.0") {
           val df = spark.read
             .parquet(path.toString)
-            .withColumn("arr", array(col("_4"), lit(null)))
-            .select(expr("array_insert(arr, 1, 1)").alias("arrInsertResult"))
+            .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+            .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
+            .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
           checkSparkAnswerAndOperator(df.select("arrInsertResult"))
+          checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
         }
       })
   }
