@@ -1024,6 +1024,9 @@ impl PhysicalPlanner {
                     file_groups.push(files);
                 });
 
+                // TODO: I think we can remove partition_count in the future, but leave for testing.
+                assert_eq!(file_groups.len(), partition_count);
+
                 let object_store_url = ObjectStoreUrl::local_filesystem();
                 let file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
