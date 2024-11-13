@@ -35,6 +35,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.FileScanRDD
 import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2893,11 +2894,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               // scalastyle:off println
 //              System.out.println(op.simpleStringWithNodeId())
 //              System.out.println(scanTypes.asJava) // Spark types for output.
-              System.out.println(cometScan.output) // This is the names of the output columns.
+//              System.out.println(cometScan.output) // This is the names of the output columns.
 //              System.out.println(cometScan.requiredSchema); // This is the projected columns.
-              System.out.println(
-                cometScan.dataFilters
-              ); // This is the filter expressions that have been pushed down.
+//              System.out.println(
+//                cometScan.dataFilters
+//              ); // This is the filter expressions that have been pushed down.
 
               val dataFilters = cometScan.dataFilters.map(exprToProto(_, cometScan.output))
               scanBuilder.addAllDataFilters(dataFilters.map(_.get).asJava)
@@ -2910,6 +2911,30 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 //              cometScan.requiredSchema.fields.foreach(field => {
 //                System.out.println(field.dataType)
 //              })
+
+              // Eventually we'll want to modify CometNativeScan to generate the file partitions
+              // for us without instantiating the RDD.
+              val file_partitions = cometScan.inputRDD.asInstanceOf[FileScanRDD].filePartitions;
+              System.out.println(f"Spark file_partitions: $file_partitions");
+              file_partitions.foreach(partition => {
+                val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+                partition.files.foreach(file => {
+//                  val file_string = file.toString()
+//                  System.out.println(f"file: $file_string")
+//                  val file_uri = file.pathUri
+//                  System.out.println(f"file_uri: $file_uri")
+//                  val file_path = file.toPath
+//                  System.out.println(f"file_path: $file_path")
+                  val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+                  fileBuilder
+                    .setFilePath(file.pathUri.toString)
+                    .setStart(file.start)
+                    .setLength(file.length)
+                    .setFileSize(file.fileSize)
+                  partitionBuilder.addPartitionedFile(fileBuilder.build())
+                })
+                scanBuilder.addFilePartitions(partitionBuilder.build())
+              })
 
 //              System.out.println("relation.dataSchema:")
 //              cometScan.relation.dataSchema.fields.foreach(field => {

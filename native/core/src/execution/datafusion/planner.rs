@@ -954,8 +954,8 @@ impl PhysicalPlanner {
                 if scan.source == "CometScan parquet  (unknown)" {
                     let data_schema = parse_message_type(&scan.data_schema).unwrap();
                     let required_schema = parse_message_type(&scan.required_schema).unwrap();
-                    println!("data_schema: {:?}", data_schema);
-                    println!("required_schema: {:?}", required_schema);
+                    // println!("data_schema: {:?}", data_schema);
+                    // println!("required_schema: {:?}", required_schema);
 
                     let data_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -966,7 +966,7 @@ impl PhysicalPlanner {
                         )
                         .unwrap(),
                     );
-                    println!("data_schema_arrow: {:?}", data_schema_arrow);
+                    // println!("data_schema_arrow: {:?}", data_schema_arrow);
 
                     let required_schema_descriptor =
                         parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
@@ -977,7 +977,7 @@ impl PhysicalPlanner {
                         )
                         .unwrap(),
                     );
-                    println!("required_schema_arrow: {:?}", required_schema_arrow);
+                    // println!("required_schema_arrow: {:?}", required_schema_arrow);
 
                     assert!(!required_schema_arrow.fields.is_empty());
 
@@ -987,7 +987,7 @@ impl PhysicalPlanner {
                     required_schema_arrow.fields.iter().for_each(|field| {
                         projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
                     });
-                    println!("projection_vector: {:?}", projection_vector);
+                    // println!("projection_vector: {:?}", projection_vector);
 
                     assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
 
@@ -1010,8 +1010,8 @@ impl PhysicalPlanner {
                             ))
                         });
 
-                    println!("data_filters: {:?}", data_filters);
-                    println!("test_data_filters: {:?}", test_data_filters);
+                    // println!("data_filters: {:?}", data_filters);
+                    // println!("test_data_filters: {:?}", test_data_filters);
 
                     let object_store_url = ObjectStoreUrl::local_filesystem();
                     let paths: Vec<Url> = scan
@@ -1040,9 +1040,34 @@ impl PhysicalPlanner {
                         file_groups[idx % partition_count].push(file.clone());
                     });
 
+                    println!["Native file_groups: {:?}", file_groups];
+
+                    let mut file_groups2: Vec<Vec<PartitionedFile>> =
+                        Vec::with_capacity(partition_count);
+                    scan.file_partitions
+                        .iter()
+                        .enumerate()
+                        .for_each(|(idx, partition)| {
+                            let mut files = Vec::with_capacity(partition.partitioned_file.len());
+                            partition.partitioned_file.iter().for_each(|file| {
+                                files.push(PartitionedFile::new_with_range(
+                                    Url::parse(file.file_path.as_ref())
+                                        .unwrap()
+                                        .path()
+                                        .to_string(),
+                                    file.file_size as u64,
+                                    file.start,
+                                    file.start + file.length,
+                                ));
+                            });
+                            file_groups2.push(files);
+                        });
+
+                    println!["Native file_groups2: {:?}", file_groups2];
+
                     let file_scan_config =
                         FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                            .with_file_groups(file_groups)
+                            .with_file_groups(file_groups2)
                             .with_projection(Some(projection_vector));
 
                     let mut table_parquet_options = TableParquetOptions::new();
