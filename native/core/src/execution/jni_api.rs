@@ -20,7 +20,6 @@
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
