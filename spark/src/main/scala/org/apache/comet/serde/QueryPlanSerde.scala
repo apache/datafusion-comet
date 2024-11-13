@@ -2493,32 +2493,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // Sink operators don't have children
           result.clearChildren()
 
-          // scalastyle:off println
-          //              System.out.println(op.simpleStringWithNodeId())
-          //              System.out.println(scanTypes.asJava) // Spark types for output.
-          System.out.println(scan.output) // This is the names of the output columns.
-          // System.out.println(cometScan.requiredSchema); // This is the projected columns.
-          System.out.println(
-            scan.dataFilters
-          ); // This is the filter expressions that have been pushed down.
-
           val dataFilters = scan.dataFilters.map(exprToProto(_, scan.output))
           nativeScanBuilder.addAllDataFilters(dataFilters.map(_.get).asJava)
-          //              System.out.println(cometScan.relation.location.inputFiles(0))
-          //              System.out.println(cometScan.partitionFilters);
-          //              System.out.println(cometScan.relation.partitionSchema)
-          //              System.out.println(cometScan.metadata);
-
-          //              System.out.println("requiredSchema:")
-          //              cometScan.requiredSchema.fields.foreach(field => {
-          //                System.out.println(field.dataType)
-          //              })
-
-          //              System.out.println("relation.dataSchema:")
-          //              cometScan.relation.dataSchema.fields.foreach(field => {
-          //                System.out.println(field.dataType)
-          //              })
-          // scalastyle:on println
 
           val requiredSchemaParquet =
             new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
