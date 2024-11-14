@@ -1162,8 +1162,22 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
+  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
+    conf.contains("spark.memory.offHeap.enabled") &&
+      conf.getConfString("spark.memory.offHeap.enabled").toBoolean
+
+  // Copied from org.apache.spark.util.Utils which is private to Spark.
+  private[comet] def isTesting: Boolean = {
+    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
+  }
+
+  // Check whether Comet shuffle is enabled:
+  // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
+  // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
+  // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      (isOffHeapEnabled(conf) || isTesting)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {

@@ -41,6 +41,7 @@ import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.RowPartition;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.types.StructType;
@@ -87,7 +88,7 @@ public final class CometDiskBlockWriter {
   static final int MAXIMUM_PAGE_SIZE_BYTES = 1 << 27;
 
   /** The Comet allocator used to allocate pages. */
-  private final CometShuffleMemoryAllocator allocator;
+  private final CometShuffleMemoryAllocatorTrait allocator;
 
   /** The serializer used to write rows to memory page. */
   private final SerializerInstance serializer;
@@ -435,12 +436,17 @@ public final class CometDiskBlockWriter {
               }
             });
 
+        long totalFreed = 0;
         for (CometDiskBlockWriter writer : currentWriters) {
           // Force to spill the writer in a synchronous way, otherwise, we may not be able to
           // acquire enough memory.
+          long used = writer.getActiveMemoryUsage();
+
           writer.doSpill(true);
 
-          if (allocator.getAvailableMemory() >= required) {
+          totalFreed += used;
+
+          if (totalFreed >= required) {
             break;
           }
         }
