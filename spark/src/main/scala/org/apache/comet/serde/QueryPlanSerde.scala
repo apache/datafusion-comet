@@ -2502,38 +2502,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           scan.inputRDD match {
             case rdd: DataSourceRDD =>
               val partitions = rdd.partitions
-              // scalastyle:off println
               partitions.foreach(p => {
                 val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
-                inputPartitions.foreach(f => {
-                  val partition = f.asInstanceOf[FilePartition]
-                  val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
-                  partition.files.foreach(file => {
-                    val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
-                    fileBuilder
-                      .setFilePath(file.pathUri.toString)
-                      .setStart(file.start)
-                      .setLength(file.length)
-                      .setFileSize(file.fileSize)
-                    partitionBuilder.addPartitionedFile(fileBuilder.build())
-                  })
-                  nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+                inputPartitions.foreach(partition => {
+                  partition2Proto(partition.asInstanceOf[FilePartition], nativeScanBuilder)
                 })
               })
-            // scalastyle:on println
             case rdd: FileScanRDD =>
               rdd.filePartitions.foreach(partition => {
-                val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
-                partition.files.foreach(file => {
-                  val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
-                  fileBuilder
-                    .setFilePath(file.pathUri.toString)
-                    .setStart(file.start)
-                    .setLength(file.length)
-                    .setFileSize(file.fileSize)
-                  partitionBuilder.addPartitionedFile(fileBuilder.build())
-                })
-                nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+                partition2Proto(partition, nativeScanBuilder)
               })
             case _ =>
           }
@@ -3208,5 +3185,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     true
+  }
+
+  private def partition2Proto(
+      partition: FilePartition,
+      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder): Unit = {
+    val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+    partition.files.foreach(file => {
+      val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+      fileBuilder
+        .setFilePath(file.pathUri.toString)
+        .setStart(file.start)
+        .setLength(file.length)
+        .setFileSize(file.fileSize)
+      partitionBuilder.addPartitionedFile(fileBuilder.build())
+    })
+    nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
 }
