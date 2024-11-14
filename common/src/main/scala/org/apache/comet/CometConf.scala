@@ -322,8 +322,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
     conf("spark.comet.columnar.shuffle.memorySize")
+      .internal()
       .doc(
-        "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
+        "Test-only config. This is only used to test Comet shuffle with Spark tests. " +
+          "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
           "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
           "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
           "flushed to disk immediately. If this is not configured, Comet will use " +
@@ -335,8 +337,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
+      .internal()
       .doc(
-        "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
+        "Test-only config. This is only used to test Comet shuffle with Spark tests. " +
+          "Fraction of Comet memory to be allocated per executor process for Comet shuffle. " +
           "Comet memory size is specified by `spark.comet.memoryOverhead` or " +
           "calculated by `spark.comet.memory.overhead.factor` * `spark.executor.memory`.")
       .doubleConf
@@ -344,6 +348,17 @@ object CometConf extends ShimCometConf {
         factor => factor > 0,
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
       .createWithDefault(1.0)
+
+  val COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST: ConfigEntry[Boolean] =
+    conf("spark.comet.columnar.shuffle.unifiedMemoryAllocatorTest")
+      .doc("Whether to use Spark unified memory allocator for Comet columnar shuffle in tests." +
+        "If not configured, Comet will use a test-only memory allocator for Comet columnar " +
+        "shuffle when Spark test env detected. The test-ony allocator is proposed to run with " +
+        "Spark tests as these tests require on-heap memory configuration. " +
+        "By default, this config is false.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
