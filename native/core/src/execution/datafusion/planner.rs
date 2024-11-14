@@ -82,6 +82,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use datafusion_comet_proto::{
@@ -107,7 +108,8 @@ use datafusion_common::{
 };
 use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{
-    AggregateUDF, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
 };
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
@@ -690,6 +692,33 @@ impl PhysicalPlanner {
                     child,
                     expr.ordinal as usize,
                 )))
+            }
+            ExprStruct::ArrayAppend(expr) => {
+                let left =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type = left.data_type(&input_schema)?;
+                let args = vec![Arc::clone(&left), right];
+                let datafusion_array_append =
+                    Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
+                let array_append_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_append",
+                    datafusion_array_append,
+                    args,
+                    return_type,
+                ));
+
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(left));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_append_expr),
+                )?;
+                Ok(Arc::new(case_expr))
             }
             ExprStruct::ArrayInsert(expr) => {
                 let src_array_expr = self.create_expr(
