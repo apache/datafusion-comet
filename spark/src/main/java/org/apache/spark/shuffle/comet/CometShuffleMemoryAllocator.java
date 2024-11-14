@@ -45,7 +45,7 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
    * created. For Spark tests, this returns `CometTestShuffleMemoryAllocator` which is a test-only
    * allocator that should not be used in production.
    */
-  public static synchronized CometShuffleMemoryAllocatorTrait getInstance(
+  public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     boolean isSparkTesting = Utils.isTesting();
     boolean useUnifiedMemAllocator =
@@ -53,11 +53,12 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
             CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
 
     if (isSparkTesting && !useUnifiedMemAllocator) {
-      if (INSTANCE == null) {
-        // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.
-        INSTANCE = new CometTestShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+      synchronized (CometShuffleMemoryAllocator.class) {
+        if (INSTANCE == null) {
+          // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.
+          INSTANCE = new CometTestShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+        }
       }
-
       return INSTANCE;
     } else {
       if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
