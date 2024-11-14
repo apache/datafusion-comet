@@ -241,16 +241,11 @@ abstract class CometNativeExec extends CometExec {
 
         foreachUntilCometInput(this)(sparkPlans += _)
 
-        // scalastyle:off println
-        println(s"sparkPlans: $sparkPlans")
-
         // Find the first non broadcast plan
         val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
-          // We cannot get the RDD from CometNativeExec
-          case (_: CometNativeExec, _) => false
           case _ => true
         }
 
@@ -270,8 +265,8 @@ abstract class CometNativeExec extends CometExec {
         // If the first non broadcast plan is found, we need to adjust the partition number of
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
-        val firstNonBroadcastPlanRDD = firstNonBroadcastPlan.map(_._1.executeColumnar())
-        val firstNonBroadcastPlanNumPartitions = firstNonBroadcastPlanRDD.map(_.getNumPartitions)
+        val firstNonBroadcastPlanNumPartitions =
+          firstNonBroadcastPlan.map(_._1.outputPartitioning.numPartitions)
 
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
@@ -301,8 +296,6 @@ abstract class CometNativeExec extends CometExec {
                 .executeColumnar()
             case _: CometNativeExec =>
             // no-op
-            case _ if firstNonBroadcastPlan.nonEmpty && idx == firstNonBroadcastPlan.get._2 =>
-              inputs += firstNonBroadcastPlanRDD.get
             case _ if firstNonBroadcastPlanNumPartitions.nonEmpty =>
               val rdd = plan.executeColumnar()
               if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions.get) {
@@ -317,13 +310,16 @@ abstract class CometNativeExec extends CometExec {
           }
         }
 
-        println(s"""inputs: $inputs""")
-
         if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
+        if (inputs.nonEmpty) {
+          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
+        } else {
+          val partitionNum = firstNonBroadcastPlanNumPartitions.get
+          CometExecRDD(sparkContext, partitionNum)(createCometExecIter(_))
+        }
     }
   }
 

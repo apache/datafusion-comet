@@ -368,7 +368,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
 
-            if exec_context.explain_native {
+            if true || exec_context.explain_native {
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
                 info!("Comet native query plan:\n {formatted_plan_str:}");

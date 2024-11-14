@@ -374,8 +374,6 @@ class CometSparkSessionExtensions
         // Fully native scan for V1
         case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
           val nativeOp = QueryPlanSerde.operator2Proto(scan).get
-          // scalastyle:off println
-          println(s"Comet full native scan: $nativeOp")
           CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
         case op if shouldApplySparkToColumnar(conf, op) =>
@@ -973,9 +971,6 @@ class CometSparkSessionExtensions
         }
 
         var newPlan = transform(normalizedPlan)
-
-        // scalastyle:off println
-        println(s"newPlan: $newPlan")
 
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
