@@ -23,7 +23,7 @@ Comet provides some tuning options to help you get the best performance from you
 
 ## Memory Tuning
 
-Comet shares an off-heap memory pool between Spark and Comet. This requires setting `spark.memory.offHeap.enabled=true`.
+Comet shares an off-heap memory pool between Spark and Comet. This requires setting `spark.memory.offHeap.enabled=true`. 
 If this setting is not enabled, Comet will not accelerate queries and will fall back to Spark.
 
 Each executor will have a single memory pool which will be shared by all native plans being executed within that

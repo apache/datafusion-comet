@@ -948,7 +948,6 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
-
       // Comet required off-heap memory to be enabled
       if (!isOffHeapEnabled(conf) && !isTesting) {
         logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")

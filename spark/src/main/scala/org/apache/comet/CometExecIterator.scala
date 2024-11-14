@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -84,6 +84,29 @@ class CometExecIterator(
   private var nextBatch: Option[ColumnarBatch] = None
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
+
+  /**
+   * Creates a new configuration map to be passed to the native side.
+   */
+  private def createNativeConf: java.util.HashMap[String, String] = {
+    val result = new java.util.HashMap[String, String]()
+    val conf = SparkEnv.get.conf
+
+    result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
+    result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
+    result.put("explain_native", String.valueOf(COMET_EXPLAIN_NATIVE_ENABLED.get()))
+    result.put("worker_threads", String.valueOf(COMET_WORKER_THREADS.get()))
+    result.put("blocking_threads", String.valueOf(COMET_BLOCKING_THREADS.get()))
+
+    // Strip mandatory prefix spark. which is not required for DataFusion session params
+    conf.getAll.foreach {
+      case (k, v) if k.startsWith("spark.datafusion") =>
+        result.put(k.replaceFirst("spark\\.", ""), v)
+      case _ =>
+    }
+
+    result
+  }
 
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
