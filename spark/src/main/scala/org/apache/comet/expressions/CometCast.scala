@@ -71,8 +71,7 @@ object CometCast {
             Unsupported
         }
       case (_: DecimalType, _: DecimalType) =>
-        // https://github.com/apache/datafusion-comet/issues/375
-        Incompatible()
+        Compatible()
       case (DataTypes.StringType, _) =>
         canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>

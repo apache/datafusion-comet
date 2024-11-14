@@ -895,6 +895,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast between decimals with different precision and scale") {
+    // cast between default Decimal(38, 18) to Decimal(9,1)
+    val values = Seq(BigDecimal("12345.6789"), BigDecimal("9876.5432"), BigDecimal("123.4567"))
+    val df = withNulls(values).toDF("a")
+    castTest(df, DataTypes.createDecimalType(7, 2))
+  }
+
+  test("cast two between decimals with different precision and scale") {
+    // cast between Decimal(10, 2) to Decimal(9,1)
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(9, 1))
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
