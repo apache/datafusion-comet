@@ -932,26 +932,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           handleCast(child, inputs, dt, timeZoneId, evalMode(c))
 
         case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
-          createMathExpression(left, right, inputs, add.dataType, getFailOnError(add)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setAdd(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            add.dataType,
+            getFailOnError(add),
+            (builder, mathExpr) => builder.setAdd(mathExpr))
 
         case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(add, s"Unsupported datatype ${left.dataType}")
           None
 
         case sub @ Subtract(left, right, _) if supportedDataType(left.dataType) =>
-          createMathExpression(left, right, inputs, sub.dataType, getFailOnError(sub)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setSubtract(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            sub.dataType,
+            getFailOnError(sub),
+            (builder, mathExpr) => builder.setSubtract(mathExpr))
 
         case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
           withInfo(sub, s"Unsupported datatype ${left.dataType}")
@@ -959,13 +959,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case mul @ Multiply(left, right, _)
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-          createMathExpression(left, right, inputs, mul.dataType, getFailOnError(mul)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setMultiply(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            right,
+            inputs,
+            mul.dataType,
+            getFailOnError(mul),
+            (builder, mathExpr) => builder.setMultiply(mathExpr))
 
         case mul @ Multiply(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -983,13 +983,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // For now, use NullIf to swap zeros with nulls.
           val rightExpr = nullIfWhenPrimitive(right)
 
-          createMathExpression(left, rightExpr, inputs, div.dataType, getFailOnError(div)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setDivide(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            div.dataType,
+            getFailOnError(div),
+            (builder, mathExpr) => builder.setDivide(mathExpr))
 
         case div @ Divide(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -1004,13 +1004,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
           val rightExpr = nullIfWhenPrimitive(right)
 
-          createMathExpression(left, rightExpr, inputs, rem.dataType, getFailOnError(rem)).map {
-            expr =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setRemainder(expr)
-                .build()
-          }
+          createMathExpression(
+            left,
+            rightExpr,
+            inputs,
+            rem.dataType,
+            getFailOnError(rem),
+            (builder, mathExpr) => builder.setRemainder(mathExpr))
 
         case rem @ Remainder(left, _, _) =>
           if (!supportedDataType(left.dataType)) {
@@ -1022,68 +1022,60 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
 
         case EqualTo(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setEq(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEq(binaryExpr))
 
         case Not(EqualTo(left, right)) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setNeq(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setNeq(binaryExpr))
 
         case EqualNullSafe(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setEqNullSafe(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
 
         case Not(EqualNullSafe(left, right)) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setNeqNullSafe(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
         case GreaterThan(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setGt(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setGt(binaryExpr))
 
         case GreaterThanOrEqual(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setGtEq(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setGtEq(binaryExpr))
 
         case LessThan(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setLt(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setLt(binaryExpr))
 
         case LessThanOrEqual(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setLtEq(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
         case Literal(value, dataType)
             if supportedDataType(dataType, allowStruct = value == null) =>
@@ -1220,12 +1212,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         case Like(left, right, escapeChar) =>
           if (escapeChar == '\\') {
-            createBinaryExpr(left, right, inputs).map { builder =>
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setLike(builder)
-                .build()
-            }
+            createBinaryExpr(
+              left,
+              right,
+              inputs,
+              (builder, binaryExpr) => builder.setLike(binaryExpr))
           } else {
             // TODO custom escape char
             withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
@@ -1250,44 +1241,38 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               return None
           }
 
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setRlike(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
         case StartsWith(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setStartsWith(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
 
         case EndsWith(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setEndsWith(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
 
         case Contains(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setContains(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setContains(binaryExpr))
 
         case StringSpace(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setStringSpace(expr)
-              .build()
-          }
+          createUnaryExpr(
+            child,
+            inputs,
+            (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
         case Hour(child, timeZoneId) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1422,20 +1407,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case IsNull(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIsNull(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNull(unaryExpr))
 
         case IsNotNull(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIsNotNull(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
         case IsNaN(child) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -1472,20 +1447,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case And(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setAnd(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setAnd(binaryExpr))
 
         case Or(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setOr(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setOr(binaryExpr))
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
@@ -1922,36 +1895,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
         case BitwiseAnd(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseAnd(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
         case BitwiseNot(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseNot(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
 
         case BitwiseOr(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseOr(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
 
         case BitwiseXor(left, right) =>
-          createBinaryExpr(left, right, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseXor(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            right,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
 
         case ShiftRight(left, right) =>
           // DataFusion bitwise shift right expression requires
@@ -1962,12 +1927,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             right
           }
 
-          createBinaryExpr(left, rightExpression, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseShiftRight(builder)
-              .build()
-          }
+          createBinaryExpr(
+            left,
+            rightExpression,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseShiftRight(binaryExpr))
 
         case ShiftLeft(left, right) =>
           // DataFusion bitwise shift right expression requires
@@ -1978,13 +1942,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             right
           }
 
-          createBinaryExpr(left, rightExpression, inputs).map { builder =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBitwiseShiftLeft(builder)
-              .build()
-          }
-
+          createBinaryExpr(
+            left,
+            rightExpression,
+            inputs,
+            (builder, binaryExpr) => builder.setBitwiseShiftLeft(binaryExpr))
         case In(value, list) =>
           in(expr, value, list, inputs, false)
 
@@ -2001,12 +1963,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           in(expr, value, list, inputs, true)
 
         case Not(child) =>
-          createUnaryExpr(child, inputs).map { expr =>
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setNot(expr)
-              .build()
-          }
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setNot(unaryExpr))
 
         case UnaryMinus(child, failOnError) =>
           val childExpr = exprToProtoInternal(child, inputs)
@@ -2280,23 +2237,51 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
-
+        case _ if expr.prettyName == "array_append" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
       }
     }
 
+    /**
+     * Creates a UnaryExpr by calling exprToProtoInternal for the provided child expression and
+     * then invokes the supplied function to wrap this UnaryExpr in a top-level Expr.
+     *
+     * @param child
+     *   Spark expression
+     * @param inputs
+     *   Inputs to the expression
+     * @param f
+     *   Function that accepts an Expr.Builder and a UnaryExpr and builds the specific top-level
+     *   Expr
+     * @return
+     *   Some(Expr) or None if not supported
+     */
     def createUnaryExpr(
         child: Expression,
-        inputs: Seq[Attribute]): Option[ExprOuterClass.UnaryExpr] = {
+        inputs: Seq[Attribute],
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
       val childExpr = exprToProtoInternal(child, inputs)
       if (childExpr.isDefined) {
+        // create the generic UnaryExpr message
+        val inner = ExprOuterClass.UnaryExpr
+          .newBuilder()
+          .setChild(childExpr.get)
+          .build()
+        // call the user-supplied function to wrap UnaryExpr in a top-level Expr
+        // such as Expr.IsNull or Expr.IsNotNull
         Some(
-          ExprOuterClass.UnaryExpr
-            .newBuilder()
-            .setChild(childExpr.get)
-            .build())
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
       } else {
         withInfo(expr, child)
         None
@@ -2306,16 +2291,27 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     def createBinaryExpr(
         left: Expression,
         right: Expression,
-        inputs: Seq[Attribute]): Option[ExprOuterClass.BinaryExpr] = {
+        inputs: Seq[Attribute],
+        f: (
+            ExprOuterClass.Expr.Builder,
+            ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
       val leftExpr = exprToProtoInternal(left, inputs)
       val rightExpr = exprToProtoInternal(right, inputs)
       if (leftExpr.isDefined && rightExpr.isDefined) {
+        // create the generic BinaryExpr message
+        val inner = ExprOuterClass.BinaryExpr
+          .newBuilder()
+          .setLeft(leftExpr.get)
+          .setRight(rightExpr.get)
+          .build()
+        // call the user-supplied function to wrap BinaryExpr in a top-level Expr
+        // such as Expr.And or Expr.Or
         Some(
-          ExprOuterClass.BinaryExpr
-            .newBuilder()
-            .setLeft(leftExpr.get)
-            .setRight(rightExpr.get)
-            .build())
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
       } else {
         withInfo(expr, left, right)
         None
@@ -2327,11 +2323,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         right: Expression,
         inputs: Seq[Attribute],
         dataType: DataType,
-        failOnError: Boolean): Option[ExprOuterClass.MathExpr] = {
+        failOnError: Boolean,
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
       val leftExpr = exprToProtoInternal(left, inputs)
       val rightExpr = exprToProtoInternal(right, inputs)
 
       if (leftExpr.isDefined && rightExpr.isDefined) {
+        // create the generic MathExpr message
         val builder = ExprOuterClass.MathExpr.newBuilder()
         builder.setLeft(leftExpr.get)
         builder.setRight(rightExpr.get)
@@ -2339,7 +2338,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         serializeDataType(dataType).foreach { t =>
           builder.setReturnType(t)
         }
-        Some(builder.build())
+        val inner = builder.build()
+        // call the user-supplied function to wrap MathExpr in a top-level Expr
+        // such as Expr.Add or Expr.Divide
+        Some(
+          f(
+            ExprOuterClass.Expr
+              .newBuilder(),
+            inner).build())
       } else {
         withInfo(expr, left, right)
         None

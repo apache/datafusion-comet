@@ -82,6 +82,7 @@ message Expr {
     ToJson to_json = 55;
     ListExtract list_extract = 56;
     GetArrayStructFields get_array_struct_fields = 57;
+    BinaryExpr array_append = 58;
   }
 }
 

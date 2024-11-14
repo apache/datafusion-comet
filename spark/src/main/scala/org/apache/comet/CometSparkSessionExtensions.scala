@@ -1169,8 +1169,22 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
+  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
+    conf.contains("spark.memory.offHeap.enabled") &&
+      conf.getConfString("spark.memory.offHeap.enabled").toBoolean
+
+  // Copied from org.apache.spark.util.Utils which is private to Spark.
+  private[comet] def isTesting: Boolean = {
+    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
+  }
+
+  // Check whether Comet shuffle is enabled:
+  // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
+  // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
+  // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      (isOffHeapEnabled(conf) || isTesting)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
@@ -1282,8 +1296,14 @@ object CometSparkSessionExtensions extends Logging {
       .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
 
     val minimum = ConfigHelpers
-      .byteFromString(sparkConf.get(COMET_MEMORY_OVERHEAD_MIN_MIB.key, "384"), ByteUnit.MiB)
-    val overheadFactor = sparkConf.getDouble(COMET_MEMORY_OVERHEAD_FACTOR.key, 0.2)
+      .byteFromString(
+        sparkConf.get(
+          COMET_MEMORY_OVERHEAD_MIN_MIB.key,
+          COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString),
+        ByteUnit.MiB)
+    val overheadFactor = sparkConf.getDouble(
+      COMET_MEMORY_OVERHEAD_FACTOR.key,
+      COMET_MEMORY_OVERHEAD_FACTOR.defaultValue.get)
 
     val overHeadMemFromConf = sparkConf
       .getOption(COMET_MEMORY_OVERHEAD.key)
