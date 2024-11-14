@@ -287,16 +287,6 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#unified-memory-management">
-     Unified Memory Management
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#native-memory-management">
-     Native Memory Management
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">
      Determining How Much Memory to Allocate
     </a>
@@ -398,32 +388,10 @@ under the License.
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
-<p>Comet provides two options for memory management:</p>
-<ul class="simple">
-<li><p><strong>Unified Memory Management</strong> shares an off-heap memory pool between Spark and Comet. This is the recommended option.</p></li>
-<li><p><strong>Native Memory Management</strong> leverages DataFusion’s memory management for the native plans and allocates memory independently of Spark.</p></li>
-</ul>
-<section id="unified-memory-management">
-<h3>Unified Memory Management<a class="headerlink" href="#unified-memory-management" title="Link to this heading">¶</a></h3>
-<p>This option is automatically enabled when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>.</p>
+<p>Comet shares an off-heap memory pool between Spark and Comet. This requires setting <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>.
+If this setting is not enabled, Comet will not accelerate queries and will fall back to Spark.</p>
 <p>Each executor will have a single memory pool which will be shared by all native plans being executed within that
 process, and by Spark itself. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
-</section>
-<section id="native-memory-management">
-<h3>Native Memory Management<a class="headerlink" href="#native-memory-management" title="Link to this heading">¶</a></h3>
-<p>This option is automatically enabled when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=false</span></code>.</p>
-<p>Each native plan has a dedicated memory pool.</p>
-<p>By default, the size of each pool is <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory</span></code>. The default value
-for <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> is <code class="docutils literal notranslate"><span class="pre">0.2</span></code>.</p>
-<p>It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
-be calculated with <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span> <span class="pre">/</span> <span class="pre">spark.task.cpus</span></code>.</p>
-<p>For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
-<code class="docutils literal notranslate"><span class="pre">4</span> <span class="pre">*</span> <span class="pre">spark.comet.memory.overhead.factor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory</span></code>.</p>
-<p>It is also possible to set <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> to the desired size for each pool, rather than calculating
-it based on <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code>.</p>
-<p>If both <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> are set, the former will be used.</p>
-<p>Comet will allocate at least <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code> memory per pool.</p>
-</section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">¶</a></h3>
 <p>Generally, increasing memory overhead will improve query performance, especially for queries containing joins and
