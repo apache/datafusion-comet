@@ -202,8 +202,9 @@ class CometSparkSessionExtensions
               if CometNativeScanExec.isSchemaSupported(requiredSchema)
                 && CometNativeScanExec.isSchemaSupported(partitionSchema)
                 && COMET_FULL_NATIVE_SCAN_ENABLED.get =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometNativeScanExec(scanExec, session)
+            logInfo("Comet extension enabled for v1 full native Scan")
+            CometScanExec(scanExec, session)
+
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
@@ -365,9 +366,17 @@ class CometSparkSessionExtensions
       }
 
       plan.transformUp {
-        case op if isCometScan(op) =>
+        // Comet JVM + native scan for V1 and V2
+        case op if isCometScan(op) && !COMET_FULL_NATIVE_SCAN_ENABLED.get =>
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
+
+        // Fully native scan for V1
+        case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+          val nativeOp = QueryPlanSerde.operator2Proto(scan).get
+          // scalastyle:off println
+          println(s"Comet full native scan: $nativeOp")
+          CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
         case op if shouldApplySparkToColumnar(conf, op) =>
           val cometOp = CometSparkToColumnarExec(op)
@@ -965,6 +974,9 @@ class CometSparkSessionExtensions
 
         var newPlan = transform(normalizedPlan)
 
+        // scalastyle:off println
+        println(s"newPlan: $newPlan")
+
         // if the plan cannot be run fully natively then explain why (when appropriate
         // config is enabled)
         if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
@@ -1221,8 +1233,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   def isCometScan(op: SparkPlan): Boolean = {
-    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec] ||
-    op.isInstanceOf[CometNativeScanExec]
+    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
