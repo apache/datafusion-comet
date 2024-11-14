@@ -2353,4 +2353,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
       })
   }
+
+  test("ArrayInsertUnsupportedArgs") {
+    // This test checks that the else branch in ArrayInsert
+    // mapping to the comet is valid and fallback to spark is working fine.
+    assume(isSpark34Plus)
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
+      spark.read
+        .parquet(path.toString)
+        .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+        .withColumn("idx", udf((x: Int) => x).apply(col("_4")))
+        .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
+    }
+  }
 }
