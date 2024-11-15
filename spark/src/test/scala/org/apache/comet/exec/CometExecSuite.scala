@@ -119,7 +119,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
-    withSQLConf(CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false") {
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
       withTable(table) {
         withView("lv_noalias") {
@@ -130,7 +130,6 @@ class CometExecSuite extends CometTestBase {
             "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
               "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
           val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key")
-          df.explain()
           checkSparkAnswer(df)
         }
       }

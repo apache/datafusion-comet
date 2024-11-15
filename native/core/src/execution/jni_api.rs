@@ -287,7 +287,7 @@ fn prepare_output(
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    if results.len() != num_cols {
+    if results.len() < num_cols {
         return Err(CometError::Internal(format!(
             "Output column count mismatch: expected {num_cols}, got {}",
             results.len()
@@ -305,7 +305,7 @@ fn prepare_output(
     }
 
     let mut i = 0;
-    while i < results.len() {
+    while i < num_cols {
         let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
         array_ref
             .to_data()
@@ -368,7 +368,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
 
-            if true || exec_context.explain_native {
+            if exec_context.explain_native {
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
                 info!("Comet native query plan:\n {formatted_plan_str:}");
