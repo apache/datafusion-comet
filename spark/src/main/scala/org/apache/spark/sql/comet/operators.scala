@@ -298,7 +298,7 @@ abstract class CometNativeExec extends CometExec {
             // no-op
             case _ if firstNonBroadcastPlanNumPartitions.nonEmpty =>
               val rdd = plan.executeColumnar()
-              if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions.get) {
+              if (plan.outputPartitioning.numPartitions != firstNonBroadcastPlanNumPartitions.get) {
                 throw new CometRuntimeException(
                   s"Partition number mismatch: ${rdd.getNumPartitions} != " +
                     s"${firstNonBroadcastPlanNumPartitions.get}")

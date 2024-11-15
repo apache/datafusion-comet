@@ -366,15 +366,15 @@ class CometSparkSessionExtensions
       }
 
       plan.transformUp {
-        // Comet JVM + native scan for V1 and V2
-        case op if isCometScan(op) && !COMET_FULL_NATIVE_SCAN_ENABLED.get =>
-          val nativeOp = QueryPlanSerde.operator2Proto(op).get
-          CometScanWrapper(nativeOp, op)
-
         // Fully native scan for V1
         case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
           val nativeOp = QueryPlanSerde.operator2Proto(scan).get
           CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+
+        // Comet JVM + native scan for V1 and V2
+        case op if isCometScan(op) =>
+          val nativeOp = QueryPlanSerde.operator2Proto(op).get
+          CometScanWrapper(nativeOp, op)
 
         case op if shouldApplySparkToColumnar(conf, op) =>
           val cometOp = CometSparkToColumnarExec(op)
