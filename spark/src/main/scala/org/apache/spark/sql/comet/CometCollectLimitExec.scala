@@ -67,6 +67,7 @@ case class CometCollectLimitExec(
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    CometExec.prepareScanForNativeExec(child)
     val childRDD = child.executeColumnar()
     if (childRDD.getNumPartitions == 0) {
       CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)

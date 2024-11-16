@@ -43,6 +43,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
 import org.apache.comet.MetricsSupport
+import org.apache.comet.parquet.CometParquetFileFormat.HAS_NATIVE_OPERATIONS
 import org.apache.comet.shims.ShimSQLConf
 import org.apache.comet.vector.CometVector
 
@@ -97,6 +98,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)
     val datetimeRebaseModeInRead = parquetOptions.datetimeRebaseModeInRead
     val parquetFilterPushDown = sqlConf.parquetFilterPushDown
+    val hasNativeOperations = options.getOrElse(HAS_NATIVE_OPERATIONS, "false").toBoolean
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
@@ -146,7 +148,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
         datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
+        JavaConverters.mapAsJavaMap(metrics),
+        hasNativeOperations)
       val iter = new RecordReaderIterator(batchReader)
       try {
         batchReader.init()
@@ -161,6 +164,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 }
 
 object CometParquetFileFormat extends Logging with ShimSQLConf {
+  final val HAS_NATIVE_OPERATIONS = "HAS_NATIVE_OPERATIONS"
 
   /**
    * Populates Parquet related configurations from the input `sqlConf` to the `hadoopConf`

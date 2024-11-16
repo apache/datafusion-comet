@@ -48,8 +48,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-use jni::objects::JValueGen;
-use jni::objects::{GlobalRef, JObject};
+use jni::objects::{GlobalRef, JObject, JValueGen};
 use jni::sys::jsize;
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
@@ -88,7 +87,7 @@ impl ScanExec {
         // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
         // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
-            ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?
+            ScanExec::get_next(exec_context_id, input_source.as_obj(), &data_types)?
         } else {
             InputBatch::EOF
         };
@@ -155,7 +154,7 @@ impl ScanExec {
             let next_batch = ScanExec::get_next(
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
+                &self.data_types,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -167,7 +166,7 @@ impl ScanExec {
     fn get_next(
         exec_context_id: i64,
         iter: &JObject,
-        num_cols: usize,
+        data_types: &[DataType],
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -183,6 +182,7 @@ impl ScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
+        let num_cols = data_types.len();
         let mut array_addrs = Vec::with_capacity(num_cols);
         let mut schema_addrs = Vec::with_capacity(num_cols);
 
@@ -212,8 +212,7 @@ impl ScanExec {
         let schema_obj = JValueGen::Object(schema_obj.as_ref());
 
         let num_rows: i32 = unsafe {
-            jni_call!(&mut env,
-        comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
+            jni_call!(&mut env, comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
         };
 
         if num_rows == -1 {
@@ -222,10 +221,10 @@ impl ScanExec {
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
 
-        for i in 0..num_cols {
+        for (i, data_type) in data_types.iter().enumerate().take(num_cols) {
             let array_ptr = array_addrs[i];
             let schema_ptr = schema_addrs[i];
-            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr), data_type)?;
 
             // TODO: validate array input data
 

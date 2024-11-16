@@ -47,6 +47,7 @@ import org.apache.comet.CometConf;
 import org.apache.comet.vector.CometDecodedVector;
 import org.apache.comet.vector.CometDictionary;
 import org.apache.comet.vector.CometDictionaryVector;
+import org.apache.comet.vector.CometNativeVector;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
@@ -58,7 +59,7 @@ public class ColumnReader extends AbstractColumnReader {
    * The current Comet vector holding all the values read by this column reader. Owned by this
    * reader and MUST be closed after use.
    */
-  private CometDecodedVector currentVector;
+  private CometVector currentVector;
 
   /** Dictionary values for this column. Only set if the column is using dictionary encoding. */
   protected CometDictionary dictionary;
@@ -90,6 +91,8 @@ public class ColumnReader extends AbstractColumnReader {
 
   private final CometSchemaImporter importer;
 
+  private final boolean hasNativeOperations;
+
   private ArrowArray array = null;
   private ArrowSchema schema = null;
 
@@ -99,11 +102,13 @@ public class ColumnReader extends AbstractColumnReader {
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLegacyDateTimestamp) {
+      boolean useLegacyDateTimestamp,
+      boolean hasNativeOperations) {
     super(type, descriptor, useDecimal128, useLegacyDateTimestamp);
     assert batchSize > 0 : "Batch size must be positive, found " + batchSize;
     this.batchSize = batchSize;
     this.importer = importer;
+    this.hasNativeOperations = hasNativeOperations;
     initNative();
   }
 
@@ -171,7 +176,23 @@ public class ColumnReader extends AbstractColumnReader {
   }
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
-  public CometDecodedVector loadVector() {
+  public CometVector loadVector() {
+    if (hasNativeOperations) {
+      if (currentVector != null) {
+        currentVector.close();
+      }
+
+      array = ArrowArray.allocateNew(ALLOCATOR);
+      schema = ArrowSchema.allocateNew(ALLOCATOR);
+
+      long arrayAddr = array.memoryAddress();
+      long schemaAddr = schema.memoryAddress();
+
+      Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
+      currentVector = new CometNativeVector(null, useDecimal128, array, schema);
+      return currentVector;
+    }
+
     // Only re-use Comet vector iff:
     //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
     //      side may fallback to plain encoding and the underlying memory address for the vector
@@ -264,7 +285,7 @@ public class ColumnReader extends AbstractColumnReader {
     if (page == null) {
       throw new RuntimeException("overreading: returned DataPage is null");
     }
-    ;
+
     int pageValueCount = page.getValueCount();
     page.accept(
         new DataPage.Visitor<Void>() {

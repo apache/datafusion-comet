@@ -108,6 +108,7 @@ case class CometBroadcastExchangeExec(
     this
   }
   def getNumPartitions(): Int = {
+    CometExec.prepareScanForNativeExec(child)
     numPartitions.getOrElse(child.executeColumnar().getNumPartitions)
   }
 

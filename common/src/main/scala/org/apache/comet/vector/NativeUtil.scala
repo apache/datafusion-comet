@@ -93,9 +93,16 @@ class NativeUtil {
       schemaAddrs: Array[Long],
       batch: ColumnarBatch): Int = {
     val numRows = mutable.ArrayBuffer.empty[Int]
+    val builder = Array.newBuilder[Long]
+    builder += batch.numRows()
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
+        case a: CometNativeVector =>
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          arrowArray.save(a.getArray.snapshot())
+          arrowSchema.save(a.getSchema.snapshot())
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -160,7 +167,7 @@ class NativeUtil {
       case -1 =>
         // EOF
         None
-      case numRows =>
+      case numRows if numRows >= 0 =>
         val cometVectors = importVector(arrays, schemas)
         Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
       case flag =>

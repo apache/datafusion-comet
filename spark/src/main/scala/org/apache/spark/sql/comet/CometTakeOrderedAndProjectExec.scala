@@ -67,6 +67,7 @@ case class CometTakeOrderedAndProjectExec(
     SortOrder.orderingSatisfies(child.outputOrdering, sortOrder)
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    CometExec.prepareScanForNativeExec(child)
     val childRDD = child.executeColumnar()
     if (childRDD.getNumPartitions == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)

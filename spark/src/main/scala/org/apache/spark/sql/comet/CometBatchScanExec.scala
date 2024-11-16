@@ -33,6 +33,7 @@ import org.apache.spark.sql.vectorized._
 import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
+import org.apache.comet.parquet.CometParquetScan
 import org.apache.comet.shims.ShimCometBatchScanExec
 
 case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
@@ -74,6 +75,13 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   // `ReusedSubqueryExec` in Spark only call non-columnar execute.
   override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
+  }
+
+  def prepareForNativeExec(): Unit = {
+    scan match {
+      case s: CometParquetScan => s.prepareForNativeExec()
+      case _ => // TODO support Iceberg
+    }
   }
 
   override def executeCollect(): Array[InternalRow] = {

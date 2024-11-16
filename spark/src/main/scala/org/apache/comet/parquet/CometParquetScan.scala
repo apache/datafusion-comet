@@ -33,8 +33,10 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.MetricsSupport
+import org.apache.comet.parquet.CometParquetFileFormat.HAS_NATIVE_OPERATIONS
 
 trait CometParquetScan extends FileScan with MetricsSupport {
+  private var hasNativeOperations = false
   def sparkSession: SparkSession
   def hadoopConf: Configuration
   def readDataSchema: StructType
@@ -55,6 +57,7 @@ trait CometParquetScan extends FileScan with MetricsSupport {
   override def createReaderFactory(): PartitionReaderFactory = {
     val sqlConf = sparkSession.sessionState.conf
     CometParquetFileFormat.populateConf(sqlConf, hadoopConf)
+    hadoopConf.set(HAS_NATIVE_OPERATIONS, hasNativeOperations.toString)
     val broadcastedConf =
       sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
     CometParquetPartitionReaderFactory(
@@ -65,6 +68,10 @@ trait CometParquetScan extends FileScan with MetricsSupport {
       pushedFilters,
       new ParquetOptions(options.asScala.toMap, sqlConf),
       metrics)
+  }
+
+  def prepareForNativeExec(): Unit = {
+    hasNativeOperations = true
   }
 }
 

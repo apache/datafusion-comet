@@ -152,6 +152,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   /** The TaskContext object for executing this task. */
   private final TaskContext taskContext;
 
+  private boolean hasNativeOperations = false;
+
   // Only for testing
   public BatchReader(String file, int capacity) {
     this(file, capacity, null, null);
@@ -215,7 +217,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       boolean useLegacyDateTimestamp,
       StructType partitionSchema,
       InternalRow partitionValues,
-      Map<String, SQLMetric> metrics) {
+      Map<String, SQLMetric> metrics,
+      boolean hasNativeOperations) {
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
@@ -229,6 +232,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.footer = footer;
     this.metrics = metrics;
     this.taskContext = TaskContext$.MODULE$.get();
+    this.hasNativeOperations = hasNativeOperations;
   }
 
   /**
@@ -586,7 +590,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
               capacity,
               useDecimal128,
               useLazyMaterialization,
-              useLegacyDateTimestamp);
+              useLegacyDateTimestamp,
+              hasNativeOperations);
       reader.setPageReader(rowGroupReader.getPageReader(columns.get(i)));
       columnReaders[i] = reader;
     }

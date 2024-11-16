@@ -43,6 +43,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, CometRuntimeException}
+import org.apache.comet.parquet.CometParquetFileFormat.HAS_NATIVE_OPERATIONS
 import org.apache.comet.shims.ShimSQLConf
 
 case class CometParquetPartitionReaderFactory(
@@ -125,6 +126,7 @@ case class CometParquetPartitionReaderFactory(
     try {
       val (datetimeRebaseSpec, footer, filters) = getFilter(file)
       filters.foreach(pushed => ParquetInputFormat.setFilterPredicate(conf, pushed))
+      val hasNativeOperations = conf.get(HAS_NATIVE_OPERATIONS, "false").toBoolean
       val cometReader = new BatchReader(
         conf,
         file,
@@ -137,7 +139,8 @@ case class CometParquetPartitionReaderFactory(
         datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
+        JavaConverters.mapAsJavaMap(metrics),
+        hasNativeOperations)
       val taskContext = Option(TaskContext.get)
       taskContext.foreach(_.addTaskCompletionListener[Unit](_ => cometReader.close()))
       return cometReader

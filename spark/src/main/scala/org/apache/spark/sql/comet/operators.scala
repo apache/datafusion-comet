@@ -159,6 +159,13 @@ object CometExec {
 
     new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
+
+  def prepareScanForNativeExec(plan: SparkPlan): Unit =
+    plan match {
+      case exec: CometScanExec => exec.prepareForNativeExec()
+      case exec: CometBatchScanExec => exec.prepareForNativeExec()
+      case _ =>
+    }
 }
 
 /**
@@ -258,6 +265,7 @@ abstract class CometNativeExec extends CometExec {
         // If the first non broadcast plan is found, we need to adjust the partition number of
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
+        CometExec.prepareScanForNativeExec(firstNonBroadcastPlan.get._1)
         val firstNonBroadcastPlanRDD = firstNonBroadcastPlan.get._1.executeColumnar()
         val firstNonBroadcastPlanNumPartitions = firstNonBroadcastPlanRDD.getNumPartitions
 
@@ -280,6 +288,7 @@ abstract class CometNativeExec extends CometExec {
             case _ if idx == firstNonBroadcastPlan.get._2 =>
               inputs += firstNonBroadcastPlanRDD
             case _ =>
+              CometExec.prepareScanForNativeExec(plan)
               val rdd = plan.executeColumnar()
               if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
                 throw new CometRuntimeException(
@@ -629,9 +638,10 @@ case class CometUnionExec(
     override val output: Seq[Attribute],
     children: Seq[SparkPlan])
     extends CometExec {
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    sparkContext.union(children.map(_.executeColumnar()))
-  }
+  override def doExecuteColumnar(): RDD[ColumnarBatch] =
+    sparkContext.union(children.map { child =>
+      child.executeColumnar()
+    })
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[SparkPlan]): SparkPlan =
     this.copy(children = newChildren)

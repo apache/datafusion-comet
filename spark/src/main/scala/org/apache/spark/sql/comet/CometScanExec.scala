@@ -45,6 +45,7 @@ import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
+import org.apache.comet.parquet.CometParquetFileFormat.HAS_NATIVE_OPERATIONS
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -64,6 +65,7 @@ case class CometScanExec(
     extends DataSourceScanExec
     with ShimCometScanExec
     with CometPlan {
+  private var hasNativeOperations = false
 
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
@@ -169,7 +171,8 @@ case class CometScanExec(
 
   lazy val inputRDD: RDD[InternalRow] = {
     val options = relation.options +
-      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
+      (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString) +
+      (HAS_NATIVE_OPERATIONS -> hasNativeOperations.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =
       relation.fileFormat.buildReaderWithPartitionValues(
         sparkSession = relation.sparkSession,
@@ -236,6 +239,10 @@ case class CometScanExec(
 
   protected override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
+  }
+
+  def prepareForNativeExec(): Unit = {
+    this.hasNativeOperations = true
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
