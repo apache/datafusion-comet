@@ -23,8 +23,6 @@ The following benchmarks were performed on a two node Kubernetes cluster with
 data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments 
 and we encourage you to run these benchmarks in your own environments.
 
-Note that these benchmarks currently omit query 72.
-
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
 
 ![](../../_static/images/benchmark-results/0.4.0/tpcds_allqueries.png)
