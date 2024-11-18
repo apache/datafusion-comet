@@ -287,7 +287,7 @@ fn prepare_output(
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    if results.len() < num_cols {
+    if results.len() != num_cols {
         return Err(CometError::Internal(format!(
             "Output column count mismatch: expected {num_cols}, got {}",
             results.len()
@@ -305,7 +305,7 @@ fn prepare_output(
     }
 
     let mut i = 0;
-    while i < num_cols {
+    while i < results.len() {
         let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
         array_ref
             .to_data()
