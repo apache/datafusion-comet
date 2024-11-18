@@ -1097,7 +1097,7 @@ mod test {
         let source =
             hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
                 .unwrap();
-        let expected = hex::decode("8a00db001800340030001d00ab003700f100").unwrap();
+        let expected = hex::decode("8a00dbff180034ff30001d00abff37fff100").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
         copy_i32_to_u8(source.as_bytes(), dest.as_mut_slice(), num);
