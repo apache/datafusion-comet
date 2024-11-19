@@ -119,17 +119,19 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
-    val table = "src"
-    withTable(table) {
-      withView("lv_noalias") {
-        sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
-        sql(s"INSERT INTO $table VALUES(238, 'val_238')")
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      val table = "src"
+      withTable(table) {
+        withView("lv_noalias") {
+          sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
+          sql(s"INSERT INTO $table VALUES(238, 'val_238')")
 
-        sql(
-          "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
-            "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
-        val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key");
-        checkSparkAnswer(df)
+          sql(
+            "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
+              "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
+          val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key")
+          checkSparkAnswer(df)
+        }
       }
     }
   }
@@ -551,7 +553,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)

@@ -1029,6 +1029,8 @@ impl PhysicalPlanner {
                         .with_file_groups(file_groups)
                         .with_projection(Some(projection_vector));
 
+                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+
                 let mut table_parquet_options = TableParquetOptions::new();
                 // TODO: Maybe these are configs?
                 table_parquet_options.global.pushdown_filters = true;

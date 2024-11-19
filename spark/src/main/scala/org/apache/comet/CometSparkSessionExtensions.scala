@@ -202,8 +202,9 @@ class CometSparkSessionExtensions
               if CometNativeScanExec.isSchemaSupported(requiredSchema)
                 && CometNativeScanExec.isSchemaSupported(partitionSchema)
                 && COMET_FULL_NATIVE_SCAN_ENABLED.get =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometNativeScanExec(scanExec, session)
+            logInfo("Comet extension enabled for v1 full native Scan")
+            CometScanExec(scanExec, session)
+
           // data source V1
           case scanExec @ FileSourceScanExec(
                 HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
@@ -365,6 +366,12 @@ class CometSparkSessionExtensions
       }
 
       plan.transformUp {
+        // Fully native scan for V1
+        case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+          val nativeOp = QueryPlanSerde.operator2Proto(scan).get
+          CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+
+        // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
@@ -1221,8 +1228,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   def isCometScan(op: SparkPlan): Boolean = {
-    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec] ||
-    op.isInstanceOf[CometNativeScanExec]
+    op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
