@@ -2520,8 +2520,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
           val projection_vector: Array[java.lang.Long] = scan.requiredSchema.fields.map(field => {
-            scan.relation.dataSchema.fields.indexOf(field).toLong.asInstanceOf[java.lang.Long]
+            scan.relation.dataSchema.fieldIndex(field.name).toLong.asInstanceOf[java.lang.Long]
           })
+
           nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
