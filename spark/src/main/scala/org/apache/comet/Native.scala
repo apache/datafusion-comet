@@ -19,8 +19,6 @@
 
 package org.apache.comet
 
-import java.util.Map
-
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
@@ -47,11 +45,15 @@ class Native extends NativeBase {
    */
   @native def createPlan(
       id: Long,
-      configMap: Map[String, String],
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
       metrics: CometMetricNode,
-      taskMemoryManager: CometTaskMemoryManager): Long
+      taskMemoryManager: CometTaskMemoryManager,
+      batchSize: Int,
+      debug: Boolean,
+      explain: Boolean,
+      workerThreads: Int,
+      blockingThreads: Int): Long
 
   /**
    * Execute a native query plan based on given input Arrow arrays.

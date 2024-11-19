@@ -31,8 +31,8 @@ use futures::poll;
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JMap, JObject, JObjectArray, JPrimitiveArray,
-        JString, ReleaseMode,
+        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JPrimitiveArray, JString,
+        ReleaseMode,
     },
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
@@ -75,8 +75,6 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// Configurations for DF execution
-    pub conf: HashMap<String, String>,
     /// The Tokio runtime used for async.
     pub runtime: Runtime,
     /// Native metrics
@@ -99,11 +97,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    config_object: JObject,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
+    batch_size: jint,
+    debug_native: jboolean,
+    explain_native: jboolean,
+    worker_threads: jint,
+    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -115,36 +117,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        // Sets up context
-        let mut configs = HashMap::new();
-
-        let config_map = JMap::from_env(&mut env, &config_object)?;
-        let mut map_iter = config_map.iter(&mut env)?;
-        while let Some((key, value)) = map_iter.next(&mut env)? {
-            let key: String = env.get_string(&JString::from(key)).unwrap().into();
-            let value: String = env.get_string(&JString::from(value)).unwrap().into();
-            configs.insert(key, value);
-        }
-
-        // Whether we've enabled additional debugging on the native side
-        let debug_native = parse_bool(&configs, "debug_native")?;
-        let explain_native = parse_bool(&configs, "explain_native")?;
-
-        let worker_threads = configs
-            .get("worker_threads")
-            .map(String::as_str)
-            .unwrap_or("4")
-            .parse::<usize>()?;
-        let blocking_threads = configs
-            .get("blocking_threads")
-            .map(String::as_str)
-            .unwrap_or("10")
-            .parse::<usize>()?;
-
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .max_blocking_threads(blocking_threads)
+            .worker_threads(worker_threads as usize)
+            .max_blocking_threads(blocking_threads as usize)
             .enable_all()
             .build()?;
 
@@ -165,7 +141,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(&configs, task_memory_manager)?;
+        let session = prepare_datafusion_session_context(batch_size as usize, task_memory_manager)?;
 
         let exec_context = Box::new(ExecutionContext {
             id,
@@ -174,12 +150,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             scans: vec![],
             input_sources,
             stream: None,
-            conf: configs,
             runtime,
             metrics,
             session_ctx: Arc::new(session),
-            debug_native,
-            explain_native,
+            debug_native: debug_native == 1,
+            explain_native: explain_native == 1,
             metrics_jstrings: HashMap::new(),
         });
 
@@ -187,19 +162,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     })
 }
 
-/// Parse Comet configs and configure DataFusion session context.
+/// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
-    conf: &HashMap<String, String>,
+    batch_size: usize,
     comet_task_memory_manager: Arc<GlobalRef>,
 ) -> CometResult<SessionContext> {
-    // Get the batch size from Comet JVM side
-    let batch_size = conf
-        .get("batch_size")
-        .ok_or(CometError::Internal(
-            "Config 'batch_size' is not specified from Comet JVM side".to_string(),
-        ))?
-        .parse::<usize>()?;
-
     let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
 
     // Set Comet memory pool for native
@@ -209,7 +176,7 @@ fn prepare_datafusion_session_context(
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let mut session_config = SessionConfig::new()
+    let session_config = SessionConfig::new()
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -222,11 +189,7 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
-    for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
-        session_config = session_config.set_str(key, value);
-    }
-
-    let runtime = RuntimeEnv::try_new(rt_config).unwrap();
+    let runtime = RuntimeEnv::try_new(rt_config)?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
