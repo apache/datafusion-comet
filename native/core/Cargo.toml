@@ -130,3 +130,7 @@ harness = false
 [[bench]]
 name = "bloom_filter_agg"
 harness = false
+
+[[bench]]
+name = "planner"
+harness = false
