@@ -74,8 +74,8 @@ message NativeScan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
-  string required_schema = 3;
-  string data_schema = 4;
+  string data_schema = 3;
+  repeated int64 projection_vector = 4;
   repeated spark.spark_expression.Expr data_filters = 5;
   repeated SparkFilePartition file_partitions = 6;
 }

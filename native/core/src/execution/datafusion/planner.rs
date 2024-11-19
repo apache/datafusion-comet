@@ -120,6 +120,7 @@ use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
+use parquet::arrow::ProjectionMask;
 use parquet::schema::parser::parse_message_type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
@@ -950,7 +951,6 @@ impl PhysicalPlanner {
             }
             OpStruct::NativeScan(scan) => {
                 let data_schema = parse_message_type(&scan.data_schema).unwrap();
-                let required_schema = parse_message_type(&scan.required_schema).unwrap();
 
                 let data_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -959,15 +959,27 @@ impl PhysicalPlanner {
                         .unwrap(),
                 );
 
-                let required_schema_descriptor =
-                    parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
+                // Add projection vector to FileScanConfig.
+                let projection_vector: Vec<usize> = scan
+                    .projection_vector
+                    .iter()
+                    .map(|offset| *offset as usize)
+                    .collect();
+
+                println!("projection_vector: {:?}", projection_vector);
+
                 let required_schema_arrow = Arc::new(
-                    parquet::arrow::schema::parquet_to_arrow_schema(
-                        &required_schema_descriptor,
+                    parquet::arrow::schema::parquet_to_arrow_schema_by_columns(
+                        &data_schema_descriptor,
+                        ProjectionMask::leaves(&data_schema_descriptor, projection_vector.clone()),
                         None,
                     )
                     .unwrap(),
                 );
+
+                println!("data_schema_arrow: {}", data_schema_arrow);
+                println!("required_schema_arrow: {}", required_schema_arrow);
+                // projection_vector.iter().for_each(|offset|)
 
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
@@ -1018,22 +1030,10 @@ impl PhysicalPlanner {
                 assert_eq!(file_groups.len(), partition_count);
 
                 let object_store_url = ObjectStoreUrl::local_filesystem();
-                let mut file_scan_config =
+                let file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                        .with_file_groups(file_groups);
-
-                // Check for projection, if so generate the vector and add to FileScanConfig.
-                if !required_schema_arrow.fields.is_empty() {
-                    let mut projection_vector: Vec<usize> =
-                        Vec::with_capacity(required_schema_arrow.fields.len());
-                    // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
-                    required_schema_arrow.fields.iter().for_each(|field| {
-                        projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
-                    });
-
-                    assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
-                    file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-                }
+                        .with_file_groups(file_groups)
+                        .with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
                 // TODO: Maybe these are configs?
