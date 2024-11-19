@@ -896,22 +896,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast between decimals with different precision and scale") {
-    // cast between default Decimal(38, 18) to Decimal(7,2)
+    // cast between default Decimal(38, 18) to Decimal(6,2)
     val values = Seq(BigDecimal("12345.6789"), BigDecimal("9876.5432"), BigDecimal("123.4567"))
-    val df = withNulls(values).toDF("a")
-    castTest(df, DataTypes.createDecimalType(7, 2))
-  }
-
-  test("cast between decimals with lower precision and scale") {
-    // cast between Decimal(10, 2) to Decimal(9,1)
-    castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(9, 1))
+    val df = withNulls(values)
+      .toDF("b")
+      .withColumn("a", col("b").cast(DecimalType(6, 2)))
+    checkSparkAnswer(df)
   }
 
   test("cast between decimals with higher precision than source") {
     // cast between Decimal(10, 2) to Decimal(10,4)
-    withSQLConf("spark.comet.explainFallback.enabled" -> "true") {
-      castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
-    }
+    castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
   }
 
   test("cast between decimals with negative precision") {

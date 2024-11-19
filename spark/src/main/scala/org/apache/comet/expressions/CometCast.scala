@@ -70,8 +70,10 @@ object CometCast {
           case _ =>
             Unsupported
         }
-      case (_: DecimalType, _: DecimalType) =>
-        Compatible()
+      case (from: DecimalType, to: DecimalType) =>
+        if (to.precision < from.precision)
+          Incompatible() // datafusion looses precision https://github.com/apache/datafusion/issues/13492
+        else Compatible()
       case (DataTypes.StringType, _) =>
         canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>
