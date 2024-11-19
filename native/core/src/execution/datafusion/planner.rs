@@ -966,8 +966,6 @@ impl PhysicalPlanner {
                     .map(|offset| *offset as usize)
                     .collect();
 
-                println!("projection_vector: {:?}", projection_vector);
-
                 let required_schema_arrow = Arc::new(
                     parquet::arrow::schema::parquet_to_arrow_schema_by_columns(
                         &data_schema_descriptor,
@@ -976,10 +974,6 @@ impl PhysicalPlanner {
                     )
                     .unwrap(),
                 );
-
-                println!("data_schema_arrow: {}", data_schema_arrow);
-                println!("required_schema_arrow: {}", required_schema_arrow);
-                // projection_vector.iter().for_each(|offset|)
 
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
