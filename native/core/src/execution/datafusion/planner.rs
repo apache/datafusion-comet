@@ -1023,17 +1023,15 @@ impl PhysicalPlanner {
                         .with_file_groups(file_groups);
 
                 // Check for projection, if so generate the vector and add to FileScanConfig.
-                if !required_schema_arrow.fields.is_empty() {
-                    let mut projection_vector: Vec<usize> =
-                        Vec::with_capacity(required_schema_arrow.fields.len());
-                    // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
-                    required_schema_arrow.fields.iter().for_each(|field| {
-                        projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
-                    });
+                let mut projection_vector: Vec<usize> =
+                    Vec::with_capacity(required_schema_arrow.fields.len());
+                // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
+                required_schema_arrow.fields.iter().for_each(|field| {
+                    projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
+                });
 
-                    assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
-                    file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-                }
+                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
                 // TODO: Maybe these are configs?
