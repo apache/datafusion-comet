@@ -1023,13 +1023,13 @@ impl PhysicalPlanner {
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
 
+                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+
                 let object_store_url = ObjectStoreUrl::local_filesystem();
                 let file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
                         .with_file_groups(file_groups)
                         .with_projection(Some(projection_vector));
-
-                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
 
                 let mut table_parquet_options = TableParquetOptions::new();
                 // TODO: Maybe these are configs?
