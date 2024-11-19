@@ -575,6 +575,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_SAVE_SERIALIZED_PLANS: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.saveSerializedPlans")
+      .doc("For development use, it is sometimes convenient to be able to capture " +
+        "serialized query plans.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

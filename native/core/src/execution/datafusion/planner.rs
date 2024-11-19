@@ -2169,12 +2169,15 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, task::Poll};
-
     use futures::{poll, StreamExt};
+    use std::fs::File;
+    use std::io::Read;
+    use std::{sync::Arc, task::Poll};
 
     use arrow_array::{DictionaryArray, Int32Array, StringArray};
     use arrow_schema::DataType;
+    use datafusion::error::Result;
+    use datafusion::physical_plan::{displayable, ExecutionPlan};
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
@@ -2383,6 +2386,40 @@ mod tests {
         let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
         let comet_err: ExecutionError = err.into();
         assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
+    }
+
+    #[test]
+    fn create_plan_tpch_q3_stage_8() -> Result<()> {
+        let plan = deserialize_plan("testdata/plan_8_0.bin")?;
+        let actual = format!("{}", displayable(plan.as_ref()).indent(true));
+        let expected = "ShuffleWriterExec: partitioning=Hash([Column { name: \"col_0\", index: 0 }], 200)\n  ScanExec: source=[], schema=[col_0: Int64]";
+        assert_eq!(expected.trim(), actual.trim());
+        Ok(())
+    }
+
+    #[test]
+    fn create_plan_tpch_q3_stage_18() -> Result<()> {
+        let plan = deserialize_plan("testdata/plan_18_0.bin")?;
+        let actual = format!("{}", displayable(plan.as_ref()).indent(true));
+        let expected = "ShuffleWriterExec: partitioning=UnknownPartitioning(1)\n  ScanExec: source=[], schema=[col_0: Int64, col_1: Decimal128(34, 4), col_2: Date32, col_3: Int32]";
+        assert_eq!(expected.trim(), actual.trim());
+        Ok(())
+    }
+
+    fn deserialize_plan(filename: &str) -> Result<Arc<dyn ExecutionPlan>> {
+        let bytes = read_plan_proto(filename);
+        let spark_plan = crate::execution::serde::deserialize_op(bytes.as_slice())?;
+        let planner = PhysicalPlanner::default();
+        let mut inputs = vec![];
+        let (_scans, plan) = planner.create_plan(&spark_plan, &mut inputs)?;
+        Ok(plan)
+    }
+
+    fn read_plan_proto(filename: &str) -> Vec<u8> {
+        let mut file = File::open(filename).unwrap();
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).unwrap();
+        buffer
     }
 
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to

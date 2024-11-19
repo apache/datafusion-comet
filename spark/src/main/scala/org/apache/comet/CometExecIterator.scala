@@ -19,8 +19,12 @@
 
 package org.apache.comet
 
+import java.nio.file.{Files, Paths}
+
 import org.apache.spark._
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
@@ -46,7 +50,8 @@ class CometExecIterator(
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode)
-    extends Iterator[ColumnarBatch] {
+    extends Iterator[ColumnarBatch]
+    with Logging {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -62,6 +67,13 @@ class CometExecIterator(
       protobufQueryPlan,
       nativeMetrics,
       new CometTaskMemoryManager(id))
+  }
+
+  if (CometConf.COMET_SAVE_SERIALIZED_PLANS.get(SQLConf.get)) {
+    val ctx = TaskContext.get()
+    val filename = s"plan_${ctx.stageId()}_${ctx.partitionId()}.bin"
+    logInfo(s"Saving serialized query plan to $filename")
+    Files.write(Paths.get(filename), protobufQueryPlan)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
