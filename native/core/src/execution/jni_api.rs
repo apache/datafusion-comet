@@ -402,7 +402,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
                                 DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
-                            info!("Comet native query plan with metrics (plan creation time: {}ms):\n{formatted_plan_str:}", exec_context.plan_creation_time);
+                            info!("Comet native query plan with metrics (plan creation took {} ms):\n{formatted_plan_str:}", exec_context.plan_creation_time);
                         }
                     }
 
