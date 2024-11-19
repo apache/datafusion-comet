@@ -482,7 +482,7 @@ impl PhysicalExpr for ArrayInsert {
             return Err(DataFusionError::Internal(format!(
                 "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
                 pos_value.data_type()
-            )))
+            )));
         }
 
         // Check that src array is actually an array and get it's value type
@@ -572,8 +572,11 @@ fn array_insert<O: OffsetSizeTrait>(
     pos_array: &ArrayRef,
     legacy_mode: bool,
 ) -> DataFusionResult<ColumnarValue> {
-    // The code is based on the implementation of array_append from DataFusion
+    // The code is based on the implementation of the array_append from the Apache DataFusion
     // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
+    //
+    // This code is also based on the implementation of the array_insert from the Apache Spark
+    // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4713
 
     let values = list_array.values();
     let offsets = list_array.offsets();
@@ -615,16 +618,19 @@ fn array_insert<O: OffsetSizeTrait>(
                 )));
             }
 
-            if corrected_pos < end {
+            if (start + corrected_pos) <= end {
                 mutable_values.extend(0, start, start + corrected_pos);
                 mutable_values.extend(1, row_index, row_index + 1);
                 mutable_values.extend(0, start + corrected_pos, end);
+                new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
             } else {
                 mutable_values.extend(0, start, end);
-                mutable_values.extend_nulls(new_array_len - (end - start + 1));
+                mutable_values.extend_nulls(new_array_len - (end - start));
                 mutable_values.extend(1, row_index, row_index + 1);
+                // In that case spark actualy makes array longer than expected;
+                // For example, if pos is equal to 5, len is eq to 3, than resulted len will be 5
+                new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len) + O::one());
             }
-            new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
         } else {
             // This comment is takes from the Apache Spark source code as is:
             // special case- if the new position is negative but larger than the current array size
@@ -640,7 +646,7 @@ fn array_insert<O: OffsetSizeTrait>(
             }
             mutable_values.extend(1, row_index, row_index + 1);
             mutable_values.extend_nulls(new_array_len - (end - start + 1));
-            mutable_values.extend(0, new_array_len - (end - start + 1), new_array_len);
+            mutable_values.extend(0, start, end);
             new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
         }
         if is_item_null {
@@ -744,14 +750,25 @@ mod test {
     #[test]
     fn test_array_insert() -> Result<()> {
         // Test inserting an item into a list array
+        // Inputs and expected values are taken from the Spark results
         let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(3)]),
             Some(vec![Some(4), Some(5)]),
+            Some(vec![None]),
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(1), Some(2), Some(3)]),
             None,
         ]);
 
-        let positions = Int32Array::from(vec![2, 1, 1]);
-        let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+        let positions = Int32Array::from(vec![2, 1, 1, 5, 6, 1]);
+        let items = Int32Array::from(vec![
+            Some(10),
+            Some(20),
+            Some(30),
+            Some(100),
+            Some(100),
+            Some(40),
+        ]);
 
         let ColumnarValue::Array(result) = array_insert(
             &list,
@@ -766,7 +783,10 @@ mod test {
         let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(10), Some(2), Some(3)]),
             Some(vec![Some(20), Some(4), Some(5)]),
-            Some(vec![Some(30)]),
+            Some(vec![Some(30), None]),
+            Some(vec![Some(1), Some(2), Some(3), None, Some(100)]),
+            Some(vec![Some(1), Some(2), Some(3), None, None, Some(100)]),
+            Some(vec![Some(40)]),
         ]);
 
         assert_eq!(&result.to_data(), &expected.to_data());
@@ -776,14 +796,17 @@ mod test {
 
     #[test]
     fn test_array_insert_negative_index() -> Result<()> {
+        // Test insert with negative index
+        // Inputs and expected values are taken from the Spark results
         let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(3)]),
             Some(vec![Some(4), Some(5)]),
+            Some(vec![Some(1)]),
             None,
         ]);
 
-        let positions = Int32Array::from(vec![-2, -1, -1]);
-        let items = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+        let positions = Int32Array::from(vec![-2, -1, -3, -1]);
+        let items = Int32Array::from(vec![Some(10), Some(20), Some(100), Some(30)]);
 
         let ColumnarValue::Array(result) = array_insert(
             &list,
@@ -798,6 +821,7 @@ mod test {
         let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(10), Some(3)]),
             Some(vec![Some(4), Some(5), Some(20)]),
+            Some(vec![Some(100), None, Some(1)]),
             Some(vec![Some(30)]),
         ]);
 
@@ -808,6 +832,7 @@ mod test {
 
     #[test]
     fn test_array_insert_legacy_mode() -> Result<()> {
+        // Test the so-called "legacy" mode exisiting in the Spark
         let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(3)]),
             Some(vec![Some(4), Some(5)]),

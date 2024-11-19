@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -119,10 +119,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          // TODO: enable test for unsigned ints
-          checkSparkAnswerAndOperator(
-            "select _1, _2, _3, _4, _5, _6, _7, _8, _13, _14, _15, _16, _17, " +
-              "_18, _19, _20 FROM tbl WHERE _2 > 100")
+          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
         }
       }
     }
@@ -1115,7 +1112,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
         withParquetTable(path.toString, "tbl") {
-          Seq(2, 3, 4, 5, 6, 7, 15, 16, 17).foreach { col =>
+          Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
             checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
           }
         }
@@ -1239,9 +1236,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(path.toString, "tbl") {
           for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
             // array tests
-            // TODO: enable test for unsigned ints (_9, _10, _11, _12)
             // TODO: enable test for floats (_6, _7, _8, _13)
-            for (c <- Seq(2, 3, 4, 5, 15, 16, 17)) {
+            for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
               checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
             }
             // scalar tests
@@ -1452,9 +1448,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
 
         withParquetTable(path.toString, "tbl") {
-          // _9 and _10 (uint8 and uint16) not supported
           checkSparkAnswerAndOperator(
-            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
         }
       }
     }
@@ -2315,8 +2310,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("array_append") {
-    // array append has been added in Spark 3.4 and in Spark 4.0 it gets written to ArrayInsert
-    assume(isSpark34Plus && !isSpark40Plus)
+    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -2334,7 +2328,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(
           spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
+    }
+  }
 
+  test("array_prepend") {
+    assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+      }
     }
   }
 
@@ -2349,8 +2364,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
           .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
           .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
+          .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
+          .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
+          .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
         checkSparkAnswerAndOperator(df.select("arrInsertResult"))
         checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
+        checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
+        checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
+        checkSparkAnswerAndOperator(df.select("arrInsertNone"))
       })
   }
 
@@ -2361,11 +2382,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
-      spark.read
+      val df = spark.read
         .parquet(path.toString)
         .withColumn("arr", array(col("_4"), lit(null), col("_4")))
         .withColumn("idx", udf((x: Int) => x).apply(col("_4")))
         .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
+      checkSparkAnswer(df.select("arrUnsupportedArgs"))
     }
   }
 }

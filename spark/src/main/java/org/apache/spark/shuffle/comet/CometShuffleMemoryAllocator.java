@@ -20,157 +20,75 @@
 package org.apache.spark.shuffle.comet;
 
 import java.io.IOException;
-import java.util.BitSet;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
-import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.memory.TaskMemoryManager;
-import org.apache.spark.sql.internal.SQLConf;
-import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
-import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
+import org.apache.spark.util.Utils;
 
-import org.apache.comet.CometSparkSessionExtensions$;
+import org.apache.comet.CometConf$;
 
 /**
  * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
- * store serialized rows. We don't rely on Spark memory allocator because we need to allocate
- * off-heap memory no matter memory mode is on-heap or off-heap. This allocator is configured with
- * fixed size of memory, and it will throw `SparkOutOfMemoryError` if the memory is not enough.
- *
- * <p>Some methods are copied from `org.apache.spark.unsafe.memory.TaskMemoryManager` with
- * modifications. Most modifications are to remove the dependency on the configured memory mode.
+ * store serialized rows. This class is simply an implementation of `MemoryConsumer` that delegates
+ * memory allocation to the `TaskMemoryManager`. This requires that the `TaskMemoryManager` is
+ * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
  */
-public final class CometShuffleMemoryAllocator extends MemoryConsumer {
-  private final UnsafeMemoryAllocator allocator = new UnsafeMemoryAllocator();
+public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
+  private static CometShuffleMemoryAllocatorTrait INSTANCE;
 
-  private final long pageSize;
-  private final long totalMemory;
-  private long allocatedMemory = 0L;
-
-  /** The number of bits used to address the page table. */
-  private static final int PAGE_NUMBER_BITS = 13;
-
-  /** The number of entries in the page table. */
-  private static final int PAGE_TABLE_SIZE = 1 << PAGE_NUMBER_BITS;
-
-  private final MemoryBlock[] pageTable = new MemoryBlock[PAGE_TABLE_SIZE];
-  private final BitSet allocatedPages = new BitSet(PAGE_TABLE_SIZE);
-
-  private static final int OFFSET_BITS = 51;
-  private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
-
-  private static CometShuffleMemoryAllocator INSTANCE;
-
-  public static synchronized CometShuffleMemoryAllocator getInstance(
+  /**
+   * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
+   * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
+   * created. For Spark tests, this returns `CometTestShuffleMemoryAllocator` which is a test-only
+   * allocator that should not be used in production.
+   */
+  public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
-    if (INSTANCE == null) {
-      INSTANCE = new CometShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
-    }
+    boolean isSparkTesting = Utils.isTesting();
+    boolean useUnifiedMemAllocator =
+        (boolean)
+            CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
 
-    return INSTANCE;
+    if (isSparkTesting && !useUnifiedMemAllocator) {
+      synchronized (CometShuffleMemoryAllocator.class) {
+        if (INSTANCE == null) {
+          // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.
+          INSTANCE = new CometTestShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+        }
+      }
+      return INSTANCE;
+    } else {
+      if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
+        throw new IllegalArgumentException(
+            "CometShuffleMemoryAllocator should be used with off-heap "
+                + "memory mode, but got "
+                + taskMemoryManager.getTungstenMemoryMode());
+      }
+
+      // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
+      // but one instance per task. So we need to create a new instance for each task.
+      return new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
+    }
   }
 
-  CometShuffleMemoryAllocator(SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
+  CometShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
-    this.pageSize = pageSize;
-    this.totalMemory =
-        CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());
-  }
-
-  public synchronized long acquireMemory(long size) {
-    if (allocatedMemory >= totalMemory) {
-      throw new SparkOutOfMemoryError(
-          "Unable to acquire "
-              + size
-              + " bytes of memory, current usage "
-              + "is "
-              + allocatedMemory
-              + " bytes and max memory is "
-              + totalMemory
-              + " bytes");
-    }
-    long allocationSize = Math.min(size, totalMemory - allocatedMemory);
-    allocatedMemory += allocationSize;
-    return allocationSize;
   }
 
   public long spill(long l, MemoryConsumer memoryConsumer) throws IOException {
+    // JVM shuffle writer does not support spilling for other memory consumers
     return 0;
   }
 
-  public synchronized LongArray allocateArray(long size) {
-    long required = size * 8L;
-    MemoryBlock page = allocate(required);
-    return new LongArray(page);
-  }
-
-  public synchronized void freeArray(LongArray array) {
-    if (array == null) {
-      return;
-    }
-    free(array.memoryBlock());
-  }
-
-  public synchronized MemoryBlock allocatePage(long required) {
-    long size = Math.max(pageSize, required);
-    return allocate(size);
-  }
-
-  private synchronized MemoryBlock allocate(long required) {
-    if (required > TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES) {
-      throw new TooLargePageException(required);
-    }
-
-    long got = acquireMemory(required);
-
-    if (got < required) {
-      allocatedMemory -= got;
-
-      throw new SparkOutOfMemoryError(
-          "Unable to acquire "
-              + required
-              + " bytes of memory, got "
-              + got
-              + " bytes. Available: "
-              + (totalMemory - allocatedMemory));
-    }
-
-    int pageNumber = allocatedPages.nextClearBit(0);
-    if (pageNumber >= PAGE_TABLE_SIZE) {
-      allocatedMemory -= got;
-
-      throw new IllegalStateException(
-          "Have already allocated a maximum of " + PAGE_TABLE_SIZE + " pages");
-    }
-
-    MemoryBlock block = allocator.allocate(got);
-
-    block.pageNumber = pageNumber;
-    pageTable[pageNumber] = block;
-    allocatedPages.set(pageNumber);
-
-    return block;
+  public synchronized MemoryBlock allocate(long required) {
+    return this.allocatePage(required);
   }
 
   public synchronized void free(MemoryBlock block) {
-    if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER) {
-      // Already freed block
-      return;
-    }
-    allocatedMemory -= block.size();
-
-    pageTable[block.pageNumber] = null;
-    allocatedPages.clear(block.pageNumber);
-    block.pageNumber = MemoryBlock.FREED_IN_TMM_PAGE_NUMBER;
-
-    allocator.free(block);
-  }
-
-  public synchronized long getAvailableMemory() {
-    return totalMemory - allocatedMemory;
+    this.freePage(block);
   }
 
   /**
@@ -178,21 +96,11 @@ public final class CometShuffleMemoryAllocator extends MemoryConsumer {
    * method assumes that the page number is valid.
    */
   public long getOffsetInPage(long pagePlusOffsetAddress) {
-    long offsetInPage = decodeOffset(pagePlusOffsetAddress);
-    int pageNumber = TaskMemoryManager.decodePageNumber(pagePlusOffsetAddress);
-    assert (pageNumber >= 0 && pageNumber < PAGE_TABLE_SIZE);
-    MemoryBlock page = pageTable[pageNumber];
-    assert (page != null);
-    return page.getBaseOffset() + offsetInPage;
-  }
-
-  public long decodeOffset(long pagePlusOffsetAddress) {
-    return pagePlusOffsetAddress & MASK_LONG_LOWER_51_BITS;
+    return taskMemoryManager.getOffsetInPage(pagePlusOffsetAddress);
   }
 
   public long encodePageNumberAndOffset(int pageNumber, long offsetInPage) {
-    assert (pageNumber >= 0);
-    return ((long) pageNumber) << OFFSET_BITS | offsetInPage & MASK_LONG_LOWER_51_BITS;
+    return TaskMemoryManager.encodePageNumberAndOffset(pageNumber, offsetInPage);
   }
 
   public long encodePageNumberAndOffset(MemoryBlock page, long offsetInPage) {
