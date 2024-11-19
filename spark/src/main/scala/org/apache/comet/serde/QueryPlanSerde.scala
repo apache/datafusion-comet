@@ -2507,12 +2507,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               partitions.foreach(p => {
                 val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
                 inputPartitions.foreach(partition => {
-                  partition2Proto(partition.asInstanceOf[FilePartition], nativeScanBuilder)
+                  partition2Proto(
+                    partition.asInstanceOf[FilePartition],
+                    nativeScanBuilder,
+                    scan.relation.partitionSchema)
                 })
               })
             case rdd: FileScanRDD =>
               rdd.filePartitions.foreach(partition => {
-                partition2Proto(partition, nativeScanBuilder)
+                partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
               })
             case _ =>
           }
@@ -3191,10 +3194,27 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   private def partition2Proto(
       partition: FilePartition,
-      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder): Unit = {
+      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,
+      partitionSchema: StructType): Unit = {
     val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
     partition.files.foreach(file => {
+      // Process the partition values
+      val partitionValues = file.partitionValues
+      assert(partitionValues.numFields == partitionSchema.length)
+      val partitionVals =
+        partitionValues.toSeq(partitionSchema).zipWithIndex.map { case (value, i) =>
+          val attr = partitionSchema(i)
+          val valueProto = exprToProto(Literal(value, attr.dataType), Seq.empty)
+          // In `CometScanRule`, we have already checked that all partition values are
+          // supported. So, we can safely use `get` here.
+          assert(
+            valueProto.isDefined,
+            s"Unsupported partition value: $value, type: ${attr.dataType}")
+          valueProto.get
+        }
+
       val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+      partitionVals.foreach(fileBuilder.addPartitionValues)
       fileBuilder
         .setFilePath(file.pathUri.toString)
         .setStart(file.start)

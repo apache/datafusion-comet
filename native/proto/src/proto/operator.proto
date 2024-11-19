@@ -52,6 +52,7 @@ message SparkPartitionedFile {
   int64 start = 2;
   int64 length = 3;
   int64 file_size = 4;
+  repeated spark.spark_expression.Expr partition_values = 5;
 }
 
 // This name and the one above are not great, but they correspond to the (unfortunate) Spark names.
