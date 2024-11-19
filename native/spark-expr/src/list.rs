@@ -478,14 +478,11 @@ impl PhysicalExpr for ArrayInsert {
 
         // Spark supports only IntegerType (Int32):
         // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
-        match pos_value.data_type() {
-            DataType::Int32 => {}
-            data_type => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
-                    data_type
-                )))
-            }
+        if !matches!(pos_value.data_type(), DataType::Int32) {
+            return Err(DataFusionError::Internal(format!(
+                "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
+                pos_value.data_type()
+            )))
         }
 
         // Check that src array is actually an array and get it's value type
