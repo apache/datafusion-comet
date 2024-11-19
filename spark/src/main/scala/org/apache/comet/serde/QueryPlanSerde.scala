@@ -36,7 +36,6 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -44,10 +43,12 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
+import org.apache.comet.parquet.FooterReader
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -2505,23 +2506,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               partitions.foreach(p => {
                 val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
                 inputPartitions.foreach(partition => {
-                  partition2Proto(partition.asInstanceOf[FilePartition], nativeScanBuilder)
+                  partition2Proto(partition.asInstanceOf[FilePartition], nativeScanBuilder, scan)
                 })
               })
             case rdd: FileScanRDD =>
               rdd.filePartitions.foreach(partition => {
-                partition2Proto(partition, nativeScanBuilder)
+                partition2Proto(partition, nativeScanBuilder, scan)
               })
             case _ =>
+              assert(false)
           }
 
-          val requiredSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
-          val dataSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.relation.dataSchema)
-
-          nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
-          nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
+          val projection_vector: Array[java.lang.Long] = scan.requiredSchema.fields.map(field => {
+            scan.relation.dataSchema.fields.indexOf(field).toLong.asInstanceOf[java.lang.Long]
+          })
+          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
@@ -3189,9 +3188,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   private def partition2Proto(
       partition: FilePartition,
-      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder): Unit = {
+      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,
+      scan: CometNativeScanExec): Unit = {
     val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+    val sparkContext = scan.session.sparkContext
+    var schema_saved: Boolean = false;
     partition.files.foreach(file => {
+      if (!schema_saved) {
+        // TODO: This code shouldn't be here, but for POC it's fine.
+        // Extract the schema and stash it.
+        val hadoopConf =
+          scan.relation.sparkSession.sessionState.newHadoopConfWithOptions(scan.relation.options)
+        val broadcastedHadoopConf =
+          sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+        val sharedConf = broadcastedHadoopConf.value.value
+        val footer = FooterReader.readFooter(sharedConf, file)
+        val footerFileMetaData = footer.getFileMetaData
+        nativeScanBuilder.setDataSchema(footerFileMetaData.getSchema.toString)
+        schema_saved = true
+      }
       val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
       fileBuilder
         .setFilePath(file.pathUri.toString)

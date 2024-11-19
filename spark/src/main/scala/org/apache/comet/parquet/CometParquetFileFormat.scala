@@ -25,7 +25,6 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.filter2.predicate.FilterApi
 import org.apache.parquet.hadoop.ParquetInputFormat
 import org.apache.parquet.hadoop.metadata.FileMetaData
-import org.apache.parquet.schema.MessageType
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -62,7 +61,6 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
   override def toString: String = "CometParquet"
   override def hashCode(): Int = getClass.hashCode()
   override def equals(other: Any): Boolean = other.isInstanceOf[CometParquetFileFormat]
-  var schema: Option[MessageType] = None
 
   override def vectorTypes(
       requiredSchema: StructType,
@@ -106,13 +104,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
       val footer = FooterReader.readFooter(sharedConf, file)
-      // scalastyle:off println
-      System.out.println(f"footer: $footer")
       val footerFileMetaData = footer.getFileMetaData
-      System.out.println(f"footerFileMetaData: $footerFileMetaData")
-      schema = Some(footerFileMetaData.getSchema)
-      System.out.println(f"schema: $schema")
-      // scalastyle:on println
       val datetimeRebaseSpec = CometParquetFileFormat.getDatetimeRebaseSpec(
         file,
         requiredSchema,
