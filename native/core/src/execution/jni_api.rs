@@ -351,7 +351,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
                 info!(
-                    "Comet native query plan (planning took {}):\n {formatted_plan_str:}",
+                    "Comet native query plan (planning took {:?}):\n {formatted_plan_str:}",
                     end.duration_since(start)
                 );
             }
