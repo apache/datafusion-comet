@@ -119,10 +119,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          // TODO: enable test for unsigned ints
-          checkSparkAnswerAndOperator(
-            "select _1, _2, _3, _4, _5, _6, _7, _8, _13, _14, _15, _16, _17, " +
-              "_18, _19, _20 FROM tbl WHERE _2 > 100")
+          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
         }
       }
     }
@@ -1115,7 +1112,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
         withParquetTable(path.toString, "tbl") {
-          Seq(2, 3, 4, 5, 6, 7, 15, 16, 17).foreach { col =>
+          Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
             checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
           }
         }
@@ -1239,9 +1236,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(path.toString, "tbl") {
           for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
             // array tests
-            // TODO: enable test for unsigned ints (_9, _10, _11, _12)
             // TODO: enable test for floats (_6, _7, _8, _13)
-            for (c <- Seq(2, 3, 4, 5, 15, 16, 17)) {
+            for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
               checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
             }
             // scalar tests
@@ -1452,9 +1448,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
 
         withParquetTable(path.toString, "tbl") {
-          // _9 and _10 (uint8 and uint16) not supported
           checkSparkAnswerAndOperator(
-            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
         }
       }
     }
@@ -2334,7 +2329,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(
           spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
-
     }
   }
 }
