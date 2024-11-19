@@ -98,6 +98,7 @@ impl ScanExec {
             let batch =
                 ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?;
             timer.stop();
+            baseline_metrics.record_output(batch.num_rows());
             batch
         } else {
             InputBatch::EOF
@@ -477,5 +478,13 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
+    }
+
+    /// Get the number of rows in this batch
+    fn num_rows(&self) -> usize {
+        match self {
+            Self::EOF => 0,
+            Self::Batch(_, num_rows) => *num_rows,
+        }
     }
 }
