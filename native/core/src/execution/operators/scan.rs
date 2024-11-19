@@ -289,7 +289,15 @@ impl ExecutionPlan for ScanExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
+        if self.exec_context_id == TEST_EXEC_CONTEXT_ID {
+            // `unwrap` is safe because `schema` is only called during converting
+            // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
+            let binding = self.batch.try_lock().unwrap();
+            let input_batch = binding.as_ref().unwrap();
+            scan_schema(input_batch, &self.data_types)
+        } else {
+            Arc::clone(&self.schema)
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
