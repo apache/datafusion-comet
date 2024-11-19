@@ -17,6 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
@@ -37,9 +38,8 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
+use std::time::Instant;
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -335,12 +335,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
+            let start = Instant::now();
             let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
             )?;
+            let end = Instant::now();
 
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
@@ -348,7 +350,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             if exec_context.explain_native {
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
-                info!("Comet native query plan:\n {formatted_plan_str:}");
+                info!(
+                    "Comet native query plan (planning took {}):\n {formatted_plan_str:}",
+                    end.duration_since(start)
+                );
             }
 
             let task_ctx = exec_context.session_ctx.task_ctx();
