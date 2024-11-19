@@ -3191,7 +3191,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   private def partition2Proto(
       partition: FilePartition,
       nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,
-      scan: CometNativeScanExec): Unit = {
+      scan: CometScanExec): Unit = {
     val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
     val sparkContext = scan.session.sparkContext
     var schema_saved: Boolean = false;
