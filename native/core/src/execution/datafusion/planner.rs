@@ -997,11 +997,12 @@ impl PhysicalPlanner {
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
                     Vec::with_capacity(partition_count);
-                scan.file_partitions.iter().for_each(|partition| {
+                scan.file_partitions.iter().try_for_each(|partition| {
                     let mut files = Vec::with_capacity(partition.partitioned_file.len());
-                    partition.partitioned_file.iter().for_each(|file| {
+                    partition.partitioned_file.iter().try_for_each(|file| {
                         assert!(file.start + file.length <= file.file_size);
-                        files.push(PartitionedFile::new_with_range(
+
+                        let mut partitioned_file = PartitionedFile::new_with_range(
                             Url::parse(file.file_path.as_ref())
                                 .unwrap()
                                 .path()
@@ -1009,10 +1010,39 @@ impl PhysicalPlanner {
                             file.file_size as u64,
                             file.start,
                             file.start + file.length,
-                        ));
-                    });
+                        );
+
+                        // Process partition values
+                        // Create an empty input schema for partition values because they are all literals.
+                        let empty_schema = Arc::new(Schema::empty());
+                        let partition_values: Result<Vec<_>, _> = file
+                            .partition_values
+                            .iter()
+                            .map(|partition_value| {
+                                let literal =
+                                    self.create_expr(partition_value, empty_schema.clone())?;
+                                literal
+                                    .as_any()
+                                    .downcast_ref::<DataFusionLiteral>()
+                                    .ok_or_else(|| {
+                                        ExecutionError::GeneralError(
+                                            "Expected literal of partition value".to_string(),
+                                        )
+                                    })
+                                    .map(|literal| literal.value().clone())
+                            })
+                            .collect();
+                        let partition_values = partition_values?;
+
+                        partitioned_file.partition_values = partition_values;
+
+                        files.push(partitioned_file);
+                        Ok::<(), ExecutionError>(())
+                    })?;
+
                     file_groups.push(files);
-                });
+                    Ok::<(), ExecutionError>(())
+                })?;
 
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
