@@ -951,6 +951,7 @@ impl PhysicalPlanner {
             OpStruct::NativeScan(scan) => {
                 let data_schema = parse_message_type(&scan.data_schema).unwrap();
                 let required_schema = parse_message_type(&scan.required_schema).unwrap();
+                let partition_schema = parse_message_type(&scan.partition_schema).unwrap();
 
                 let data_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -968,6 +969,21 @@ impl PhysicalPlanner {
                     )
                     .unwrap(),
                 );
+
+                let partition_schema_descriptor =
+                    parquet::schema::types::SchemaDescriptor::new(Arc::new(partition_schema));
+                let partition_schema_arrow = Arc::new(
+                    parquet::arrow::schema::parquet_to_arrow_schema(
+                        &partition_schema_descriptor,
+                        None,
+                    )
+                    .unwrap(),
+                );
+                let partition_fields: Vec<_> = partition_schema_arrow
+                    .flattened_fields()
+                    .into_iter()
+                    .map(|field| field.clone())
+                    .collect();
 
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
@@ -1050,7 +1066,8 @@ impl PhysicalPlanner {
                 let object_store_url = ObjectStoreUrl::local_filesystem();
                 let mut file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                        .with_file_groups(file_groups);
+                        .with_file_groups(file_groups)
+                        .with_table_partition_cols(partition_fields);
 
                 // Check for projection, if so generate the vector and add to FileScanConfig.
                 let mut projection_vector: Vec<usize> =
@@ -1060,7 +1077,18 @@ impl PhysicalPlanner {
                     projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
                 });
 
-                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+                partition_schema_arrow
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .for_each(|(idx, _)| {
+                        projection_vector.push(idx + data_schema_arrow.fields.len());
+                    });
+
+                assert_eq!(
+                    projection_vector.len(),
+                    required_schema_arrow.fields.len() + partition_schema_arrow.fields.len()
+                );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();

@@ -77,8 +77,9 @@ message NativeScan {
   string source = 2;
   string required_schema = 3;
   string data_schema = 4;
-  repeated spark.spark_expression.Expr data_filters = 5;
-  repeated SparkFilePartition file_partitions = 6;
+  string partition_schema = 5;
+  repeated spark.spark_expression.Expr data_filters = 6;
+  repeated SparkFilePartition file_partitions = 7;
 }
 
 message Projection {
