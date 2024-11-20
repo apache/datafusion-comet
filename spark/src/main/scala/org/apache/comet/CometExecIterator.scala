@@ -95,7 +95,8 @@ class CometExecIterator(
     nativeUtil.getNextBatch(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
-        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+        val ctx = TaskContext.get()
+        nativeLib.executePlan(ctx.stageId(), ctx.partitionId(), plan, arrayAddrs, schemaAddrs)
       })
   }
 
