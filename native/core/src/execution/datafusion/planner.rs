@@ -982,7 +982,7 @@ impl PhysicalPlanner {
                 let partition_fields: Vec<_> = partition_schema_arrow
                     .flattened_fields()
                     .into_iter()
-                    .map(|field| field.clone())
+                    .cloned()
                     .collect();
 
                 // Convert the Spark expressions to Physical expressions
@@ -1035,8 +1035,10 @@ impl PhysicalPlanner {
                             .partition_values
                             .iter()
                             .map(|partition_value| {
-                                let literal =
-                                    self.create_expr(partition_value, empty_schema.clone())?;
+                                let literal = self.create_expr(
+                                    partition_value,
+                                    Arc::<Schema>::clone(&empty_schema),
+                                )?;
                                 literal
                                     .as_any()
                                     .downcast_ref::<DataFusionLiteral>()
