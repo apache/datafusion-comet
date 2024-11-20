@@ -598,6 +598,14 @@ fn array_insert<O: OffsetSizeTrait>(
         let end = offset_window[1].as_usize();
         let is_item_null = items_array.is_null(row_index);
 
+        if list_array.is_null(row_index) {
+            // In Spark if value of the array is NULL than nothing happens
+            mutable_values.extend_nulls(1);
+            new_offsets.push(new_offsets[row_index] + O::one());
+            new_nulls.push(false);
+            continue;
+        }
+
         if pos == 0 {
             return Err(DataFusionError::Internal(
                 "Position for array_insert should be greter or less than zero".to_string(),
@@ -786,7 +794,7 @@ mod test {
             Some(vec![Some(30), None]),
             Some(vec![Some(1), Some(2), Some(3), None, Some(100)]),
             Some(vec![Some(1), Some(2), Some(3), None, None, Some(100)]),
-            Some(vec![Some(40)]),
+            None,
         ]);
 
         assert_eq!(&result.to_data(), &expected.to_data());
@@ -822,7 +830,7 @@ mod test {
             Some(vec![Some(1), Some(2), Some(10), Some(3)]),
             Some(vec![Some(4), Some(5), Some(20)]),
             Some(vec![Some(100), None, Some(1)]),
-            Some(vec![Some(30)]),
+            None,
         ]);
 
         assert_eq!(&result.to_data(), &expected.to_data());
@@ -855,7 +863,7 @@ mod test {
         let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(10), Some(3)]),
             Some(vec![Some(4), Some(20), Some(5)]),
-            Some(vec![Some(30), None]),
+            None,
         ]);
 
         assert_eq!(&result.to_data(), &expected.to_data());
