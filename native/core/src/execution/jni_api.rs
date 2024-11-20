@@ -37,6 +37,7 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
@@ -81,6 +82,8 @@ struct ExecutionContext {
     pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
+    /// The time it took to create the native plan and configure the context
+    pub plan_creation_time: Duration,
     /// DataFusion SessionContext
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
@@ -108,6 +111,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
         JVMClasses::init(&mut env);
+
+        let start = Instant::now();
 
         let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
         let bytes = env.convert_byte_array(array)?;
@@ -167,6 +172,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // dictionaries will be dropped as well.
         let session = prepare_datafusion_session_context(&configs, task_memory_manager)?;
 
+        let plan_creation_time = start.elapsed();
+
         let exec_context = Box::new(ExecutionContext {
             id,
             spark_plan,
@@ -177,6 +184,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             conf: configs,
             runtime,
             metrics,
+            plan_creation_time,
             session_ctx: Arc::new(session),
             debug_native,
             explain_native,
@@ -321,6 +329,8 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
+    stage_id: jint,
+    partition: jint,
     exec_context: jlong,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
@@ -335,20 +345,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
+            let start = Instant::now();
             let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
             )?;
+            let physical_plan_time = start.elapsed();
 
+            exec_context.plan_creation_time += physical_plan_time;
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
 
             if exec_context.explain_native {
                 let formatted_plan_str =
                     DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
-                info!("Comet native query plan:\n {formatted_plan_str:}");
+                info!("Comet native query plan:\n{formatted_plan_str:}");
             }
 
             let task_ctx = exec_context.session_ctx.task_ctx();
@@ -388,7 +401,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
                                 DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
-                            info!("Comet native query plan with metrics:\n{formatted_plan_str:}");
+                            info!(
+                                "Comet native query plan with metrics:\
+                            \n[Stage {} Partition {}] plan creation (including CometScans fetching first batches) took {:?}:\
+                            \n{formatted_plan_str:}",
+                                stage_id, partition, exec_context.plan_creation_time
+                            );
                         }
                     }
 
