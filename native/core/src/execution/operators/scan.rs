@@ -15,16 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use futures::Stream;
-use itertools::Itertools;
-use std::rc::Rc;
-use std::{
-    any::Any,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-};
-
 use crate::{
     errors::CometError,
     execution::{
@@ -48,9 +38,18 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
+use futures::Stream;
+use itertools::Itertools;
 use jni::objects::JValueGen;
 use jni::objects::{GlobalRef, JObject};
 use jni::sys::jsize;
+use std::rc::Rc;
+use std::{
+    any::Any,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
 /// scan or the result of reading a broadcast or shuffle exchange.
@@ -162,6 +161,7 @@ impl ScanExec {
             // This is a unit test. We don't need to call JNI.
             return Ok(());
         }
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
@@ -172,6 +172,8 @@ impl ScanExec {
             )?;
             *current_batch = Some(next_batch);
         }
+
+        timer.stop();
 
         Ok(())
     }
