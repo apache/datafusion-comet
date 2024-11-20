@@ -97,7 +97,6 @@ impl ScanExec {
             let batch =
                 ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?;
             timer.stop();
-            baseline_metrics.record_output(batch.num_rows());
             batch
         } else {
             InputBatch::EOF
