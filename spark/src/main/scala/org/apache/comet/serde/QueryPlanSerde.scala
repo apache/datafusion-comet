@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometNativeScanExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
@@ -2524,12 +2524,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
           val dataSchemaParquet =
             new SparkToParquetSchemaConverter(conf).convert(scan.relation.dataSchema)
-          val partitionSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.relation.partitionSchema)
+          val partitionSchema = scan.relation.partitionSchema.fields.flatMap { field =>
+            serializeDataType(field.dataType)
+          }
+          // In `CometScanRule`, we ensure partitionSchema is supported.
+          assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
           nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
           nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
-          nativeScanBuilder.setPartitionSchema(partitionSchemaParquet.toString)
+          nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 

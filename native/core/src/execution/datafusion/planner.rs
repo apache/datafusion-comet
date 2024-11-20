@@ -951,7 +951,6 @@ impl PhysicalPlanner {
             OpStruct::NativeScan(scan) => {
                 let data_schema = parse_message_type(&scan.data_schema).unwrap();
                 let required_schema = parse_message_type(&scan.required_schema).unwrap();
-                let partition_schema = parse_message_type(&scan.partition_schema).unwrap();
 
                 let data_schema_descriptor =
                     parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
@@ -970,19 +969,17 @@ impl PhysicalPlanner {
                     .unwrap(),
                 );
 
-                let partition_schema_descriptor =
-                    parquet::schema::types::SchemaDescriptor::new(Arc::new(partition_schema));
-                let partition_schema_arrow = Arc::new(
-                    parquet::arrow::schema::parquet_to_arrow_schema(
-                        &partition_schema_descriptor,
-                        None,
-                    )
-                    .unwrap(),
-                );
+                let partition_schema_arrow = scan
+                    .partition_schema
+                    .iter()
+                    .map(to_arrow_datatype)
+                    .collect_vec();
                 let partition_fields: Vec<_> = partition_schema_arrow
-                    .flattened_fields()
-                    .into_iter()
-                    .cloned()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, data_type)| {
+                        Field::new(format!("part_{}", idx), data_type.clone(), true)
+                    })
                     .collect();
 
                 // Convert the Spark expressions to Physical expressions
@@ -1080,7 +1077,6 @@ impl PhysicalPlanner {
                 });
 
                 partition_schema_arrow
-                    .fields
                     .iter()
                     .enumerate()
                     .for_each(|(idx, _)| {
@@ -1089,7 +1085,7 @@ impl PhysicalPlanner {
 
                 assert_eq!(
                     projection_vector.len(),
-                    required_schema_arrow.fields.len() + partition_schema_arrow.fields.len()
+                    required_schema_arrow.fields.len() + partition_schema_arrow.len()
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
