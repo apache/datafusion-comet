@@ -985,7 +985,7 @@ impl PhysicalPlanner {
                 // Create a conjunctive form of the vector because ParquetExecBuilder takes
                 // a single expression
                 let data_filters = data_filters?;
-                let test_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
+                let cnf_data_filters = data_filters.into_iter().reduce(|left, right| {
                     Arc::new(BinaryExpr::new(
                         left,
                         datafusion::logical_expr::Operator::And,
@@ -1039,7 +1039,7 @@ impl PhysicalPlanner {
                 let mut builder = ParquetExecBuilder::new(file_scan_config)
                     .with_table_parquet_options(table_parquet_options);
 
-                if let Some(filter) = test_data_filters {
+                if let Some(filter) = cnf_data_filters {
                     builder = builder.with_predicate(filter);
                 }
 

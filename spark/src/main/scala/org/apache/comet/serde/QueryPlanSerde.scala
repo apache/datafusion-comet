@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometNativeScanExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
@@ -3207,7 +3207,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val sharedConf = broadcastedHadoopConf.value.value
         val footer = FooterReader.readFooter(sharedConf, file)
         val footerFileMetaData = footer.getFileMetaData
-        nativeScanBuilder.setDataSchema(footerFileMetaData.getSchema.toString)
+        val schema = footerFileMetaData.getSchema
+        nativeScanBuilder.setDataSchema(schema.toString)
+
+//        val clippedSchema = CometParquetReadSupport.clipParquetSchema(
+//          schema,
+//          scan.requiredSchema,
+//          scan.session.sessionState.conf.caseSensitiveAnalysis,
+//          CometParquetUtils.readFieldId(scan.session.sessionState.conf),
+//          CometParquetUtils.ignoreMissingIds(scan.session.sessionState.conf))
+
         schema_saved = true
       }
       val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
