@@ -20,7 +20,7 @@ members = ["core", "spark-expr", "proto"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-apple"
+version = "0.4.0-apple"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -47,8 +47,8 @@ datafusion-expr = { git = "https://github.com/apache/datafusion.git", rev = "3b6
 datafusion-execution = { git = "https://github.com/apache/datafusion.git", rev = "3b6aac2", default-features = false }
 datafusion-physical-plan = { git = "https://github.com/apache/datafusion.git", rev = "3b6aac2", default-features = false }
 datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git", rev = "3b6aac2", default-features = false }
-datafusion-comet-spark-expr = { path = "spark-expr", version = "0.2.0-apple" }
-datafusion-comet-proto = { path = "proto", version = "0.2.0-apple" }
+datafusion-comet-spark-expr = { path = "spark-expr", version = "0.4.0-apple" }
+datafusion-comet-proto = { path = "proto", version = "0.4.0-apple" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 num = "0.4"

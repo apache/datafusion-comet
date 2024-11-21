@@ -16,3 +16,4 @@ filtered_rat.txt
 dev/dist
 apache-rat-*.jar
 venv
+dev/release/comet-rm/workdir

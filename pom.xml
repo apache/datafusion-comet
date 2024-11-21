@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.3.0.2-apple-SNAPSHOT</version>
+  <version>0.4.0.0-apple-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -442,10 +442,6 @@ under the License.
           <exclusion>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.apache.arrow</groupId>
-            <artifactId>*</artifactId>
           </exclusion>
           <exclusion>
             <groupId>org.apache.arrow</groupId>
@@ -901,17 +897,6 @@ under the License.
           <configuration>
 <!--            <source>${java.version}</source>-->
 <!--            <target>${java.version}</target>-->
-            <skipMain>true</skipMain>
-            <skip>true</skip>
-          </configuration>
-        </plugin>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-compiler-plugin</artifactId>
-          <version>3.10.1</version>
-          <configuration>
-            <source>${java.version}</source>
-            <target>${java.version}</target>
             <skipMain>true</skipMain>
             <skip>true</skip>
           </configuration>
