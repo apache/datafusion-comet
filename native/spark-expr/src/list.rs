@@ -448,6 +448,19 @@ impl ArrayInsert {
             legacy_negative_index,
         }
     }
+
+    pub fn array_type(&self, data_type: &DataType) -> DataFusionResult<DataType> {
+        match data_type {
+            DataType::List(field) => Ok(DataType::List(Arc::clone(field))),
+            DataType::LargeList(field) => Ok(DataType::LargeList(Arc::clone(field))),
+            data_type => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected src array type in ArrayInsert: {:?}",
+                    data_type
+                )))
+            }
+        }
+    }
 }
 
 impl PhysicalExpr for ArrayInsert {
@@ -456,14 +469,7 @@ impl PhysicalExpr for ArrayInsert {
     }
 
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
-        match self.src_array_expr.data_type(input_schema)? {
-            DataType::List(field) => Ok(DataType::List(field)),
-            DataType::LargeList(field) => Ok(DataType::LargeList(field)),
-            data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in ArrayInsert: {:?}",
-                data_type
-            ))),
-        }
+        self.array_type(&self.src_array_expr.data_type(input_schema)?)
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
@@ -490,15 +496,11 @@ impl PhysicalExpr for ArrayInsert {
             .src_array_expr
             .evaluate(batch)?
             .into_array(batch.num_rows())?;
-        let src_element_type = match src_value.data_type() {
-            DataType::List(field) => field.data_type(),
-            DataType::LargeList(field) => field.data_type(),
-            data_type => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected src array type in ArrayInsert: {:?}",
-                    data_type
-                )))
-            }
+
+        let src_element_type = match self.array_type(src_value.data_type())? {
+            DataType::List(field) => &field.data_type().clone(),
+            DataType::LargeList(field) => &field.data_type().clone(),
+            _ => unreachable!(),
         };
 
         // Check that inserted value has the same type as an array
