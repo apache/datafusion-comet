@@ -919,7 +919,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast between decimals with zero precision") {
-    // cast between Decimal(10, 2) to Decimal(10,4)
+    // cast between Decimal(10, 2) to Decimal(10,0)
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
   }
 
