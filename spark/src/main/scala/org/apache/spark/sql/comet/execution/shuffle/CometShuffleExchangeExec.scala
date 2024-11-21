@@ -487,7 +487,7 @@ class CometShuffleWriteProcessor(
     val nativeMetrics = if (metrics.contains("jvm_fetch_time")) {
       CometMetricNode(
         nativeSQLMetrics ++ Map("jvm_fetch_time" ->
-          metrics("time to fetch batches from JVM")))
+          metrics("jvm_fetch_time")))
     } else {
       CometMetricNode(nativeSQLMetrics)
     }
