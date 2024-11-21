@@ -142,11 +142,12 @@ impl ExecutionPlan for ShuffleWriterExec {
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
         let read_time = MetricBuilder::new(&self.metrics).subset_time("read_time", 0);
 
-        let scan_time = if let Some(scan) = self.input.as_any().downcast_ref::<ScanExec>() {
-            Some(scan.baseline_metrics.elapsed_compute().clone())
-        } else {
-            None
-        };
+        // clone the ScanExec elapsed_compute metric
+        let scan_time = self
+            .input
+            .as_any()
+            .downcast_ref::<ScanExec>()
+            .map(|scan| scan.baseline_metrics.elapsed_compute().clone());
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -1093,6 +1094,7 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition_id: usize,
