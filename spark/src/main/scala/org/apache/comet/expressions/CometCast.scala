@@ -73,7 +73,7 @@ object CometCast {
       case (from: DecimalType, to: DecimalType) =>
         if (to.precision < from.precision) {
           // https://github.com/apache/datafusion/issues/13492
-          Incompatible()
+          Incompatible(Some("Casting to smaller precision is not supported"))
         } else {
           Compatible()
         }
