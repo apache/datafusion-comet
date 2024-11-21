@@ -453,12 +453,10 @@ impl ArrayInsert {
         match data_type {
             DataType::List(field) => Ok(DataType::List(Arc::clone(field))),
             DataType::LargeList(field) => Ok(DataType::LargeList(Arc::clone(field))),
-            data_type => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected src array type in ArrayInsert: {:?}",
-                    data_type
-                )))
-            }
+            data_type => Err(DataFusionError::Internal(format!(
+                "Unexpected src array type in ArrayInsert: {:?}",
+                data_type
+            ))),
         }
     }
 }
