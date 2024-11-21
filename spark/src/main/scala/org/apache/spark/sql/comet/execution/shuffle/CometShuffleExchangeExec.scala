@@ -77,7 +77,9 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(sparkContext, "time fetching batches from JVM"),
+    "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(
+      sparkContext,
+      "time fetching batches from JVM"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -483,7 +485,9 @@ class CometShuffleWriteProcessor(
       "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
 
     val nativeMetrics = if (metrics.contains("jvm_fetch_time")) {
-      CometMetricNode(nativeSQLMetrics ++ Map("jvm_fetch_time" -> metrics("time to fetch batches from JVM")))
+      CometMetricNode(
+        nativeSQLMetrics ++ Map("jvm_fetch_time" ->
+          metrics("time to fetch batches from JVM")))
     } else {
       CometMetricNode(nativeSQLMetrics)
     }
