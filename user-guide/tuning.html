@@ -336,6 +336,13 @@ under the License.
   <a class="reference internal nav-link" href="#metrics">
    Metrics
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#shufflewriterexec">
+     ShuffleWriterExec
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -458,10 +465,28 @@ then any shuffle operations that cannot be supported in this mode will fall back
 </section>
 <section id="metrics">
 <h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
-<p>Comet metrics are not directly comparable to Spark metrics in some cases.</p>
-<p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds <em>per batch</em> which can result in a large loss of precision. In one case we saw total scan time
-of 41 seconds reported as 23 seconds for example.</p>
+<p>Some Comet metrics are not directly comparable to Spark metrics in some cases:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
+milliseconds <em>per batch</em> which can result in a large loss of precision, making it difficult to compare scan times
+between Spark and Comet.</p></li>
+</ul>
+<p>Comet also adds some custom metrics:</p>
+<section id="shufflewriterexec">
+<h3>ShuffleWriterExec<a class="headerlink" href="#shufflewriterexec" title="Link to this heading">¶</a></h3>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
+<td><p>Measure the time it takes for <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
 </section>
 </section>
 
