@@ -114,6 +114,6 @@ Comet also adds some custom metrics:
 
 ### ShuffleWriterExec
 
-| Metric      | Description                                                                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `read_time` | Measure the time it takes for ShuffleWriterExec to fetch an existing batch from the JVM. Note that this does not include the execution time of the query that produced the input batch. |
+| Metric           | Description                                                                                                                                                                             |
+|------------------| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `jvm_fetch_time` | Measure the time it takes for ShuffleWriterExec to fetch an existing batch from the JVM. Note that this does not include the execution time of the query that produced the input batch. |
