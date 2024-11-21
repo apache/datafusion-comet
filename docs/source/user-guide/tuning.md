@@ -105,15 +105,16 @@ then any shuffle operations that cannot be supported in this mode will fall back
 
 ## Metrics
 
-Some Comet metrics are not directly comparable to Spark metrics in some cases.
+Some Comet metrics are not directly comparable to Spark metrics in some cases:
 
-`CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds _per batch_ which can result in a large loss of precision.
+- `CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
+  milliseconds _per batch_ which can result in a large loss of precision, making it difficult to compare scan times
+  between Spark and Comet.
 
 Comet also adds some custom metrics:
 
 ### ShuffleWriterExec
 
-| Metric           | Description                                                                                                                                                                               |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `jvm_fetch_time` | Measure the time it takes for `ShuffleWriterExec` to fetch an existing batch from the JVM. Note that this does not include the execution time of the query that produced the input batch. |
+| Metric           | Description                                                                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `jvm_fetch_time` | Measure the time it takes for `ShuffleWriterExec` to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches. |
