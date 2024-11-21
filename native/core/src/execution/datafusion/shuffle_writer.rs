@@ -60,7 +60,6 @@ use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
 
-use crate::execution::operators::ScanExec;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
@@ -142,13 +141,6 @@ impl ExecutionPlan for ShuffleWriterExec {
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
         let read_time = MetricBuilder::new(&self.metrics).subset_time("read_time", 0);
 
-        // clone the ScanExec elapsed_compute metric
-        let scan_time = self
-            .input
-            .as_any()
-            .downcast_ref::<ScanExec>()
-            .map(|scan| scan.baseline_metrics.elapsed_compute().clone());
-
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
             futures::stream::once(
@@ -161,7 +153,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     read_time,
-                    scan_time,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -1104,7 +1095,6 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     read_time: Time,
-    scan_time: Option<Time>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1118,17 +1108,21 @@ async fn external_shuffle(
         context.session_config().batch_size(),
     );
 
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
+    loop {
+        let mut timer = read_time.timer();
+        let b = input.next().await;
+        timer.stop();
 
-    // copy ScanExec elapsed_compute into ShuffleWriterExec read_time
-    if let Some(t) = &scan_time {
-        read_time.add(t);
+        match b {
+            Some(batch_result) => {
+                // Block on the repartitioner to insert the batch and shuffle the rows
+                // into the corresponding partition buffer.
+                // Otherwise, pull the next batch from the input stream might overwrite the
+                // current batch in the repartitioner.
+                block_on(repartitioner.insert_batch(batch_result?))?;
+            }
+            _ => break,
+        }
     }
 
     repartitioner.shuffle_write().await
