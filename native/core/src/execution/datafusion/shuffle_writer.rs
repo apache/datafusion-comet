@@ -60,12 +60,12 @@ use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
 
+use crate::execution::operators::ScanExec;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
 };
 use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
-use crate::execution::operators::ScanExec;
 
 /// The status of appending rows to a partition buffer.
 enum AppendRowStatus {
@@ -160,7 +160,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     read_time,
-                    scan_time
+                    scan_time,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -1102,7 +1102,7 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     read_time: Time,
-    scan_time: Option<Time>
+    scan_time: Option<Time>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
