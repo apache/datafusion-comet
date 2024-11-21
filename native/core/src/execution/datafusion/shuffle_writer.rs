@@ -139,6 +139,7 @@ impl ExecutionPlan for ShuffleWriterExec {
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
+        let jvm_fetch_time = MetricBuilder::new(&self.metrics).subset_time("jvm_fetch_time", 0);
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -151,6 +152,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
+                    jvm_fetch_time,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -1083,6 +1085,7 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition_id: usize,
@@ -1091,6 +1094,7 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
+    jvm_fetch_time: Time,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1104,13 +1108,23 @@ async fn external_shuffle(
         context.session_config().batch_size(),
     );
 
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
+    loop {
+        let mut timer = jvm_fetch_time.timer();
+        let b = input.next().await;
+        timer.stop();
+
+        match b {
+            Some(batch_result) => {
+                // Block on the repartitioner to insert the batch and shuffle the rows
+                // into the corresponding partition buffer.
+                // Otherwise, pull the next batch from the input stream might overwrite the
+                // current batch in the repartitioner.
+                block_on(repartitioner.insert_batch(batch_result?))?;
+            }
+            _ => break,
+        }
     }
+
     repartitioner.shuffle_write().await
 }
 

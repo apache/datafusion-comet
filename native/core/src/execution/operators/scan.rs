@@ -52,7 +52,9 @@ use std::{
 };
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
-/// scan or the result of reading a broadcast or shuffle exchange.
+/// scan or the result of reading a broadcast or shuffle exchange. ScanExec isn't invoked
+/// until the data is already available in the JVM. When CometExecIterator invokes
+/// Native.executePlan, it passes in the memory addresses of the input batches.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
@@ -73,6 +75,7 @@ pub struct ScanExec {
     cache: PlanProperties,
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
+    /// Baseline metrics
     baseline_metrics: BaselineMetrics,
 }
 
