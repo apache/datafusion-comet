@@ -76,7 +76,7 @@ pub struct ScanExec {
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
-    pub(crate) baseline_metrics: BaselineMetrics,
+    baseline_metrics: BaselineMetrics,
 }
 
 impl ScanExec {
