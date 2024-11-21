@@ -65,6 +65,7 @@ use crate::{
     errors::{CometError, CometResult},
 };
 use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
+use crate::execution::operators::ScanExec;
 
 /// The status of appending rows to a partition buffer.
 enum AppendRowStatus {
@@ -139,6 +140,13 @@ impl ExecutionPlan for ShuffleWriterExec {
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
+        let read_time = MetricBuilder::new(&self.metrics).subset_time("read_time", 0);
+
+        let scan_time = if let Some(scan) = self.input.as_any().downcast_ref::<ScanExec>() {
+            Some(scan.baseline_metrics.elapsed_compute().clone())
+        } else {
+            None
+        };
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -151,6 +159,8 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
+                    read_time,
+                    scan_time
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -1091,6 +1101,8 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
+    read_time: Time,
+    scan_time: Option<Time>
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1111,6 +1123,12 @@ async fn external_shuffle(
         // current batch in the repartitioner.
         block_on(repartitioner.insert_batch(batch?))?;
     }
+
+    // copy ScanExec elapsed_compute into ShuffleWriterExec read_time
+    if let Some(t) = &scan_time {
+        read_time.add(t);
+    }
+
     repartitioner.shuffle_write().await
 }
 

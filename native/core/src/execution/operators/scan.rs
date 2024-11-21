@@ -72,8 +72,9 @@ pub struct ScanExec {
     /// Cache of expensive-to-compute plan properties
     cache: PlanProperties,
     /// Metrics collector
-    metrics: ExecutionPlanMetricsSet,
-    baseline_metrics: BaselineMetrics,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
+    /// Baseline metrics
+    pub(crate) baseline_metrics: BaselineMetrics,
 }
 
 impl ScanExec {
