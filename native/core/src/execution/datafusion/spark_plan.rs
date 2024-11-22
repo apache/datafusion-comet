@@ -49,7 +49,7 @@ impl SparkPlan {
         }
 
         println!(
-            "native_plan={}, additional={:?}",
+            "SparkPlan::new() native_plan={}, additional={:?}",
             native_plan.name(),
             additional_native_plans
                 .iter()

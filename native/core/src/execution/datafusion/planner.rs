@@ -128,8 +128,8 @@ type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
 
 struct JoinParameters {
-    pub left: Arc<dyn ExecutionPlan>,
-    pub right: Arc<dyn ExecutionPlan>,
+    pub left: Arc<SparkPlan>,
+    pub right: Arc<SparkPlan>,
     pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
     pub join_filter: Option<JoinFilter>,
     pub join_type: DFJoinType,
@@ -1166,8 +1166,8 @@ impl PhysicalPlanner {
                     .collect();
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    join_params.left,
-                    join_params.right,
+                    Arc::clone(&join_params.left.native_plan),
+                    Arc::clone(&join_params.right.native_plan),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,
@@ -1177,11 +1177,16 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
-                // TODO pass in additional plans (CopyExec, ScanExec)
-                // TODO pass in child spark plans
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, join, vec![])),
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
                 ))
             }
             OpStruct::HashJoin(join) => {
@@ -1198,8 +1203,8 @@ impl PhysicalPlanner {
                 // to copy the input batch to avoid the data corruption from reusing the input
                 // batch. We also need to unpack dictionary arrays, because the join operators
                 // do not support them.
-                let left = Self::wrap_in_copy_exec(join_params.left);
-                let right = Self::wrap_in_copy_exec(join_params.right);
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1215,17 +1220,30 @@ impl PhysicalPlanner {
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
-                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
-                    hash_join
+                if join.build_side == BuildSide::BuildLeft as i32 {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            hash_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
                 } else {
-                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
-                };
-
-                // TODO pass in child spark plans
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, hash_join, vec![])),
-                ))
+                    // we insert a projection around the hash join in this case
+                    let projection =
+                        swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
+                    let swapped_hash_join = Arc::clone(&projection.children()[0]);
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            projection,
+                            vec![join_params.left, join_params.right],
+                            vec![swapped_hash_join],
+                        )),
+                    ))
+                }
             }
             OpStruct::Window(wnd) => {
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
@@ -1266,7 +1284,6 @@ impl PhysicalPlanner {
                 )?);
                 Ok((
                     scans,
-                    // TODO additional metrics?
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
@@ -1404,8 +1421,8 @@ impl PhysicalPlanner {
 
         Ok((
             JoinParameters {
-                left: Arc::clone(&left.native_plan),
-                right: Arc::clone(&right.native_plan),
+                left: Arc::clone(&left),
+                right: Arc::clone(&right),
                 join_on,
                 join_type,
                 join_filter,
@@ -2272,6 +2289,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
+        spark_expression::Expr,
         spark_expression::{self, literal},
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
@@ -2439,20 +2457,7 @@ mod tests {
     #[tokio::test()]
     #[allow(clippy::field_reassign_with_default)]
     async fn to_datafusion_filter() {
-        let op_scan = spark_operator::Operator {
-            plan_id: 0,
-            children: vec![],
-            op_struct: Some(spark_operator::operator::OpStruct::Scan(
-                spark_operator::Scan {
-                    fields: vec![spark_expression::DataType {
-                        type_id: 3,
-                        type_info: None,
-                    }],
-                    source: "".to_string(),
-                },
-            )),
-        };
-
+        let op_scan = create_scan();
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
@@ -2530,21 +2535,8 @@ mod tests {
     }
 
     #[test]
-    fn spark_plan_metrics() {
-        let op_scan = spark_operator::Operator {
-            plan_id: 0,
-            children: vec![],
-            op_struct: Some(spark_operator::operator::OpStruct::Scan(
-                spark_operator::Scan {
-                    fields: vec![spark_expression::DataType {
-                        type_id: 3,
-                        type_info: None,
-                    }],
-                    source: "".to_string(),
-                },
-            )),
-        };
-
+    fn spark_plan_metrics_filter() {
+        let op_scan = create_scan();
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
@@ -2558,5 +2550,68 @@ mod tests {
         let scan_exec = &filter_exec.children()[0];
         assert_eq!("ScanExec", scan_exec.native_plan.name());
         assert_eq!(0, scan_exec.additional_native_plans.len());
+    }
+
+    #[test]
+    fn spark_plan_metrics_hash_join() {
+        let op_scan = create_scan();
+        let op_join = Operator {
+            plan_id: 0,
+            children: vec![op_scan.clone(), op_scan.clone()],
+            op_struct: Some(spark_operator::operator::OpStruct::HashJoin(
+                spark_operator::HashJoin {
+                    left_join_keys: vec![create_bound_reference(0)],
+                    right_join_keys: vec![create_bound_reference(0)],
+                    join_type: 0,
+                    condition: None,
+                    build_side: 0,
+                },
+            )),
+        };
+
+        let planner = PhysicalPlanner::default();
+
+        let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![]).unwrap();
+
+        assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
+        assert_eq!(2, hash_join_exec.children.len());
+        assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
+        assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+
+        assert_eq!(2, hash_join_exec.additional_native_plans.len());
+        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[0].name());
+        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[1].name());
+    }
+
+    fn create_bound_reference(index: i32) -> Expr {
+        spark_expression::Expr {
+            expr_struct: Some(spark_expression::expr::ExprStruct::Bound(
+                spark_expression::BoundReference {
+                    index,
+                    datatype: Some(create_proto_datatype()),
+                },
+            )),
+        }
+    }
+
+    fn create_scan() -> Operator {
+        let op_scan = spark_operator::Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(spark_operator::operator::OpStruct::Scan(
+                spark_operator::Scan {
+                    fields: vec![create_proto_datatype()],
+                    source: "".to_string(),
+                },
+            )),
+        };
+        op_scan
+    }
+
+    fn create_proto_datatype() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 3,
+            type_info: None,
+        }
     }
 }
