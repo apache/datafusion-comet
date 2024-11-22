@@ -48,7 +48,7 @@ pub fn update_comet_metric(
                     MetricValue::OutputRows(_) => {
                         // we do not want to double count output rows
                     }
-                    _ => metrics.push(c.to_owned())
+                    _ => metrics.push(c.to_owned()),
                 }
             }
         }

@@ -1233,7 +1233,7 @@ impl PhysicalPlanner {
                     // we insert a projection around the hash join in this case
                     let projection =
                         swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
-                    let swapped_hash_join = Arc::clone(&projection.children()[0]);
+                    let swapped_hash_join = Arc::clone(projection.children()[0]);
                     println!(
                         "Planner creating SparkPlan for HashJoin: {}",
                         displayable(projection.as_ref()).indent(true)
@@ -1241,7 +1241,7 @@ impl PhysicalPlanner {
                     let mut additional_native_plans = swapped_hash_join
                         .children()
                         .iter()
-                        .map(|p| p.to_owned().clone())
+                        .map(|p| Arc::clone(p))
                         .collect::<Vec<_>>();
                     additional_native_plans.push(Arc::clone(&swapped_hash_join));
                     Ok((

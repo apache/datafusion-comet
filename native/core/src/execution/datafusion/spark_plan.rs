@@ -45,7 +45,7 @@ impl SparkPlan {
     ) -> Self {
         let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
         for child in &children {
-            collect_additional_plans(child.native_plan.clone(), &mut additional_native_plans);
+            collect_additional_plans(Arc::clone(&child.native_plan), &mut additional_native_plans);
         }
         Self {
             plan_id,
@@ -67,7 +67,7 @@ impl SparkPlan {
             accum.push(Arc::clone(plan));
         }
         for child in &children {
-            collect_additional_plans(child.native_plan.clone(), &mut accum);
+            collect_additional_plans(Arc::clone(&child.native_plan), &mut accum);
         }
         Self {
             plan_id,
@@ -93,10 +93,10 @@ fn collect_additional_plans(
     additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
 ) {
     if child.as_any().is::<CopyExec>() {
-        additional_native_plans.push(child.clone());
+        additional_native_plans.push(Arc::clone(&child));
         // CopyExec may be wrapping a ScanExec
-        collect_additional_plans(child.children()[0].clone(), additional_native_plans);
+        collect_additional_plans(Arc::clone(child.children()[0]), additional_native_plans);
     } else if child.as_any().is::<ScanExec>() {
-        additional_native_plans.push(child.clone());
+        additional_native_plans.push(Arc::clone(&child));
     }
 }
