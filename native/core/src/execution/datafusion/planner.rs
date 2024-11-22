@@ -1028,11 +1028,10 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new_with_additional(
+                    Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         sort,
                         vec![Arc::clone(&child)],
-                        vec![Arc::clone(&child.native_plan)],
                     )),
                 ))
             }
@@ -1078,14 +1077,12 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                 )?);
 
-                // TODO this assumes that the child of a shuffle is always a ScanExec
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new_with_additional(
+                    Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
                         vec![Arc::clone(&child)],
-                        vec![Arc::clone(&child.native_plan)],
                     )),
                 ))
             }
@@ -1130,32 +1127,19 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                if can_reuse_input_batch(&child.native_plan) {
-                    let child_copied = Arc::new(CopyExec::new(
+                let input = if can_reuse_input_batch(&child.native_plan) {
+                    Arc::new(CopyExec::new(
                         Arc::clone(&child.native_plan),
                         CopyMode::UnpackOrDeepCopy,
-                    ));
-                    let expand = Arc::new(CometExpandExec::new(projections, child_copied, schema));
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            expand,
-                            vec![Arc::clone(&child)],
-                            vec![Arc::clone(&child.native_plan)],
-                        )),
                     ))
                 } else {
-                    let expand = Arc::new(CometExpandExec::new(
-                        projections,
-                        Arc::clone(&child.native_plan),
-                        schema,
-                    ));
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
-                    ))
-                }
+                    Arc::clone(&child.native_plan)
+                };
+                let expand = Arc::new(CometExpandExec::new(projections, input, schema));
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                ))
             }
             OpStruct::SortMergeJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
