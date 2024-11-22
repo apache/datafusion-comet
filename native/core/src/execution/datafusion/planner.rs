@@ -881,7 +881,8 @@ impl PhysicalPlanner {
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
-                let projection = Arc::new(ProjectionExec::try_new(exprs?, child.wrapped.clone())?);
+                let projection =
+                    Arc::new(ProjectionExec::try_new(exprs?, Arc::clone(&child.wrapped))?);
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
@@ -893,7 +894,7 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = Arc::new(FilterExec::try_new(predicate, child.wrapped.clone())?);
+                let filter = Arc::new(FilterExec::try_new(predicate, Arc::clone(&child.wrapped))?);
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
@@ -929,7 +930,7 @@ impl PhysicalPlanner {
 
                 let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
-                let aggregate = Arc::new(
+                let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
@@ -962,8 +963,10 @@ impl PhysicalPlanner {
                     //
                     // Note that `result_exprs` should only be set for final aggregation on the
                     // Spark side.
-                    let projection =
-                        Arc::new(ProjectionExec::try_new(result_exprs?, aggregate.clone())?);
+                    let projection = Arc::new(ProjectionExec::try_new(
+                        result_exprs?,
+                        Arc::clone(&aggregate),
+                    )?);
                     Ok((
                         scans,
                         Arc::new(SparkPlan::new_with_additional(
@@ -980,7 +983,10 @@ impl PhysicalPlanner {
                 let num = limit.limit;
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
 
-                let limit = Arc::new(LocalLimitExec::new(child.wrapped.clone(), num as usize));
+                let limit = Arc::new(LocalLimitExec::new(
+                    Arc::clone(&child.wrapped),
+                    num as usize,
+                ));
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
@@ -1002,10 +1008,11 @@ impl PhysicalPlanner {
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
                 // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(child.wrapped.clone());
+                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.wrapped));
 
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?), child_copied.clone()).with_fetch(fetch),
+                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                        .with_fetch(fetch),
                 );
 
                 Ok((
@@ -1013,8 +1020,8 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         sort,
-                        vec![child.clone()],
-                        vec![child.wrapped.clone()],
+                        vec![Arc::clone(&child)],
+                        vec![Arc::clone(&child.wrapped)],
                     )),
                 ))
             }
@@ -1054,7 +1061,7 @@ impl PhysicalPlanner {
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    child.wrapped.clone(),
+                    Arc::clone(&child.wrapped),
                     partitioning,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
@@ -1066,8 +1073,8 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         shuffle_writer,
-                        vec![child.clone()],
-                        vec![child.wrapped.clone()],
+                        vec![Arc::clone(&child)],
+                        vec![Arc::clone(&child.wrapped)],
                     )),
                 ))
             }
@@ -1114,7 +1121,7 @@ impl PhysicalPlanner {
                 // will create new arrays for the output batch.
                 if can_reuse_input_batch(&child.wrapped) {
                     let child_copied = Arc::new(CopyExec::new(
-                        child.wrapped.clone(),
+                        Arc::clone(&child.wrapped),
                         CopyMode::UnpackOrDeepCopy,
                     ));
                     let expand = Arc::new(CometExpandExec::new(projections, child_copied, schema));
@@ -1123,14 +1130,14 @@ impl PhysicalPlanner {
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             expand,
-                            vec![child.clone()],
-                            vec![child.wrapped.clone()],
+                            vec![Arc::clone(&child)],
+                            vec![Arc::clone(&child.wrapped)],
                         )),
                     ))
                 } else {
                     let expand = Arc::new(CometExpandExec::new(
                         projections,
-                        child.wrapped.clone(),
+                        Arc::clone(&child.wrapped),
                         schema,
                     ));
                     Ok((
@@ -1259,7 +1266,7 @@ impl PhysicalPlanner {
 
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
-                    child.wrapped.clone(),
+                    Arc::clone(&child.wrapped),
                     partition_exprs.to_vec(),
                     InputOrderMode::Sorted,
                 )?);
@@ -1403,8 +1410,8 @@ impl PhysicalPlanner {
 
         Ok((
             JoinParameters {
-                left: left.wrapped.clone(),
-                right: right.wrapped.clone(),
+                left: Arc::clone(&left.wrapped),
+                right: Arc::clone(&right.wrapped),
                 join_on,
                 join_type,
                 join_filter,
