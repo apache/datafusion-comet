@@ -2568,7 +2568,7 @@ mod tests {
         let op_join = Operator {
             plan_id: 0,
             children: vec![op_scan.clone(), op_scan.clone()],
-            op_struct: Some(spark_operator::operator::OpStruct::HashJoin(
+            op_struct: Some(OpStruct::HashJoin(
                 spark_operator::HashJoin {
                     left_join_keys: vec![create_bound_reference(0)],
                     right_join_keys: vec![create_bound_reference(0)],
@@ -2594,8 +2594,8 @@ mod tests {
     }
 
     fn create_bound_reference(index: i32) -> Expr {
-        spark_expression::Expr {
-            expr_struct: Some(spark_expression::expr::ExprStruct::Bound(
+        Expr {
+            expr_struct: Some(Bound(
                 spark_expression::BoundReference {
                     index,
                     datatype: Some(create_proto_datatype()),
@@ -2605,17 +2605,16 @@ mod tests {
     }
 
     fn create_scan() -> Operator {
-        let op_scan = spark_operator::Operator {
+        Operator {
             plan_id: 0,
             children: vec![],
-            op_struct: Some(spark_operator::operator::OpStruct::Scan(
+            op_struct: Some(OpStruct::Scan(
                 spark_operator::Scan {
                     fields: vec![create_proto_datatype()],
                     source: "".to_string(),
                 },
             )),
-        };
-        op_scan
+        }
     }
 
     fn create_proto_datatype() -> spark_expression::DataType {
