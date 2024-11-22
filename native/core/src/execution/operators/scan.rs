@@ -77,6 +77,8 @@ pub struct ScanExec {
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
     baseline_metrics: BaselineMetrics,
+    /// Timer
+    jvm_fetch_time: Time,
 }
 
 impl ScanExec {
@@ -88,6 +90,7 @@ impl ScanExec {
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
+        let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
@@ -97,8 +100,12 @@ impl ScanExec {
         // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
             let mut timer = baseline_metrics.elapsed_compute().timer();
-            let batch =
-                ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?;
+            let batch = ScanExec::get_next(
+                exec_context_id,
+                input_source.as_obj(),
+                data_types.len(),
+                &jvm_fetch_time,
+            )?;
             timer.stop();
             batch
         } else {
@@ -124,6 +131,7 @@ impl ScanExec {
             cache,
             metrics: metrics_set,
             baseline_metrics,
+            jvm_fetch_time,
             schema,
         })
     }
@@ -171,6 +179,7 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
+                &self.jvm_fetch_time,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -185,6 +194,7 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
+        jvm_fetch_time: &Time,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -197,6 +207,7 @@ impl ScanExec {
                 exec_context_id
             ))));
         }
+        let mut timer = jvm_fetch_time.timer();
 
         let mut env = JVMClasses::get_env()?;
 
@@ -254,6 +265,8 @@ impl ScanExec {
                 Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
+
+        timer.stop();
 
         Ok(InputBatch::new(inputs, Some(num_rows as usize)))
     }
@@ -324,7 +337,7 @@ impl ExecutionPlan for ScanExec {
             self.clone(),
             self.schema(),
             partition,
-            self.baseline_metrics.clone(),
+            self.jvm_fetch_time.clone(),
         )))
     }
 
@@ -365,28 +378,23 @@ struct ScanStream<'a> {
     scan: ScanExec,
     /// Schema representing the data
     schema: SchemaRef,
-    /// Metrics
-    baseline_metrics: BaselineMetrics,
     /// Cast options
     cast_options: CastOptions<'a>,
     /// elapsed time for casting columns to different data types during scan
     cast_time: Time,
+    /// elapsed time for fetching arrow arrays from JVM
+    jvm_fetch_time: Time,
 }
 
 impl<'a> ScanStream<'a> {
-    pub fn new(
-        scan: ScanExec,
-        schema: SchemaRef,
-        partition: usize,
-        baseline_metrics: BaselineMetrics,
-    ) -> Self {
+    pub fn new(scan: ScanExec, schema: SchemaRef, partition: usize, jvm_fetch_time: Time) -> Self {
         let cast_time = MetricBuilder::new(&scan.metrics).subset_time("cast_time", partition);
         Self {
             scan,
             schema,
-            baseline_metrics,
             cast_options: CastOptions::default(),
             cast_time,
+            jvm_fetch_time,
         }
     }
 
@@ -426,7 +434,7 @@ impl<'a> Stream for ScanStream<'a> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let mut timer = self.jvm_fetch_time.timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let input_batch = &*scan_batch;
@@ -440,7 +448,6 @@ impl<'a> Stream for ScanStream<'a> {
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
-                self.baseline_metrics.record_output(*num_rows);
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
                 Poll::Ready(Some(maybe_batch))
             }

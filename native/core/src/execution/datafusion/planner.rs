@@ -56,7 +56,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
-use datafusion::physical_plan::InputOrderMode;
+use datafusion::physical_plan::{displayable, InputOrderMode};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -1234,13 +1234,23 @@ impl PhysicalPlanner {
                     let projection =
                         swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
                     let swapped_hash_join = Arc::clone(&projection.children()[0]);
+                    println!(
+                        "Planner creating SparkPlan for HashJoin: {}",
+                        displayable(projection.as_ref()).indent(true)
+                    );
+                    let mut additional_native_plans = swapped_hash_join
+                        .children()
+                        .iter()
+                        .map(|p| p.to_owned().clone())
+                        .collect::<Vec<_>>();
+                    additional_native_plans.push(Arc::clone(&swapped_hash_join));
                     Ok((
                         scans,
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             projection,
                             vec![join_params.left, join_params.right],
-                            vec![swapped_hash_join],
+                            additional_native_plans,
                         )),
                     ))
                 }

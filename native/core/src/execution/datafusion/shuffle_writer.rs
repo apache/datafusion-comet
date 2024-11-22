@@ -139,7 +139,6 @@ impl ExecutionPlan for ShuffleWriterExec {
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
-        let jvm_fetch_time = MetricBuilder::new(&self.metrics).subset_time("jvm_fetch_time", 0);
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -152,7 +151,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
-                    jvm_fetch_time,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -1094,7 +1092,6 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
-    jvm_fetch_time: Time,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1109,10 +1106,7 @@ async fn external_shuffle(
     );
 
     loop {
-        let mut timer = jvm_fetch_time.timer();
         let b = input.next().await;
-        timer.stop();
-
         match b {
             Some(batch_result) => {
                 // Block on the repartitioner to insert the batch and shuffle the rows

@@ -47,16 +47,6 @@ impl SparkPlan {
         for child in &children {
             collect_additional_plans(child.native_plan.clone(), &mut additional_native_plans);
         }
-
-        println!(
-            "SparkPlan::new() native_plan={}, additional={:?}",
-            native_plan.name(),
-            additional_native_plans
-                .iter()
-                .map(|x| x.name())
-                .collect::<Vec<_>>()
-        );
-
         Self {
             plan_id,
             native_plan,
@@ -72,7 +62,7 @@ impl SparkPlan {
         children: Vec<Arc<SparkPlan>>,
         additional_native_plans: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Self {
-        let mut accum: Vec<Arc<dyn ExecutionPlan>> = vec![native_plan.clone()];
+        let mut accum: Vec<Arc<dyn ExecutionPlan>> = vec![];
         for plan in &additional_native_plans {
             accum.push(Arc::clone(plan));
         }

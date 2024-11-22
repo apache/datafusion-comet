@@ -21,9 +21,9 @@ use crate::{
     errors::CometError,
     jvm_bridge::{jni_call, jni_new_string},
 };
+use datafusion::physical_plan::metrics::MetricValue;
 use jni::objects::{GlobalRef, JString};
 use jni::{objects::JObject, JNIEnv};
-use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,8 +36,6 @@ pub fn update_comet_metric(
     spark_plan: &Arc<SparkPlan>,
     metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
 ) -> Result<(), CometError> {
-    info!("update_comet_metric for {}", spark_plan.native_plan.name());
-
     // combine all metrics from all native plans for this SparkPlan
     let metrics = if spark_plan.additional_native_plans.is_empty() {
         spark_plan.native_plan.metrics()
@@ -46,7 +44,16 @@ pub fn update_comet_metric(
         for plan in &spark_plan.additional_native_plans {
             let additional_metrics = plan.metrics().unwrap_or_default();
             for c in additional_metrics.iter() {
-                metrics.push(c.to_owned());
+                match c.value() {
+                    MetricValue::ElapsedCompute(_)
+                    | MetricValue::Time { .. }
+                    | MetricValue::SpilledRows(_)
+                    | MetricValue::SpillCount(_)
+                    | MetricValue::SpilledBytes(_) => {
+                        metrics.push(c.to_owned());
+                    }
+                    _ => {}
+                }
             }
         }
         Some(metrics.aggregate_by_name())
@@ -70,7 +77,6 @@ pub fn update_comet_metric(
                 comet_metric_node(metric_node).get_child_node(i as i32) -> JObject
             )?;
             if child_metric_node.is_null() {
-                warn!("child_metric_node was null");
                 continue;
             }
             update_comet_metric(env, &child_metric_node, child_plan, metrics_jstrings)?;
