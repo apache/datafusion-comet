@@ -361,7 +361,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             if exec_context.explain_native {
                 let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.wrapped.as_ref()).indent(true);
+                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
                 info!("Comet native query plan:\n{formatted_plan_str:}");
             }
 
@@ -370,7 +370,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 .root_op
                 .as_ref()
                 .unwrap()
-                .wrapped
+                .native_plan
                 .execute(0, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
@@ -402,7 +402,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.wrapped.as_ref())
+                                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
                                     .indent(true);
                             info!(
                                 "Comet native query plan with metrics:\

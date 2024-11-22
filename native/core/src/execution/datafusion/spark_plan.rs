@@ -21,52 +21,56 @@ use std::sync::Arc;
 
 /// Wrapper around a native plan that maps to a Spark plan and can optionally contain
 /// references to other native plans that should contribute to the Spark SQL metrics
-///for the root plan (such as CopyExec and ScanExec nodes)
+/// for the root plan (such as CopyExec and ScanExec nodes)
 #[derive(Debug, Clone)]
 pub(crate) struct SparkPlan {
     /// Spark plan ID which is passed down in the protobuf
     pub(crate) plan_id: u32,
     /// The root native plan that was generated for this Spark plan
-    pub(crate) wrapped: Arc<dyn ExecutionPlan>,
+    pub(crate) native_plan: Arc<dyn ExecutionPlan>,
     /// Child Spark plans
     pub(crate) children: Vec<Arc<SparkPlan>>,
     /// Additional native plans that were generated for this Spark plan that we need
-    /// to collect metrics for
-    pub(crate) metrics_plans: Vec<Arc<dyn ExecutionPlan>>,
+    /// to collect metrics for (such as CopyExec and ScanExec)
+    pub(crate) additional_native_plans: Vec<Arc<dyn ExecutionPlan>>,
 }
 
 impl SparkPlan {
+    /// Create a SparkPlan that consists of a single native plan
     pub(crate) fn new(
         plan_id: u32,
-        wrapped: Arc<dyn ExecutionPlan>,
+        native_plan: Arc<dyn ExecutionPlan>,
         children: Vec<Arc<SparkPlan>>,
     ) -> Self {
         Self {
             plan_id,
-            wrapped,
+            native_plan,
             children,
-            metrics_plans: vec![],
+            additional_native_plans: vec![],
         }
     }
 
+    /// Create a SparkPlan that consists of more than one native plan
     pub(crate) fn new_with_additional(
         plan_id: u32,
-        wrapped: Arc<dyn ExecutionPlan>,
+        native_plan: Arc<dyn ExecutionPlan>,
         children: Vec<Arc<SparkPlan>>,
-        metrics_plans: Vec<Arc<dyn ExecutionPlan>>,
+        additional_native_plans: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Self {
         Self {
             plan_id,
-            wrapped,
+            native_plan,
             children,
-            metrics_plans,
+            additional_native_plans,
         }
     }
 
+    /// Get the schema of the native plan
     pub(crate) fn schema(&self) -> SchemaRef {
-        self.wrapped.schema()
+        self.native_plan.schema()
     }
 
+    /// Get the child SparkPlan instances
     pub(crate) fn children(&self) -> &Vec<Arc<SparkPlan>> {
         &self.children
     }

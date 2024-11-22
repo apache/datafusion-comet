@@ -887,8 +887,10 @@ impl PhysicalPlanner {
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
-                let projection =
-                    Arc::new(ProjectionExec::try_new(exprs?, Arc::clone(&child.wrapped))?);
+                let projection = Arc::new(ProjectionExec::try_new(
+                    exprs?,
+                    Arc::clone(&child.native_plan),
+                )?);
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
@@ -900,7 +902,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = Arc::new(FilterExec::try_new(predicate, Arc::clone(&child.wrapped))?);
+                let filter = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
@@ -942,7 +947,7 @@ impl PhysicalPlanner {
                         group_by,
                         aggr_expr,
                         vec![None; num_agg], // no filter expressions
-                        Arc::clone(&child.wrapped),
+                        Arc::clone(&child.native_plan),
                         Arc::clone(&schema),
                     )?,
                 );
@@ -990,7 +995,7 @@ impl PhysicalPlanner {
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
 
                 let limit = Arc::new(LocalLimitExec::new(
-                    Arc::clone(&child.wrapped),
+                    Arc::clone(&child.native_plan),
                     num as usize,
                 ));
                 Ok((
@@ -1014,7 +1019,7 @@ impl PhysicalPlanner {
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
                 // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.wrapped));
+                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let sort = Arc::new(
                     SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
@@ -1027,7 +1032,7 @@ impl PhysicalPlanner {
                         spark_plan.plan_id,
                         sort,
                         vec![Arc::clone(&child)],
-                        vec![Arc::clone(&child.wrapped)],
+                        vec![Arc::clone(&child.native_plan)],
                     )),
                 ))
             }
@@ -1067,7 +1072,7 @@ impl PhysicalPlanner {
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.wrapped),
+                    Arc::clone(&child.native_plan),
                     partitioning,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
@@ -1080,7 +1085,7 @@ impl PhysicalPlanner {
                         spark_plan.plan_id,
                         shuffle_writer,
                         vec![Arc::clone(&child)],
-                        vec![Arc::clone(&child.wrapped)],
+                        vec![Arc::clone(&child.native_plan)],
                     )),
                 ))
             }
@@ -1125,9 +1130,9 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                if can_reuse_input_batch(&child.wrapped) {
+                if can_reuse_input_batch(&child.native_plan) {
                     let child_copied = Arc::new(CopyExec::new(
-                        Arc::clone(&child.wrapped),
+                        Arc::clone(&child.native_plan),
                         CopyMode::UnpackOrDeepCopy,
                     ));
                     let expand = Arc::new(CometExpandExec::new(projections, child_copied, schema));
@@ -1137,13 +1142,13 @@ impl PhysicalPlanner {
                             spark_plan.plan_id,
                             expand,
                             vec![Arc::clone(&child)],
-                            vec![Arc::clone(&child.wrapped)],
+                            vec![Arc::clone(&child.native_plan)],
                         )),
                     ))
                 } else {
                     let expand = Arc::new(CometExpandExec::new(
                         projections,
-                        Arc::clone(&child.wrapped),
+                        Arc::clone(&child.native_plan),
                         schema,
                     ));
                     Ok((
@@ -1272,7 +1277,7 @@ impl PhysicalPlanner {
 
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
-                    Arc::clone(&child.wrapped),
+                    Arc::clone(&child.native_plan),
                     partition_exprs.to_vec(),
                     InputOrderMode::Sorted,
                 )?);
@@ -1416,8 +1421,8 @@ impl PhysicalPlanner {
 
         Ok((
             JoinParameters {
-                left: Arc::clone(&left.wrapped),
-                right: Arc::clone(&right.wrapped),
+                left: Arc::clone(&left.native_plan),
+                right: Arc::clone(&right.native_plan),
                 join_on,
                 join_type,
                 join_filter,
@@ -2318,7 +2323,7 @@ mod tests {
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let mut stream = datafusion_plan.wrapped.execute(0, task_ctx).unwrap();
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = mpsc::channel(1);
@@ -2402,7 +2407,7 @@ mod tests {
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let mut stream = datafusion_plan.wrapped.execute(0, task_ctx).unwrap();
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = mpsc::channel(1);
@@ -2477,7 +2482,7 @@ mod tests {
         let task_ctx = session_ctx.task_ctx();
 
         let stream = datafusion_plan
-            .wrapped
+            .native_plan
             .execute(0, Arc::clone(&task_ctx))
             .unwrap();
         let output = collect(stream).await.unwrap();

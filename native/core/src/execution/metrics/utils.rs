@@ -28,19 +28,31 @@ use std::sync::Arc;
 
 /// Updates the metrics of a CometMetricNode. This function is called recursively to
 /// update the metrics of all the children nodes. The metrics are pulled from the
-/// DataFusion execution plan and pushed to the Java side through JNI.
+/// native execution plan and pushed to the Java side through JNI.
 pub fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
     metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
 ) -> Result<(), CometError> {
+    // combine all metrics from all native plans for this SparkPlan
+    let metrics = if spark_plan.additional_native_plans.is_empty() {
+        spark_plan.native_plan.metrics()
+    } else {
+        let mut metrics = spark_plan.native_plan.metrics().unwrap_or_default();
+        for plan in &spark_plan.additional_native_plans {
+            let additional_metrics = plan.metrics().unwrap_or_default();
+            for c in additional_metrics.iter() {
+                metrics.push(c.to_owned());
+            }
+        }
+        Some(metrics.aggregate_by_name())
+    };
+
     update_metrics(
         env,
         metric_node,
-        &spark_plan
-            .wrapped
-            .metrics()
+        &metrics
             .unwrap_or_default()
             .iter()
             .map(|m| m.value())
@@ -48,23 +60,6 @@ pub fn update_comet_metric(
             .collect::<Vec<_>>(),
         metrics_jstrings,
     )?;
-
-    if !spark_plan.metrics_plans.is_empty() {
-        for metrics_plan in &spark_plan.metrics_plans {
-            // TODO stop dropping these metrics!
-            println!(
-                "Dropping the {} elapsed_compute time of {} for plan {} (#{})",
-                metrics_plan.name(),
-                metrics_plan
-                    .metrics()
-                    .unwrap()
-                    .elapsed_compute()
-                    .unwrap_or(0),
-                spark_plan.wrapped.name(),
-                spark_plan.plan_id
-            );
-        }
-    }
 
     unsafe {
         for (i, child_plan) in spark_plan.children().iter().enumerate() {
