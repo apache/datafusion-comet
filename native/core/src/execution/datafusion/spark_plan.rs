@@ -24,9 +24,14 @@ use std::sync::Arc;
 ///for the root plan (such as CopyExec and ScanExec nodes)
 #[derive(Debug, Clone)]
 pub(crate) struct SparkPlan {
+    /// Spark plan ID which is passed down in the protobuf
     pub(crate) plan_id: u32,
+    /// The root native plan that was generated for this Spark plan
     pub(crate) wrapped: Arc<dyn ExecutionPlan>,
+    /// Child Spark plans
     pub(crate) children: Vec<Arc<SparkPlan>>,
+    /// Additional native plans that were generated for this Spark plan that we need
+    /// to collect metrics for
     pub(crate) metrics_plans: Vec<Arc<dyn ExecutionPlan>>,
 }
 

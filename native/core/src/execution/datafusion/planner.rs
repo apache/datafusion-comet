@@ -848,7 +848,13 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Create a DataFusion physical plan from Spark physical plan.
+    /// Create a DataFusion physical plan from Spark physical plan. There is a level of
+    /// abstraction where a tree of SparkPlan nodes is returned. There is a 1:1 mapping from a
+    /// protobuf Operator (that represents a Spark operator) to a native SparkPlan struct. We
+    /// need this 1:1 mapping so that we can report metrics back to Spark. The native execution
+    /// plan that is generated for each Operator is sometimes a single ExecutionPlan, but in some
+    /// cases we generate a tree of ExecutionPlans and we need to collect metrics for all of these
+    /// plans so we store references to them in the SparkPlan struct.
     ///
     /// `inputs` is a vector of input source IDs. It is used to create `ScanExec`s. Each `ScanExec`
     /// will be assigned a unique ID from `inputs` and the ID will be used to identify the input
