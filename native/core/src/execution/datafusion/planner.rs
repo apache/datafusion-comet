@@ -2568,15 +2568,13 @@ mod tests {
         let op_join = Operator {
             plan_id: 0,
             children: vec![op_scan.clone(), op_scan.clone()],
-            op_struct: Some(OpStruct::HashJoin(
-                spark_operator::HashJoin {
-                    left_join_keys: vec![create_bound_reference(0)],
-                    right_join_keys: vec![create_bound_reference(0)],
-                    join_type: 0,
-                    condition: None,
-                    build_side: 0,
-                },
-            )),
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: 0,
+                condition: None,
+                build_side: 0,
+            })),
         };
 
         let planner = PhysicalPlanner::default();
@@ -2595,12 +2593,10 @@ mod tests {
 
     fn create_bound_reference(index: i32) -> Expr {
         Expr {
-            expr_struct: Some(Bound(
-                spark_expression::BoundReference {
-                    index,
-                    datatype: Some(create_proto_datatype()),
-                },
-            )),
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(create_proto_datatype()),
+            })),
         }
     }
 
@@ -2608,12 +2604,10 @@ mod tests {
         Operator {
             plan_id: 0,
             children: vec![],
-            op_struct: Some(OpStruct::Scan(
-                spark_operator::Scan {
-                    fields: vec![create_proto_datatype()],
-                    source: "".to_string(),
-                },
-            )),
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![create_proto_datatype()],
+                source: "".to_string(),
+            })),
         }
     }
 
