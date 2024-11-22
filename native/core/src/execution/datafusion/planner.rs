@@ -969,6 +969,19 @@ impl PhysicalPlanner {
                     .unwrap(),
                 );
 
+                let partition_schema_arrow = scan
+                    .partition_schema
+                    .iter()
+                    .map(to_arrow_datatype)
+                    .collect_vec();
+                let partition_fields: Vec<_> = partition_schema_arrow
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, data_type)| {
+                        Field::new(format!("part_{}", idx), data_type.clone(), true)
+                    })
+                    .collect();
+
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
@@ -997,11 +1010,12 @@ impl PhysicalPlanner {
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
                     Vec::with_capacity(partition_count);
-                scan.file_partitions.iter().for_each(|partition| {
+                scan.file_partitions.iter().try_for_each(|partition| {
                     let mut files = Vec::with_capacity(partition.partitioned_file.len());
-                    partition.partitioned_file.iter().for_each(|file| {
+                    partition.partitioned_file.iter().try_for_each(|file| {
                         assert!(file.start + file.length <= file.file_size);
-                        files.push(PartitionedFile::new_with_range(
+
+                        let mut partitioned_file = PartitionedFile::new_with_range(
                             Url::parse(file.file_path.as_ref())
                                 .unwrap()
                                 .path()
@@ -1009,10 +1023,41 @@ impl PhysicalPlanner {
                             file.file_size as u64,
                             file.start,
                             file.start + file.length,
-                        ));
-                    });
+                        );
+
+                        // Process partition values
+                        // Create an empty input schema for partition values because they are all literals.
+                        let empty_schema = Arc::new(Schema::empty());
+                        let partition_values: Result<Vec<_>, _> = file
+                            .partition_values
+                            .iter()
+                            .map(|partition_value| {
+                                let literal = self.create_expr(
+                                    partition_value,
+                                    Arc::<Schema>::clone(&empty_schema),
+                                )?;
+                                literal
+                                    .as_any()
+                                    .downcast_ref::<DataFusionLiteral>()
+                                    .ok_or_else(|| {
+                                        ExecutionError::GeneralError(
+                                            "Expected literal of partition value".to_string(),
+                                        )
+                                    })
+                                    .map(|literal| literal.value().clone())
+                            })
+                            .collect();
+                        let partition_values = partition_values?;
+
+                        partitioned_file.partition_values = partition_values;
+
+                        files.push(partitioned_file);
+                        Ok::<(), ExecutionError>(())
+                    })?;
+
                     file_groups.push(files);
-                });
+                    Ok::<(), ExecutionError>(())
+                })?;
 
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
@@ -1020,7 +1065,8 @@ impl PhysicalPlanner {
                 let object_store_url = ObjectStoreUrl::local_filesystem();
                 let mut file_scan_config =
                     FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                        .with_file_groups(file_groups);
+                        .with_file_groups(file_groups)
+                        .with_table_partition_cols(partition_fields);
 
                 // Check for projection, if so generate the vector and add to FileScanConfig.
                 let mut projection_vector: Vec<usize> =
@@ -1030,7 +1076,17 @@ impl PhysicalPlanner {
                     projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
                 });
 
-                assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+                partition_schema_arrow
+                    .iter()
+                    .enumerate()
+                    .for_each(|(idx, _)| {
+                        projection_vector.push(idx + data_schema_arrow.fields.len());
+                    });
+
+                assert_eq!(
+                    projection_vector.len(),
+                    required_schema_arrow.fields.len() + partition_schema_arrow.len()
+                );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
