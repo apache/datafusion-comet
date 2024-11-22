@@ -45,14 +45,10 @@ pub fn update_comet_metric(
             let additional_metrics = plan.metrics().unwrap_or_default();
             for c in additional_metrics.iter() {
                 match c.value() {
-                    MetricValue::ElapsedCompute(_)
-                    | MetricValue::Time { .. }
-                    | MetricValue::SpilledRows(_)
-                    | MetricValue::SpillCount(_)
-                    | MetricValue::SpilledBytes(_) => {
-                        metrics.push(c.to_owned());
+                    MetricValue::OutputRows(_) => {
+                        // we do not want to double count output rows
                     }
-                    _ => {}
+                    _ => metrics.push(c.to_owned())
                 }
             }
         }
