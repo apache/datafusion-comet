@@ -69,11 +69,6 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
-  def defaultMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
-      "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(sc, "time fetching batches from JVM"))
-  }
-
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -82,23 +77,25 @@ object CometMetricNode {
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total time (in ms) spent in this operator"))
+        "total time (in ms) spent in this operator"),
+      "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(sc, "time fetching batches from JVM"))
   }
 
   /**
    * SQL Metrics for Comet native ScanExec
    */
   def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
-      "cast_time" ->
-        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
+    baselineMetrics(sc) ++
+      Map(
+        "cast_time" ->
+          SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
   }
 
   /**
    * SQL Metrics for DataFusion HashJoin
    */
   def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    defaultMetrics(sc) ++
+    baselineMetrics(sc) ++
       Map(
         "build_time" ->
           SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
@@ -113,7 +110,6 @@ object CometMetricNode {
         "input_rows" ->
           SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
         "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
-        "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
         "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
   }
 
@@ -121,7 +117,7 @@ object CometMetricNode {
    * SQL Metrics for DataFusion SortMergeJoin
    */
   def sortMergeJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    defaultMetrics(sc) ++
+    baselineMetrics(sc) ++
       Map(
         "peak_mem_used" ->
           SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
@@ -130,7 +126,6 @@ object CometMetricNode {
         "input_rows" ->
           SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
         "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
-        "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
         "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"),
         "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
         "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),

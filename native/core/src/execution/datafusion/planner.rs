@@ -1221,7 +1221,6 @@ impl PhysicalPlanner {
                     swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
                 };
 
-                // TODO pass in additional plans (CopyExec, ScanExec)
                 // TODO pass in child spark plans
                 Ok((
                     scans,
@@ -2528,5 +2527,36 @@ mod tests {
                 predicate: Some(expr),
             })),
         }
+    }
+
+    #[test]
+    fn spark_plan_metrics() {
+        let op_scan = spark_operator::Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(spark_operator::operator::OpStruct::Scan(
+                spark_operator::Scan {
+                    fields: vec![spark_expression::DataType {
+                        type_id: 3,
+                        type_info: None,
+                    }],
+                    source: "".to_string(),
+                },
+            )),
+        };
+
+        let op = create_filter(op_scan, 0);
+        let planner = PhysicalPlanner::default();
+
+        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![]).unwrap();
+
+        assert_eq!("FilterExec", filter_exec.native_plan.name());
+        assert_eq!(1, filter_exec.children.len());
+        assert_eq!(1, filter_exec.additional_native_plans.len());
+        assert_eq!("ScanExec", filter_exec.additional_native_plans[0].name());
+
+        let scan_exec = &filter_exec.children()[0];
+        assert_eq!("ScanExec", scan_exec.native_plan.name());
+        assert_eq!(0, scan_exec.additional_native_plans.len());
     }
 }
