@@ -31,11 +31,15 @@ pub(crate) struct SparkPlan {
 }
 
 impl SparkPlan {
-    pub(crate) fn new(plan_id: u32, wrapped: Arc<dyn ExecutionPlan>) -> Self {
+    pub(crate) fn new(
+        plan_id: u32,
+        wrapped: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<SparkPlan>>,
+    ) -> Self {
         Self {
             plan_id,
             wrapped,
-            children: vec![],
+            children,
             metrics_plans: vec![],
         }
     }
@@ -43,12 +47,13 @@ impl SparkPlan {
     pub(crate) fn new_with_additional(
         plan_id: u32,
         wrapped: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<SparkPlan>>,
         metrics_plans: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Self {
         Self {
             plan_id,
             wrapped,
-            children: vec![],
+            children,
             metrics_plans,
         }
     }

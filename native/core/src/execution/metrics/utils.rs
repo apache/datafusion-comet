@@ -32,13 +32,13 @@ use std::sync::Arc;
 pub fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
-    execution_plan: &Arc<SparkPlan>,
+    spark_plan: &Arc<SparkPlan>,
     metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
 ) -> Result<(), CometError> {
     update_metrics(
         env,
         metric_node,
-        &execution_plan
+        &spark_plan
             .wrapped
             .metrics()
             .unwrap_or_default()
@@ -49,22 +49,25 @@ pub fn update_comet_metric(
         metrics_jstrings,
     )?;
 
-    if !execution_plan.metrics_plans.is_empty() {
-        // TODO stop dropping these metrics
-        println!(
-            "Dropping the elapsed_compute time of {} for plan {} ({})",
-            execution_plan
-                .metrics_plans
-                .iter()
-                .map(|p| p.metrics().unwrap().elapsed_compute().unwrap_or(0))
-                .sum::<usize>(),
-            execution_plan.wrapped.name(),
-            execution_plan.plan_id
-        );
+    if !spark_plan.metrics_plans.is_empty() {
+        for metrics_plan in &spark_plan.metrics_plans {
+            // TODO stop dropping these metrics!
+            println!(
+                "Dropping the {} elapsed_compute time of {} for plan {} (#{})",
+                metrics_plan.name(),
+                metrics_plan
+                    .metrics()
+                    .unwrap()
+                    .elapsed_compute()
+                    .unwrap_or(0),
+                spark_plan.wrapped.name(),
+                spark_plan.plan_id
+            );
+        }
     }
 
     unsafe {
-        for (i, child_plan) in execution_plan.children().iter().enumerate() {
+        for (i, child_plan) in spark_plan.children().iter().enumerate() {
             let child_metric_node: JObject = jni_call!(env,
                 comet_metric_node(metric_node).get_child_node(i as i32) -> JObject
             )?;

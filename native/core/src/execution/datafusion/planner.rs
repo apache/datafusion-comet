@@ -884,7 +884,7 @@ impl PhysicalPlanner {
                 let projection = Arc::new(ProjectionExec::try_new(exprs?, child.wrapped.clone())?);
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection)),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
                 ))
             }
             OpStruct::Filter(filter) => {
@@ -894,7 +894,10 @@ impl PhysicalPlanner {
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
                 let filter = Arc::new(FilterExec::try_new(predicate, child.wrapped.clone())?);
-                Ok((scans, Arc::new(SparkPlan::new(spark_plan.plan_id, filter))))
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                ))
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
@@ -949,7 +952,7 @@ impl PhysicalPlanner {
                 if agg.result_exprs.is_empty() {
                     Ok((
                         scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate)),
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
                     ))
                 } else {
                     // For final aggregation, DF's hash aggregate exec doesn't support Spark's
@@ -966,6 +969,7 @@ impl PhysicalPlanner {
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             projection,
+                            vec![child],
                             vec![aggregate],
                         )),
                     ))
@@ -977,7 +981,10 @@ impl PhysicalPlanner {
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
 
                 let limit = Arc::new(LocalLimitExec::new(child.wrapped.clone(), num as usize));
-                Ok((scans, Arc::new(SparkPlan::new(spark_plan.plan_id, limit))))
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
+                ))
             }
             OpStruct::Sort(sort) => {
                 assert!(children.len() == 1);
@@ -1006,6 +1013,7 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         sort,
+                        vec![child.clone()],
                         vec![child.wrapped.clone()],
                     )),
                 ))
@@ -1035,7 +1043,7 @@ impl PhysicalPlanner {
                     ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
                 Ok((
                     vec![scan.clone()],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan))),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {
@@ -1058,6 +1066,7 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         shuffle_writer,
+                        vec![child.clone()],
                         vec![child.wrapped.clone()],
                     )),
                 ))
@@ -1114,6 +1123,7 @@ impl PhysicalPlanner {
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             expand,
+                            vec![child.clone()],
                             vec![child.wrapped.clone()],
                         )),
                     ))
@@ -1123,7 +1133,10 @@ impl PhysicalPlanner {
                         child.wrapped.clone(),
                         schema,
                     ));
-                    Ok((scans, Arc::new(SparkPlan::new(spark_plan.plan_id, expand))))
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                    ))
                 }
             }
             OpStruct::SortMergeJoin(join) => {
@@ -1163,7 +1176,11 @@ impl PhysicalPlanner {
                 )?);
 
                 // TODO pass in additional plans (CopyExec, ScanExec)
-                Ok((scans, Arc::new(SparkPlan::new(spark_plan.plan_id, join))))
+                // TODO pass in child spark plans
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, join, vec![])),
+                ))
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
@@ -1203,9 +1220,10 @@ impl PhysicalPlanner {
                 };
 
                 // TODO pass in additional plans (CopyExec, ScanExec)
+                // TODO pass in child spark plans
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, hash_join)),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, hash_join, vec![])),
                 ))
             }
             OpStruct::Window(wnd) => {
@@ -1248,7 +1266,7 @@ impl PhysicalPlanner {
                 Ok((
                     scans,
                     // TODO additional metrics?
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg)),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
         }
