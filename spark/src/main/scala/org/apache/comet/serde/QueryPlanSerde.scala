@@ -2508,7 +2508,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
     val conf = op.conf
-    val result = OperatorOuterClass.Operator.newBuilder()
+    val result = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(result.addChildren)
 
     op match {

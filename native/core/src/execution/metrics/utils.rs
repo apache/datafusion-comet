@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::spark_plan::SparkPlan;
 use crate::jvm_bridge::jni_new_global_ref;
 use crate::{
     errors::CometError,
     jvm_bridge::{jni_call, jni_new_string},
 };
-use datafusion::physical_plan::ExecutionPlan;
 use jni::objects::{GlobalRef, JString};
 use jni::{objects::JObject, JNIEnv};
 use std::collections::HashMap;
@@ -32,13 +32,14 @@ use std::sync::Arc;
 pub fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
-    execution_plan: &Arc<dyn ExecutionPlan>,
+    execution_plan: &Arc<SparkPlan>,
     metrics_jstrings: &mut HashMap<String, Arc<GlobalRef>>,
 ) -> Result<(), CometError> {
     update_metrics(
         env,
         metric_node,
         &execution_plan
+            .wrapped
             .metrics()
             .unwrap_or_default()
             .iter()
@@ -47,6 +48,20 @@ pub fn update_comet_metric(
             .collect::<Vec<_>>(),
         metrics_jstrings,
     )?;
+
+    if !execution_plan.metrics_plans.is_empty() {
+        // TODO stop dropping these metrics
+        println!(
+            "Dropping the elapsed_compute time of {} for plan {} ({})",
+            execution_plan
+                .metrics_plans
+                .iter()
+                .map(|p| p.metrics().unwrap().elapsed_compute().unwrap_or(0))
+                .sum::<usize>(),
+            execution_plan.wrapped.name(),
+            execution_plan.plan_id
+        );
+    }
 
     unsafe {
         for (i, child_plan) in execution_plan.children().iter().enumerate() {

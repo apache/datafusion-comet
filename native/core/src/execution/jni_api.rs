@@ -24,7 +24,7 @@ use datafusion::{
         disk_manager::DiskManagerConfig,
         runtime_env::{RuntimeConfig, RuntimeEnv},
     },
-    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan, SendableRecordBatchStream},
+    physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
 use futures::poll;
@@ -59,6 +59,7 @@ use jni::{
 };
 use tokio::runtime::Runtime;
 
+use crate::execution::datafusion::spark_plan::SparkPlan;
 use crate::execution::operators::ScanExec;
 use log::info;
 
@@ -69,7 +70,7 @@ struct ExecutionContext {
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The DataFusion root operator converted from the `spark_plan`
-    pub root_op: Option<Arc<dyn ExecutionPlan>>,
+    pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
     /// The global reference of input sources for the DataFusion plan
@@ -360,7 +361,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             if exec_context.explain_native {
                 let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
+                    DisplayableExecutionPlan::new(root_op.wrapped.as_ref()).indent(true);
                 info!("Comet native query plan:\n{formatted_plan_str:}");
             }
 
@@ -369,6 +370,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 .root_op
                 .as_ref()
                 .unwrap()
+                .wrapped
                 .execute(0, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
@@ -400,7 +402,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
+                                DisplayableExecutionPlan::with_metrics(plan.wrapped.as_ref())
+                                    .indent(true);
                             info!(
                                 "Comet native query plan with metrics:\
                             \n[Stage {} Partition {}] plan creation (including CometScans fetching first batches) took {:?}:\
