@@ -124,13 +124,7 @@ class NativeUtil {
    *   an exported batches object containing an array containing number of rows + pairs of memory
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportBatch(
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
-      batch: ColumnarBatch): Int = {
-
-    exportSchema(schemaAddrs, batch)
-
+  def exportBatch(arrayAddrs: Array[Long], batch: ColumnarBatch): Int = {
     val numRows = mutable.ArrayBuffer.empty[Int]
 
     (0 until batch.numCols()).foreach { index =>

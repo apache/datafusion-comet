@@ -52,7 +52,9 @@ public class CometBatchIterator {
     if (!hasBatch) {
       return -1;
     }
-
-    return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());
+    ColumnarBatch batch = input.next();
+    // TODO we should not have to export schema for each batch
+    nativeUtil.exportSchema(schemaAddrs, batch);
+    return nativeUtil.exportBatch(arrayAddrs, batch);
   }
 }
