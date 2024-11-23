@@ -33,6 +33,7 @@ import org.apache.comet.vector.NativeUtil;
 public class CometBatchIterator {
   final Iterator<ColumnarBatch> input;
   final NativeUtil nativeUtil;
+  private ColumnarBatch currentBatch = null;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
     this.input = input;
@@ -40,22 +41,38 @@ public class CometBatchIterator {
   }
 
   /**
-   * Get the next batches of Arrow arrays. This is only called from native code via JNI.
+   * Get the schema of the Arrow arrays.
+   *
+   * @param schemaAddrs The addresses of the ArrowSchema structures.
+   */
+  public int exportSchema(long[] schemaAddrs) {
+    if (currentBatch == null) {
+      if (input.hasNext()) {
+        currentBatch = input.next();
+      } else {
+        return -1;
+      }
+    }
+    nativeUtil.exportSchema(schemaAddrs, currentBatch);
+    return 0;
+  }
+
+  /**
+   * Get the next batches of Arrow arrays.
    *
    * @param arrayAddrs The addresses of the ArrowArray structures.
-   * @param schemaAddrs The addresses of the ArrowSchema structures.
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
-  public int next(long[] arrayAddrs, long[] schemaAddrs) {
-    boolean hasBatch = input.hasNext();
-
-    if (!hasBatch) {
-      return -1;
+  public int next(long[] arrayAddrs) {
+    if (currentBatch == null) {
+      if (input.hasNext()) {
+        currentBatch = input.next();
+      } else {
+        return -1;
+      }
     }
-    ColumnarBatch batch = input.next();
-    // TODO we should not have to export schema for each batch
-    // see https://github.com/apache/datafusion-comet/issues/1115
-    nativeUtil.exportSchema(schemaAddrs, batch);
-    return nativeUtil.exportBatch(arrayAddrs, batch);
+    int rows = nativeUtil.exportBatch(arrayAddrs, currentBatch);
+    currentBatch = null;
+    return rows;
   }
 }

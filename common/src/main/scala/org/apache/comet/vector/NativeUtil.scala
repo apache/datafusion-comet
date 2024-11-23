@@ -88,7 +88,7 @@ class NativeUtil {
    *   an exported batches object containing an array containing number of rows + pairs of memory
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
-  def exportSchema(schemaAddrs: Array[Long], batch: ColumnarBatch): Unit = {
+  def exportSchema(schemaAddrs: Array[Long], batch: ColumnarBatch): Int = {
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
@@ -112,6 +112,7 @@ class NativeUtil {
               s"${c.getClass}")
       }
     }
+    0
   }
 
   /**

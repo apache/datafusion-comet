@@ -215,22 +215,30 @@ impl ScanExec {
             schema_addrs.push(schema_ptr);
         }
 
-        // Prepare the java array parameters
-        let long_array_addrs = env.new_long_array(num_cols as jsize)?;
+        // export schema
         let long_schema_addrs = env.new_long_array(num_cols as jsize)?;
-
-        env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
         env.set_long_array_region(&long_schema_addrs, 0, &schema_addrs)?;
-
-        let array_obj = JObject::from(long_array_addrs);
         let schema_obj = JObject::from(long_schema_addrs);
-
-        let array_obj = JValueGen::Object(array_obj.as_ref());
         let schema_obj = JValueGen::Object(schema_obj.as_ref());
 
         let num_rows: i32 = unsafe {
             jni_call!(&mut env,
-        comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
+        comet_batch_iterator(iter).export_schema(schema_obj) -> i32)?
+        };
+
+        if num_rows == -1 {
+            return Ok(InputBatch::EOF);
+        }
+
+        // export data
+        let long_array_addrs = env.new_long_array(num_cols as jsize)?;
+        env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
+        let array_obj = JObject::from(long_array_addrs);
+        let array_obj = JValueGen::Object(array_obj.as_ref());
+
+        let num_rows: i32 = unsafe {
+            jni_call!(&mut env,
+        comet_batch_iterator(iter).next(array_obj) -> i32)?
         };
 
         if num_rows == -1 {
