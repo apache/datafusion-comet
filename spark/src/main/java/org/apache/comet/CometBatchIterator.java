@@ -54,6 +54,7 @@ public class CometBatchIterator {
     }
     ColumnarBatch batch = input.next();
     // TODO we should not have to export schema for each batch
+    // see https://github.com/apache/datafusion-comet/issues/1115
     nativeUtil.exportSchema(schemaAddrs, batch);
     return nativeUtil.exportBatch(arrayAddrs, batch);
   }
