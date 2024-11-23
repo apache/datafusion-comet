@@ -100,6 +100,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
+    val nativeArrowReaderEnabled = CometConf.COMET_NATIVE_ARROW_SCAN_ENABLED.get(sqlConf)
 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
@@ -134,22 +135,42 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
       }
       pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
 
-      val batchReader = new BatchReader(
-        sharedConf,
-        file,
-        footer,
-        capacity,
-        requiredSchema,
-        isCaseSensitive,
-        useFieldId,
-        ignoreMissingIds,
-        datetimeRebaseSpec.mode == CORRECTED,
-        partitionSchema,
-        file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
-      val iter = new RecordReaderIterator(batchReader)
+      val recordBatchReader =
+        if (nativeArrowReaderEnabled) {
+          val batchReader = new NativeBatchReader(
+            sharedConf,
+            file,
+            footer,
+            capacity,
+            requiredSchema,
+            isCaseSensitive,
+            useFieldId,
+            ignoreMissingIds,
+            datetimeRebaseSpec.mode == CORRECTED,
+            partitionSchema,
+            file.partitionValues,
+            JavaConverters.mapAsJavaMap(metrics))
+          batchReader.init()
+          batchReader
+        } else {
+          val batchReader = new BatchReader(
+            sharedConf,
+            file,
+            footer,
+            capacity,
+            requiredSchema,
+            isCaseSensitive,
+            useFieldId,
+            ignoreMissingIds,
+            datetimeRebaseSpec.mode == CORRECTED,
+            partitionSchema,
+            file.partitionValues,
+            JavaConverters.mapAsJavaMap(metrics))
+          batchReader.init()
+          batchReader
+        }
+      val iter = new RecordReaderIterator(recordBatchReader)
       try {
-        batchReader.init()
         iter.asInstanceOf[Iterator[InternalRow]]
       } catch {
         case e: Throwable =>
