@@ -88,10 +88,49 @@ class NativeUtil {
    *   an exported batches object containing an array containing number of rows + pairs of memory
    *   addresses in the format of (address of Arrow array, address of Arrow schema)
    */
+  def exportSchema(schemaAddrs: Array[Long], batch: ColumnarBatch): Unit = {
+
+    (0 until batch.numCols()).foreach { index =>
+      batch.column(index) match {
+        case a: CometVector =>
+          val valueVector = a.getValueVector
+
+          val provider = if (valueVector.getField.getDictionary != null) {
+            a.getDictionaryProvider
+          } else {
+            null
+          }
+
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val export = getFieldVector(valueVector, "export")
+          Data.exportField(allocator, export.getField, provider, arrowSchema)
+        case c =>
+          throw new SparkException(
+            "Comet execution only takes Arrow Arrays, but got " +
+              s"${c.getClass}")
+      }
+    }
+  }
+
+  /**
+   * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
+   * native execution.
+   *
+   * @param batch
+   *   the input Comet columnar batch
+   * @return
+   *   an exported batches object containing an array containing number of rows + pairs of memory
+   *   addresses in the format of (address of Arrow array, address of Arrow schema)
+   */
   def exportBatch(
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       batch: ColumnarBatch): Int = {
+
+    exportSchema(schemaAddrs, batch)
+
     val numRows = mutable.ArrayBuffer.empty[Int]
 
     (0 until batch.numCols()).foreach { index =>
@@ -109,11 +148,8 @@ class NativeUtil {
 
           // The array and schema structures are allocated by native side.
           // Don't need to deallocate them here.
-          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
           val arrowArray = ArrowArray.wrap(arrayAddrs(index))
           val export = getFieldVector(valueVector, "export")
-          // export schema
-          Data.exportField(allocator, export.getField, provider, arrowSchema)
           // export array
           Data.exportVector(allocator, export, provider, arrowArray)
         case c =>

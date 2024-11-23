@@ -40,7 +40,7 @@ public class CometBatchIterator {
   }
 
   /**
-   * Get the next batches of Arrow arrays.
+   * Get the next batches of Arrow arrays. This is only called from native code via JNI.
    *
    * @param arrayAddrs The addresses of the ArrowArray structures.
    * @param schemaAddrs The addresses of the ArrowSchema structures.
