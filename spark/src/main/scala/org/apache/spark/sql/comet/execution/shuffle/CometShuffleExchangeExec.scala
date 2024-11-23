@@ -499,7 +499,9 @@ class CometShuffleWriteProcessor(
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       outputAttributes.length,
       nativePlan,
-      nativeMetrics)
+      nativeMetrics,
+      context.numPartitions(),
+      context.partitionId())
 
     while (cometIter.hasNext) {
       cometIter.next()

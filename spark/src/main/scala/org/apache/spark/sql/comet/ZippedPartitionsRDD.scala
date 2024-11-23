@@ -31,16 +31,20 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  */
 private[spark] class ZippedPartitionsRDD(
     sc: SparkContext,
-    var f: (Seq[Iterator[ColumnarBatch]]) => Iterator[ColumnarBatch],
+    var f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch],
     var zipRdds: Seq[RDD[ColumnarBatch]],
     preservesPartitioning: Boolean = false)
     extends ZippedPartitionsBaseRDD[ColumnarBatch](sc, zipRdds, preservesPartitioning) {
+
+  // We need to get the number of partitions in `compute` but `getNumPartitions` is not available
+  // on the executors. So we need to capture it here.
+  private val numParts: Int = this.getNumPartitions
 
   override def compute(s: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partitions = s.asInstanceOf[ZippedPartitionsPartition].partitions
     val iterators =
       zipRdds.zipWithIndex.map(pair => pair._1.iterator(partitions(pair._2), context))
-    f(iterators)
+    f(iterators, numParts, s.index)
   }
 
   override def clearDependencies(): Unit = {
@@ -52,7 +56,8 @@ private[spark] class ZippedPartitionsRDD(
 
 object ZippedPartitionsRDD {
   def apply(sc: SparkContext, rdds: Seq[RDD[ColumnarBatch]])(
-      f: (Seq[Iterator[ColumnarBatch]]) => Iterator[ColumnarBatch]): RDD[ColumnarBatch] =
+      f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch])
+      : RDD[ColumnarBatch] =
     withScope(sc) {
       new ZippedPartitionsRDD(sc, f, rdds)
     }
