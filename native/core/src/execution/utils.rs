@@ -77,8 +77,7 @@ impl SparkArrowConvert for ArrayData {
         // about memory leak.
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
-            let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
-
+            let schema_data: &FFI_ArrowSchema = &*schema_ptr;
             from_ffi(array_data, &schema_data)?
         };
 

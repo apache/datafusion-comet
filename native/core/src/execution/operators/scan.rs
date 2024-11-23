@@ -62,6 +62,7 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
     pub input_source: Option<Arc<GlobalRef>>,
+    schema_addrs: Vec<i64>,
     /// A description of the input source for informational purposes
     pub input_source_description: String,
     /// The data types of columns of the input batch. Converted from Spark schema.
@@ -95,7 +96,7 @@ impl ScanExec {
         // ScanExec will cast arrays from all future batches to the type determined here, so we
         // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
         // Dictionary-encoded primitive arrays are always unpacked.
-        let first_batch = if let Some(input_source) = input_source.as_ref() {
+        let (first_batch, schema_addrs) = if let Some(input_source) = input_source.as_ref() {
             let mut timer = baseline_metrics.elapsed_compute().timer();
             if let Some(schema_addrs) =
                 ScanExec::get_schema(exec_context_id, input_source.as_obj(), data_types.len())?
@@ -103,16 +104,18 @@ impl ScanExec {
                 let batch = ScanExec::get_next(
                     exec_context_id,
                     input_source.as_obj(),
-                    schema_addrs,
+                    schema_addrs.clone(),
                     data_types.len(),
                 )?;
                 timer.stop();
-                batch
+                (batch, schema_addrs)
+
+
             } else {
-                InputBatch::EOF
+                (InputBatch::EOF, vec![])
             }
         } else {
-            InputBatch::EOF
+            (InputBatch::EOF, vec![])
         };
 
         let schema = scan_schema(&first_batch, &data_types);
@@ -129,6 +132,7 @@ impl ScanExec {
             exec_context_id,
             input_source,
             input_source_description: input_source_description.to_string(),
+            schema_addrs,
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
@@ -178,19 +182,13 @@ impl ScanExec {
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
             let iter = self.input_source.as_ref().unwrap().as_obj();
-            if let Some(schema_addrs) =
-                ScanExec::get_schema(self.exec_context_id, iter, self.data_types.len())?
-            {
-                let next_batch = ScanExec::get_next(
-                    self.exec_context_id,
-                    iter,
-                    schema_addrs,
-                    self.data_types.len(),
-                )?;
-                *current_batch = Some(next_batch);
-            } else {
-                *current_batch = Some(InputBatch::EOF);
-            }
+            let next_batch = ScanExec::get_next(
+                self.exec_context_id,
+                iter,
+                self.schema_addrs.clone(),
+                self.data_types.len(),
+            )?;
+            *current_batch = Some(next_batch);
         }
 
         timer.stop();
