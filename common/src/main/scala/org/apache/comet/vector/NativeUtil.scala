@@ -111,12 +111,11 @@ class NativeUtil {
           // Don't need to deallocate them here.
           val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
           val arrowArray = ArrowArray.wrap(arrayAddrs(index))
-          Data.exportVector(
-            allocator,
-            getFieldVector(valueVector, "export"),
-            provider,
-            arrowArray,
-            arrowSchema)
+          val export = getFieldVector(valueVector, "export")
+          // export schema
+          Data.exportField(allocator, export.getField, provider, arrowSchema)
+          // export array
+          Data.exportVector(allocator, export, provider, arrowArray)
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
