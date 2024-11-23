@@ -80,7 +80,7 @@ Results for our benchmark derived from TPC-DS are available in the [benchmarking
 ## Use Commodity Hardware
 
 Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or
-specialized hardware accelerators, such as GPUs or FGPA. By maximizing the utilization of commodity hardware, Comet 
+specialized hardware accelerators, such as GPUs or FPGA. By maximizing the utilization of commodity hardware, Comet 
 ensures cost-effectiveness and scalability for your Spark deployments.
 
 ## Spark Compatibility
