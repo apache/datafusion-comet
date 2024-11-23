@@ -500,7 +500,7 @@ class CometShuffleWriteProcessor(
       outputAttributes.length,
       nativePlan,
       nativeMetrics,
-      context.numPartitions(),
+      dep.rdd.getNumPartitions,
       context.partitionId())
 
     while (cometIter.hasNext) {
