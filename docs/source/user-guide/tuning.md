@@ -119,7 +119,7 @@ Comet also adds some custom metrics:
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scanTime` | Total time to read Parquet batches into JVM. This does not include the Arrow FFI cost of exporting these batches to native code for processing. |
 
-### Common to all Comet Executors
+### Common to all Comet Operators
 
 | Metric           | Description                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
