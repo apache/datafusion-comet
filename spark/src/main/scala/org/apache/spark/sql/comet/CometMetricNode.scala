@@ -69,6 +69,9 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
+  val ARROW_FFI_TIME_KEY = "arrow_ffi_time"
+  val ARROW_FFI_TIME_DESCRIPTION = "Arrow FFI time"
+
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -78,7 +81,7 @@ object CometMetricNode {
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
         "total time (in ms) spent in this operator"),
-      "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(sc, "time fetching batches from JVM"))
+      ARROW_FFI_TIME_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_TIME_DESCRIPTION))
   }
 
   /**

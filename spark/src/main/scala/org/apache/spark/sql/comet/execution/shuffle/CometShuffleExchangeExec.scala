@@ -77,9 +77,9 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(
+    CometMetricNode.ARROW_FFI_TIME_KEY -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "time fetching batches from JVM"),
+      CometMetricNode.ARROW_FFI_TIME_DESCRIPTION),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -484,10 +484,10 @@ class CometShuffleWriteProcessor(
       "data_size" -> metrics("dataSize"),
       "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
 
-    val nativeMetrics = if (metrics.contains("jvm_fetch_time")) {
+    val nativeMetrics = if (metrics.contains(CometMetricNode.ARROW_FFI_TIME_KEY)) {
       CometMetricNode(
-        nativeSQLMetrics ++ Map("jvm_fetch_time" ->
-          metrics("jvm_fetch_time")))
+        nativeSQLMetrics ++ Map(CometMetricNode.ARROW_FFI_TIME_KEY ->
+          metrics(CometMetricNode.ARROW_FFI_TIME_KEY)))
     } else {
       CometMetricNode(nativeSQLMetrics)
     }
@@ -499,6 +499,7 @@ class CometShuffleWriteProcessor(
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       outputAttributes.length,
       nativePlan,
+      None,
       nativeMetrics)
 
     while (cometIter.hasNext) {

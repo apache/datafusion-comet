@@ -121,6 +121,6 @@ Comet also adds some custom metrics:
 
 ### Common to all Comet Operators
 
-| Metric           | Description                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `jvm_fetch_time` | Measure the time it takes for an operator to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches. |
+| Metric           | Description                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------ |
+| `arrow_ffi_time` | Measure the time it takes to transfer Arrow batches between JVM and native code using Arrow FFI. |
