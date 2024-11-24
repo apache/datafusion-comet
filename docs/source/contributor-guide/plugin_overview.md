@@ -28,11 +28,21 @@ following setting to the Spark configuration when launching `spark-shell` or `sp
 --conf spark.plugins=org.apache.spark.CometPlugin
 ```
 
+This class is loaded by Spark's plugin framework. It will be instantiated in the Spark driver only. Comet does not
+provide any executor plugins.
+
+The plugin will update the current `SparkConf` with the extra configuration provided by Comet, such as executor memory
+configuration.
+
+The plugin also registers `CometSparkSessionExtensions` with Spark's extension API.
+
+## CometSparkSessionExtensions
+
 On initialization, this class registers two physical plan optimization rules with Spark: `CometScanRule`
 and `CometExecRule`. These rules run whenever a query stage is being planned during Adaptive Query Execution, and
 run once for the entire plan when Adaptive Query Execution is disabled.
 
-## CometScanRule
+### CometScanRule
 
 `CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
 
@@ -43,13 +53,13 @@ Parquet data source but leverages native code for decoding Parquet row groups di
 
 Comet only supports a subset of data types and will fall back to Spark's scan if unsupported types
 exist. Comet can still accelerate the rest of the query execution in this case because `CometSparkToColumnarExec` will
-convert the output from Spark's can to Arrow arrays. Note that both `spark.comet.exec.enabled=true` and
+convert the output from Spark's scan to Arrow arrays. Note that both `spark.comet.exec.enabled=true` and
 `spark.comet.convert.parquet.enabled=true` must be set to enable this conversion.
 
 Refer to the [Supported Spark Data Types](https://datafusion.apache.org/comet/user-guide/datatypes.html) section
 in the contributor guide to see a list of currently supported data types.
 
-## CometExecRule
+### CometExecRule
 
 This rule traverses bottom-up from the original Spark plan and attempts to replace each operator with a Comet equivalent.
 For example, a `ProjectExec` will be replaced by `CometProjectExec`.
@@ -64,25 +74,38 @@ of this could outweigh the benefits of running parts of the query stage natively
 
 ## Query Execution
 
-Once the plan has been transformed, any consecutive Comet operators are combined into a `CometNativeExec` which contains
-a serialized version of the plan (the serialization code can be found in `QueryPlanSerde`). When this operator is
-executed, the serialized plan is passed to the native code when calling `Native.createPlan`.
+Once the plan has been transformed, any consecutive native Comet operators are combined into a `CometNativeExec` which contains
+a protocol buffer serialized version of the plan (the serialization code can be found in `QueryPlanSerde`).
+
+Spark serializes the physical plan and sends it to the executors when executing tasks. The executors deserialize the
+plan and invoke it.
+
+When `CometNativeExec` is invoked, it will deserialize the protobuf plan and pass it into
+`Native.createPlan`, which invokes the native code via JNI.
 
 In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
-`CometExecIterator` will invoke `Native.executePlan` to pull the next batch from the native plan. This is repeated
-until no more batches are available (meaning that all data has been processed by the native plan).
+The leaf nodes in the physical plan are always `ScanExec` and each of these operators will consume batches
+of Arrow data that are prepared before the plan is executed. The source of these batches could be a Comet Parquet scan,
+or a Spark exchange.
 
-The leaf nodes in the physical plan are always `ScanExec` and these operators consume batches of Arrow data that were
-prepared before the plan is executed. When `CometExecIterator` invokes `Native.executePlan` it passes the memory
-addresses of these Arrow arrays to the native code.
+`CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
+partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan` and pass the memory addresses
+of the input batches to be processed so that the native code can access them via Arrow FFI. Once the plan finishes
+executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.
 
-![Diagram of Comet Native Execution](../../_static/images/CometOverviewDetailed.drawio.svg)
+## Arrow FFI
+
+Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code. This is
+implemented using Arrow FFI. The foundation for Arrow FFI is the [Arrow C Data Interface], which provides a stable
+ABI-compatible interface for accessing Arrow data structures from multiple languages.
+
+[Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
 ## End to End Flow
 
-The following diagram shows the end-to-end flow.
+The following diagram shows an example of the end-to-end flow for a query stage.
 
-![Diagram of Comet Native Parquet Scan](../../_static/images/CometNativeParquetReader.drawio.svg)
+![Diagram of Comet Data Flow](../../_static/images/comet-dataflow.svg)
