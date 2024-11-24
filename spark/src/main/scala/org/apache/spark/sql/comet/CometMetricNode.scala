@@ -85,10 +85,9 @@ object CometMetricNode {
    * SQL Metrics for Comet native ScanExec
    */
   def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    baselineMetrics(sc) ++
-      Map(
-        "cast_time" ->
-          SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
+    Map(
+      "cast_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
   }
 
   /**

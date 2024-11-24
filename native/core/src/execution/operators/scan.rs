@@ -337,7 +337,7 @@ impl ExecutionPlan for ScanExec {
             self.clone(),
             self.schema(),
             partition,
-            self.jvm_fetch_time.clone(),
+            self.baseline_metrics.clone(),
         )))
     }
 
@@ -378,23 +378,28 @@ struct ScanStream<'a> {
     scan: ScanExec,
     /// Schema representing the data
     schema: SchemaRef,
+    /// Metrics
+    baseline_metrics: BaselineMetrics,
     /// Cast options
     cast_options: CastOptions<'a>,
     /// elapsed time for casting columns to different data types during scan
     cast_time: Time,
-    /// elapsed time for fetching arrow arrays from JVM
-    jvm_fetch_time: Time,
 }
 
 impl<'a> ScanStream<'a> {
-    pub fn new(scan: ScanExec, schema: SchemaRef, partition: usize, jvm_fetch_time: Time) -> Self {
+    pub fn new(
+        scan: ScanExec,
+        schema: SchemaRef,
+        partition: usize,
+        baseline_metrics: BaselineMetrics,
+    ) -> Self {
         let cast_time = MetricBuilder::new(&scan.metrics).subset_time("cast_time", partition);
         Self {
             scan,
             schema,
+            baseline_metrics,
             cast_options: CastOptions::default(),
             cast_time,
-            jvm_fetch_time,
         }
     }
 
@@ -434,7 +439,7 @@ impl<'a> Stream for ScanStream<'a> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut timer = self.jvm_fetch_time.timer();
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let input_batch = &*scan_batch;
@@ -448,6 +453,7 @@ impl<'a> Stream for ScanStream<'a> {
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
+                self.baseline_metrics.record_output(*num_rows);
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
