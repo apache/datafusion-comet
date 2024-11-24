@@ -116,11 +116,11 @@ Comet also adds some custom metrics:
 ### CometScanExec
 
 | Metric     | Description                                                                                                                                     |
-|------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scanTime` | Total time to read Parquet batches into JVM. This does not include the Arrow FFI cost of exporting these batches to native code for processing. |
 
 ### Common to all Comet Executors
 
-| Metric           | Description                                                                                                                                                                |
-| ---------------- |----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `jvm_fetch_time` | Measure the time it takes for an operatior to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches. |
+| Metric           | Description                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `jvm_fetch_time` | Measure the time it takes for an operator to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches. |
