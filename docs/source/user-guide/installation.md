@@ -30,16 +30,21 @@ Make sure the following requirements are met and software installed on your mach
 
 ### Supported Spark Versions
 
-Comet currently supports the following versions of Apache Spark:
+### Supported Apache Spark Versions
+For more details, refer to the documentation: [Apache Spark supported by Comet](overview.md#supported-apache-spark-versions)
+
+- **Apache Spark 3.3, 3.4, or 3.5**
+  - **Supported Java Versions**: JDK 8 and above
+  - **GLIBC**: 2.17 (CentOS 7) and above
+  - **Scala**: 2.12/2.13
+- **Apache Spark 4.0** *(Experimental Support - is intended for development/testing use only and should not be used in production yet.)*
+  - **Supported Java Versions**: JDK 17/21 
+  - **GLIBC**: 2.17 (CentOS 7) and above
+  - **Scala**: 2.13
 
 - 3.3.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.4.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.5.x (Java 8/11/17, Scala 2.12/2.13)
-
-Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.
-
-- 4.0.0-preview1 (Java 17/21, Scala 2.13)
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
