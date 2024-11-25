@@ -39,13 +39,19 @@ import org.apache.comet.vector.NativeUtil
  *   The input iterators producing sequence of batches of Arrow Arrays.
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
+ * @param numParts
+ *   The number of partitions.
+ * @param partitionIndex
+ *   The index of the partition.
  */
 class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
-    nativeMetrics: CometMetricNode)
+    nativeMetrics: CometMetricNode,
+    numParts: Int,
+    partitionIndex: Int)
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
@@ -55,13 +61,12 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val configs = createNativeConf
-    TaskContext.get().numPartitions()
     nativeLib.createPlan(
       id,
       configs,
       cometBatchIterators,
       protobufQueryPlan,
-      TaskContext.get().numPartitions(),
+      numParts,
       nativeMetrics,
       new CometTaskMemoryManager(id))
   }
@@ -103,10 +108,12 @@ class CometExecIterator(
   }
 
   def getNextBatch(): Option[ColumnarBatch] = {
+    assert(partitionIndex >= 0 && partitionIndex < numParts)
+
     nativeUtil.getNextBatch(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
-        nativeLib.executePlan(plan, TaskContext.get().partitionId(), arrayAddrs, schemaAddrs)
+        nativeLib.executePlan(plan, partitionIndex, arrayAddrs, schemaAddrs)
       })
   }
 
