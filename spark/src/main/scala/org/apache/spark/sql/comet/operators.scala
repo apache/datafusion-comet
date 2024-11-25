@@ -293,7 +293,7 @@ abstract class CometNativeExec extends CometExec {
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
         // partition number of Broadcast RDDs to make sure they have the same partition number.
-        sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
+        sparkPlans.zipWithIndex.foreach { case (plan, _) =>
           plan match {
             case c: CometBroadcastExchangeExec if firstNonBroadcastPlanNumPartitions.nonEmpty =>
               inputs += c
