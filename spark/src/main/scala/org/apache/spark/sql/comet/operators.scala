@@ -120,20 +120,37 @@ object CometExec {
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
-      nativePlan: Operator): CometExecIterator = {
-    getCometIterator(inputs, numOutputCols, nativePlan, CometMetricNode(Map.empty))
+      nativePlan: Operator,
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    getCometIterator(
+      inputs,
+      numOutputCols,
+      nativePlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx)
   }
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
       nativePlan: Operator,
-      nativeMetrics: CometMetricNode): CometExecIterator = {
+      nativeMetrics: CometMetricNode,
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-    new CometExecIterator(newIterId, inputs, numOutputCols, bytes, nativeMetrics)
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      bytes,
+      nativeMetrics,
+      numParts,
+      partitionIdx)
   }
 
   /**
@@ -214,13 +231,18 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-        def createCometExecIter(inputs: Seq[Iterator[ColumnarBatch]]): CometExecIterator = {
+        def createCometExecIter(
+            inputs: Seq[Iterator[ColumnarBatch]],
+            numParts: Int,
+            partitionIndex: Int): CometExecIterator = {
           val it = new CometExecIterator(
             CometExec.newIterId,
             inputs,
             output.length,
             serializedPlanCopy,
-            nativeMetrics)
+            nativeMetrics,
+            numParts,
+            partitionIndex)
 
           setSubqueries(it.id, this)
 
@@ -295,7 +317,7 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
+        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
     }
   }
 
