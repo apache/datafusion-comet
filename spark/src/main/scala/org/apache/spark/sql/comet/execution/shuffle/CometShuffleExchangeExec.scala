@@ -480,17 +480,10 @@ class CometShuffleWriteProcessor(
 
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
+      CometMetricNode.ARROW_FFI_TIME_KEY -> metrics(CometMetricNode.ARROW_FFI_TIME_KEY),
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
       "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
-
-    val nativeMetrics = if (metrics.contains(CometMetricNode.ARROW_FFI_TIME_KEY)) {
-      CometMetricNode(
-        nativeSQLMetrics ++ Map(CometMetricNode.ARROW_FFI_TIME_KEY ->
-          metrics(CometMetricNode.ARROW_FFI_TIME_KEY)))
-    } else {
-      CometMetricNode(nativeSQLMetrics)
-    }
 
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
@@ -499,8 +492,8 @@ class CometShuffleWriteProcessor(
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       outputAttributes.length,
       nativePlan,
-      None,
-      nativeMetrics)
+      metrics.get(CometMetricNode.ARROW_FFI_TIME_KEY),
+      CometMetricNode(nativeSQLMetrics))
 
     while (cometIter.hasNext) {
       cometIter.next()
