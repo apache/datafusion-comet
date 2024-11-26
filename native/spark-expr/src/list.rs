@@ -776,13 +776,14 @@ impl PhysicalExpr for ArraySize {
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
         vec![&self.src_array_expr]
     }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         match children.len() {
             1 => Ok(Arc::new(ArraySize::new(Arc::clone(&children[0])))),
-            _ => internal_err!("ListExtract should have exactly two children"),
+            _ => internal_err!("ArraySize should have exactly one child"),
         }
     }
 
