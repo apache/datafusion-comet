@@ -2390,4 +2390,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
     }
   }
+
+  test("ArraySize") {
+    assume(isSpark34Plus)
+    Seq(true, false).foreach(dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+        val df = spark.read
+          .parquet(path.toString)
+          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+          .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
+          .withColumn("arrSizeResult", expr("array_size(arrInsertResult)"))
+          .withColumn("arrSizeResultNull", expr("array_size(null)"))
+        checkSparkAnswerAndOperator(df.select("arrSizeResult"))
+        checkSparkAnswerAndOperator(df.select("arrSizeResultNull"))
+      })
+  }
 }

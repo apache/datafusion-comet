@@ -708,6 +708,92 @@ impl PartialEq<dyn Any> for ArrayInsert {
     }
 }
 
+#[derive(Debug, Hash)]
+pub struct ArraySize {
+    src_array_expr: Arc<dyn PhysicalExpr>,
+}
+
+impl ArraySize {
+    pub fn new(src_array_expr: Arc<dyn PhysicalExpr>) -> Self {
+        Self { src_array_expr }
+    }
+}
+
+impl Display for ArraySize {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ArraySize [array: {:?}]", self.src_array_expr)
+    }
+}
+
+impl PartialEq<dyn Any> for ArraySize {
+    fn eq(&self, other: &dyn Any) -> bool {
+        down_cast_any_ref(other)
+            .downcast_ref::<Self>()
+            .map(|x| self.src_array_expr.eq(&x.src_array_expr))
+            .unwrap_or(false)
+    }
+}
+
+impl PhysicalExpr for ArraySize {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
+        Ok(DataType::Int32)
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
+        // Only non-nullable if fail_on_error is enabled and the element is non-nullable
+        Ok(self.src_array_expr.nullable(input_schema)?)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        let array_value = self
+            .src_array_expr
+            .evaluate(batch)?
+            .into_array(batch.num_rows())?;
+        match array_value.data_type() {
+            DataType::List(_) => {
+                let list_array = as_list_array(&array_value)?;
+                let mut builder = Int32Array::builder(list_array.len());
+                for i in 0..list_array.len() {
+                    if list_array.is_null(i) {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(list_array.value_length(i));
+                    }
+                }
+                let sizes_array = Int32Array::from(builder.finish());
+                Ok(ColumnarValue::Array(Arc::new(sizes_array)))
+            }
+            _ => Err(DataFusionError::Internal(format!(
+                "Unexpected data type in ArraySize: {:?}",
+                array_value.data_type()
+            ))),
+        }
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.src_array_expr]
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+        match children.len() {
+            1 => Ok(Arc::new(ArraySize::new(Arc::clone(&children[0])))),
+            _ => internal_err!("ListExtract should have exactly two children"),
+        }
+    }
+
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.src_array_expr.hash(&mut s);
+        self.hash(&mut s);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::list::{array_insert, list_extract, zero_based_index};

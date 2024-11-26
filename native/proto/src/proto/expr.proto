@@ -84,6 +84,7 @@ message Expr {
     GetArrayStructFields get_array_struct_fields = 57;
     BinaryExpr array_append = 58;
     ArrayInsert array_insert = 59;
+    ArraySize array_size= 60;
   }
 }
 
@@ -410,6 +411,10 @@ message ArrayInsert {
   Expr pos_expr = 2;
   Expr item_expr = 3;
   bool legacy_negative_index = 4;
+}
+
+message ArraySize {
+  Expr src_array_expr = 1;
 }
 
 message DataType {

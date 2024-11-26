@@ -117,7 +117,7 @@
  - [x] ~
 
 ### collection_funcs
- - [ ] array_size
+ - [x] array_size
  - [ ] cardinality
  - [ ] concat
  - [x] reverse

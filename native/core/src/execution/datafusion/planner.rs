@@ -98,8 +98,9 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    ArrayInsert, ArraySize, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields,
+    GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr,
+    TimestampTruncExpr, ToJson,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -735,6 +736,13 @@ impl PhysicalPlanner {
                     item_expr,
                     expr.legacy_negative_index,
                 )))
+            }
+            ExprStruct::ArraySize(expr) => {
+                let child = self.create_expr(
+                    expr.src_array_expr.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+                Ok(Arc::new(ArraySize::new(child)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
