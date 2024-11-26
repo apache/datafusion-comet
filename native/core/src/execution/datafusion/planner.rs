@@ -1070,6 +1070,8 @@ impl PhysicalPlanner {
                 let partitioning = self
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
+
+
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1079,10 +1081,11 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(
+                    Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         shuffle_writer,
                         vec![Arc::clone(&child)],
+                        vec![Arc::clone(&child.native_plan)]
                     )),
                 ))
             }
