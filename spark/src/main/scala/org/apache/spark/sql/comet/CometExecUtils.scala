@@ -51,9 +51,10 @@ object CometExecUtils {
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
       limit: Int): RDD[ColumnarBatch] = {
-    childPlan.mapPartitionsInternal { iter =>
+    val numParts = childPlan.getNumPartitions
+    childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
       val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit).get
-      CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp)
+      CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
     }
   }
 
