@@ -744,7 +744,6 @@ impl PhysicalExpr for ArraySize {
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        // Only non-nullable if fail_on_error is enabled and the element is non-nullable
         self.src_array_expr.nullable(input_schema)
     }
 

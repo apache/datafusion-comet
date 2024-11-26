@@ -2220,8 +2220,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               expr.children(2))
             None
           }
-        case expr if expr.prettyName == "size" =>
-          val srcExprProto = exprToProto(expr.children(0), inputs, binding)
+        case Size(child, _) if child.dataType.isInstanceOf[ArrayType] =>
+          val srcExprProto = exprToProto(child, inputs, binding)
           val arraySizeBuilder = ExprOuterClass.ArraySize
             .newBuilder()
             .setSrcArrayExpr(srcExprProto.get)
