@@ -739,13 +739,13 @@ impl PhysicalExpr for ArraySize {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
+    fn data_type(&self, _input_schema: &Schema) -> DataFusionResult<DataType> {
         Ok(DataType::Int32)
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
         // Only non-nullable if fail_on_error is enabled and the element is non-nullable
-        Ok(self.src_array_expr.nullable(input_schema)?)
+        self.src_array_expr.nullable(input_schema)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
