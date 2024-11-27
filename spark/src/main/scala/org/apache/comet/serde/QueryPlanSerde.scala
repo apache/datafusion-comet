@@ -3222,7 +3222,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
       partitionVals.foreach(fileBuilder.addPartitionValues)
       fileBuilder
-        .setFilePath(file.pathUri.toString)
+        .setFilePath(file.filePath.toUri.toString)
         .setStart(file.start)
         .setLength(file.length)
         .setFileSize(file.fileSize)
