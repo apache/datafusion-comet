@@ -77,9 +77,9 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(
+    CometMetricNode.ARROW_FFI_TIME_KEY -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "time fetching batches from JVM"),
+      CometMetricNode.ARROW_FFI_TIME_DESCRIPTION),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
       "number of partitions")) ++ readMetrics ++ writeMetrics
@@ -482,17 +482,10 @@ class CometShuffleWriteProcessor(
 
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
+      CometMetricNode.ARROW_FFI_TIME_KEY -> metrics(CometMetricNode.ARROW_FFI_TIME_KEY),
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
       "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
-
-    val nativeMetrics = if (metrics.contains("jvm_fetch_time")) {
-      CometMetricNode(
-        nativeSQLMetrics ++ Map("jvm_fetch_time" ->
-          metrics("jvm_fetch_time")))
-    } else {
-      CometMetricNode(nativeSQLMetrics)
-    }
 
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
@@ -501,7 +494,8 @@ class CometShuffleWriteProcessor(
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       outputAttributes.length,
       nativePlan,
-      nativeMetrics,
+      metrics.get(CometMetricNode.ARROW_FFI_TIME_KEY),
+      CometMetricNode(nativeSQLMetrics),
       numParts,
       context.partitionId())
 

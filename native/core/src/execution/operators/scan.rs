@@ -77,6 +77,8 @@ pub struct ScanExec {
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
     baseline_metrics: BaselineMetrics,
+    /// Timer
+    arrow_ffi_time: Time,
 }
 
 impl ScanExec {
@@ -88,6 +90,7 @@ impl ScanExec {
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
+        let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
@@ -97,8 +100,12 @@ impl ScanExec {
         // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
             let mut timer = baseline_metrics.elapsed_compute().timer();
-            let batch =
-                ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?;
+            let batch = ScanExec::get_next(
+                exec_context_id,
+                input_source.as_obj(),
+                data_types.len(),
+                &arrow_ffi_time,
+            )?;
             timer.stop();
             batch
         } else {
@@ -124,6 +131,7 @@ impl ScanExec {
             cache,
             metrics: metrics_set,
             baseline_metrics,
+            arrow_ffi_time,
             schema,
         })
     }
@@ -171,6 +179,7 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
+                &self.arrow_ffi_time,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -185,6 +194,7 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
+        arrow_ffi_time: &Time,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -197,6 +207,7 @@ impl ScanExec {
                 exec_context_id
             ))));
         }
+        let mut timer = arrow_ffi_time.timer();
 
         let mut env = JVMClasses::get_env()?;
 
@@ -254,6 +265,8 @@ impl ScanExec {
                 Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
+
+        timer.stop();
 
         Ok(InputBatch::new(inputs, Some(num_rows as usize)))
     }
