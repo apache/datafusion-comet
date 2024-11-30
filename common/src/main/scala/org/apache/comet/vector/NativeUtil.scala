@@ -26,7 +26,6 @@ import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
@@ -149,16 +148,11 @@ class NativeUtil {
    */
   def getNextBatch(
       numOutputCols: Int,
-      arrowFfiMetric: Option[SQLMetric],
       func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
-
-    val start = System.nanoTime()
     val (arrays, schemas) = allocateArrowStructs(numOutputCols)
 
     val arrayAddrs = arrays.map(_.memoryAddress())
     val schemaAddrs = schemas.map(_.memoryAddress())
-
-    var arrowFfiTime = System.nanoTime() - start
 
     val result = func(arrayAddrs, schemaAddrs)
 
@@ -167,10 +161,7 @@ class NativeUtil {
         // EOF
         None
       case numRows =>
-        val start = System.nanoTime()
         val cometVectors = importVector(arrays, schemas)
-        arrowFfiTime += System.nanoTime() - start
-        arrowFfiMetric.foreach(_.add(arrowFfiTime))
         Some(new ColumnarBatch(cometVectors.toArray, numRows.toInt))
       case flag =>
         throw new IllegalStateException(s"Invalid native flag: $flag")

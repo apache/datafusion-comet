@@ -21,7 +21,6 @@ package org.apache.comet
 
 import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
-import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
@@ -50,7 +49,6 @@ class CometExecIterator(
     inputs: Seq[Iterator[ColumnarBatch]],
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
-    arrowFfiMetric: Option[SQLMetric],
     nativeMetrics: CometMetricNode,
     numParts: Int,
     partitionIndex: Int)
@@ -104,7 +102,6 @@ class CometExecIterator(
 
     nativeUtil.getNextBatch(
       numOutputCols,
-      arrowFfiMetric,
       (arrayAddrs, schemaAddrs) => {
         val ctx = TaskContext.get()
         nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)

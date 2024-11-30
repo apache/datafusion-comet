@@ -69,9 +69,6 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
-  val ARROW_FFI_TIME_KEY = "arrow_ffi_time"
-  val ARROW_FFI_TIME_DESCRIPTION = "Arrow FFI time"
-
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -80,8 +77,7 @@ object CometMetricNode {
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total time (in ms) spent in this operator"),
-      ARROW_FFI_TIME_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_TIME_DESCRIPTION))
+        "total time (in ms) spent in this operator"))
   }
 
   /**
@@ -97,41 +93,41 @@ object CometMetricNode {
    * SQL Metrics for DataFusion HashJoin
    */
   def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    baselineMetrics(sc) ++
-      Map(
-        "build_time" ->
-          SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
-        "build_input_batches" ->
-          SQLMetrics.createMetric(sc, "Number of batches consumed by build-side"),
-        "build_input_rows" ->
-          SQLMetrics.createMetric(sc, "Number of rows consumed by build-side"),
-        "build_mem_used" ->
-          SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
-        "input_batches" ->
-          SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
-        "input_rows" ->
-          SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
-        "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
-        "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
+    Map(
+      "build_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
+      "build_input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by build-side"),
+      "build_input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by build-side"),
+      "build_mem_used" ->
+        SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
+      "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
   }
 
   /**
    * SQL Metrics for DataFusion SortMergeJoin
    */
   def sortMergeJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    baselineMetrics(sc) ++
-      Map(
-        "peak_mem_used" ->
-          SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
-        "input_batches" ->
-          SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
-        "input_rows" ->
-          SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
-        "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
-        "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"),
-        "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
-        "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
-        "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
+    Map(
+      "peak_mem_used" ->
+        SQLMetrics.createSizeMetric(sc, "Memory used by build-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
+      "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"),
+      "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
   }
 
   /**

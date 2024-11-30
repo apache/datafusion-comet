@@ -127,7 +127,6 @@ object CometExec {
       inputs,
       numOutputCols,
       nativePlan,
-      None,
       CometMetricNode(Map.empty),
       numParts,
       partitionIdx)
@@ -137,7 +136,6 @@ object CometExec {
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
       nativePlan: Operator,
-      arrowFfiMetric: Option[SQLMetric],
       nativeMetrics: CometMetricNode,
       numParts: Int,
       partitionIdx: Int): CometExecIterator = {
@@ -150,7 +148,6 @@ object CometExec {
       inputs,
       numOutputCols,
       bytes,
-      arrowFfiMetric,
       nativeMetrics,
       numParts,
       partitionIdx)
@@ -243,7 +240,6 @@ abstract class CometNativeExec extends CometExec {
             inputs,
             output.length,
             serializedPlanCopy,
-            metrics.get(CometMetricNode.ARROW_FFI_TIME_KEY),
             nativeMetrics,
             numParts,
             partitionIndex)
