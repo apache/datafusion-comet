@@ -505,6 +505,8 @@ object CometScanExec extends DataTypeSupport {
   }
 
   def isFileFormatSupported(fileFormat: FileFormat): Boolean = {
+    // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
+    // of ParquetFileFormat.
     fileFormat.getClass().equals(classOf[ParquetFileFormat])
   }
 }
