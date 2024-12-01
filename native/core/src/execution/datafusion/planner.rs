@@ -1234,10 +1234,6 @@ impl PhysicalPlanner {
                     let projection =
                         swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
                     let swapped_hash_join = Arc::clone(projection.children()[0]);
-                    println!(
-                        "Planner creating SparkPlan for HashJoin: {}",
-                        displayable(projection.as_ref()).indent(true)
-                    );
                     let mut additional_native_plans = swapped_hash_join
                         .children()
                         .iter()
