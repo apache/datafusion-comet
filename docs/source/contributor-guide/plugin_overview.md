@@ -96,13 +96,28 @@ partitions. Each call to `CometExecIterator.next()` will invoke `Native.executeP
 of the input batches to be processed so that the native code can access them via Arrow FFI. Once the plan finishes
 executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.
 
-## Arrow FFI
+## Arrow
 
-Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code. This is
-implemented using Arrow FFI. The foundation for Arrow FFI is the [Arrow C Data Interface], which provides a stable
-ABI-compatible interface for accessing Arrow data structures from multiple languages.
+Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.
+
+Comet uses a combination of Arrow FFI and Arrow IPC to achieve this.
+
+### Arrow FFI
+
+The foundation for Arrow FFI is the [Arrow C Data Interface], which provides a stable ABI-compatible interface for 
+accessing Arrow data structures from multiple languages.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
+
+- Native code calls `CometBatchIterator` via JNI to fetch input batches from the JVM
+- `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
+
+### Arrow IPC
+
+Comet native shuffle uses Arrow IPC to write batches to the shuffle files.
+
+- `CometShuffleWriteProcessor` invokes a native plan to fetch batches and then passes them to native `ShuffleWriterExec`
+- `CometBlockStoreShuffleReader` reads batches from shuffle files
 
 ## End to End Flow
 
