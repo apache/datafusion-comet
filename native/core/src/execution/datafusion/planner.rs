@@ -56,7 +56,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
-use datafusion::physical_plan::{displayable, InputOrderMode};
+use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
