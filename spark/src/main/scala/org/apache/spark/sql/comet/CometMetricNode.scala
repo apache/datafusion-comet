@@ -78,14 +78,21 @@ object CometMetricNode {
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
-  def baselineMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+  def ffiMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      ARROW_FFI_EXPORT_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_EXPORT_DESCRIPTION),
+      ARROW_FFI_IMPORT_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_IMPORT_DESCRIPTION))
+  }
+
+  /**
+   * The baseline SQL metrics for DataFusion `BaselineMetrics`.
+   */
+  def baselineMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    ffiMetrics(sc) ++ Map(
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total time (in ms) spent in this operator"),
-      ARROW_FFI_EXPORT_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_EXPORT_DESCRIPTION),
-      ARROW_FFI_IMPORT_KEY -> SQLMetrics.createNanoTimingMetric(sc, ARROW_FFI_IMPORT_DESCRIPTION))
+        "total time (in ms) spent in this operator"))
   }
 
   /**

@@ -75,17 +75,12 @@ case class CometShuffleExchangeExec(
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
   private[sql] lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    CometMetricNode.ARROW_FFI_EXPORT_KEY -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      CometMetricNode.ARROW_FFI_EXPORT_DESCRIPTION),
-    CometMetricNode.ARROW_FFI_IMPORT_KEY -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      CometMetricNode.ARROW_FFI_IMPORT_DESCRIPTION),
-    "numPartitions" -> SQLMetrics.createMetric(
-      sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.ffiMetrics(sparkContext) ++ Map(
+      "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
+      "numPartitions" -> SQLMetrics.createMetric(
+        sparkContext,
+        "number of partitions")) ++ readMetrics ++ writeMetrics
 
   override def nodeName: String = if (shuffleType == CometNativeShuffle) {
     "CometExchange"

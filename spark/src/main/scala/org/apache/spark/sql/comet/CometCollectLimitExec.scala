@@ -53,18 +53,12 @@ case class CometCollectLimitExec(
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
   private lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    // TODO use baselineMetrics?
-    CometMetricNode.ARROW_FFI_IMPORT_KEY -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      CometMetricNode.ARROW_FFI_IMPORT_DESCRIPTION),
-    CometMetricNode.ARROW_FFI_EXPORT_KEY -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      CometMetricNode.ARROW_FFI_EXPORT_DESCRIPTION),
-    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "numPartitions" -> SQLMetrics.createMetric(
-      sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.ffiMetrics(sparkContext) ++ Map(
+      "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
+      "numPartitions" -> SQLMetrics.createMetric(
+        sparkContext,
+        "number of partitions")) ++ readMetrics ++ writeMetrics
 
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
