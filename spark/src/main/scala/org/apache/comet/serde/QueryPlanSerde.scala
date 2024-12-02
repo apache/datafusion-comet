@@ -35,6 +35,9 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -2910,6 +2913,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         scanBuilder.setSource(op.simpleStringWithNodeId())
+        scanBuilder.setReusesBuffers(isParquetScan(op))
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
@@ -2941,6 +2945,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(op, msg)
         }
         None
+    }
+  }
+
+  def isParquetScan(op: SparkPlan): Boolean = {
+    op match {
+      case scan: FileSourceScanExec =>
+        scan.relation.fileFormat.isInstanceOf[ParquetFileFormat]
+      case scan: BatchScanExec =>
+        scan.scan.isInstanceOf[ParquetScan]
+      case _ =>
+        false
     }
   }
 

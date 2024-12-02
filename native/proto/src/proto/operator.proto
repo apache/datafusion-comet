@@ -55,6 +55,7 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  bool reuses_buffers = 3;
 }
 
 message Projection {
