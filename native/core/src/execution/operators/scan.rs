@@ -77,7 +77,9 @@ pub struct ScanExec {
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
     baseline_metrics: BaselineMetrics,
-    /// Timer
+    /// Time waiting for JVM input plan to execute and return batches
+    jvm_fetch_time: Time,
+    /// Time spent in FFI
     arrow_ffi_time: Time,
 }
 
@@ -91,6 +93,7 @@ impl ScanExec {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
         let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
+        let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
@@ -104,6 +107,7 @@ impl ScanExec {
                 exec_context_id,
                 input_source.as_obj(),
                 data_types.len(),
+                &jvm_fetch_time,
                 &arrow_ffi_time,
             )?;
             timer.stop();
@@ -131,6 +135,7 @@ impl ScanExec {
             cache,
             metrics: metrics_set,
             baseline_metrics,
+            jvm_fetch_time,
             arrow_ffi_time,
             schema,
         })
@@ -179,6 +184,7 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
+                &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
             )?;
             *current_batch = Some(next_batch);
@@ -194,6 +200,7 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
+        jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
@@ -210,10 +217,14 @@ impl ScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
+        let mut timer = jvm_fetch_time.timer();
+
         let num_rows: i32 = unsafe {
             jni_call!(&mut env,
         comet_batch_iterator(iter).has_next() -> i32)?
         };
+
+        timer.stop();
 
         if num_rows == -1 {
             return Ok(InputBatch::EOF);

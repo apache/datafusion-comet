@@ -103,7 +103,7 @@ native shuffle currently only supports `HashPartitioning` and `SinglePartitionin
 To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
 then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
-## Metrics
+## Spark SQL Metrics
 
 Some Comet metrics are not directly comparable to Spark metrics in some cases:
 
@@ -113,8 +113,17 @@ Some Comet metrics are not directly comparable to Spark metrics in some cases:
 
 Comet also adds some custom metrics:
 
-### ShuffleWriterExec
+## Native Metrics
 
-| Metric           | Description                                                                                                                                                                       |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `jvm_fetch_time` | Measure the time it takes for `ShuffleWriterExec` to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches. |
+Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
+logged for each native plan (and there is one plan per task, so this is very verbose).
+
+Here is a guide to some of the native metrics.
+
+### ScanExec
+
+| Metric            | Description                                                                                         |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `elapsed_compute` | Total time spent in this operator, fetching batches from a JVM iterator.                            |
+| `jvm_fetch_time`  | Time spent in the JVM fetching input batches to be read by this `ScanExec` instance.                |
+| `arrow_ffi_time`  | Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM. |
