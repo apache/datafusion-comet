@@ -243,7 +243,7 @@ abstract class CometNativeExec extends CometExec {
             inputs,
             output.length,
             serializedPlanCopy,
-            metrics.get(CometMetricNode.ARROW_FFI_TIME_KEY),
+            metrics.get(CometMetricNode.ARROW_FFI_IMPORT_KEY),
             nativeMetrics,
             numParts,
             partitionIndex)

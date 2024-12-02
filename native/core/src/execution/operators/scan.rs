@@ -90,7 +90,7 @@ impl ScanExec {
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
-        let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
+        let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_export", 0);
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the

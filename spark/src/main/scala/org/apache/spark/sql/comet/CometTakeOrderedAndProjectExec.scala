@@ -54,9 +54,13 @@ case class CometTakeOrderedAndProjectExec(
   private lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
-    CometMetricNode.ARROW_FFI_TIME_KEY -> SQLMetrics.createNanoTimingMetric(
+    // TODO use baselineMetrics?
+    CometMetricNode.ARROW_FFI_IMPORT_KEY -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      CometMetricNode.ARROW_FFI_TIME_DESCRIPTION),
+      CometMetricNode.ARROW_FFI_IMPORT_DESCRIPTION),
+    CometMetricNode.ARROW_FFI_EXPORT_KEY -> SQLMetrics.createNanoTimingMetric(
+      sparkContext,
+      CometMetricNode.ARROW_FFI_EXPORT_DESCRIPTION),
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
