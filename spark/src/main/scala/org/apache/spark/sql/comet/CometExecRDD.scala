@@ -29,11 +29,11 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 private[spark] class CometExecRDD(
     sc: SparkContext,
     partitionNum: Int,
-    var f: (Seq[Iterator[ColumnarBatch]]) => Iterator[ColumnarBatch])
+    var f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch])
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def compute(s: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    f(Seq.empty)
+    f(Seq.empty, partitionNum, s.index)
   }
 
   override protected def getPartitions: Array[Partition] = {
@@ -46,7 +46,8 @@ private[spark] class CometExecRDD(
 
 object CometExecRDD {
   def apply(sc: SparkContext, partitionNum: Int)(
-      f: (Seq[Iterator[ColumnarBatch]]) => Iterator[ColumnarBatch]): RDD[ColumnarBatch] =
+      f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch])
+      : RDD[ColumnarBatch] =
     withScope(sc) {
       new CometExecRDD(sc, partitionNum, f)
     }
