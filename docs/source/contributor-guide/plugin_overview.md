@@ -87,13 +87,12 @@ In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which c
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
-The leaf nodes in the physical plan are always `ScanExec` and each of these operators will consume batches
-of Arrow data that are prepared before the plan is executed. The source of these batches could be a Comet Parquet scan,
+The leaf nodes in the physical plan are always `ScanExec` and each of these operators will make a JNI call to 
+`CometBatchIterator.next()` to fetch the next input batch. The input could be a Comet Parquet scan,
 or a Spark exchange.
 
 `CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
-partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan` and pass the memory addresses
-of the input batches to be processed so that the native code can access them via Arrow FFI. Once the plan finishes
+partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan`. Once the plan finishes
 executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.
 
 ## Arrow
@@ -109,8 +108,8 @@ accessing Arrow data structures from multiple languages.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
-- Native code calls `CometBatchIterator` via JNI to fetch input batches from the JVM
 - `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
+- Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
 
 ### Arrow IPC
 
