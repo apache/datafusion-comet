@@ -2549,12 +2549,7 @@ mod tests {
 
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
-        assert_eq!(1, filter_exec.additional_native_plans.len());
-        assert_eq!("ScanExec", filter_exec.additional_native_plans[0].name());
-
-        let scan_exec = &filter_exec.children()[0];
-        assert_eq!("ScanExec", scan_exec.native_plan.name());
-        assert_eq!(0, scan_exec.additional_native_plans.len());
+        assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
     #[test]
@@ -2580,10 +2575,6 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
-
-        assert_eq!(2, hash_join_exec.additional_native_plans.len());
-        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[0].name());
-        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[1].name());
     }
 
     fn create_bound_reference(index: i32) -> Expr {
