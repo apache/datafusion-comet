@@ -1230,21 +1230,20 @@ impl PhysicalPlanner {
                         )),
                     ))
                 } else {
-                    // we insert a projection around the hash join in this case
-                    let projection =
+                    let swapped_hash_join =
                         swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
-                    let swapped_hash_join = Arc::clone(projection.children()[0]);
-                    let mut additional_native_plans = swapped_hash_join
-                        .children()
-                        .iter()
-                        .map(|p| Arc::clone(p))
-                        .collect::<Vec<_>>();
-                    additional_native_plans.push(Arc::clone(&swapped_hash_join));
+
+                    let mut additional_native_plans = vec![];
+                    if swapped_hash_join.as_any().is::<ProjectionExec>() {
+                        // a projection was added to the hash join
+                        additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
+                    }
+
                     Ok((
                         scans,
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
-                            projection,
+                            swapped_hash_join,
                             vec![join_params.left, join_params.right],
                             additional_native_plans,
                         )),
@@ -2550,12 +2549,7 @@ mod tests {
 
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
-        assert_eq!(1, filter_exec.additional_native_plans.len());
-        assert_eq!("ScanExec", filter_exec.additional_native_plans[0].name());
-
-        let scan_exec = &filter_exec.children()[0];
-        assert_eq!("ScanExec", scan_exec.native_plan.name());
-        assert_eq!(0, scan_exec.additional_native_plans.len());
+        assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
     #[test]
@@ -2581,10 +2575,6 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
-
-        assert_eq!(2, hash_join_exec.additional_native_plans.len());
-        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[0].name());
-        assert_eq!("ScanExec", hash_join_exec.additional_native_plans[1].name());
     }
 
     fn create_bound_reference(index: i32) -> Expr {
