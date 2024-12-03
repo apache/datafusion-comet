@@ -405,8 +405,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
                                     .indent(true);
                             info!(
-                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                            \n plan creation (including CometScans fetching first batches) took {:?}:\
+                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}). Plan creation took {:?}:\
                             \n{formatted_plan_str:}",
                                 plan.plan_id, stage_id, partition, exec_context.plan_creation_time
                             );

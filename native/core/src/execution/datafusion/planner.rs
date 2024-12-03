@@ -2374,6 +2374,7 @@ mod tests {
     const STRING_TYPE_ID: i32 = 7;
 
     #[test]
+    #[ignore] // this test is no longer valid because ScanExec always unpacks dictionaries now
     fn test_unpack_dictionary_string() {
         let op_scan = Operator {
             plan_id: 0,

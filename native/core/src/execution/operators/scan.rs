@@ -243,50 +243,13 @@ impl ScanExec {
     }
 }
 
-/// this is only used in tests
-fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
-    let fields = match input_batch {
-        // Note that if `columns` is empty, we'll get an empty schema
-        InputBatch::Batch(columns, _) => {
-            columns
-                .iter()
-                .enumerate()
-                .map(|(idx, c)| {
-                    let datatype = ScanExec::unpack_dictionary_type(c.data_type());
-                    // We don't use the field name. Put a placeholder.
-                    if matches!(datatype, DataType::Dictionary(_, _)) {
-                        Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
-                    } else {
-                        Field::new(format!("col_{}", idx), datatype, true)
-                    }
-                })
-                .collect::<Vec<Field>>()
-        }
-        _ => data_types
-            .iter()
-            .enumerate()
-            .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
-            .collect(),
-    };
-
-    Arc::new(Schema::new(fields))
-}
-
 impl ExecutionPlan for ScanExec {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn schema(&self) -> SchemaRef {
-        if self.exec_context_id == TEST_EXEC_CONTEXT_ID {
-            // `unwrap` is safe because `schema` is only called during converting
-            // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
-            let binding = self.batch.try_lock().unwrap();
-            let input_batch = binding.as_ref().unwrap();
-            scan_schema(input_batch, &self.data_types)
-        } else {
-            Arc::clone(&self.schema)
-        }
+        Arc::clone(&self.schema)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
