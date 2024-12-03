@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{CopyExec, ScanExec};
+use crate::execution::operators::CopyExec;
 use arrow_schema::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub(crate) struct SparkPlan {
     /// Child Spark plans
     pub(crate) children: Vec<Arc<SparkPlan>>,
     /// Additional native plans that were generated for this Spark plan that we need
-    /// to collect metrics for (such as CopyExec and ScanExec)
+    /// to collect metrics for
     pub(crate) additional_native_plans: Vec<Arc<dyn ExecutionPlan>>,
 }
 
@@ -93,10 +93,6 @@ fn collect_additional_plans(
     additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
 ) {
     if child.as_any().is::<CopyExec>() {
-        additional_native_plans.push(Arc::clone(&child));
-        // CopyExec may be wrapping a ScanExec
-        collect_additional_plans(Arc::clone(child.children()[0]), additional_native_plans);
-    } else if child.as_any().is::<ScanExec>() {
         additional_native_plans.push(Arc::clone(&child));
     }
 }
