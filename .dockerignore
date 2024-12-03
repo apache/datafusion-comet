@@ -11,7 +11,7 @@ target
 common/target
 spark-integration/target
 fuzz-testing/target
-spark/target
+# spark/target
 native/target
 core/target
 spark-warehouse

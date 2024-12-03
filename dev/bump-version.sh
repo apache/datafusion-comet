@@ -96,7 +96,7 @@ NEW_RELEASE_VERSION=${NEW_VERSION%-SNAPSHOT}
 $MVN versions:set -DnewVersion="$NEW_VERSION" -DgenerateBackupPoms=false | grep -v "no value"
 
 sed -i '' 's/'"$OLD_RELEASE_VERSION"'/'"$NEW_RELEASE_VERSION"'/' rio.y*ml
-sed -i '' 's/'"$OLD_VERSION"'/'"$NEW_VERSION"'/' bin/comet-spark-shell
+# sed -i '' 's/'"$OLD_VERSION"'/'"$NEW_VERSION"'/' bin/comet-spark-shell
 
 if [ -z "${SET_VERSION:-}" ]; then
   git commit -a -m "build: Bump to $NEW_VERSION after $OLD_RELEASE_VERSION release"
