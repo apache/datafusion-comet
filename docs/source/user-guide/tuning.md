@@ -103,7 +103,9 @@ native shuffle currently only supports `HashPartitioning` and `SinglePartitionin
 To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
 then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
-## Spark SQL Metrics
+##  Metrics
+
+### Spark SQL Metrics
 
 Some Comet metrics are not directly comparable to Spark metrics in some cases:
 
@@ -111,9 +113,7 @@ Some Comet metrics are not directly comparable to Spark metrics in some cases:
   milliseconds _per batch_ which can result in a large loss of precision, making it difficult to compare scan times
   between Spark and Comet.
 
-Comet also adds some custom metrics:
-
-## Native Metrics
+### Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
 logged for each native plan (and there is one plan per task, so this is very verbose).
