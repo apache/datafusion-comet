@@ -80,16 +80,16 @@ a protocol buffer serialized version of the plan (the serialization code can be 
 Spark serializes the physical plan and sends it to the executors when executing tasks. The executors deserialize the
 plan and invoke it.
 
-When `CometNativeExec` is invoked, it will deserialize the protobuf plan and pass it into
-`Native.createPlan`, which invokes the native code via JNI.
+When `CometNativeExec` is invoked, it will pass the serialized protobuf plan into
+`Native.createPlan`, which invokes the native code via JNI, where the plan is then deserialized.
 
-In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the serialized plan into an
+In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which converts the deserialized plan into an
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
 The leaf nodes in the physical plan are always `ScanExec` and each of these operators will make a JNI call to 
-`CometBatchIterator.next()` to fetch the next input batch. The input could be a Comet Parquet scan,
-or a Spark exchange.
+`CometBatchIterator.next()` to fetch the next input batch. The input could be a Comet native Parquet scan,
+a Spark exchange, or another native plan.
 
 `CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
 partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan`. Once the plan finishes
