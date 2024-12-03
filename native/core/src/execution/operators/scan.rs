@@ -51,10 +51,9 @@ use std::{
     task::{Context, Poll},
 };
 
-/// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
-/// scan or the result of reading a broadcast or shuffle exchange. ScanExec isn't invoked
-/// until the data is already available in the JVM. When CometExecIterator invokes
-/// Native.executePlan, it passes in the memory addresses of the input batches.
+/// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a native
+/// Parquet scan or the result of reading a broadcast or shuffle exchange. ScanExec invokes
+/// `CometBatchIterator` in the JVM to fetch the next record batch.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
@@ -64,11 +63,9 @@ pub struct ScanExec {
     pub input_source: Option<Arc<GlobalRef>>,
     /// A description of the input source for informational purposes
     pub input_source_description: String,
-    /// The data types of columns of the input batch. Converted from Spark schema.
-    pub data_types: Vec<DataType>,
-    /// Schema of first batch
+    /// The schema of this scan. Converted from Spark schema.
     pub schema: SchemaRef,
-    /// The input batch of input data. Used to determine the schema of the input data.
+    /// The current batch of input data.
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
     /// Cache of expensive-to-compute plan properties
@@ -89,6 +86,8 @@ impl ScanExec {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
 
+        // create schema based on Spark types (there will be no dictionary-encoded
+        // types in the schema)
         let fields: Vec<Field> = data_types
             .iter()
             .enumerate()
@@ -97,9 +96,6 @@ impl ScanExec {
                 Field::new(&field_name, dt.clone(), true)
             })
             .collect();
-
-        // create schema based on Spark types (there will be no dictionary-encoded
-        // types in the schema)
         let schema = Arc::new(Schema::new(fields));
 
         let cache = PlanProperties::new(
@@ -114,17 +110,16 @@ impl ScanExec {
             exec_context_id,
             input_source,
             input_source_description: input_source_description.to_string(),
-            data_types,
+            schema,
             batch: Arc::new(Mutex::new(None)),
             cache,
             metrics: metrics_set,
             baseline_metrics,
-            schema,
         })
     }
 
     /// Checks if the input data type `dt` is a dictionary type.
-    /// If so, unpacks it and returns the primitive value type.
+    /// If so, returns the primitive value type.
     ///
     /// Otherwise, this returns the original data type.
     ///
@@ -154,7 +149,7 @@ impl ScanExec {
             let next_batch = ScanExec::get_next(
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
+                self.schema.fields.len(),
             )?;
             *current_batch = Some(next_batch);
         }
@@ -295,8 +290,10 @@ impl DisplayAs for ScanExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ScanExec: source=[{}], ", self.input_source_description)?;
                 let fields: Vec<String> = self
-                    .data_types
+                    .schema
+                    .fields
                     .iter()
+                    .map(|f| f.data_type())
                     .enumerate()
                     .map(|(idx, dt)| format!("col_{idx:}: {dt:}"))
                     .collect();
@@ -346,10 +343,7 @@ impl<'a> ScanStream<'a> {
         let schema_fields = self.schema.fields();
         assert_eq!(columns.len(), schema_fields.len());
 
-        // Cast dictionary-encoded primitive arrays to regular arrays and cast
-        // Utf8/LargeUtf8/Binary arrays to dictionary-encoded if the schema is
-        // defined as dictionary-encoded and the data in this batch is not
-        // dictionary-encoded (could also be the other way around)
+        // Unpack any dictionary-encoded arrays
         let new_columns: Vec<ArrayRef> = columns
             .iter()
             .zip(schema_fields.iter())
