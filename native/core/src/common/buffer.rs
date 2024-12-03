@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::common::bit;
+use crate::execution::operators::ExecutionError;
 use arrow::buffer::Buffer as ArrowBuffer;
 use std::{
     alloc::{handle_alloc_error, Layout},
@@ -43,6 +44,8 @@ pub struct CometBuffer {
     capacity: usize,
     /// Whether this buffer owns the data it points to.
     owned: bool,
+    /// The allocation instance for this buffer.
+    allocation: Arc<CometBufferAllocation>,
 }
 
 unsafe impl Sync for CometBuffer {}
@@ -63,6 +66,7 @@ impl CometBuffer {
                 len: aligned_capacity,
                 capacity: aligned_capacity,
                 owned: true,
+                allocation: Arc::new(CometBufferAllocation::new()),
             }
         }
     }
@@ -84,6 +88,7 @@ impl CometBuffer {
             len,
             capacity,
             owned: false,
+            allocation: Arc::new(CometBufferAllocation::new()),
         }
     }
 
@@ -163,11 +168,28 @@ impl CometBuffer {
     /// because of the iterator-style pattern, the content of the original mutable buffer will only
     /// be updated once upstream operators fully consumed the previous output batch. For breaking
     /// operators, they are responsible for copying content out of the buffers.
-    pub unsafe fn to_arrow(&self) -> ArrowBuffer {
+    pub unsafe fn to_arrow(&self) -> Result<ArrowBuffer, ExecutionError> {
         let ptr = NonNull::new_unchecked(self.data.as_ptr());
-        // Uses a dummy `Arc::new(0)` as `Allocation` to ensure the memory region pointed by
-        // `ptr` won't be freed when the returned `ArrowBuffer` goes out of scope.
-        ArrowBuffer::from_custom_allocation(ptr, self.len, Arc::new(0))
+        self.check_reference()?;
+        Ok(ArrowBuffer::from_custom_allocation(
+            ptr,
+            self.len,
+            Arc::<CometBufferAllocation>::clone(&self.allocation),
+        ))
+    }
+
+    /// Checks if this buffer is exclusively owned by Comet. If not, an error is returned.
+    /// We run this check when we want to update the buffer. If the buffer is also shared by
+    /// other components, e.g. one DataFusion operator stores the buffer, Comet cannot safely
+    /// modify the buffer.
+    pub fn check_reference(&self) -> Result<(), ExecutionError> {
+        if Arc::strong_count(&self.allocation) > 1 {
+            Err(ExecutionError::GeneralError(
+                "Error on modifying a buffer which is not exclusively owned by Comet".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Resets this buffer by filling all bytes with zeros.
@@ -242,13 +264,6 @@ impl PartialEq for CometBuffer {
     }
 }
 
-impl From<&ArrowBuffer> for CometBuffer {
-    fn from(value: &ArrowBuffer) -> Self {
-        assert_eq!(value.len(), value.capacity());
-        CometBuffer::from_ptr(value.as_ptr(), value.len(), value.capacity())
-    }
-}
-
 impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
@@ -261,6 +276,15 @@ impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
         unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
+    }
+}
+
+#[derive(Debug)]
+struct CometBufferAllocation {}
+
+impl CometBufferAllocation {
+    fn new() -> Self {
+        Self {}
     }
 }
 
@@ -319,7 +343,7 @@ mod tests {
         assert_eq!(b"aaaa bbbb cccc dddd", &buf.as_slice()[0..str.len()]);
 
         unsafe {
-            let immutable_buf: ArrowBuffer = buf.to_arrow();
+            let immutable_buf: ArrowBuffer = buf.to_arrow().unwrap();
             assert_eq!(64, immutable_buf.len());
             assert_eq!(str, &immutable_buf.as_slice()[0..str.len()]);
         }
@@ -335,7 +359,7 @@ mod tests {
         assert_eq!(b"hello comet", &buf.as_slice()[0..11]);
 
         unsafe {
-            let arrow_buf2 = buf.to_arrow();
+            let arrow_buf2 = buf.to_arrow().unwrap();
             assert_eq!(arrow_buf, arrow_buf2);
         }
     }
