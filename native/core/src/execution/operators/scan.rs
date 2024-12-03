@@ -89,23 +89,18 @@ impl ScanExec {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
 
-        // Scan's schema is determined by the input batch, so we need to set it before execution.
-        // Note that we determine if arrays are dictionary-encoded based on the
-        // first batch. The array may be dictionary-encoded in some batches and not others, and
-        // ScanExec will cast arrays from all future batches to the type determined here, so we
-        // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
-        // Dictionary-encoded primitive arrays are always unpacked.
-        let first_batch = if let Some(input_source) = input_source.as_ref() {
-            let mut timer = baseline_metrics.elapsed_compute().timer();
-            let batch =
-                ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?;
-            timer.stop();
-            batch
-        } else {
-            InputBatch::EOF
-        };
+        let fields: Vec<Field> = data_types
+            .iter()
+            .enumerate()
+            .map(|(idx, dt)| {
+                let field_name = format!("_{}", idx);
+                Field::new(&field_name, dt.clone(), true)
+            })
+            .collect();
 
-        let schema = scan_schema(&first_batch, &data_types);
+        // create schema based on Spark types (there will be no dictionary-encoded
+        // types in the schema)
+        let schema = Arc::new(Schema::new(fields));
 
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -120,7 +115,7 @@ impl ScanExec {
             input_source,
             input_source_description: input_source_description.to_string(),
             data_types,
-            batch: Arc::new(Mutex::new(Some(first_batch))),
+            batch: Arc::new(Mutex::new(None)),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -128,27 +123,16 @@ impl ScanExec {
         })
     }
 
-    /// Checks if the input data type `dt` is a dictionary type with primitive value type.
+    /// Checks if the input data type `dt` is a dictionary type.
     /// If so, unpacks it and returns the primitive value type.
     ///
     /// Otherwise, this returns the original data type.
     ///
-    /// This is necessary since DataFusion doesn't handle dictionary array with values
-    /// being primitive type.
-    ///
-    /// TODO: revisit this once DF has improved its dictionary type support. Ideally we shouldn't
-    ///   do this in Comet but rather let DF to handle it for us.
     fn unpack_dictionary_type(dt: &DataType) -> DataType {
         if let DataType::Dictionary(_, vt) = dt {
-            if !matches!(
-                vt.as_ref(),
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) {
-                // return the underlying data type
-                return vt.as_ref().clone();
-            }
+            // return the underlying data type
+            return vt.as_ref().clone();
         }
-
         dt.clone()
     }
 
@@ -259,6 +243,7 @@ impl ScanExec {
     }
 }
 
+/// this is only used in tests
 fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
     let fields = match input_batch {
         // Note that if `columns` is empty, we'll get an empty schema
