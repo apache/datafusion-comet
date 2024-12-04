@@ -623,6 +623,7 @@ fn cast_array(
 ) -> DataFusionResult<ArrayRef> {
     let array = array_with_timezone(array, timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
+
     let array = match &from_type {
         DataType::Dictionary(key_type, value_type)
             if key_type.as_ref() == &DataType::Int32

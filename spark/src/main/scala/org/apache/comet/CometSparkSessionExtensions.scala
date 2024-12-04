@@ -977,7 +977,8 @@ class CometSparkSessionExtensions
         if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
           val info = new ExtendedExplainInfo()
           if (info.extensionInfo(newPlan).nonEmpty) {
-            logWarning(
+            // scalastyle:off println
+            println(
               "Comet cannot execute some parts of this plan natively " +
                 s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
                 "to disable this logging):\n" +
