@@ -95,7 +95,7 @@ object CometConf extends ShimCometConf {
         "use Comet to read Parquet files natively via the Arrow based Parquet reader." +
         " By default, this config is false.")
     .booleanConf
-    .createWithDefault(true)
+    .createWithDefault(false)
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
