@@ -624,8 +624,6 @@ fn cast_array(
     let array = array_with_timezone(array, timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
 
-    println!("Comet cast_array from {from_type} to {to_type}");
-
     let array = match &from_type {
         DataType::Dictionary(key_type, value_type)
             if key_type.as_ref() == &DataType::Int32
