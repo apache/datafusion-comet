@@ -93,12 +93,6 @@ impl SchemaAdapter for CometSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.projected_table_schema.fields().find(file_field.name())
             {
-                println!(
-                    "SchemaAdapter cast from {} to {}",
-                    file_field.data_type(),
-                    table_field.data_type()
-                );
-
                 // workaround for struct casting
                 match (file_field.data_type(), table_field.data_type()) {
                     // TODO need to use Comet cast logic to determine which casts are supported,
