@@ -109,7 +109,7 @@ impl SchemaAdapter for CometSchemaAdapter {
 
         Ok((
             Arc::new(SchemaMapping {
-                projected_table_schema: self.required_schema.clone(),
+                required_schema: self.required_schema.clone(),
                 field_mappings,
                 table_schema: self.table_schema.clone(),
             }),
@@ -163,7 +163,7 @@ pub fn spark_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
 pub struct SchemaMapping {
     /// The schema of the table. This is the expected schema after conversion
     /// and it should match the schema of the query result.
-    projected_table_schema: SchemaRef,
+    required_schema: SchemaRef,
     /// Mapping from field index in `projected_table_schema` to index in
     /// projected file_schema.
     ///
@@ -187,7 +187,7 @@ impl SchemaMapper for SchemaMapping {
         let batch_cols = batch.columns().to_vec();
 
         let cols = self
-            .projected_table_schema
+            .required_schema
             // go through each field in the projected schema
             .fields()
             .iter()
@@ -220,7 +220,7 @@ impl SchemaMapper for SchemaMapping {
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
-        let schema = self.projected_table_schema.clone();
+        let schema = self.required_schema.clone();
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
