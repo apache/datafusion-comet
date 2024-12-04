@@ -970,6 +970,22 @@ impl PhysicalPlanner {
                     .unwrap(),
                 );
 
+                println!["data_schema_arrow: {:?}", data_schema_arrow];
+                println!["required_schema_arrow: {:?}", required_schema_arrow];
+
+                let data_schema_spark =
+                    convert_spark_types_to_arrow_schema(scan.data_schema_spark.as_slice());
+                let required_schema_spark: SchemaRef =
+                    convert_spark_types_to_arrow_schema(scan.required_schema_spark.as_slice());
+                let projection_vector_spark: Vec<usize> = scan
+                    .projection_vector
+                    .iter()
+                    .map(|offset| *offset as usize)
+                    .collect();
+                println!["data_schema_spark: {:?}", data_schema_spark];
+                println!["required_schema_spark: {:?}", required_schema_spark];
+                println!["projection_vector_spark: {:?}", projection_vector_spark];
+
                 let partition_schema_arrow = scan
                     .partition_schema
                     .iter()
@@ -1088,6 +1104,7 @@ impl PhysicalPlanner {
                     projection_vector.len(),
                     required_schema_arrow.fields.len() + partition_schema_arrow.len()
                 );
+                println!["projection_vector: {:?}", projection_vector];
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
@@ -2307,6 +2324,19 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
         spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
     }
+}
+
+fn convert_spark_types_to_arrow_schema(
+    spark_types: &[datafusion_comet_proto::spark_expression::DataType],
+) -> SchemaRef {
+    let arrow_types = spark_types.iter().map(to_arrow_datatype).collect_vec();
+    let arrow_fields: Vec<_> = arrow_types
+        .iter()
+        .enumerate()
+        .map(|(idx, data_type)| Field::new(format!("req_{}", idx), data_type.clone(), true))
+        .collect();
+    let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
+    arrow_schema
 }
 
 #[cfg(test)]

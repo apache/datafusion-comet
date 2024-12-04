@@ -80,6 +80,9 @@ message NativeScan {
   repeated spark.spark_expression.DataType partition_schema = 5;
   repeated spark.spark_expression.Expr data_filters = 6;
   repeated SparkFilePartition file_partitions = 7;
+  repeated int64 projection_vector = 8;
+  repeated spark.spark_expression.DataType required_schema_spark = 9;
+  repeated spark.spark_expression.DataType data_schema_spark = 10;
 }
 
 message Projection {
