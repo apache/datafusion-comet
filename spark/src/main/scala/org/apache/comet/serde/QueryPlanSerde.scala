@@ -2520,6 +2520,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _ =>
           }
 
+          // scalastyle:off println
+//          System.out.println(f"output: ${scan.output}")
+//          System.out.println(f"requiredSchema: ${scan.requiredSchema}")
+//          System.out.println(f"dataSchema: ${scan.relation.dataSchema}")
+//          System.out.println(f"partitionSchema: ${scan.relation.partitionSchema}")
+          // scalastyle:on println
+
           val requiredSchemaParquet =
             new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
           val dataSchemaParquet =
@@ -2527,12 +2534,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val partitionSchema = scan.relation.partitionSchema.fields.flatMap { field =>
             serializeDataType(field.dataType)
           }
+          val requiredSchema = scan.requiredSchema.fields.flatMap { field =>
+            serializeDataType(field.dataType)
+          }
+          val dataSchema = scan.relation.dataSchema.fields.flatMap { field =>
+            serializeDataType(field.dataType)
+          }
+
+          // scalastyle:off println
+//          System.out.println(
+//            f"serialized requiredSchema: ${requiredSchema.mkString("Array(", ", ", ")")}")
+//          System.out.println(
+//            f"serialized dataSchema: ${dataSchema.mkString("Array(", ", ", ")")}")
+//          System.out.println(
+//            f"serialized partitionSchema: ${partitionSchema.mkString("Array(", ", ", ")")}")
+          // scalastyle:on println
+
+          val projection_vector: Array[java.lang.Long] = scan.requiredSchema.fields.map(field => {
+            try {
+              scan.relation.dataSchema.fieldIndex(field.name).toLong.asInstanceOf[java.lang.Long]
+            } catch {
+              case _: IllegalArgumentException =>
+                (scan.relation.partitionSchema.fieldIndex(
+                  field.name) + scan.relation.dataSchema.length).toLong
+                  .asInstanceOf[java.lang.Long]
+
+            }
+          })
+
+          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
+
           // In `CometScanRule`, we ensure partitionSchema is supported.
           assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
           nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
           nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+          nativeScanBuilder.addAllDataSchemaSpark(dataSchema.toIterable.asJava)
+          nativeScanBuilder.addAllRequiredSchemaSpark(requiredSchema.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
