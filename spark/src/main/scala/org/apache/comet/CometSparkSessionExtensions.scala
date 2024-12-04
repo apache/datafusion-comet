@@ -199,6 +199,23 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
+              if CometNativeScanExec.isSchemaSupported(requiredSchema)
+                && CometNativeScanExec.isSchemaSupported(partitionSchema)
+                && COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+            logInfo("Comet extension enabled for v1 full native Scan")
+            CometScanExec(scanExec, session)
+
+          // data source V1
+          case scanExec @ FileSourceScanExec(
+                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
+                _: Seq[_],
+                requiredSchema,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _)
               if CometScanExec.isSchemaSupported(requiredSchema)
                 && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
@@ -349,6 +366,12 @@ class CometSparkSessionExtensions
       }
 
       plan.transformUp {
+        // Fully native scan for V1
+        case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+          val nativeOp = QueryPlanSerde.operator2Proto(scan).get
+          CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+
+        // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
@@ -1007,12 +1030,20 @@ class CometSparkSessionExtensions
         var firstNativeOp = true
         newPlan.transformDown {
           case op: CometNativeExec =>
-            if (firstNativeOp) {
+            val newPlan = if (firstNativeOp) {
               firstNativeOp = false
               op.convertBlock()
             } else {
               op
             }
+
+            // If reaching leaf node, reset `firstNativeOp` to true
+            // because it will start a new block in next iteration.
+            if (op.children.isEmpty) {
+              firstNativeOp = true
+            }
+
+            newPlan
           case op =>
             firstNativeOp = true
             op

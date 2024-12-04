@@ -120,20 +120,37 @@ object CometExec {
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
-      nativePlan: Operator): CometExecIterator = {
-    getCometIterator(inputs, numOutputCols, nativePlan, CometMetricNode(Map.empty))
+      nativePlan: Operator,
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    getCometIterator(
+      inputs,
+      numOutputCols,
+      nativePlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx)
   }
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
       nativePlan: Operator,
-      nativeMetrics: CometMetricNode): CometExecIterator = {
+      nativeMetrics: CometMetricNode,
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-    new CometExecIterator(newIterId, inputs, numOutputCols, bytes, nativeMetrics)
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      bytes,
+      nativeMetrics,
+      numParts,
+      partitionIdx)
   }
 
   /**
@@ -214,13 +231,18 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-        def createCometExecIter(inputs: Seq[Iterator[ColumnarBatch]]): CometExecIterator = {
+        def createCometExecIter(
+            inputs: Seq[Iterator[ColumnarBatch]],
+            numParts: Int,
+            partitionIndex: Int): CometExecIterator = {
           val it = new CometExecIterator(
             CometExec.newIterId,
             inputs,
             output.length,
             serializedPlanCopy,
-            nativeMetrics)
+            nativeMetrics,
+            numParts,
+            partitionIndex)
 
           setSubqueries(it.id, this)
 
@@ -249,53 +271,77 @@ abstract class CometNativeExec extends CometExec {
           case _ => true
         }
 
+        val containsBroadcastInput = sparkPlans.exists {
+          case _: CometBroadcastExchangeExec => true
+          case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case _ => false
+        }
+
         // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
         // This is not expected, so throw an exception.
-        if (firstNonBroadcastPlan.isEmpty) {
+        if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
           throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
         }
 
         // If the first non broadcast plan is found, we need to adjust the partition number of
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
-        val firstNonBroadcastPlanRDD = firstNonBroadcastPlan.get._1.executeColumnar()
-        val firstNonBroadcastPlanNumPartitions = firstNonBroadcastPlanRDD.getNumPartitions
+        val firstNonBroadcastPlanNumPartitions =
+          firstNonBroadcastPlan.map(_._1.outputPartitioning.numPartitions)
 
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
         // partition number of Broadcast RDDs to make sure they have the same partition number.
-        sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
+        sparkPlans.zipWithIndex.foreach { case (plan, _) =>
           plan match {
-            case c: CometBroadcastExchangeExec =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
-            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
-            case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+            case c: CometBroadcastExchangeExec if firstNonBroadcastPlanNumPartitions.nonEmpty =>
+              inputs += c
+                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
+                .executeColumnar()
+            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _)
+                if firstNonBroadcastPlanNumPartitions.nonEmpty =>
+              inputs += c
+                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
+                .executeColumnar()
+            case ReusedExchangeExec(_, c: CometBroadcastExchangeExec)
+                if firstNonBroadcastPlanNumPartitions.nonEmpty =>
+              inputs += c
+                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
+                .executeColumnar()
             case BroadcastQueryStageExec(
                   _,
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                  _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
-            case _ if idx == firstNonBroadcastPlan.get._2 =>
-              inputs += firstNonBroadcastPlanRDD
-            case _ =>
+                  _) if firstNonBroadcastPlanNumPartitions.nonEmpty =>
+              inputs += c
+                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
+                .executeColumnar()
+            case _: CometNativeExec =>
+            // no-op
+            case _ if firstNonBroadcastPlanNumPartitions.nonEmpty =>
               val rdd = plan.executeColumnar()
-              if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
+              if (plan.outputPartitioning.numPartitions != firstNonBroadcastPlanNumPartitions.get) {
                 throw new CometRuntimeException(
                   s"Partition number mismatch: ${rdd.getNumPartitions} != " +
-                    s"$firstNonBroadcastPlanNumPartitions")
+                    s"${firstNonBroadcastPlanNumPartitions.get}")
               } else {
                 inputs += rdd
               }
+            case _ =>
+              throw new CometRuntimeException(s"Unexpected plan: $plan")
           }
         }
 
-        if (inputs.isEmpty) {
+        if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter(_))
+        if (inputs.nonEmpty) {
+          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+        } else {
+          val partitionNum = firstNonBroadcastPlanNumPartitions.get
+          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
+        }
     }
   }
 
@@ -319,10 +365,10 @@ abstract class CometNativeExec extends CometExec {
    */
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
-      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
+          _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
+          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
+          _: ReusedExchangeExec | _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
           _: CometSparkToColumnarExec =>
         func(plan)
       case _: CometPlan =>
@@ -401,6 +447,8 @@ abstract class CometNativeExec extends CometExec {
     makeCopy(newArgs).asInstanceOf[CometNativeExec]
   }
 }
+
+abstract class CometLeafExec extends CometNativeExec with LeafExecNode
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 

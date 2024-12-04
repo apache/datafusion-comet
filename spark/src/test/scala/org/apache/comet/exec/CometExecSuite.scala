@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
@@ -119,17 +119,19 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
-    val table = "src"
-    withTable(table) {
-      withView("lv_noalias") {
-        sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
-        sql(s"INSERT INTO $table VALUES(238, 'val_238')")
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      val table = "src"
+      withTable(table) {
+        withView("lv_noalias") {
+          sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
+          sql(s"INSERT INTO $table VALUES(238, 'val_238')")
 
-        sql(
-          "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
-            "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
-        val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key");
-        checkSparkAnswer(df)
+          sql(
+            "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
+              "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
+          val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key")
+          checkSparkAnswer(df)
+        }
       }
     }
   }
@@ -551,7 +553,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
@@ -559,7 +563,8 @@ class CometExecSuite extends CometTestBase {
           val df = sql("SELECT * FROM tbl WHERE _2 > _3")
           df.collect()
 
-          val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
+          val metrics = find(df.queryExecution.executedPlan)(s =>
+            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
             .map(_.metrics)
             .get
 
@@ -1484,7 +1489,10 @@ class CometExecSuite extends CometTestBase {
         val projected = df.selectExpr("_1 as x")
         val unioned = projected.union(df)
         val p = unioned.queryExecution.executedPlan.find(_.isInstanceOf[UnionExec])
-        assert(p.get.collectLeaves().forall(_.isInstanceOf[CometScanExec]))
+        assert(
+          p.get
+            .collectLeaves()
+            .forall(o => o.isInstanceOf[CometScanExec] || o.isInstanceOf[CometNativeScanExec]))
       }
     }
   }

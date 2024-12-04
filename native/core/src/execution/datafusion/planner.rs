@@ -949,106 +949,151 @@ impl PhysicalPlanner {
                     Arc::new(SortExec::new(LexOrdering::new(exprs?), child).with_fetch(fetch)),
                 ))
             }
-            OpStruct::Scan(scan) => {
-                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+            OpStruct::NativeScan(scan) => {
+                let data_schema = parse_message_type(&scan.data_schema).unwrap();
+                let required_schema = parse_message_type(&scan.required_schema).unwrap();
 
-                if scan.source == "CometScan parquet  (unknown)" {
-                    let data_schema = parse_message_type(&scan.data_schema).unwrap();
-                    let required_schema = parse_message_type(&scan.required_schema).unwrap();
-                    println!("data_schema: {:?}", data_schema);
-                    println!("required_schema: {:?}", required_schema);
-
-                    let data_schema_descriptor =
-                        parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
-                    let data_schema_arrow = Arc::new(
-                        parquet::arrow::schema::parquet_to_arrow_schema(
-                            &data_schema_descriptor,
-                            None,
-                        )
+                let data_schema_descriptor =
+                    parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
+                let data_schema_arrow = Arc::new(
+                    parquet::arrow::schema::parquet_to_arrow_schema(&data_schema_descriptor, None)
                         .unwrap(),
-                    );
-                    println!("data_schema_arrow: {:?}", data_schema_arrow);
+                );
 
-                    let required_schema_descriptor =
-                        parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
-                    let required_schema_arrow = Arc::new(
-                        parquet::arrow::schema::parquet_to_arrow_schema(
-                            &required_schema_descriptor,
-                            None,
-                        )
-                        .unwrap(),
-                    );
-                    println!("required_schema_arrow: {:?}", required_schema_arrow);
+                let required_schema_descriptor =
+                    parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
+                let required_schema_arrow = Arc::new(
+                    parquet::arrow::schema::parquet_to_arrow_schema(
+                        &required_schema_descriptor,
+                        None,
+                    )
+                    .unwrap(),
+                );
 
-                    assert!(!required_schema_arrow.fields.is_empty());
+                let partition_schema_arrow = scan
+                    .partition_schema
+                    .iter()
+                    .map(to_arrow_datatype)
+                    .collect_vec();
+                let partition_fields: Vec<_> = partition_schema_arrow
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, data_type)| {
+                        Field::new(format!("part_{}", idx), data_type.clone(), true)
+                    })
+                    .collect();
 
-                    let mut projection_vector: Vec<usize> =
-                        Vec::with_capacity(required_schema_arrow.fields.len());
-                    // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
-                    required_schema_arrow.fields.iter().for_each(|field| {
-                        projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
+                // Convert the Spark expressions to Physical expressions
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
+                    .data_filters
+                    .iter()
+                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema_arrow)))
+                    .collect();
+
+                // Create a conjunctive form of the vector because ParquetExecBuilder takes
+                // a single expression
+                let data_filters = data_filters?;
+                let test_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
+                    Arc::new(BinaryExpr::new(
+                        left,
+                        datafusion::logical_expr::Operator::And,
+                        right,
+                    ))
+                });
+
+                let object_store = object_store::local::LocalFileSystem::new();
+                // register the object store with the runtime environment
+                let url = Url::try_from("file://").unwrap();
+                self.session_ctx
+                    .runtime_env()
+                    .register_object_store(&url, Arc::new(object_store));
+
+                // Generate file groups
+                let mut file_groups: Vec<Vec<PartitionedFile>> =
+                    Vec::with_capacity(partition_count);
+                scan.file_partitions.iter().try_for_each(|partition| {
+                    let mut files = Vec::with_capacity(partition.partitioned_file.len());
+                    partition.partitioned_file.iter().try_for_each(|file| {
+                        assert!(file.start + file.length <= file.file_size);
+
+                        let mut partitioned_file = PartitionedFile::new_with_range(
+                            Url::parse(file.file_path.as_ref())
+                                .unwrap()
+                                .path()
+                                .to_string(),
+                            file.file_size as u64,
+                            file.start,
+                            file.start + file.length,
+                        );
+
+                        // Process partition values
+                        // Create an empty input schema for partition values because they are all literals.
+                        let empty_schema = Arc::new(Schema::empty());
+                        let partition_values: Result<Vec<_>, _> = file
+                            .partition_values
+                            .iter()
+                            .map(|partition_value| {
+                                let literal = self.create_expr(
+                                    partition_value,
+                                    Arc::<Schema>::clone(&empty_schema),
+                                )?;
+                                literal
+                                    .as_any()
+                                    .downcast_ref::<DataFusionLiteral>()
+                                    .ok_or_else(|| {
+                                        ExecutionError::GeneralError(
+                                            "Expected literal of partition value".to_string(),
+                                        )
+                                    })
+                                    .map(|literal| literal.value().clone())
+                            })
+                            .collect();
+                        let partition_values = partition_values?;
+
+                        partitioned_file.partition_values = partition_values;
+
+                        files.push(partitioned_file);
+                        Ok::<(), ExecutionError>(())
+                    })?;
+
+                    file_groups.push(files);
+                    Ok::<(), ExecutionError>(())
+                })?;
+
+                // TODO: I think we can remove partition_count in the future, but leave for testing.
+                assert_eq!(file_groups.len(), partition_count);
+
+                let object_store_url = ObjectStoreUrl::local_filesystem();
+                let mut file_scan_config =
+                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
+                        .with_file_groups(file_groups)
+                        .with_table_partition_cols(partition_fields);
+
+                // Check for projection, if so generate the vector and add to FileScanConfig.
+                let mut projection_vector: Vec<usize> =
+                    Vec::with_capacity(required_schema_arrow.fields.len());
+                // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
+                required_schema_arrow.fields.iter().for_each(|field| {
+                    projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
+                });
+
+                partition_schema_arrow
+                    .iter()
+                    .enumerate()
+                    .for_each(|(idx, _)| {
+                        projection_vector.push(idx + data_schema_arrow.fields.len());
                     });
-                    println!("projection_vector: {:?}", projection_vector);
 
-                    assert_eq!(projection_vector.len(), required_schema_arrow.fields.len());
+                assert_eq!(
+                    projection_vector.len(),
+                    required_schema_arrow.fields.len() + partition_schema_arrow.len()
+                );
+                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
-                    // Convert the Spark expressions to Physical expressions
-                    let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
-                        .data_filters
-                        .iter()
-                        .map(|expr| self.create_expr(expr, Arc::clone(&required_schema_arrow)))
-                        .collect();
-
-                    // Create a conjunctive form of the vector because ParquetExecBuilder takes
-                    // a single expression
-                    let data_filters = data_filters?;
-                    let test_data_filters =
-                        data_filters.clone().into_iter().reduce(|left, right| {
-                            Arc::new(BinaryExpr::new(
-                                left,
-                                datafusion::logical_expr::Operator::And,
-                                right,
-                            ))
-                        });
-
-                    println!("data_filters: {:?}", data_filters);
-                    println!("test_data_filters: {:?}", test_data_filters);
-
-                    let object_store_url = ObjectStoreUrl::local_filesystem();
-                    let paths: Vec<Url> = scan
-                        .path
-                        .iter()
-                        .map(|path| Url::parse(path).unwrap())
-                        .collect();
-
-                    let object_store = object_store::local::LocalFileSystem::new();
-                    // register the object store with the runtime environment
-                    let url = Url::try_from("file://").unwrap();
-                    self.session_ctx
-                        .runtime_env()
-                        .register_object_store(&url, Arc::new(object_store));
-
-                    let files: Vec<PartitionedFile> = paths
-                        .iter()
-                        .map(|path| PartitionedFile::from_path(path.path().to_string()).unwrap())
-                        .collect();
-
-                    // partition the files
-                    // TODO really should partition the row groups
-
-                    let mut file_groups = vec![vec![]; partition_count];
-                    files.iter().enumerate().for_each(|(idx, file)| {
-                        file_groups[idx % partition_count].push(file.clone());
-                    });
-
-                    let file_scan_config =
-                        FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
-                            .with_file_groups(file_groups)
-                            .with_projection(Some(projection_vector));
-
-                    let mut table_parquet_options = TableParquetOptions::new();
-                    table_parquet_options.global.pushdown_filters = true;
-                    table_parquet_options.global.reorder_filters = true;
+                let mut table_parquet_options = TableParquetOptions::new();
+                // TODO: Maybe these are configs?
+                table_parquet_options.global.pushdown_filters = true;
+                table_parquet_options.global.reorder_filters = true;
 
                     let mut builder = ParquetExecBuilder::new(file_scan_config)
                         .with_table_parquet_options(table_parquet_options)
@@ -1056,13 +1101,15 @@ impl PhysicalPlanner {
                             Arc::new(CometSchemaAdapterFactory::default()),
                         );
 
-                    if let Some(filter) = test_data_filters {
-                        builder = builder.with_predicate(filter);
-                    }
-
-                    let scan = builder.build();
-                    return Ok((vec![], Arc::new(scan)));
+                if let Some(filter) = test_data_filters {
+                    builder = builder.with_predicate(filter);
                 }
+
+                let scan = builder.build();
+                Ok((vec![], Arc::new(scan)))
+            }
+            OpStruct::Scan(scan) => {
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
@@ -2306,7 +2353,7 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         scans[0].set_input_batch(input_batch);
 
         let session_ctx = SessionContext::new();
@@ -2387,7 +2434,7 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         scans[0].set_input_batch(input_batch);
@@ -2459,7 +2506,7 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         let scan = &mut scans[0];
         scan.set_input_batch(InputBatch::EOF);
