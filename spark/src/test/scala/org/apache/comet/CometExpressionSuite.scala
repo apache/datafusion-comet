@@ -942,6 +942,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("add overflow (ANSI enabled)") {
+    // Enabling ANSI will cause native engine failure, but as we cannot catch
+    // native error now, we cannot test it here.
+    withAnsiMode(enabled = true) {
+      withParquetTable(Seq((Int.MaxValue, 1)), "tbl") {
+        checkOverflow("SELECT _1 + _2 FROM tbl", "")
+      }
+    }
+  }
+
+  test("subtract overflow (ANSI enabled)") {
+    // Enabling ANSI will cause native engine failure, but as we cannot catch
+    // native error now, we cannot test it here.
+    withAnsiMode(enabled = false) {
+      withParquetTable(Seq((Int.MinValue, 1)), "tbl") {
+        checkOverflow("SELECT _1 - _2 FROM tbl", "")
+      }
+    }
+  }
+
   test("divide by zero (ANSI disable)") {
     // Enabling ANSI will cause native engine failure, but as we cannot catch
     // native error now, we cannot test it here.
@@ -1922,38 +1942,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> enabled.toString,
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+  }
+
+  def checkOverflow(query: String, dtype: String): Unit = {
+    checkSparkMaybeThrows(sql(query)) match {
+      case (Some(sparkException), Some(cometException)) =>
+        println(cometException.getMessage)
+        assert(sparkException.getMessage.contains(dtype + " overflow"))
+        assert(cometException.getMessage.contains(dtype + " overflow"))
+      case (None, None) => checkSparkAnswerAndOperator(sql(query))
+      case (None, Some(ex)) =>
+        fail("Comet threw an exception but Spark did not " + ex.getMessage)
+      case (Some(_), None) =>
+        fail("Spark threw an exception but Comet did not")
+    }
+  }
+
+  def runArrayTest(query: String, dtype: String, path: String): Unit = {
+    withParquetTable(path, "t") {
+      withAnsiMode(enabled = false) {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+      withAnsiMode(enabled = true) {
+        checkOverflow(query, dtype)
+      }
+    }
+  }
+
   test("unary negative integer overflow test") {
-    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
-      withSQLConf(
-        SQLConf.ANSI_ENABLED.key -> enabled.toString,
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
-    }
-
-    def checkOverflow(query: String, dtype: String): Unit = {
-      checkSparkMaybeThrows(sql(query)) match {
-        case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(dtype + " overflow"))
-          assert(cometException.getMessage.contains(dtype + " overflow"))
-        case (None, None) => checkSparkAnswerAndOperator(sql(query))
-        case (None, Some(ex)) =>
-          fail("Comet threw an exception but Spark did not " + ex.getMessage)
-        case (Some(_), None) =>
-          fail("Spark threw an exception but Comet did not")
-      }
-    }
-
-    def runArrayTest(query: String, dtype: String, path: String): Unit = {
-      withParquetTable(path, "t") {
-        withAnsiMode(enabled = false) {
-          checkSparkAnswerAndOperator(sql(query))
-        }
-        withAnsiMode(enabled = true) {
-          checkOverflow(query, dtype)
-        }
-      }
-    }
 
     withTempDir { dir =>
       // Array values test
@@ -2011,6 +2034,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("add integer overflow test") {}
 
   test("readSidePadding") {
     // https://stackoverflow.com/a/46290728
