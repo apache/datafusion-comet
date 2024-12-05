@@ -127,6 +127,10 @@ pub fn spark_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
             true
         }
         (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
+        // Native cast invoked for unsupported cast from FixedSizeBinary(3) to Binary.
+        (DataType::FixedSizeBinary(_), _) => false,
+        // Native cast invoked for unsupported cast from UInt32 to Int64.
+        (DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64, _) => false,
         _ => can_cast_types(from_type, to_type),
     }
 }

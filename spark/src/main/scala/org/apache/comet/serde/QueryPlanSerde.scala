@@ -2496,8 +2496,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // Sink operators don't have children
           result.clearChildren()
 
-          val dataFilters = scan.dataFilters.map(exprToProto(_, scan.output))
-          nativeScanBuilder.addAllDataFilters(dataFilters.map(_.get).asJava)
+          // TODO remove flatMap and add error handling for unsupported data filters
+          val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
 
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
           scan.inputRDD match {
