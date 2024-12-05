@@ -61,6 +61,12 @@ message SparkFilePartition {
   repeated SparkPartitionedFile partitioned_file = 1;
 }
 
+message SparkStructField {
+  string name = 1;
+  spark.spark_expression.DataType data_type = 2;
+  bool nullable = 3;
+}
+
 message Scan {
   repeated spark.spark_expression.DataType fields = 1;
   // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
@@ -75,11 +81,12 @@ message NativeScan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
-  string required_schema = 3;
-  string data_schema = 4;
-  repeated spark.spark_expression.DataType partition_schema = 5;
+  repeated SparkStructField required_schema = 3;
+  repeated SparkStructField data_schema = 4;
+  repeated SparkStructField partition_schema = 5;
   repeated spark.spark_expression.Expr data_filters = 6;
   repeated SparkFilePartition file_partitions = 7;
+  repeated int64 projection_vector = 8;
 }
 
 message Projection {

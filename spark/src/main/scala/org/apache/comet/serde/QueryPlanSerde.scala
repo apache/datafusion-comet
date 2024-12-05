@@ -36,7 +36,6 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2520,18 +2519,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _ =>
           }
 
-          val requiredSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
-          val dataSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.relation.dataSchema)
-          val partitionSchema = scan.relation.partitionSchema.fields.flatMap { field =>
-            serializeDataType(field.dataType)
-          }
+          val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
+          val requiredSchema = schema2Proto(scan.requiredSchema.fields)
+          val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
+
+          val data_schema_idxs = scan.requiredSchema.fields.map(field => {
+            scan.relation.dataSchema.fieldIndex(field.name)
+          })
+          val partition_schema_idxs = Array
+            .range(
+              scan.relation.dataSchema.fields.length,
+              scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+
+          val projection_vector = (data_schema_idxs ++ partition_schema_idxs).map(idx =>
+            idx.toLong.asInstanceOf[java.lang.Long])
+
+          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
+
           // In `CometScanRule`, we ensure partitionSchema is supported.
           assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
-          nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
-          nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
+          nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
+          nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
@@ -3196,6 +3205,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     true
+  }
+
+  private def schema2Proto(
+      fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
+    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
+    fields.map(field => {
+      fieldBuilder.setName(field.name)
+      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
+      fieldBuilder.setNullable(field.nullable)
+      fieldBuilder.build()
+    })
   }
 
   private def partition2Proto(

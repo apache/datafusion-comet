@@ -121,7 +121,6 @@ use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
-use parquet::schema::parser::parse_message_type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
@@ -950,50 +949,28 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = parse_message_type(&scan.data_schema).unwrap();
-                let required_schema = parse_message_type(&scan.required_schema).unwrap();
-
-                let data_schema_descriptor =
-                    parquet::schema::types::SchemaDescriptor::new(Arc::new(data_schema));
-                let data_schema_arrow = Arc::new(
-                    parquet::arrow::schema::parquet_to_arrow_schema(&data_schema_descriptor, None)
-                        .unwrap(),
-                );
-
-                let required_schema_descriptor =
-                    parquet::schema::types::SchemaDescriptor::new(Arc::new(required_schema));
-                let required_schema_arrow = Arc::new(
-                    parquet::arrow::schema::parquet_to_arrow_schema(
-                        &required_schema_descriptor,
-                        None,
-                    )
-                    .unwrap(),
-                );
-
-                let partition_schema_arrow = scan
-                    .partition_schema
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let required_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                let partition_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let projection_vector: Vec<usize> = scan
+                    .projection_vector
                     .iter()
-                    .map(to_arrow_datatype)
-                    .collect_vec();
-                let partition_fields: Vec<_> = partition_schema_arrow
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, data_type)| {
-                        Field::new(format!("part_{}", idx), data_type.clone(), true)
-                    })
+                    .map(|offset| *offset as usize)
                     .collect();
 
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
                     .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema_arrow)))
+                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
                 // Create a conjunctive form of the vector because ParquetExecBuilder takes
                 // a single expression
                 let data_filters = data_filters?;
-                let test_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
+                let cnf_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
                     Arc::new(BinaryExpr::new(
                         left,
                         datafusion::logical_expr::Operator::And,
@@ -1064,29 +1041,21 @@ impl PhysicalPlanner {
                 assert_eq!(file_groups.len(), partition_count);
 
                 let object_store_url = ObjectStoreUrl::local_filesystem();
+                let partition_fields: Vec<Field> = partition_schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        Field::new(field.name(), field.data_type().clone(), field.is_nullable())
+                    })
+                    .collect_vec();
                 let mut file_scan_config =
-                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema_arrow))
+                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema))
                         .with_file_groups(file_groups)
                         .with_table_partition_cols(partition_fields);
 
-                // Check for projection, if so generate the vector and add to FileScanConfig.
-                let mut projection_vector: Vec<usize> =
-                    Vec::with_capacity(required_schema_arrow.fields.len());
-                // TODO: could be faster with a hashmap rather than iterating over data_schema_arrow with index_of.
-                required_schema_arrow.fields.iter().for_each(|field| {
-                    projection_vector.push(data_schema_arrow.index_of(field.name()).unwrap());
-                });
-
-                partition_schema_arrow
-                    .iter()
-                    .enumerate()
-                    .for_each(|(idx, _)| {
-                        projection_vector.push(idx + data_schema_arrow.fields.len());
-                    });
-
                 assert_eq!(
                     projection_vector.len(),
-                    required_schema_arrow.fields.len() + partition_schema_arrow.len()
+                    required_schema.fields.len() + partition_schema.fields.len()
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
@@ -1099,7 +1068,7 @@ impl PhysicalPlanner {
                     .with_table_parquet_options(table_parquet_options)
                     .with_schema_adapter_factory(Arc::new(CometSchemaAdapterFactory::default()));
 
-                if let Some(filter) = test_data_filters {
+                if let Some(filter) = cnf_data_filters {
                     builder = builder.with_predicate(filter);
                 }
 
@@ -2305,6 +2274,23 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
         spark_expression::EvalMode::Ansi => Ok(EvalMode::Ansi),
     }
+}
+
+fn convert_spark_types_to_arrow_schema(
+    spark_types: &[spark_operator::SparkStructField],
+) -> SchemaRef {
+    let arrow_fields = spark_types
+        .iter()
+        .map(|spark_type| {
+            Field::new(
+                String::clone(&spark_type.name),
+                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                spark_type.nullable,
+            )
+        })
+        .collect_vec();
+    let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
+    arrow_schema
 }
 
 #[cfg(test)]
