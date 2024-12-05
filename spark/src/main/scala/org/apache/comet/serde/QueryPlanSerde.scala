@@ -2531,15 +2531,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
           val dataSchemaParquet =
             new SparkToParquetSchemaConverter(conf).convert(scan.relation.dataSchema)
+
           val partitionSchema = scan.relation.partitionSchema.fields.flatMap { field =>
             serializeDataType(field.dataType)
           }
-          val requiredSchema = scan.requiredSchema.fields.flatMap { field =>
-            serializeDataType(field.dataType)
-          }
-          val dataSchema = scan.relation.dataSchema.fields.flatMap { field =>
-            serializeDataType(field.dataType)
-          }
+          val partitionSchema2 = schema2Proto(scan.relation.partitionSchema.fields)
+          val requiredSchema = schema2Proto(scan.requiredSchema.fields)
+          val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
 
           // scalastyle:off println
 //          System.out.println(
@@ -2572,6 +2570,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
           nativeScanBuilder.addAllDataSchemaSpark(dataSchema.toIterable.asJava)
           nativeScanBuilder.addAllRequiredSchemaSpark(requiredSchema.toIterable.asJava)
+          nativeScanBuilder.addAllPartitionSchemaSpark(partitionSchema2.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
@@ -3235,6 +3234,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     true
+  }
+
+  private def schema2Proto(
+      fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
+    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
+    fields.map(field => {
+      fieldBuilder.setName(field.name)
+      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
+      fieldBuilder.setNullable(field.nullable)
+      fieldBuilder.build()
+    })
   }
 
   private def partition2Proto(
