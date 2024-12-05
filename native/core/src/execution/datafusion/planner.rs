@@ -2279,7 +2279,7 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
 fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
-    let thing = spark_types
+    let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
             Field::new(
@@ -2289,7 +2289,7 @@ fn convert_spark_types_to_arrow_schema(
             )
         })
         .collect_vec();
-    let arrow_schema: SchemaRef = Arc::new(Schema::new(thing));
+    let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
     arrow_schema
 }
 
