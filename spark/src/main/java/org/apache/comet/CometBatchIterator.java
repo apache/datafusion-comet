@@ -66,6 +66,9 @@ public class CometBatchIterator {
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
   public int next(long[] arrayAddrs, long[] schemaAddrs) {
+    if (currentBatch == null) {
+      return -1;
+    }
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
     currentBatch = null;
     return numRows;
