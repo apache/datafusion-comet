@@ -120,9 +120,9 @@ impl SchemaAdapter for CometSchemaAdapter {
 
         Ok((
             Arc::new(SchemaMapping {
-                projected_table_schema: self.projected_table_schema.clone(),
+                projected_table_schema: Arc::<Schema>::clone(&self.projected_table_schema),
                 field_mappings,
-                table_schema: self.table_schema.clone(),
+                table_schema: Arc::<Schema>::clone(&self.table_schema),
             }),
             projection,
         ))
@@ -218,7 +218,7 @@ impl SchemaMapper for SchemaMapping {
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
-        let schema = self.projected_table_schema.clone();
+        let schema = Arc::<Schema>::clone(&self.projected_table_schema);
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
