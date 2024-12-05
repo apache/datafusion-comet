@@ -36,7 +36,6 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2520,33 +2519,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _ =>
           }
 
-          // scalastyle:off println
-//          System.out.println(f"output: ${scan.output}")
-//          System.out.println(f"requiredSchema: ${scan.requiredSchema}")
-//          System.out.println(f"dataSchema: ${scan.relation.dataSchema}")
-//          System.out.println(f"partitionSchema: ${scan.relation.partitionSchema}")
-          // scalastyle:on println
-
-          val requiredSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.requiredSchema)
-          val dataSchemaParquet =
-            new SparkToParquetSchemaConverter(conf).convert(scan.relation.dataSchema)
-
-          val partitionSchema = scan.relation.partitionSchema.fields.flatMap { field =>
-            serializeDataType(field.dataType)
-          }
-          val partitionSchema2 = schema2Proto(scan.relation.partitionSchema.fields)
+          val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
           val requiredSchema = schema2Proto(scan.requiredSchema.fields)
           val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
-
-          // scalastyle:off println
-//          System.out.println(
-//            f"serialized requiredSchema: ${requiredSchema.mkString("Array(", ", ", ")")}")
-//          System.out.println(
-//            f"serialized dataSchema: ${dataSchema.mkString("Array(", ", ", ")")}")
-//          System.out.println(
-//            f"serialized partitionSchema: ${partitionSchema.mkString("Array(", ", ", ")")}")
-          // scalastyle:on println
 
           val projection_vector: Array[java.lang.Long] = scan.requiredSchema.fields.map(field => {
             try {
@@ -2565,12 +2540,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // In `CometScanRule`, we ensure partitionSchema is supported.
           assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
-          nativeScanBuilder.setRequiredSchema(requiredSchemaParquet.toString)
-          nativeScanBuilder.setDataSchema(dataSchemaParquet.toString)
+          nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
+          nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
-          nativeScanBuilder.addAllDataSchemaSpark(dataSchema.toIterable.asJava)
-          nativeScanBuilder.addAllRequiredSchemaSpark(requiredSchema.toIterable.asJava)
-          nativeScanBuilder.addAllPartitionSchemaSpark(partitionSchema2.toIterable.asJava)
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
