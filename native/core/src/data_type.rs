@@ -121,48 +121,6 @@ impl TypeKind {
     }
 }
 
-pub const STRING_VIEW_LEN: usize = 16; // StringView is stored using 16 bytes
-pub const STRING_VIEW_PREFIX_LEN: usize = 4; // String prefix in StringView is stored using 4 bytes
-
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug)]
-pub struct StringView {
-    pub len: u32,
-    pub prefix: [u8; STRING_VIEW_PREFIX_LEN],
-    pub ptr: usize,
-}
-
-impl StringView {
-    pub fn as_utf8_str(&self) -> &str {
-        unsafe {
-            let slice = std::slice::from_raw_parts(self.ptr as *const u8, self.len as usize);
-            std::str::from_utf8_unchecked(slice)
-        }
-    }
-}
-
-impl Default for StringView {
-    fn default() -> Self {
-        Self {
-            len: 0,
-            prefix: [0; STRING_VIEW_PREFIX_LEN],
-            ptr: 0,
-        }
-    }
-}
-
-impl PartialEq for StringView {
-    fn eq(&self, other: &Self) -> bool {
-        if self.len != other.len {
-            return false;
-        }
-        if self.prefix != other.prefix {
-            return false;
-        }
-        self.as_utf8_str() == other.as_utf8_str()
-    }
-}
-
 pub trait NativeEqual {
     fn is_equal(&self, other: &Self) -> bool;
 }
@@ -183,7 +141,6 @@ make_native_equal!(i16);
 make_native_equal!(i32);
 make_native_equal!(i64);
 make_native_equal!(i128);
-make_native_equal!(StringView);
 
 impl NativeEqual for f32 {
     fn is_equal(&self, other: &Self) -> bool {
@@ -206,7 +163,6 @@ impl NativeType for i64 {}
 impl NativeType for i128 {}
 impl NativeType for f32 {}
 impl NativeType for f64 {}
-impl NativeType for StringView {}
 
 /// A trait for Comet data type. This should only be used as generic parameter during method
 /// invocations.
@@ -235,7 +191,5 @@ make_type_trait!(LongType, i64, TypeKind::Long);
 make_type_trait!(FloatType, f32, TypeKind::Float);
 make_type_trait!(DoubleType, f64, TypeKind::Double);
 make_type_trait!(DecimalType, i128, TypeKind::Decimal);
-make_type_trait!(StringType, StringView, TypeKind::String);
-make_type_trait!(BinaryType, StringView, TypeKind::Binary);
 make_type_trait!(TimestampType, i64, TypeKind::Timestamp);
 make_type_trait!(DateType, i32, TypeKind::Date);
