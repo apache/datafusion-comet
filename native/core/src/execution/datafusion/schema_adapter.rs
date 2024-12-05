@@ -259,7 +259,8 @@ impl SchemaMapper for SchemaMapping {
                             EvalMode::Legacy,
                             "UTC",
                             false,
-                        )?.into_array(batch_col.len())
+                        )?
+                        .into_array(batch_col.len())
                         // and if that works, return the field and column.
                         .map(|new_col| (new_col, table_field.clone()))
                     })

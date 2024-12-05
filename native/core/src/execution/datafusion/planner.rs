@@ -971,7 +971,7 @@ impl PhysicalPlanner {
                 // Create a conjunctive form of the vector because ParquetExecBuilder takes
                 // a single expression
                 let data_filters = data_filters?;
-                let test_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
+                let cnf_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
                     Arc::new(BinaryExpr::new(
                         left,
                         datafusion::logical_expr::Operator::And,
@@ -1058,7 +1058,6 @@ impl PhysicalPlanner {
                     projection_vector.len(),
                     required_schema.fields.len() + partition_schema.fields.len()
                 );
-                // println!["projection_vector: {:?}", projection_vector];
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
@@ -1066,13 +1065,11 @@ impl PhysicalPlanner {
                 table_parquet_options.global.pushdown_filters = true;
                 table_parquet_options.global.reorder_filters = true;
 
-                    let mut builder = ParquetExecBuilder::new(file_scan_config)
-                        .with_table_parquet_options(table_parquet_options)
-                        .with_schema_adapter_factory(
-                            Arc::new(CometSchemaAdapterFactory::default()),
-                        );
+                let mut builder = ParquetExecBuilder::new(file_scan_config)
+                    .with_table_parquet_options(table_parquet_options)
+                    .with_schema_adapter_factory(Arc::new(CometSchemaAdapterFactory::default()));
 
-                if let Some(filter) = test_data_filters {
+                if let Some(filter) = cnf_data_filters {
                     builder = builder.with_predicate(filter);
                 }
 
