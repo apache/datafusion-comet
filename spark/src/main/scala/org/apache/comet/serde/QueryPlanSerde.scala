@@ -2523,17 +2523,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           val requiredSchema = schema2Proto(scan.requiredSchema.fields)
           val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
 
-          val projection_vector: Array[java.lang.Long] = scan.requiredSchema.fields.map(field => {
-            try {
-              scan.relation.dataSchema.fieldIndex(field.name).toLong.asInstanceOf[java.lang.Long]
-            } catch {
-              case _: IllegalArgumentException =>
-                (scan.relation.partitionSchema.fieldIndex(
-                  field.name) + scan.relation.dataSchema.length).toLong
-                  .asInstanceOf[java.lang.Long]
-
-            }
+          val data_schema_idxs = scan.requiredSchema.fields.map(field => {
+            scan.relation.dataSchema.fieldIndex(field.name)
           })
+          val partition_schema_idxs = Array
+            .range(
+              scan.relation.dataSchema.fields.length,
+              scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+
+          val projection_vector = (data_schema_idxs ++ partition_schema_idxs).map(idx =>
+            idx.toLong.asInstanceOf[java.lang.Long])
 
           nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
 
