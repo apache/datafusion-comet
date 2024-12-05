@@ -2323,15 +2323,20 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
 }
 
 fn convert_spark_types_to_arrow_schema(
-    spark_types: &[datafusion_comet_proto::spark_expression::DataType],
+    spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
-    let arrow_types = spark_types.iter().map(to_arrow_datatype).collect_vec();
-    let arrow_fields: Vec<_> = arrow_types
+    let thing = spark_types
         .iter()
-        .enumerate()
-        .map(|(idx, data_type)| Field::new(format!("req_{}", idx), data_type.clone(), true))
-        .collect();
-    let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
+        .map(|spark_type| {
+            Field::new(
+                String::clone(&spark_type.name),
+                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                spark_type.nullable,
+            )
+        })
+        .collect_vec();
+    let arrow_schema: SchemaRef = Arc::new(Schema::new(thing));
+    println!["{}", arrow_schema];
     arrow_schema
 }
 
