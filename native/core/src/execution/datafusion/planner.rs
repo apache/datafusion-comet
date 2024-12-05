@@ -2294,7 +2294,6 @@ fn convert_spark_types_to_arrow_schema(
         })
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(thing));
-    println!["{}", arrow_schema];
     arrow_schema
 }
 
