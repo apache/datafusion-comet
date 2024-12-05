@@ -949,8 +949,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema_spark =
-                    convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
                 let partition_schema: SchemaRef =
@@ -1050,7 +1049,7 @@ impl PhysicalPlanner {
                     })
                     .collect_vec();
                 let mut file_scan_config =
-                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema_spark))
+                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema))
                         .with_file_groups(file_groups)
                         .with_table_partition_cols(partition_fields);
 
