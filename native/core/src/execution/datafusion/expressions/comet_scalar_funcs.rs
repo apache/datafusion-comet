@@ -55,7 +55,7 @@ macro_rules! make_comet_scalar_udf {
 }
 
 /// Create a physical scalar function.
-pub fn create_comet_physical_fun(
+pub(crate) fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,

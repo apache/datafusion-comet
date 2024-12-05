@@ -156,7 +156,7 @@ struct TestColumnReader {
 }
 
 impl TestColumnReader {
-    pub fn new(
+    pub(crate) fn new(
         cd: ColumnDescriptor,
         promotion_info: TypePromotionInfo,
         batch_size: usize,

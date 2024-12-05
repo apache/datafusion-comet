@@ -18,7 +18,7 @@
 use std::{ops::Index, slice::SliceIndex, sync::Arc};
 
 /// An immutable byte buffer.
-pub trait Buffer {
+pub(crate) trait Buffer {
     /// Returns the length (in bytes) of this buffer.
     fn len(&self) -> usize;
 
@@ -41,14 +41,14 @@ impl Buffer for Vec<u8> {
     }
 }
 
-pub struct BufferRef {
+pub(crate) struct BufferRef {
     inner: Arc<dyn Buffer>,
     offset: usize,
     len: usize,
 }
 
 impl BufferRef {
-    pub fn new(inner: Arc<dyn Buffer>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn Buffer>) -> Self {
         let len = inner.len();
         Self {
             inner,
@@ -59,23 +59,23 @@ impl BufferRef {
 
     /// Returns the length of this buffer.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.len
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     #[inline]
-    pub fn data(&self) -> &[u8] {
+    pub(crate) fn data(&self) -> &[u8] {
         self.inner.data()
     }
 
     /// Creates a new byte buffer containing elements in `[offset, offset+len)`
     #[inline]
-    pub fn slice(&self, offset: usize, len: usize) -> BufferRef {
+    pub(crate) fn slice(&self, offset: usize, len: usize) -> BufferRef {
         assert!(
             self.offset + offset + len <= self.inner.len(),
             "can't create a buffer slice with offset exceeding original \
@@ -95,7 +95,7 @@ impl BufferRef {
 
     /// Creates a new byte buffer containing all elements starting from `offset` in this byte array.
     #[inline]
-    pub fn start(&self, offset: usize) -> BufferRef {
+    pub(crate) fn start(&self, offset: usize) -> BufferRef {
         assert!(
             self.offset + offset <= self.inner.len(),
             "can't create a buffer slice with offset exceeding original \

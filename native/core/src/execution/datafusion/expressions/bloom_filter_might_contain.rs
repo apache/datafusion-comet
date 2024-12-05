@@ -35,9 +35,9 @@ use std::{
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
 /// Spark's `BloomFilterMightContain` expression.
 #[derive(Debug, Hash)]
-pub struct BloomFilterMightContain {
-    pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
-    pub value_expr: Arc<dyn PhysicalExpr>,
+pub(crate) struct BloomFilterMightContain {
+    pub(crate) bloom_filter_expr: Arc<dyn PhysicalExpr>,
+    pub(crate) value_expr: Arc<dyn PhysicalExpr>,
     bloom_filter: Option<SparkBloomFilter>,
 }
 
@@ -79,7 +79,7 @@ fn evaluate_bloom_filter(
 }
 
 impl BloomFilterMightContain {
-    pub fn try_new(
+    pub(crate) fn try_new(
         bloom_filter_expr: Arc<dyn PhysicalExpr>,
         value_expr: Arc<dyn PhysicalExpr>,
     ) -> Result<Self> {

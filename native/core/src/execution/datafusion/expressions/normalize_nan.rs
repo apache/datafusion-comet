@@ -33,13 +33,13 @@ use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_physical_expr::PhysicalExpr;
 
 #[derive(Debug, Hash)]
-pub struct NormalizeNaNAndZero {
-    pub data_type: DataType,
-    pub child: Arc<dyn PhysicalExpr>,
+pub(crate) struct NormalizeNaNAndZero {
+    pub(crate) data_type: DataType,
+    pub(crate) child: Arc<dyn PhysicalExpr>,
 }
 
 impl NormalizeNaNAndZero {
-    pub fn new(data_type: DataType, child: Arc<dyn PhysicalExpr>) -> Self {
+    pub(crate) fn new(data_type: DataType, child: Arc<dyn PhysicalExpr>) -> Self {
         Self { data_type, child }
     }
 }

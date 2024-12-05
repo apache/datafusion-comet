@@ -25,19 +25,19 @@ use jni::{
 /// A wrapper which delegate acquire/release memory calls to the
 /// JVM side `CometTaskMemoryManager`.
 #[derive(Debug)]
-pub struct CometTaskMemoryManager<'a> {
-    pub class: JClass<'a>,
-    pub method_acquire_memory: JMethodID,
-    pub method_release_memory: JMethodID,
+pub(crate) struct CometTaskMemoryManager<'a> {
+    pub(crate) class: JClass<'a>,
+    pub(crate) method_acquire_memory: JMethodID,
+    pub(crate) method_release_memory: JMethodID,
 
-    pub method_acquire_memory_ret: ReturnType,
-    pub method_release_memory_ret: ReturnType,
+    pub(crate) method_acquire_memory_ret: ReturnType,
+    pub(crate) method_release_memory_ret: ReturnType,
 }
 
 impl<'a> CometTaskMemoryManager<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/spark/CometTaskMemoryManager";
+    pub(crate) const JVM_CLASS: &'static str = "org/apache/spark/CometTaskMemoryManager";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometTaskMemoryManager<'a>> {
+    pub(crate) fn new(env: &mut JNIEnv<'a>) -> JniResult<CometTaskMemoryManager<'a>> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         let result = CometTaskMemoryManager {

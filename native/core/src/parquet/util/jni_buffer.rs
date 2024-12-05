@@ -31,7 +31,7 @@ use super::Buffer;
 /// An immutable byte buffer wrapping a JNI byte array allocated on heap.
 ///
 /// Unlike `AutoArray`, this doesn't have a lifetime and can be used across different JNI calls.
-pub struct JniBuffer {
+pub(crate) struct JniBuffer {
     /// A pointer for the JVM instance, used to obtain byte array elements (via
     /// `GetByteArrayElements`) and release byte array elements (via `ReleaseByteArrayElements`).
     jvm: JavaVM,
@@ -46,7 +46,7 @@ pub struct JniBuffer {
 }
 
 impl JniBuffer {
-    pub fn try_new(jvm: JavaVM, array: jbyteArray, len: usize) -> Result<Self> {
+    pub(crate) fn try_new(jvm: JavaVM, array: jbyteArray, len: usize) -> Result<Self> {
         let env = jvm.get_env()?;
         let mut is_copy = 0xff;
         let ptr = jbyte::get(&env, array.into(), &mut is_copy)?;
@@ -63,7 +63,7 @@ impl JniBuffer {
 
     /// Whether the JNI byte array is copied or not, i.e., whether the JVM pinned down the original
     /// Java byte array, or made a new copy of it.
-    pub fn is_copy(&self) -> bool {
+    pub(crate) fn is_copy(&self) -> bool {
         self.is_copy
     }
 }

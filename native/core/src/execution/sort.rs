@@ -21,7 +21,7 @@ use std::{cmp, mem, ptr};
 /// - removed `Rdx` implementations for all types except for i64 which is the packed representation
 ///   of row addresses and partition ids from Spark.
 
-pub trait Rdx {
+pub(crate) trait Rdx {
     /// Sets the number of buckets used by the generic implementation.
     fn cfg_nbuckets() -> usize;
 
@@ -77,7 +77,7 @@ impl Rdx for i64 {
 }
 
 /// Radix Sort implementation for some type
-pub trait RdxSort {
+pub(crate) trait RdxSort {
     /// Execute Radix Sort, overwrites (unsorted) content of the type.
     fn rdxsort(&mut self);
 }

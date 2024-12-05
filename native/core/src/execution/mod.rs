@@ -16,21 +16,20 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
-pub mod datafusion;
-pub mod jni_api;
+pub(crate) mod datafusion;
+pub(crate) mod jni_api;
 
-pub mod kernels; // for benchmarking
+pub(crate) mod kernels; // for benchmarking
 
 mod metrics;
-pub mod operators;
-pub mod serde;
-pub mod shuffle;
+pub(crate) mod operators;
+pub(crate) mod serde;
+pub(crate) mod shuffle;
 pub(crate) mod sort;
-pub use datafusion_comet_spark_expr::timezone;
 pub(crate) mod utils;
 
 mod memory_pool;
-pub use memory_pool::*;
+pub(crate) use memory_pool::*;
 
 #[cfg(test)]
 mod tests {

@@ -23,18 +23,18 @@ use jni::{
 };
 
 /// A struct that holds all the JNI methods and fields for JVM CometMetricNode class.
-pub struct CometMetricNode<'a> {
-    pub class: JClass<'a>,
-    pub method_get_child_node: JMethodID,
-    pub method_get_child_node_ret: ReturnType,
-    pub method_set: JMethodID,
-    pub method_set_ret: ReturnType,
+pub(crate) struct CometMetricNode<'a> {
+    pub(crate) class: JClass<'a>,
+    pub(crate) method_get_child_node: JMethodID,
+    pub(crate) method_get_child_node_ret: ReturnType,
+    pub(crate) method_set: JMethodID,
+    pub(crate) method_set_ret: ReturnType,
 }
 
 impl<'a> CometMetricNode<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometMetricNode";
+    pub(crate) const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometMetricNode";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
+    pub(crate) fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {

@@ -25,7 +25,7 @@ use arrow_array::{
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
 use std::fmt::Debug;
 
-pub fn hash(src: &[ArrayRef], dst: &mut [u64]) {
+pub(crate) fn hash(src: &[ArrayRef], dst: &mut [u64]) {
     let state = RandomState::with_seed(42);
     src.iter().enumerate().for_each(|(idx, v)| {
         downcast_dictionary_array!(

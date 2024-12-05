@@ -25,13 +25,13 @@ use pprof::ProfilerGuard;
 /// Mostly followed this blog post: https://www.jibbow.com/posts/criterion-flamegraphs/
 /// After `cargo bench --bench <bench-name> -- --profile-time=<time>`
 /// You can find flamegraph.svg under `target/criterion/<bench-name>/<bench-method-name>/profile`
-pub struct FlamegraphProfiler<'a> {
+pub(crate) struct FlamegraphProfiler<'a> {
     frequency: c_int,
     active_profiler: Option<ProfilerGuard<'a>>,
 }
 
 impl<'a> FlamegraphProfiler<'a> {
-    pub fn new(frequency: c_int) -> Self {
+    pub(crate) fn new(frequency: c_int) -> Self {
         FlamegraphProfiler {
             frequency,
             active_profiler: None,

@@ -50,7 +50,7 @@ use std::io::{copy, Read, Write};
 
 /// Parquet compression codec interface.
 #[allow(clippy::ptr_arg)]
-pub trait Codec {
+pub(crate) trait Codec {
     /// Compresses data stored in slice `input_buf` and writes the compressed result
     /// to `output_buf`.
     /// Note that you'll need to call `clear()` before reusing the same `output_buf`
@@ -65,7 +65,7 @@ pub trait Codec {
 /// Given the compression type `codec`, returns a codec used to compress and decompress
 /// bytes for the compression type.
 /// This returns `None` if the codec type is `UNCOMPRESSED`.
-pub fn create_codec(codec: CodecType) -> Result<Option<Box<dyn Codec>>> {
+pub(crate) fn create_codec(codec: CodecType) -> Result<Option<Box<dyn Codec>>> {
     match codec {
         CodecType::BROTLI => Ok(Some(Box::new(BrotliCodec::new()))),
         CodecType::GZIP => Ok(Some(Box::new(GZipCodec::new()))),
@@ -78,7 +78,7 @@ pub fn create_codec(codec: CodecType) -> Result<Option<Box<dyn Codec>>> {
 }
 
 /// Codec for Snappy compression format.
-pub struct SnappyCodec {
+pub(crate) struct SnappyCodec {
     decoder: Decoder,
     encoder: Encoder,
 }
@@ -115,7 +115,7 @@ impl Codec for SnappyCodec {
 }
 
 /// Codec for GZIP compression algorithm.
-pub struct GZipCodec {}
+pub(crate) struct GZipCodec {}
 
 impl GZipCodec {
     /// Creates new GZIP compression codec.
@@ -142,7 +142,7 @@ const BROTLI_DEFAULT_COMPRESSION_QUALITY: u32 = 1; // supported levels 0-9
 const BROTLI_DEFAULT_LG_WINDOW_SIZE: u32 = 22; // recommended between 20-22
 
 /// Codec for Brotli compression algorithm.
-pub struct BrotliCodec {}
+pub(crate) struct BrotliCodec {}
 
 impl BrotliCodec {
     /// Creates new Brotli compression codec.
@@ -173,7 +173,7 @@ impl Codec for BrotliCodec {
 const LZ4_BUFFER_SIZE: usize = 4096;
 
 /// Codec for LZ4 compression algorithm.
-pub struct LZ4Codec {}
+pub(crate) struct LZ4Codec {}
 
 impl LZ4Codec {
     /// Creates new LZ4 compression codec.
@@ -214,7 +214,7 @@ impl Codec for LZ4Codec {
 }
 
 /// Codec for Zstandard compression algorithm.
-pub struct ZSTDCodec {}
+pub(crate) struct ZSTDCodec {}
 
 impl ZSTDCodec {
     /// Creates new Zstandard compression codec.

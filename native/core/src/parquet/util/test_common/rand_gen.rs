@@ -20,7 +20,7 @@ use rand::{
     thread_rng, Rng,
 };
 
-pub fn random_bytes(n: usize) -> Vec<u8> {
+pub(crate) fn random_bytes(n: usize) -> Vec<u8> {
     let mut result = vec![];
     let mut rng = thread_rng();
     for _ in 0..n {
@@ -29,7 +29,7 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     result
 }
 
-pub fn random_bools(n: usize) -> Vec<bool> {
+pub(crate) fn random_bools(n: usize) -> Vec<bool> {
     let mut result = vec![];
     let mut rng = thread_rng();
     for _ in 0..n {
@@ -38,7 +38,7 @@ pub fn random_bools(n: usize) -> Vec<bool> {
     result
 }
 
-pub fn random_numbers<T>(n: usize) -> Vec<T>
+pub(crate) fn random_numbers<T>(n: usize) -> Vec<T>
 where
     Standard: Distribution<T>,
 {
@@ -46,7 +46,7 @@ where
     Standard.sample_iter(&mut rng).take(n).collect()
 }
 
-pub fn random_numbers_range<T>(n: usize, low: T, high: T, result: &mut Vec<T>)
+pub(crate) fn random_numbers_range<T>(n: usize, low: T, high: T, result: &mut Vec<T>)
 where
     T: PartialOrd + SampleUniform + Copy,
 {

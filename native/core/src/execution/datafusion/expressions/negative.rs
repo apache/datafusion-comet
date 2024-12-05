@@ -35,7 +35,7 @@ use std::{
     sync::Arc,
 };
 
-pub fn create_negate_expr(
+pub(crate) fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
 ) -> Result<Arc<dyn PhysicalExpr>, CometError> {
@@ -44,7 +44,7 @@ pub fn create_negate_expr(
 
 /// Negative expression
 #[derive(Debug, Hash)]
-pub struct NegativeExpr {
+pub(crate) struct NegativeExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
@@ -70,12 +70,12 @@ macro_rules! check_overflow {
 
 impl NegativeExpr {
     /// Create new not expression
-    pub fn new(arg: Arc<dyn PhysicalExpr>, fail_on_error: bool) -> Self {
+    pub(crate) fn new(arg: Arc<dyn PhysicalExpr>, fail_on_error: bool) -> Self {
         Self { arg, fail_on_error }
     }
 
     /// Get the input expression
-    pub fn arg(&self) -> &Arc<dyn PhysicalExpr> {
+    pub(crate) fn arg(&self) -> &Arc<dyn PhysicalExpr> {
         &self.arg
     }
 }

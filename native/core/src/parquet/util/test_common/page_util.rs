@@ -35,7 +35,7 @@ use super::random_numbers_range;
 use bytes::Bytes;
 use zstd::zstd_safe::WriteBuf;
 
-pub trait DataPageBuilder {
+pub(crate) trait DataPageBuilder {
     fn add_rep_levels(&mut self, max_level: i16, rep_levels: &[i16]);
     fn add_def_levels(&mut self, max_level: i16, def_levels: &[i16]);
     fn add_values<T: DataType>(&mut self, encoding: Encoding, values: &[T::T]);
@@ -49,7 +49,7 @@ pub trait DataPageBuilder {
 ///   - add_values() for normal data page / add_indices() for dictionary data page
 ///   - consume()
 ///     in order to populate and obtain a data page.
-pub struct DataPageBuilderImpl {
+pub(crate) struct DataPageBuilderImpl {
     desc: ColumnDescPtr,
     encoding: Option<Encoding>,
     num_values: u32,
@@ -63,7 +63,7 @@ impl DataPageBuilderImpl {
     // `num_values` is the number of non-null values to put in the data page.
     // `datapage_v2` flag is used to indicate if the generated data page should use V2
     // format or not.
-    pub fn new(desc: ColumnDescPtr, num_values: u32, datapage_v2: bool) -> Self {
+    pub(crate) fn new(desc: ColumnDescPtr, num_values: u32, datapage_v2: bool) -> Self {
         DataPageBuilderImpl {
             desc,
             encoding: None,
@@ -164,12 +164,12 @@ impl DataPageBuilder for DataPageBuilderImpl {
 }
 
 /// A utility page reader which stores pages in memory.
-pub struct InMemoryPageReader<P: Iterator<Item = Page>> {
+pub(crate) struct InMemoryPageReader<P: Iterator<Item = Page>> {
     page_iter: P,
 }
 
 impl<P: Iterator<Item = Page>> InMemoryPageReader<P> {
-    pub fn new(pages: impl IntoIterator<Item = Page, IntoIter = P>) -> Self {
+    pub(crate) fn new(pages: impl IntoIterator<Item = Page, IntoIter = P>) -> Self {
         Self {
             page_iter: pages.into_iter(),
         }
@@ -200,14 +200,14 @@ impl<P: Iterator<Item = Page> + Send> Iterator for InMemoryPageReader<P> {
 
 /// A utility page iterator which stores page readers in memory, used for tests.
 #[derive(Clone)]
-pub struct InMemoryPageIterator<I: Iterator<Item = Vec<Page>>> {
+pub(crate) struct InMemoryPageIterator<I: Iterator<Item = Vec<Page>>> {
     schema: SchemaDescPtr,
     column_desc: ColumnDescPtr,
     page_reader_iter: I,
 }
 
 impl<I: Iterator<Item = Vec<Page>>> InMemoryPageIterator<I> {
-    pub fn new(
+    pub(crate) fn new(
         schema: SchemaDescPtr,
         column_desc: ColumnDescPtr,
         pages: impl IntoIterator<Item = Vec<Page>, IntoIter = I>,
@@ -233,7 +233,7 @@ impl<I: Iterator<Item = Vec<Page>>> Iterator for InMemoryPageIterator<I> {
 impl<I: Iterator<Item = Vec<Page>> + Send> PageIterator for InMemoryPageIterator<I> {}
 
 #[allow(clippy::too_many_arguments)]
-pub fn make_pages<T: DataType>(
+pub(crate) fn make_pages<T: DataType>(
     desc: ColumnDescPtr,
     encoding: Encoding,
     num_pages: usize,

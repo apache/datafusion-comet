@@ -15,5 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod spark_bit_array;
-pub mod spark_bloom_filter;
+pub(crate) mod spark_bit_array;
+pub(crate) mod spark_bloom_filter;

@@ -46,7 +46,7 @@ const DECIMAL_MAX_INT_DIGITS: i32 = 9;
 /// Maximum number of decimal digits an i64 can represent
 const DECIMAL_MAX_LONG_DIGITS: i32 = 18;
 
-pub enum ColumnReader {
+pub(crate) enum ColumnReader {
     BoolColumnReader(TypedColumnReader<BoolType>),
     Int8ColumnReader(TypedColumnReader<Int8Type>),
     UInt8ColumnReader(TypedColumnReader<UInt8Type>),
@@ -91,7 +91,7 @@ impl ColumnReader {
     /// - `use_legacy_date_timestamp_or_ntz`: Whether to read dates/timestamps that were written
     ///   using the legacy Julian/Gregorian hybrid calendar as it is. If false, exceptions will be
     ///   thrown. If the spark type is TimestampNTZ, this should be true.
-    pub fn get(
+    pub(crate) fn get(
         desc: ColumnDescriptor,
         promotion_info: TypePromotionInfo,
         capacity: usize,
@@ -515,12 +515,12 @@ macro_rules! make_func_mut {
 
 impl ColumnReader {
     #[inline]
-    pub fn get_descriptor(&self) -> &ColumnDescriptor {
+    pub(crate) fn get_descriptor(&self) -> &ColumnDescriptor {
         make_func!(self, get_descriptor)
     }
 
     #[inline]
-    pub fn set_dictionary_page(
+    pub(crate) fn set_dictionary_page(
         &mut self,
         page_value_count: usize,
         page_data: Buffer,
@@ -536,12 +536,17 @@ impl ColumnReader {
     }
 
     #[inline]
-    pub fn set_page_v1(&mut self, page_value_count: usize, page_data: Buffer, encoding: Encoding) {
+    pub(crate) fn set_page_v1(
+        &mut self,
+        page_value_count: usize,
+        page_data: Buffer,
+        encoding: Encoding,
+    ) {
         make_func_mut!(self, set_page_v1, page_value_count, page_data, encoding)
     }
 
     #[inline]
-    pub fn set_page_v2(
+    pub(crate) fn set_page_v2(
         &mut self,
         page_value_count: usize,
         def_level_data: Buffer,
@@ -561,63 +566,63 @@ impl ColumnReader {
     }
 
     #[inline]
-    pub fn set_null(&mut self) {
+    pub(crate) fn set_null(&mut self) {
         make_func_mut!(self, set_null)
     }
 
     #[inline]
-    pub fn set_boolean(&mut self, value: bool) {
+    pub(crate) fn set_boolean(&mut self, value: bool) {
         make_func_mut!(self, set_boolean, value)
     }
 
     #[inline]
-    pub fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
+    pub(crate) fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
         make_func_mut!(self, set_fixed, value)
     }
 
     #[inline]
-    pub fn set_binary(&mut self, value: MutableBuffer) {
+    pub(crate) fn set_binary(&mut self, value: MutableBuffer) {
         make_func_mut!(self, set_binary, value)
     }
 
     #[inline]
-    pub fn set_decimal_flba(&mut self, value: MutableBuffer) {
+    pub(crate) fn set_decimal_flba(&mut self, value: MutableBuffer) {
         make_func_mut!(self, set_decimal_flba, value)
     }
 
     #[inline]
-    pub fn set_position(&mut self, value: i64, size: usize) {
+    pub(crate) fn set_position(&mut self, value: i64, size: usize) {
         make_func_mut!(self, set_position, value, size)
     }
 
     #[inline]
-    pub fn set_is_deleted(&mut self, value: MutableBuffer) {
+    pub(crate) fn set_is_deleted(&mut self, value: MutableBuffer) {
         make_func_mut!(self, set_is_deleted, value)
     }
 
     #[inline]
-    pub fn reset_batch(&mut self) {
+    pub(crate) fn reset_batch(&mut self) {
         make_func_mut!(self, reset_batch)
     }
 
     #[inline]
-    pub fn current_batch(&mut self) -> ArrayData {
+    pub(crate) fn current_batch(&mut self) -> ArrayData {
         make_func_mut!(self, current_batch)
     }
 
     #[inline]
-    pub fn read_batch(&mut self, total: usize, null_pad_size: usize) -> (usize, usize) {
+    pub(crate) fn read_batch(&mut self, total: usize, null_pad_size: usize) -> (usize, usize) {
         make_func_mut!(self, read_batch, total, null_pad_size)
     }
 
     #[inline]
-    pub fn skip_batch(&mut self, total: usize, put_nulls: bool) -> usize {
+    pub(crate) fn skip_batch(&mut self, total: usize, put_nulls: bool) -> usize {
         make_func_mut!(self, skip_batch, total, put_nulls)
     }
 }
 
 /// A batched reader for a primitive Parquet column.
-pub struct TypedColumnReader<T: DataType> {
+pub(crate) struct TypedColumnReader<T: DataType> {
     desc: ColumnDescPtr,
     arrow_type: ArrowDataType,
     rep_level_decoder: Option<LevelDecoder>,
@@ -643,7 +648,7 @@ pub struct TypedColumnReader<T: DataType> {
 }
 
 impl<T: DataType> TypedColumnReader<T> {
-    pub fn new(
+    pub(crate) fn new(
         desc: ColumnDescriptor,
         capacity: usize,
         arrow_type: ArrowDataType,
@@ -668,14 +673,14 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     #[inline]
-    pub fn get_descriptor(&self) -> &ColumnDescriptor {
+    pub(crate) fn get_descriptor(&self) -> &ColumnDescriptor {
         &self.desc
     }
 
     /// Reset the current batch. This will clear all the content of the current columnar vector as
     /// well as reset all of its internal states.
     #[inline]
-    pub fn reset_batch(&mut self) {
+    pub(crate) fn reset_batch(&mut self) {
         self.vector.reset()
     }
 
@@ -684,7 +689,7 @@ impl<T: DataType> TypedColumnReader<T> {
     /// Note: the caller must make sure the returned Arrow vector is fully consumed before calling
     /// `read_batch` again.
     #[inline]
-    pub fn current_batch(&mut self) -> ArrayData {
+    pub(crate) fn current_batch(&mut self) -> ArrayData {
         self.vector.get_array_data()
     }
 
@@ -696,7 +701,7 @@ impl<T: DataType> TypedColumnReader<T> {
     ///
     /// If the return number of values is < `total`, it means the current page is drained and the
     /// caller should call `set_page_v1` or `set_page_v2` before calling next `read_batch`.
-    pub fn read_batch(&mut self, total: usize, null_pad_size: usize) -> (usize, usize) {
+    pub(crate) fn read_batch(&mut self, total: usize, null_pad_size: usize) -> (usize, usize) {
         debug_assert!(
             self.value_decoder.is_some() && self.def_level_decoder.is_some(),
             "set_page_v1/v2 should have been called"
@@ -719,7 +724,7 @@ impl<T: DataType> TypedColumnReader<T> {
     ///
     /// If the return value is < `total`, it means the current page is drained and the caller should
     /// call `set_page_v1` or `set_page_v2` before calling next `skip_batch`.
-    pub fn skip_batch(&mut self, total: usize, put_nulls: bool) -> usize {
+    pub(crate) fn skip_batch(&mut self, total: usize, put_nulls: bool) -> usize {
         debug_assert!(
             self.value_decoder.is_some() && self.def_level_decoder.is_some(),
             "set_page_v1/v2 should have been called"
@@ -742,7 +747,7 @@ impl<T: DataType> TypedColumnReader<T> {
     /// - If being called more than once during the lifetime of this column reader. A Parquet column
     ///   chunk should only contain a single dictionary page.
     /// - If the input `encoding` is neither `PLAIN`, `PLAIN_DICTIONARY` nor `RLE_DICTIONARY`.
-    pub fn set_dictionary_page(
+    pub(crate) fn set_dictionary_page(
         &mut self,
         page_value_count: usize,
         page_data: Buffer,
@@ -781,7 +786,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Resets the Parquet data page for this column reader.
-    pub fn set_page_v1(
+    pub(crate) fn set_page_v1(
         &mut self,
         page_value_count: usize,
         page_data: Buffer,
@@ -817,7 +822,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Resets the Parquet data page for this column reader.
-    pub fn set_page_v2(
+    pub(crate) fn set_page_v2(
         &mut self,
         page_value_count: usize,
         def_level_data: Buffer,
@@ -843,13 +848,13 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets all values in the vector of this column reader to be null.
-    pub fn set_null(&mut self) {
+    pub(crate) fn set_null(&mut self) {
         self.check_const("set_null");
         self.vector.put_nulls(self.capacity);
     }
 
     /// Sets all values in the vector of this column reader to be `value`.
-    pub fn set_boolean(&mut self, value: bool) {
+    pub(crate) fn set_boolean(&mut self, value: bool) {
         self.check_const("set_boolean");
         if value {
             let dst = self.vector.value_buffer.as_slice_mut();
@@ -859,7 +864,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets all values in the vector of this column reader to be `value`.
-    pub fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
+    pub(crate) fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
         self.check_const("set_fixed");
         let type_size = std::mem::size_of::<U>();
 
@@ -872,7 +877,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets all values in the vector of this column reader to be binary represented by `buffer`.
-    pub fn set_binary(&mut self, buffer: MutableBuffer) {
+    pub(crate) fn set_binary(&mut self, buffer: MutableBuffer) {
         self.check_const("set_binary");
 
         // TODO: consider using dictionary here
@@ -902,7 +907,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets all values in the vector of this column reader to be decimal represented by `buffer`.
-    pub fn set_decimal_flba(&mut self, buffer: MutableBuffer) {
+    pub(crate) fn set_decimal_flba(&mut self, buffer: MutableBuffer) {
         self.check_const("set_decimal_flba");
 
         // TODO: consider using dictionary here
@@ -926,7 +931,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets position values of this column reader to the vector starting from `value`.
-    pub fn set_position(&mut self, value: i64, size: usize) {
+    pub(crate) fn set_position(&mut self, value: i64, size: usize) {
         let i64_size = std::mem::size_of::<i64>();
 
         let mut offset = self.vector.num_values * i64_size;
@@ -940,7 +945,7 @@ impl<T: DataType> TypedColumnReader<T> {
 
     /// Sets the values in the vector of this column reader to be a boolean array represented
     /// by `buffer`.
-    pub fn set_is_deleted(&mut self, buffer: MutableBuffer) {
+    pub(crate) fn set_is_deleted(&mut self, buffer: MutableBuffer) {
         let len = buffer.len();
         let dst = self.vector.value_buffer.as_slice_mut();
         for i in 0..len {

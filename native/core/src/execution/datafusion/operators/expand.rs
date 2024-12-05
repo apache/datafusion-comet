@@ -37,7 +37,7 @@ use std::{
 /// A Comet native operator that expands a single row into multiple rows. This behaves as same as
 /// Spark Expand operator.
 #[derive(Debug)]
-pub struct CometExpandExec {
+pub(crate) struct CometExpandExec {
     projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
     child: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
@@ -46,7 +46,7 @@ pub struct CometExpandExec {
 
 impl CometExpandExec {
     /// Create a new ExpandExec
-    pub fn new(
+    pub(crate) fn new(
         projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
         child: Arc<dyn ExecutionPlan>,
         schema: SchemaRef,
@@ -135,7 +135,7 @@ impl ExecutionPlan for CometExpandExec {
     }
 }
 
-pub struct ExpandStream {
+pub(crate) struct ExpandStream {
     projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
     child_stream: SendableRecordBatchStream,
     schema: SchemaRef,
@@ -146,7 +146,7 @@ pub struct ExpandStream {
 
 impl ExpandStream {
     /// Create a new ExpandStream
-    pub fn new(
+    pub(crate) fn new(
         projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
         child_stream: SendableRecordBatchStream,
         schema: SchemaRef,

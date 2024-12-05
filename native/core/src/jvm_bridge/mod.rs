@@ -113,30 +113,30 @@ macro_rules! jni_static_call {
 
 /// Wrapper for JString. Because we cannot implement `TryFrom` trait for `JString` as they
 /// are defined in different crates.
-pub struct StringWrapper<'a> {
+pub(crate) struct StringWrapper<'a> {
     value: JString<'a>,
 }
 
 impl<'a> StringWrapper<'a> {
-    pub fn new(value: JString<'a>) -> StringWrapper<'a> {
+    pub(crate) fn new(value: JString<'a>) -> StringWrapper<'a> {
         Self { value }
     }
 
-    pub fn get(&self) -> &JString {
+    pub(crate) fn get(&self) -> &JString {
         &self.value
     }
 }
 
-pub struct BinaryWrapper<'a> {
+pub(crate) struct BinaryWrapper<'a> {
     value: JObject<'a>,
 }
 
 impl<'a> BinaryWrapper<'a> {
-    pub fn new(value: JObject<'a>) -> BinaryWrapper<'a> {
+    pub(crate) fn new(value: JObject<'a>) -> BinaryWrapper<'a> {
         Self { value }
     }
 
-    pub fn get(&self) -> &JObject {
+    pub(crate) fn get(&self) -> &JObject {
         &self.value
     }
 }
@@ -178,18 +178,18 @@ pub(crate) use jni_static_call;
 pub(crate) use jvalues;
 
 mod comet_exec;
-pub use comet_exec::*;
+pub(crate) use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
 
 use crate::{errors::CometError, JAVA_VM};
 use batch_iterator::CometBatchIterator;
-pub use comet_metric_node::*;
-pub use comet_task_memory_manager::*;
+pub(crate) use comet_metric_node::*;
+pub(crate) use comet_task_memory_manager::*;
 
 /// The JVM classes that are used in the JNI calls.
-pub struct JVMClasses<'a> {
+pub(crate) struct JVMClasses<'a> {
     /// Cached JClass for "java.lang.Object"
     java_lang_object: JClass<'a>,
     /// Cached JClass for "java.lang.Class"
@@ -197,23 +197,23 @@ pub struct JVMClasses<'a> {
     /// Cached JClass for "java.lang.Throwable"
     java_lang_throwable: JClass<'a>,
     /// Cached method ID for "java.lang.Object#getClass"
-    pub object_get_class_method: JMethodID,
+    pub(crate) object_get_class_method: JMethodID,
     /// Cached method ID for "java.lang.Class#getName"
-    pub class_get_name_method: JMethodID,
+    pub(crate) class_get_name_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getMessage"
-    pub throwable_get_message_method: JMethodID,
+    pub(crate) throwable_get_message_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getCause"
-    pub throwable_get_cause_method: JMethodID,
+    pub(crate) throwable_get_cause_method: JMethodID,
 
     /// The CometMetricNode class. Used for updating the metrics.
-    pub comet_metric_node: CometMetricNode<'a>,
+    pub(crate) comet_metric_node: CometMetricNode<'a>,
     /// The static CometExec class. Used for getting the subquery result.
-    pub comet_exec: CometExec<'a>,
+    pub(crate) comet_exec: CometExec<'a>,
     /// The CometBatchIterator class. Used for iterating over the batches.
-    pub comet_batch_iterator: CometBatchIterator<'a>,
+    pub(crate) comet_batch_iterator: CometBatchIterator<'a>,
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
-    pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
+    pub(crate) comet_task_memory_manager: CometTaskMemoryManager<'a>,
 }
 
 unsafe impl<'a> Send for JVMClasses<'a> {}
@@ -225,7 +225,7 @@ static JVM_CLASSES: OnceCell<JVMClasses> = OnceCell::new();
 
 impl JVMClasses<'_> {
     /// Creates a new JVMClasses struct.
-    pub fn init(env: &mut JNIEnv) {
+    pub(crate) fn init(env: &mut JNIEnv) {
         JVM_CLASSES.get_or_init(|| {
             // A hack to make the `JNIEnv` static. It is not safe but we don't really use the
             // `JNIEnv` except for creating the global references of the classes.
@@ -269,12 +269,12 @@ impl JVMClasses<'_> {
         });
     }
 
-    pub fn get() -> &'static JVMClasses<'static> {
+    pub(crate) fn get() -> &'static JVMClasses<'static> {
         unsafe { JVM_CLASSES.get_unchecked() }
     }
 
     /// Gets the JNIEnv for the current thread.
-    pub fn get_env() -> CometResult<AttachGuard<'static>> {
+    pub(crate) fn get_env() -> CometResult<AttachGuard<'static>> {
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
             java_vm.attach_current_thread().map_err(|e| {

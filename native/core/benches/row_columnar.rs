@@ -88,13 +88,13 @@ struct Row {
 }
 
 impl Row {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Row {
             data: Box::new([0u8; ROW_SIZE]),
         }
     }
 
-    pub fn to_spark_row(&self, spark_row: &mut SparkUnsafeRow) {
+    pub(crate) fn to_spark_row(&self, spark_row: &mut SparkUnsafeRow) {
         spark_row.point_to_slice(self.data.as_ref());
     }
 }

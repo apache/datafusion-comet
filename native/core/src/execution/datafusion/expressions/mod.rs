@@ -17,28 +17,28 @@
 
 //! Native DataFusion expressions
 
-pub mod bitwise_not;
-pub mod checkoverflow;
+pub(crate) mod bitwise_not;
+pub(crate) mod checkoverflow;
 mod normalize_nan;
-pub use normalize_nan::NormalizeNaNAndZero;
+pub(crate) use normalize_nan::NormalizeNaNAndZero;
 
 use crate::errors::CometError;
-pub mod avg;
-pub mod avg_decimal;
-pub mod bloom_filter_agg;
-pub mod bloom_filter_might_contain;
-pub mod comet_scalar_funcs;
-pub mod correlation;
-pub mod covariance;
-pub mod negative;
-pub mod stddev;
-pub mod strings;
-pub mod subquery;
-pub mod sum_decimal;
-pub mod unbound;
-pub mod variance;
+pub(crate) mod avg;
+pub(crate) mod avg_decimal;
+pub(crate) mod bloom_filter_agg;
+pub(crate) mod bloom_filter_might_contain;
+pub(crate) mod comet_scalar_funcs;
+pub(crate) mod correlation;
+pub(crate) mod covariance;
+pub(crate) mod negative;
+pub(crate) mod stddev;
+pub(crate) mod strings;
+pub(crate) mod subquery;
+pub(crate) mod sum_decimal;
+pub(crate) mod unbound;
+pub(crate) mod variance;
 
-pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
+pub(crate) use datafusion_comet_spark_expr::{EvalMode, SparkError};
 
 fn arithmetic_overflow_error(from_type: &str) -> CometError {
     CometError::Spark(SparkError::ArithmeticOverflow {

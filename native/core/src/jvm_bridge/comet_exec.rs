@@ -23,36 +23,36 @@ use jni::{
 };
 
 /// A struct that holds all the JNI methods and fields for JVM CometExec object.
-pub struct CometExec<'a> {
-    pub class: JClass<'a>,
-    pub method_get_bool: JStaticMethodID,
-    pub method_get_bool_ret: ReturnType,
-    pub method_get_byte: JStaticMethodID,
-    pub method_get_byte_ret: ReturnType,
-    pub method_get_short: JStaticMethodID,
-    pub method_get_short_ret: ReturnType,
-    pub method_get_int: JStaticMethodID,
-    pub method_get_int_ret: ReturnType,
-    pub method_get_long: JStaticMethodID,
-    pub method_get_long_ret: ReturnType,
-    pub method_get_float: JStaticMethodID,
-    pub method_get_float_ret: ReturnType,
-    pub method_get_double: JStaticMethodID,
-    pub method_get_double_ret: ReturnType,
-    pub method_get_decimal: JStaticMethodID,
-    pub method_get_decimal_ret: ReturnType,
-    pub method_get_string: JStaticMethodID,
-    pub method_get_string_ret: ReturnType,
-    pub method_get_binary: JStaticMethodID,
-    pub method_get_binary_ret: ReturnType,
-    pub method_is_null: JStaticMethodID,
-    pub method_is_null_ret: ReturnType,
+pub(crate) struct CometExec<'a> {
+    pub(crate) class: JClass<'a>,
+    pub(crate) method_get_bool: JStaticMethodID,
+    pub(crate) method_get_bool_ret: ReturnType,
+    pub(crate) method_get_byte: JStaticMethodID,
+    pub(crate) method_get_byte_ret: ReturnType,
+    pub(crate) method_get_short: JStaticMethodID,
+    pub(crate) method_get_short_ret: ReturnType,
+    pub(crate) method_get_int: JStaticMethodID,
+    pub(crate) method_get_int_ret: ReturnType,
+    pub(crate) method_get_long: JStaticMethodID,
+    pub(crate) method_get_long_ret: ReturnType,
+    pub(crate) method_get_float: JStaticMethodID,
+    pub(crate) method_get_float_ret: ReturnType,
+    pub(crate) method_get_double: JStaticMethodID,
+    pub(crate) method_get_double_ret: ReturnType,
+    pub(crate) method_get_decimal: JStaticMethodID,
+    pub(crate) method_get_decimal_ret: ReturnType,
+    pub(crate) method_get_string: JStaticMethodID,
+    pub(crate) method_get_string_ret: ReturnType,
+    pub(crate) method_get_binary: JStaticMethodID,
+    pub(crate) method_get_binary_ret: ReturnType,
+    pub(crate) method_is_null: JStaticMethodID,
+    pub(crate) method_is_null_ret: ReturnType,
 }
 
 impl<'a> CometExec<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometScalarSubquery";
+    pub(crate) const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometScalarSubquery";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometExec<'a>> {
+    pub(crate) fn new(env: &mut JNIEnv<'a>) -> JniResult<CometExec<'a>> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometExec {

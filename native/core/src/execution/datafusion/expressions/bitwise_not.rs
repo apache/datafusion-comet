@@ -44,19 +44,19 @@ macro_rules! compute_op {
 
 /// BitwiseNot expression
 #[derive(Debug, Hash)]
-pub struct BitwiseNotExpr {
+pub(crate) struct BitwiseNotExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
 }
 
 impl BitwiseNotExpr {
     /// Create new bitwise not expression
-    pub fn new(arg: Arc<dyn PhysicalExpr>) -> Self {
+    pub(crate) fn new(arg: Arc<dyn PhysicalExpr>) -> Self {
         Self { arg }
     }
 
     /// Get the input expression
-    pub fn arg(&self) -> &Arc<dyn PhysicalExpr> {
+    pub(crate) fn arg(&self) -> &Arc<dyn PhysicalExpr> {
         &self.arg
     }
 }
@@ -131,7 +131,7 @@ impl PartialEq<dyn Any> for BitwiseNotExpr {
     }
 }
 
-pub fn bitwise_not(arg: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
+pub(crate) fn bitwise_not(arg: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
     Ok(Arc::new(BitwiseNotExpr::new(arg)))
 }
 

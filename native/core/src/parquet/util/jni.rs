@@ -32,7 +32,7 @@ use parquet::{
 
 /// Convert primitives from Spark side into a `ColumnDescriptor`.
 #[allow(clippy::too_many_arguments)]
-pub fn convert_column_descriptor(
+pub(crate) fn convert_column_descriptor(
     env: &mut JNIEnv,
     physical_type_id: jint,
     logical_type_id: jint,
@@ -78,7 +78,7 @@ pub fn convert_column_descriptor(
     Ok(result)
 }
 
-pub fn convert_encoding(ordinal: jint) -> Encoding {
+pub(crate) fn convert_encoding(ordinal: jint) -> Encoding {
     match ordinal {
         0 => Encoding::PLAIN,
         1 => Encoding::RLE,
@@ -94,7 +94,7 @@ pub fn convert_encoding(ordinal: jint) -> Encoding {
 }
 
 #[derive(Debug)]
-pub struct TypePromotionInfo {
+pub(crate) struct TypePromotionInfo {
     pub(crate) physical_type: PhysicalType,
     pub(crate) precision: i32,
     pub(crate) scale: i32,
@@ -102,7 +102,7 @@ pub struct TypePromotionInfo {
 }
 
 impl TypePromotionInfo {
-    pub fn new_from_jni(
+    pub(crate) fn new_from_jni(
         physical_type_id: jint,
         precision: jint,
         scale: jint,
@@ -117,7 +117,12 @@ impl TypePromotionInfo {
         }
     }
 
-    pub fn new(physical_type: PhysicalType, precision: i32, scale: i32, bit_width: i32) -> Self {
+    pub(crate) fn new(
+        physical_type: PhysicalType,
+        precision: i32,
+        scale: i32,
+        bit_width: i32,
+    ) -> Self {
         Self {
             physical_type,
             precision,

@@ -37,7 +37,7 @@ use std::{
 /// If `owned` is false, this buffer is an alias to another buffer. The buffer itself becomes
 /// immutable and can only be read.
 #[derive(Debug)]
-pub struct CometBuffer {
+pub(crate) struct CometBuffer {
     data: NonNull<u8>,
     len: usize,
     capacity: usize,
@@ -53,7 +53,7 @@ const ALIGNMENT: usize = 64;
 
 impl CometBuffer {
     /// Initializes a owned buffer filled with 0.
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         let aligned_capacity = bit::round_upto_power_of_2(capacity, ALIGNMENT);
         unsafe {
             let layout = Layout::from_size_align_unchecked(aligned_capacity, ALIGNMENT);
@@ -67,7 +67,7 @@ impl CometBuffer {
         }
     }
 
-    pub fn from_ptr(ptr: *const u8, len: usize, capacity: usize) -> Self {
+    pub(crate) fn from_ptr(ptr: *const u8, len: usize, capacity: usize) -> Self {
         assert_eq!(
             capacity % ALIGNMENT,
             0,
@@ -88,34 +88,34 @@ impl CometBuffer {
     }
 
     /// Returns the capacity of this buffer.
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Returns the length (i.e., number of bytes) in this buffer.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.len
     }
 
     /// Whether this buffer is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns the data stored in this buffer as a slice.
-    pub fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         self
     }
 
     /// Returns the data stored in this buffer as a mutable slice.
-    pub fn as_slice_mut(&mut self) -> &mut [u8] {
+    pub(crate) fn as_slice_mut(&mut self) -> &mut [u8] {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         self
     }
 
     /// Extends this buffer (must be an owned buffer) by appending bytes from `src`,
     /// starting from `offset`.
-    pub fn extend_from_slice(&mut self, offset: usize, src: &[u8]) {
+    pub(crate) fn extend_from_slice(&mut self, offset: usize, src: &[u8]) {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         debug_assert!(
             offset + src.len() <= self.capacity(),
@@ -134,14 +134,14 @@ impl CometBuffer {
     /// Returns a raw pointer to this buffer's internal memory
     /// This pointer is guaranteed to be aligned along cache-lines.
     #[inline]
-    pub const fn as_ptr(&self) -> *const u8 {
+    pub(crate) const fn as_ptr(&self) -> *const u8 {
         self.data.as_ptr()
     }
 
     /// Returns a mutable raw pointer to this buffer's internal memory
     /// This pointer is guaranteed to be aligned along cache-lines.
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         self.data.as_ptr()
     }
@@ -163,7 +163,7 @@ impl CometBuffer {
     /// because of the iterator-style pattern, the content of the original mutable buffer will only
     /// be updated once upstream operators fully consumed the previous output batch. For breaking
     /// operators, they are responsible for copying content out of the buffers.
-    pub unsafe fn to_arrow(&self) -> ArrowBuffer {
+    pub(crate) unsafe fn to_arrow(&self) -> ArrowBuffer {
         let ptr = NonNull::new_unchecked(self.data.as_ptr());
         // Uses a dummy `Arc::new(0)` as `Allocation` to ensure the memory region pointed by
         // `ptr` won't be freed when the returned `ArrowBuffer` goes out of scope.
@@ -171,7 +171,7 @@ impl CometBuffer {
     }
 
     /// Resets this buffer by filling all bytes with zeros.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         unsafe {
             std::ptr::write_bytes(self.as_mut_ptr(), 0, self.len);
@@ -181,7 +181,7 @@ impl CometBuffer {
     /// Resize this buffer to the `new_capacity`. For additional bytes allocated, they are filled
     /// with 0. if `new_capacity` is less than the current capacity of this buffer, this is a no-op.
     #[inline(always)]
-    pub fn resize(&mut self, new_capacity: usize) {
+    pub(crate) fn resize(&mut self, new_capacity: usize) {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         if new_capacity > self.len {
             let (ptr, new_capacity) =

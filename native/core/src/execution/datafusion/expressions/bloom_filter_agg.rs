@@ -33,7 +33,7 @@ use datafusion_expr::{
 use datafusion_physical_expr::expressions::Literal;
 
 #[derive(Debug, Clone)]
-pub struct BloomFilterAgg {
+pub(crate) struct BloomFilterAgg {
     name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
@@ -52,7 +52,7 @@ fn extract_i32_from_literal(expr: Arc<dyn PhysicalExpr>) -> i32 {
 }
 
 impl BloomFilterAgg {
-    pub fn new(
+    pub(crate) fn new(
         expr: Arc<dyn PhysicalExpr>,
         num_items: Arc<dyn PhysicalExpr>,
         num_bits: Arc<dyn PhysicalExpr>,

@@ -41,7 +41,7 @@ use DataType::*;
 
 /// AVG aggregate expression
 #[derive(Debug, Clone)]
-pub struct AvgDecimal {
+pub(crate) struct AvgDecimal {
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
     sum_data_type: DataType,
@@ -50,7 +50,11 @@ pub struct AvgDecimal {
 
 impl AvgDecimal {
     /// Create a new AVG aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>, result_type: DataType, sum_type: DataType) -> Self {
+    pub(crate) fn new(
+        expr: Arc<dyn PhysicalExpr>,
+        result_type: DataType,
+        sum_type: DataType,
+    ) -> Self {
         Self {
             signature: Signature::user_defined(Immutable),
             expr,
@@ -183,7 +187,12 @@ struct AvgDecimalAccumulator {
 }
 
 impl AvgDecimalAccumulator {
-    pub fn new(sum_scale: i8, sum_precision: u8, target_precision: u8, target_scale: i8) -> Self {
+    pub(crate) fn new(
+        sum_scale: i8,
+        sum_precision: u8,
+        target_precision: u8,
+        target_scale: i8,
+    ) -> Self {
         Self {
             sum: None,
             count: 0,
@@ -334,7 +343,7 @@ struct AvgDecimalGroupsAccumulator {
 }
 
 impl AvgDecimalGroupsAccumulator {
-    pub fn new(
+    pub(crate) fn new(
         return_data_type: &DataType,
         sum_data_type: &DataType,
         target_precision: u8,

@@ -47,7 +47,7 @@ impl From<prost::DecodeError> for ExecutionError {
 }
 
 /// Deserialize bytes to protobuf type of expression
-pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, ExpressionError> {
+pub(crate) fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, ExpressionError> {
     match spark_expression::Expr::decode(&mut Cursor::new(buf)) {
         Ok(e) => Ok(e),
         Err(err) => Err(ExpressionError::from(err)),
@@ -55,7 +55,7 @@ pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, Expression
 }
 
 /// Deserialize bytes to protobuf type of operator
-pub fn deserialize_op(buf: &[u8]) -> Result<spark_operator::Operator, ExecutionError> {
+pub(crate) fn deserialize_op(buf: &[u8]) -> Result<spark_operator::Operator, ExecutionError> {
     match spark_operator::Operator::decode(&mut Cursor::new(buf)) {
         Ok(e) => Ok(e),
         Err(err) => Err(ExecutionError::from(err)),
@@ -63,7 +63,9 @@ pub fn deserialize_op(buf: &[u8]) -> Result<spark_operator::Operator, ExecutionE
 }
 
 /// Deserialize bytes to protobuf type of data type
-pub fn deserialize_data_type(buf: &[u8]) -> Result<spark_expression::DataType, ExecutionError> {
+pub(crate) fn deserialize_data_type(
+    buf: &[u8],
+) -> Result<spark_expression::DataType, ExecutionError> {
     match spark_expression::DataType::decode(&mut Cursor::new(buf)) {
         Ok(e) => Ok(e),
         Err(err) => Err(ExecutionError::from(err)),
@@ -71,7 +73,7 @@ pub fn deserialize_data_type(buf: &[u8]) -> Result<spark_expression::DataType, E
 }
 
 /// Converts Protobuf data type to Arrow data type.
-pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
+pub(crate) fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
     match DataTypeId::try_from(dt_value.type_id).unwrap() {
         Bool => ArrowDataType::Boolean,
         Int8 => ArrowDataType::Int8,

@@ -35,7 +35,7 @@ use datafusion_physical_expr::PhysicalExpr;
 use std::{any::Any, ops::BitAnd, sync::Arc};
 
 #[derive(Debug)]
-pub struct SumDecimal {
+pub(crate) struct SumDecimal {
     /// Aggregate function signature
     signature: Signature,
     /// The expression that provides the input decimal values to be summed
@@ -50,7 +50,7 @@ pub struct SumDecimal {
 }
 
 impl SumDecimal {
-    pub fn try_new(expr: Arc<dyn PhysicalExpr>, data_type: DataType) -> DFResult<Self> {
+    pub(crate) fn try_new(expr: Arc<dyn PhysicalExpr>, data_type: DataType) -> DFResult<Self> {
         // The `data_type` is the SUM result type passed from Spark side
         let (precision, scale) = match data_type {
             DataType::Decimal128(p, s) => (p, s),

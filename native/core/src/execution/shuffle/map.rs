@@ -29,7 +29,7 @@ use arrow_array::builder::{
 };
 use arrow_schema::{DataType, FieldRef, Fields, TimeUnit};
 
-pub struct SparkUnsafeMap {
+pub(crate) struct SparkUnsafeMap {
     row_addr: i64,
     row_size: i32,
     pub(crate) keys: SparkUnsafeArray,
@@ -1931,7 +1931,7 @@ define_append_map_struct_key_element!(
 /// Appending the given map stored in `SparkUnsafeMap` into `MapBuilder`.
 /// `field` includes data types of the map element. `map_builder` is the map builder.
 /// `map` is the map stored in `SparkUnsafeMap`.
-pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
+pub(crate) fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
     field: &FieldRef,
     map_builder: &mut MapBuilder<K, V>,
     map: &SparkUnsafeMap,
@@ -2843,7 +2843,7 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
 }
 
 #[allow(clippy::field_reassign_with_default)]
-pub fn get_map_key_value_dt(
+pub(crate) fn get_map_key_value_dt(
     field: &FieldRef,
 ) -> Result<(&DataType, &DataType, MapFieldNames), CometError> {
     let mut map_fieldnames = MapFieldNames::default();

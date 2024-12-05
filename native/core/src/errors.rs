@@ -50,7 +50,7 @@ lazy_static! {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum CometError {
+pub(crate) enum CometError {
     #[error("Configuration Error: {0}")]
     Config(String),
 
@@ -144,7 +144,7 @@ pub enum CometError {
     },
 }
 
-pub fn init() {
+pub(crate) fn init() {
     std::panic::set_hook(Box::new(|_panic_info| {
         // Capture the backtrace for a panic
         *PANIC_BACKTRACE.lock().unwrap() =
@@ -244,7 +244,7 @@ impl jni::errors::ToException for CometError {
 
 /// Error returned when there is an error during executing an expression.
 #[derive(thiserror::Error, Debug)]
-pub enum ExpressionError {
+pub(crate) enum ExpressionError {
     /// Simple error
     #[error("General expression error with reason {0}.")]
     General(String),
@@ -263,7 +263,7 @@ pub enum ExpressionError {
 }
 
 /// A specialized `Result` for Comet errors.
-pub type CometResult<T> = result::Result<T, CometError>;
+pub(crate) type CometResult<T> = result::Result<T, CometError>;
 
 // ----------------------------------------------------------------------
 // Convenient macros for different errors
@@ -282,7 +282,7 @@ macro_rules! general_err {
 /// NOTE: We can't just use [Default] since both the trait and the object are defined in other
 /// crates.
 /// See [Rust Compiler Error Index - E0117](https://doc.rust-lang.org/error-index.html#E0117)
-pub trait JNIDefault {
+pub(crate) trait JNIDefault {
     fn default() -> Self;
 }
 
@@ -348,7 +348,7 @@ impl JNIDefault for () {
 // Unwrap the result returned from `panic::catch_unwind` when `Ok`, otherwise throw a
 // `RuntimeException` back to the calling Java.  Since a return result is required, use `JNIDefault`
 // to create a reasonable result.  This returned default value will be ignored due to the exception.
-pub fn unwrap_or_throw_default<T: JNIDefault>(
+pub(crate) fn unwrap_or_throw_default<T: JNIDefault>(
     env: &mut JNIEnv,
     result: std::result::Result<T, CometError>,
 ) -> T {
@@ -487,7 +487,7 @@ where
 
 // This is a duplicate of `try_unwrap_or_throw`, which is used to work around Arrow's lack of
 // `UnwindSafe` handling.
-pub fn try_assert_unwind_safe_or_throw<T, F>(env: &JNIEnv, f: F) -> T
+pub(crate) fn try_assert_unwind_safe_or_throw<T, F>(env: &JNIEnv, f: F) -> T
 where
     T: JNIDefault,
     F: FnOnce(JNIEnv) -> Result<T, CometError>,
@@ -504,7 +504,7 @@ where
 
 // It is currently undefined behavior to unwind from Rust code into foreign code, so we can wrap
 // our JNI functions and turn these panics into a `RuntimeException`.
-pub fn try_unwrap_or_throw<T, F>(env: &JNIEnv, f: F) -> T
+pub(crate) fn try_unwrap_or_throw<T, F>(env: &JNIEnv, f: F) -> T
 where
     T: JNIDefault,
     F: FnOnce(JNIEnv) -> Result<T, CometError> + UnwindSafe,
@@ -539,7 +539,7 @@ mod tests {
         assert_starts_with_as_result,
     };
 
-    pub fn jvm() -> &'static Arc<JavaVM> {
+    pub(crate) fn jvm() -> &'static Arc<JavaVM> {
         static mut JVM: Option<Arc<JavaVM>> = None;
         static INIT: Once = Once::new();
 
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn error_from_panic() {
+    pub(crate) fn error_from_panic() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -604,7 +604,7 @@ mod tests {
     // a test of the "happy path".
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn object_result() {
+    pub(crate) fn object_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -622,7 +622,7 @@ mod tests {
     // a test of the "happy path".
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jlong_result() {
+    pub(crate) fn jlong_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -639,7 +639,7 @@ mod tests {
     // causes an exception by dividing by zero.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jlong_panic_exception() {
+    pub(crate) fn jlong_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -660,7 +660,7 @@ mod tests {
     // a test of the "happy path".
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jlong_result_ok() {
+    pub(crate) fn jlong_result_ok() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -677,7 +677,7 @@ mod tests {
     // a test of the "happy path".
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jlong_result_err() {
+    pub(crate) fn jlong_result_err() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -698,7 +698,7 @@ mod tests {
     // a test of the "happy path".
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jint_array_result() {
+    pub(crate) fn jint_array_result() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -719,7 +719,7 @@ mod tests {
     // causes an exception by dividing by zero.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn jint_array_panic_exception() {
+    pub(crate) fn jint_array_panic_exception() {
         let _guard = attach_current_thread();
         let mut env = jvm().get_env().unwrap();
 
@@ -743,7 +743,7 @@ mod tests {
     /// that the resulting stack trace includes the offending call.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn stacktrace_string() {
+    pub(crate) fn stacktrace_string() {
         // Setup: Start with a backtrace that includes all of the expected scenarios, including
         // cases where the file and location are not provided as part of the backtrace capture
         let backtrace_string = read_resource("testdata/backtrace.txt").expect("backtrace content");
@@ -773,7 +773,7 @@ mod tests {
     // * returning an object
     // * throwing an exception from `.expect()`
     #[no_mangle]
-    pub extern "system" fn Java_Errors_hello(
+    pub(crate) extern "system" fn Java_Errors_hello(
         e: &JNIEnv,
         _class: JClass,
         input: JString,
@@ -796,7 +796,7 @@ mod tests {
     // * returning an native type
     // * throwing an exception when dividing by zero
     #[no_mangle]
-    pub extern "system" fn Java_Errors_div(
+    pub(crate) extern "system" fn Java_Errors_div(
         env: &JNIEnv,
         _class: JClass,
         a: jlong,
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_Errors_div_with_parse(
+    pub(crate) extern "system" fn Java_Errors_div_with_parse(
         e: &JNIEnv,
         _class: JClass,
         a: JString,
@@ -823,7 +823,7 @@ mod tests {
     // * returning an array
     // * throwing an exception when dividing by zero
     #[no_mangle]
-    pub extern "system" fn Java_Errors_array_div(
+    pub(crate) extern "system" fn Java_Errors_array_div(
         e: &JNIEnv,
         _class: JClass,
         input: &JIntArray,

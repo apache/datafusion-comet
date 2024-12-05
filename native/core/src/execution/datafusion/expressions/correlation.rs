@@ -41,7 +41,7 @@ use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// to be consistent with Spark's implementation.
 #[derive(Debug)]
-pub struct Correlation {
+pub(crate) struct Correlation {
     name: String,
     signature: Signature,
     expr1: Arc<dyn PhysicalExpr>,
@@ -50,7 +50,7 @@ pub struct Correlation {
 }
 
 impl Correlation {
-    pub fn new(
+    pub(crate) fn new(
         expr1: Arc<dyn PhysicalExpr>,
         expr2: Arc<dyn PhysicalExpr>,
         name: impl Into<String>,
@@ -148,7 +148,7 @@ impl PartialEq<dyn Any> for Correlation {
 
 /// An accumulator to compute correlation
 #[derive(Debug)]
-pub struct CorrelationAccumulator {
+pub(crate) struct CorrelationAccumulator {
     covar: CovarianceAccumulator,
     stddev1: StddevAccumulator,
     stddev2: StddevAccumulator,
@@ -157,7 +157,7 @@ pub struct CorrelationAccumulator {
 
 impl CorrelationAccumulator {
     /// Creates a new `CorrelationAccumulator`
-    pub fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
+    pub(crate) fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
             stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,

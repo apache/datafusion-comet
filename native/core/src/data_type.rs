@@ -20,7 +20,7 @@ use arrow_schema::TimeUnit;
 use std::{cmp, fmt::Debug};
 
 #[derive(Debug, PartialEq)]
-pub enum DataType {
+pub(crate) enum DataType {
     Boolean,
     Byte,
     Short,
@@ -60,7 +60,7 @@ impl From<&ArrowDataType> for DataType {
 }
 
 impl DataType {
-    pub fn kind(&self) -> TypeKind {
+    pub(crate) fn kind(&self) -> TypeKind {
         match self {
             DataType::Boolean => TypeKind::Boolean,
             DataType::Byte => TypeKind::Byte,
@@ -87,7 +87,7 @@ fn is_valid_key_type(dt: &ArrowDataType) -> bool {
 /// decimal precision & scale. Instead, it is merely a token that is used to do runtime case
 /// analysis depending on the actual type. It can be obtained from a `TypeTrait` generic parameter.
 #[derive(Debug, PartialEq)]
-pub enum TypeKind {
+pub(crate) enum TypeKind {
     Boolean,
     Byte,
     Short,
@@ -102,11 +102,11 @@ pub enum TypeKind {
     Date,
 }
 
-pub const BITS_PER_BYTE: usize = 8;
+pub(crate) const BITS_PER_BYTE: usize = 8;
 
 impl TypeKind {
     /// Returns the size of this type, in number of bits.
-    pub fn type_size(&self) -> usize {
+    pub(crate) fn type_size(&self) -> usize {
         match self {
             TypeKind::Boolean => 1,
             TypeKind::Byte => BITS_PER_BYTE,
@@ -121,19 +121,19 @@ impl TypeKind {
     }
 }
 
-pub const STRING_VIEW_LEN: usize = 16; // StringView is stored using 16 bytes
-pub const STRING_VIEW_PREFIX_LEN: usize = 4; // String prefix in StringView is stored using 4 bytes
+pub(crate) const STRING_VIEW_LEN: usize = 16; // StringView is stored using 16 bytes
+pub(crate) const STRING_VIEW_PREFIX_LEN: usize = 4; // String prefix in StringView is stored using 4 bytes
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug)]
-pub struct StringView {
-    pub len: u32,
-    pub prefix: [u8; STRING_VIEW_PREFIX_LEN],
-    pub ptr: usize,
+pub(crate) struct StringView {
+    pub(crate) len: u32,
+    pub(crate) prefix: [u8; STRING_VIEW_PREFIX_LEN],
+    pub(crate) ptr: usize,
 }
 
 impl StringView {
-    pub fn as_utf8_str(&self) -> &str {
+    pub(crate) fn as_utf8_str(&self) -> &str {
         unsafe {
             let slice = std::slice::from_raw_parts(self.ptr as *const u8, self.len as usize);
             std::str::from_utf8_unchecked(slice)
@@ -163,7 +163,7 @@ impl PartialEq for StringView {
     }
 }
 
-pub trait NativeEqual {
+pub(crate) trait NativeEqual {
     fn is_equal(&self, other: &Self) -> bool;
 }
 
@@ -196,7 +196,7 @@ impl NativeEqual for f64 {
         self.total_cmp(other) == cmp::Ordering::Equal
     }
 }
-pub trait NativeType: Debug + Default + Copy + NativeEqual {}
+pub(crate) trait NativeType: Debug + Default + Copy + NativeEqual {}
 
 impl NativeType for bool {}
 impl NativeType for i8 {}
@@ -210,14 +210,14 @@ impl NativeType for StringView {}
 
 /// A trait for Comet data type. This should only be used as generic parameter during method
 /// invocations.
-pub trait TypeTrait: 'static {
+pub(crate) trait TypeTrait: 'static {
     type Native: NativeType;
     fn type_kind() -> TypeKind;
 }
 
 macro_rules! make_type_trait {
     ($name:ident, $native_ty:ty, $kind:path) => {
-        pub struct $name {}
+        pub(crate) struct $name {}
         impl TypeTrait for $name {
             type Native = $native_ty;
             fn type_kind() -> TypeKind {

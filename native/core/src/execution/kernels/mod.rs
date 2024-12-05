@@ -18,6 +18,5 @@
 //! Kernels
 
 mod hash;
-pub use hash::hash;
 
 pub(crate) mod strings;

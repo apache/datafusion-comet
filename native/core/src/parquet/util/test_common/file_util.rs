@@ -18,7 +18,7 @@
 use std::{env, fs, io::Write, path::PathBuf};
 
 /// Returns file handle for a temp file in 'target' directory with a provided content
-pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
+pub(crate) fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
     // build tmp path to a file in "target/debug/testdata"
     let mut path_buf = env::current_dir().unwrap();
     path_buf.push("target");
@@ -41,7 +41,7 @@ pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
     file.unwrap()
 }
 
-pub fn get_temp_filename() -> PathBuf {
+pub(crate) fn get_temp_filename() -> PathBuf {
     let mut path_buf = env::current_dir().unwrap();
     path_buf.push("target");
     path_buf.push("debug");

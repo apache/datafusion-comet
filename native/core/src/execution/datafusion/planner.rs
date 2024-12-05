@@ -128,17 +128,17 @@ type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
 
 struct JoinParameters {
-    pub left: Arc<SparkPlan>,
-    pub right: Arc<SparkPlan>,
-    pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
-    pub join_filter: Option<JoinFilter>,
-    pub join_type: DFJoinType,
+    pub(crate) left: Arc<SparkPlan>,
+    pub(crate) right: Arc<SparkPlan>,
+    pub(crate) join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
+    pub(crate) join_filter: Option<JoinFilter>,
+    pub(crate) join_type: DFJoinType,
 }
 
-pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
+pub(crate) const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
 /// The query planner for converting Spark query plans to DataFusion query plans.
-pub struct PhysicalPlanner {
+pub(crate) struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
     execution_props: ExecutionProps,
@@ -158,7 +158,7 @@ impl Default for PhysicalPlanner {
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+    pub(crate) fn new(session_ctx: Arc<SessionContext>) -> Self {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -167,7 +167,7 @@ impl PhysicalPlanner {
         }
     }
 
-    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
+    pub(crate) fn with_exec_id(self, exec_context_id: i64) -> Self {
         Self {
             exec_context_id,
             execution_props: self.execution_props,

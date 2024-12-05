@@ -56,21 +56,21 @@ use std::{
 /// until the data is already available in the JVM. When CometExecIterator invokes
 /// Native.executePlan, it passes in the memory addresses of the input batches.
 #[derive(Debug, Clone)]
-pub struct ScanExec {
+pub(crate) struct ScanExec {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
     /// environment `JNIEnv` from the execution context.
-    pub exec_context_id: i64,
+    pub(crate) exec_context_id: i64,
     /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
-    pub input_source: Option<Arc<GlobalRef>>,
+    pub(crate) input_source: Option<Arc<GlobalRef>>,
     /// A description of the input source for informational purposes
-    pub input_source_description: String,
+    pub(crate) input_source_description: String,
     /// The data types of columns of the input batch. Converted from Spark schema.
-    pub data_types: Vec<DataType>,
+    pub(crate) data_types: Vec<DataType>,
     /// Schema of first batch
-    pub schema: SchemaRef,
+    pub(crate) schema: SchemaRef,
     /// The input batch of input data. Used to determine the schema of the input data.
     /// It is also used in unit test to mock the input data from JVM.
-    pub batch: Arc<Mutex<Option<InputBatch>>>,
+    pub(crate) batch: Arc<Mutex<Option<InputBatch>>>,
     /// Cache of expensive-to-compute plan properties
     cache: PlanProperties,
     /// Metrics collector
@@ -80,7 +80,7 @@ pub struct ScanExec {
 }
 
 impl ScanExec {
-    pub fn new(
+    pub(crate) fn new(
         exec_context_id: i64,
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
@@ -153,12 +153,12 @@ impl ScanExec {
     }
 
     /// Feeds input batch into this `Scan`. Only used in unit test.
-    pub fn set_input_batch(&mut self, input: InputBatch) {
+    pub(crate) fn set_input_batch(&mut self, input: InputBatch) {
         *self.batch.try_lock().unwrap() = Some(input);
     }
 
     /// Pull next input batch from JVM.
-    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+    pub(crate) fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // This is a unit test. We don't need to call JNI.
             return Ok(());
@@ -374,7 +374,7 @@ struct ScanStream<'a> {
 }
 
 impl<'a> ScanStream<'a> {
-    pub fn new(
+    pub(crate) fn new(
         scan: ScanExec,
         schema: SchemaRef,
         partition: usize,
@@ -462,7 +462,7 @@ impl<'a> RecordBatchStream for ScanStream<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub enum InputBatch {
+pub(crate) enum InputBatch {
     /// The end of input batches.
     EOF,
 
@@ -476,7 +476,7 @@ impl InputBatch {
     /// Constructs a `InputBatch` from columns and optional number of rows.
     /// If `num_rows` is none, this function will calculate it from given
     /// columns.
-    pub fn new(columns: Vec<ArrayRef>, num_rows: Option<usize>) -> Self {
+    pub(crate) fn new(columns: Vec<ArrayRef>, num_rows: Option<usize>) -> Self {
         let num_rows = num_rows.unwrap_or_else(|| {
             let lengths = columns.iter().map(|a| a.len()).unique().collect::<Vec<_>>();
             assert!(lengths.len() <= 1, "Columns have different lengths.");

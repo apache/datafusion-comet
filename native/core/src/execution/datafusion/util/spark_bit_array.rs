@@ -23,13 +23,13 @@ use std::iter::zip;
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
 #[derive(Debug, Hash)]
-pub struct SparkBitArray {
+pub(crate) struct SparkBitArray {
     data: Vec<u64>,
     bit_count: usize,
 }
 
 impl SparkBitArray {
-    pub fn new(buf: Vec<u64>) -> Self {
+    pub(crate) fn new(buf: Vec<u64>) -> Self {
         let num_bits = buf.iter().map(|x| x.count_ones() as usize).sum();
         Self {
             data: buf,
@@ -37,7 +37,7 @@ impl SparkBitArray {
         }
     }
 
-    pub fn set(&mut self, index: usize) -> bool {
+    pub(crate) fn set(&mut self, index: usize) -> bool {
         if !self.get(index) {
             // see the get method for the explanation of the shift operators
             self.data[index >> 6] |= 1u64 << (index & 0x3f);
@@ -48,7 +48,7 @@ impl SparkBitArray {
         }
     }
 
-    pub fn get(&self, index: usize) -> bool {
+    pub(crate) fn get(&self, index: usize) -> bool {
         // Java version: (data[(int) (index >> 6)] & (1L << (index))) != 0
         // Rust and Java have different semantics for the shift operators. Java's shift operators
         // explicitly mask the right-hand operand with 0x3f [1], while Rust's shift operators does
@@ -58,33 +58,33 @@ impl SparkBitArray {
         (self.data[index >> 6] & (1u64 << (index & 0x3f))) != 0
     }
 
-    pub fn bit_size(&self) -> u64 {
+    pub(crate) fn bit_size(&self) -> u64 {
         self.word_size() as u64 * 64
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub(crate) fn byte_size(&self) -> usize {
         self.word_size() * 8
     }
 
-    pub fn word_size(&self) -> usize {
+    pub(crate) fn word_size(&self) -> usize {
         self.data.len()
     }
 
-    pub fn cardinality(&self) -> usize {
+    pub(crate) fn cardinality(&self) -> usize {
         self.bit_count
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         Vec::from(self.data.to_byte_slice())
     }
 
-    pub fn data(&self) -> Vec<u64> {
+    pub(crate) fn data(&self) -> Vec<u64> {
         self.data.clone()
     }
 
     // Combines SparkBitArrays, however other is a &[u8] because we anticipate to come from an
     // Arrow ScalarValue::Binary which is a byte vector underneath, rather than a word vector.
-    pub fn merge_bits(&mut self, other: &[u8]) {
+    pub(crate) fn merge_bits(&mut self, other: &[u8]) {
         assert_eq!(self.byte_size(), other.len());
         let mut bit_count: usize = 0;
         // For each word, merge the bits into self, and accumulate a new bit_count.
@@ -101,7 +101,7 @@ impl SparkBitArray {
     }
 }
 
-pub fn num_words(num_bits: i32) -> i32 {
+pub(crate) fn num_words(num_bits: i32) -> i32 {
     bit::ceil(num_bits as usize, 64) as i32
 }
 

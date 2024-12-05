@@ -30,7 +30,7 @@ use std::sync::Arc;
 /// Updates the metrics of a CometMetricNode. This function is called recursively to
 /// update the metrics of all the children nodes. The metrics are pulled from the
 /// native execution plan and pushed to the Java side through JNI.
-pub fn update_comet_metric(
+pub(crate) fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,

@@ -17,9 +17,9 @@
 
 //! Native execution through DataFusion
 
-pub mod expressions;
+pub(crate) mod expressions;
 mod operators;
-pub mod planner;
-pub mod shuffle_writer;
+pub(crate) mod planner;
+pub(crate) mod shuffle_writer;
 pub(crate) mod spark_plan;
 mod util;

@@ -51,7 +51,7 @@ use log::trace;
 /// batches are never passed through unchanged. The changes are between the comments
 /// `BEGIN Comet change` and `END Comet change`.
 #[derive(Debug)]
-pub struct FilterExec {
+pub(crate) struct FilterExec {
     /// The expression to filter on. This expression must evaluate to a boolean value.
     predicate: Arc<dyn PhysicalExpr>,
     /// The input plan
@@ -66,7 +66,7 @@ pub struct FilterExec {
 
 impl FilterExec {
     /// Create a FilterExec on an input
-    pub fn try_new(
+    pub(crate) fn try_new(
         predicate: Arc<dyn PhysicalExpr>,
         input: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
@@ -88,7 +88,7 @@ impl FilterExec {
         }
     }
 
-    pub fn with_default_selectivity(
+    pub(crate) fn with_default_selectivity(
         mut self,
         default_selectivity: u8,
     ) -> Result<Self, DataFusionError> {
@@ -102,17 +102,17 @@ impl FilterExec {
     }
 
     /// The expression to filter on. This expression must evaluate to a boolean value.
-    pub fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
+    pub(crate) fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
         &self.predicate
     }
 
     /// The input plan
-    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
     }
 
     /// The default selectivity
-    pub fn default_selectivity(&self) -> u8 {
+    pub(crate) fn default_selectivity(&self) -> u8 {
         self.default_selectivity
     }
 
@@ -362,7 +362,7 @@ pub(crate) fn batch_filter(
 // BEGIN Comet changes
 // `FilterExec` could modify input batch or return input batch without change. Instead of always
 // adding `CopyExec` on top of it, we only copy input batch for the special case.
-pub fn comet_filter_record_batch(
+pub(crate) fn comet_filter_record_batch(
     record_batch: &RecordBatch,
     predicate: &BooleanArray,
 ) -> std::result::Result<RecordBatch, ArrowError> {
@@ -446,7 +446,7 @@ fn collect_columns_from_predicate(predicate: &Arc<dyn PhysicalExpr>) -> EqualAnd
 }
 
 /// Pair of `Arc<dyn PhysicalExpr>`s
-pub type PhysicalExprPairRef<'a> = (&'a Arc<dyn PhysicalExpr>, &'a Arc<dyn PhysicalExpr>);
+pub(crate) type PhysicalExprPairRef<'a> = (&'a Arc<dyn PhysicalExpr>, &'a Arc<dyn PhysicalExpr>);
 
 /// The equals Column-Pairs and Non-equals Column-Pairs in the Predicates
-pub type EqualAndNonEqual<'a> = (Vec<PhysicalExprPairRef<'a>>, Vec<PhysicalExprPairRef<'a>>);
+pub(crate) type EqualAndNonEqual<'a> = (Vec<PhysicalExprPairRef<'a>>, Vec<PhysicalExprPairRef<'a>>);

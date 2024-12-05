@@ -66,38 +66,38 @@ use log::info;
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
-    pub id: i64,
+    pub(crate) id: i64,
     /// The deserialized Spark plan
-    pub spark_plan: Operator,
+    pub(crate) spark_plan: Operator,
     /// The DataFusion root operator converted from the `spark_plan`
-    pub root_op: Option<Arc<SparkPlan>>,
+    pub(crate) root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
-    pub scans: Vec<ScanExec>,
+    pub(crate) scans: Vec<ScanExec>,
     /// The global reference of input sources for the DataFusion plan
-    pub input_sources: Vec<Arc<GlobalRef>>,
+    pub(crate) input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
-    pub stream: Option<SendableRecordBatchStream>,
+    pub(crate) stream: Option<SendableRecordBatchStream>,
     /// The Tokio runtime used for async.
-    pub runtime: Runtime,
+    pub(crate) runtime: Runtime,
     /// Native metrics
-    pub metrics: Arc<GlobalRef>,
+    pub(crate) metrics: Arc<GlobalRef>,
     /// The time it took to create the native plan and configure the context
-    pub plan_creation_time: Duration,
+    pub(crate) plan_creation_time: Duration,
     /// DataFusion SessionContext
-    pub session_ctx: Arc<SessionContext>,
+    pub(crate) session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
-    pub debug_native: bool,
+    pub(crate) debug_native: bool,
     /// Whether to write native plans with metrics to stdout
-    pub explain_native: bool,
+    pub(crate) explain_native: bool,
     /// Map of metrics name -> jstring object to cache jni_NewStringUTF calls.
-    pub metrics_jstrings: HashMap<String, Arc<GlobalRef>>,
+    pub(crate) metrics_jstrings: HashMap<String, Arc<GlobalRef>>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
@@ -290,7 +290,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
     stage_id: jint,
@@ -397,7 +397,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
 #[no_mangle]
 /// Drop the native query plan object and context object.
-pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
+pub(crate) extern "system" fn Java_org_apache_comet_Native_releasePlan(
     e: JNIEnv,
     _class: JClass,
     exec_context: jlong,
@@ -451,7 +451,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
     _class: JClass,
     row_addresses: jlongArray,
@@ -520,7 +520,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 
 #[no_mangle]
 /// Used by Comet shuffle external sorter to sort in-memory row partition ids.
-pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
+pub(crate) extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     e: JNIEnv,
     _class: JClass,
     address: jlong,

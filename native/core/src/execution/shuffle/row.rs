@@ -55,7 +55,7 @@ const NESTED_TYPE_BUILDER_CAPACITY: usize = 100;
 /// A common trait for Spark Unsafe classes that can be used to access the underlying data,
 /// e.g., `UnsafeRow` and `UnsafeArray`. This defines a set of methods that can be used to
 /// access the underlying data with index.
-pub trait SparkUnsafeObject {
+pub(crate) trait SparkUnsafeObject {
     /// Returns the address of the row.
     fn get_row_addr(&self) -> i64;
 
@@ -180,7 +180,7 @@ pub trait SparkUnsafeObject {
     }
 }
 
-pub struct SparkUnsafeRow {
+pub(crate) struct SparkUnsafeRow {
     row_addr: i64,
     row_size: i32,
     row_bitset_width: i64,
@@ -216,18 +216,18 @@ impl SparkUnsafeRow {
     }
 
     /// Returns true if the row is a null row.
-    pub fn is_null_row(&self) -> bool {
+    pub(crate) fn is_null_row(&self) -> bool {
         self.row_addr == -1 && self.row_size == -1 && self.row_bitset_width == -1
     }
 
     /// Calculate the width of the bitset for the row in bytes.
     /// The logic is from Spark `UnsafeRow.calculateBitSetWidthInBytes`.
     #[inline]
-    pub const fn get_row_bitset_width(num_fields: usize) -> usize {
+    pub(crate) const fn get_row_bitset_width(num_fields: usize) -> usize {
         ((num_fields + 63) / 64) * 8
     }
 
-    pub fn new_with_num_fields(num_fields: usize) -> Self {
+    pub(crate) fn new_with_num_fields(num_fields: usize) -> Self {
         Self {
             row_addr: -1,
             row_size: -1,
@@ -236,7 +236,7 @@ impl SparkUnsafeRow {
     }
 
     /// Points the row to the given slice.
-    pub fn point_to_slice(&mut self, slice: &[u8]) {
+    pub(crate) fn point_to_slice(&mut self, slice: &[u8]) {
         self.row_addr = slice.as_ptr() as i64;
         self.row_size = slice.len() as i32;
     }
@@ -247,7 +247,7 @@ impl SparkUnsafeRow {
         self.row_size = row_size;
     }
 
-    pub fn get_row_size(&self) -> i32 {
+    pub(crate) fn get_row_size(&self) -> i32 {
         self.row_size
     }
 
@@ -263,7 +263,7 @@ impl SparkUnsafeRow {
     }
 
     /// Unsets the null bit at the given index of the row, i.e., set the bit to 0 (not null).
-    pub fn set_not_null_at(&mut self, index: usize) {
+    pub(crate) fn set_not_null_at(&mut self, index: usize) {
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
@@ -3281,7 +3281,7 @@ fn make_builders(
 
 /// Processes a sorted row partition and writes the result to the given output path.
 #[allow(clippy::too_many_arguments)]
-pub fn process_sorted_row_partition(
+pub(crate) fn process_sorted_row_partition(
     row_num: usize,
     batch_size: usize,
     row_addresses_ptr: *mut jlong,

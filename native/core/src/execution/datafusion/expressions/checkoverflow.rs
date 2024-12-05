@@ -39,14 +39,18 @@ use datafusion_physical_expr::PhysicalExpr;
 /// decimals already, Comet `CheckOverflow` expression only checks if the decimals can fit in the
 /// precision.
 #[derive(Debug, Hash)]
-pub struct CheckOverflow {
-    pub child: Arc<dyn PhysicalExpr>,
-    pub data_type: DataType,
-    pub fail_on_error: bool,
+pub(crate) struct CheckOverflow {
+    pub(crate) child: Arc<dyn PhysicalExpr>,
+    pub(crate) data_type: DataType,
+    pub(crate) fail_on_error: bool,
 }
 
 impl CheckOverflow {
-    pub fn new(child: Arc<dyn PhysicalExpr>, data_type: DataType, fail_on_error: bool) -> Self {
+    pub(crate) fn new(
+        child: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        fail_on_error: bool,
+    ) -> Self {
         Self {
             child,
             data_type,
@@ -179,7 +183,7 @@ impl PhysicalExpr for CheckOverflow {
 /// we can remove this code once we upgrade to a version of arrow-rs that
 /// includes https://github.com/apache/arrow-rs/pull/6419
 #[inline]
-pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
+pub(crate) fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
     precision <= DECIMAL128_MAX_PRECISION
         && value >= MIN_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
         && value <= MAX_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]

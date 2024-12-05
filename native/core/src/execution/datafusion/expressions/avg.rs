@@ -39,7 +39,7 @@ use DataType::*;
 
 /// AVG aggregate expression
 #[derive(Debug, Clone)]
-pub struct Avg {
+pub(crate) struct Avg {
     name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
@@ -49,7 +49,11 @@ pub struct Avg {
 
 impl Avg {
     /// Create a new AVG aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>, name: impl Into<String>, data_type: DataType) -> Self {
+    pub(crate) fn new(
+        expr: Arc<dyn PhysicalExpr>,
+        name: impl Into<String>,
+        data_type: DataType,
+    ) -> Self {
         let result_data_type = avg_return_type("avg", &data_type).unwrap();
 
         Self {
@@ -155,7 +159,7 @@ impl PartialEq<dyn Any> for Avg {
 
 /// An accumulator to compute the average
 #[derive(Debug, Default)]
-pub struct AvgAccumulator {
+pub(crate) struct AvgAccumulator {
     sum: Option<f64>,
     count: i64,
 }
@@ -236,7 +240,7 @@ where
     T: ArrowNumericType + Send,
     F: Fn(T::Native, i64) -> Result<T::Native> + Send,
 {
-    pub fn new(return_data_type: &DataType, avg_fn: F) -> Self {
+    pub(crate) fn new(return_data_type: &DataType, avg_fn: F) -> Self {
         Self {
             return_data_type: return_data_type.clone(),
             counts: vec![],

@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod data_type;
-pub mod mutable_vector;
-pub use mutable_vector::*;
+pub(crate) mod data_type;
+pub(crate) mod mutable_vector;
+pub(crate) use mutable_vector::*;
 
 #[macro_use]
-pub mod util;
-pub mod read;
+pub(crate) mod util;
+pub(crate) mod read;
 
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
 
@@ -51,12 +51,12 @@ const STR_CLASS_NAME: &str = "java/lang/String";
 
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
-    pub column_reader: ColumnReader,
+    pub(crate) column_reader: ColumnReader,
     last_data_page: Option<GlobalRef>,
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
     e: JNIEnv,
     _jclass: JClass,
     primitive_type: jint,
@@ -119,7 +119,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionaryPage(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionaryPage(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -147,7 +147,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionary
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -175,7 +175,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBufferV1(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBufferV1(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -216,7 +216,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBuffer
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV2(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV2(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -260,7 +260,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV2(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setNull(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setNull(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -273,7 +273,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setNull(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setBoolean(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setBoolean(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -287,7 +287,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setBoolean(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setByte(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setByte(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -301,7 +301,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setByte(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setShort(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setShort(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -315,7 +315,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setShort(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setInt(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setInt(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -329,7 +329,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setInt(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setLong(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setLong(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -343,7 +343,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setLong(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setFloat(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setFloat(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -357,7 +357,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setFloat(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setDouble(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setDouble(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -373,7 +373,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setDouble(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setBinary(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setBinary(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -394,7 +394,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setBinary(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDecimal(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDecimal(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -413,7 +413,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDecimal(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_setPosition(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_setPosition(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -430,7 +430,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_setPosition(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIndices(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIndices(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -468,7 +468,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIndices(
 /// # Safety
 /// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIsDeleted(
+pub(crate) unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIsDeleted(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -487,7 +487,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIsDeleted(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_resetBatch(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_resetBatch(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -500,7 +500,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_resetBatch(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_readBatch(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_readBatch(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -519,7 +519,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readBatch(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_skipBatch(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_skipBatch(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -533,7 +533,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_skipBatch(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
@@ -564,7 +564,7 @@ fn get_reader<'a>(handle: jlong) -> Result<&'a mut ColumnReader, CometError> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_parquet_Native_closeColumnReader(
+pub(crate) extern "system" fn Java_org_apache_comet_parquet_Native_closeColumnReader(
     env: JNIEnv,
     _jclass: JClass,
     handle: jlong,

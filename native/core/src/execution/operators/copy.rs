@@ -40,7 +40,7 @@ use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFus
 /// This could cause issues for Comet, since we re-use column vectors across different batches.
 /// For those scenarios, this can be used as an adapter node.
 #[derive(Debug)]
-pub struct CopyExec {
+pub(crate) struct CopyExec {
     input: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
     cache: PlanProperties,
@@ -49,7 +49,7 @@ pub struct CopyExec {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum CopyMode {
+pub(crate) enum CopyMode {
     /// Perform a deep copy and also unpack dictionaries
     UnpackOrDeepCopy,
     /// Perform a clone and also unpack dictionaries
@@ -57,7 +57,7 @@ pub enum CopyMode {
 }
 
 impl CopyExec {
-    pub fn new(input: Arc<dyn ExecutionPlan>, mode: CopyMode) -> Self {
+    pub(crate) fn new(input: Arc<dyn ExecutionPlan>, mode: CopyMode) -> Self {
         // change schema to remove dictionary types because CopyExec always unpacks
         // dictionaries
 

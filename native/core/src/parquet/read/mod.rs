@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod column;
-pub mod levels;
-pub mod values;
+pub(crate) mod column;
+pub(crate) mod levels;
+pub(crate) mod values;
 
-pub use column::ColumnReader;
+pub(crate) use column::ColumnReader;
 use parquet::schema::types::ColumnDescPtr;
 
 use super::ParquetMutableVector;
@@ -31,13 +31,13 @@ use bytes::Buf;
 pub(crate) const DECIMAL_BYTE_WIDTH: usize = 16;
 
 #[derive(Clone, Copy)]
-pub struct ReadOptions {
+pub(crate) struct ReadOptions {
     // Whether to read legacy dates/timestamps as it is. If false, throw exceptions.
     pub(crate) use_legacy_date_timestamp_or_ntz: bool,
 }
 
 /// Internal states for PLAIN decoder. Used in combination of `PlainDecoding`.
-pub struct PlainDecoderInner {
+pub(crate) struct PlainDecoderInner {
     /// The input buffer containing values to be decoded
     data: Buffer,
 
@@ -61,7 +61,7 @@ pub struct PlainDecoderInner {
 /// format given an input and output buffer.
 ///
 /// The actual implementations of this trait is in `read/values.rs`.
-pub trait PlainDecoding {
+pub(crate) trait PlainDecoding {
     /// Decodes `num` of items from `src`, and store the result into `dst`, in Arrow format.
     ///
     /// Note: this assumes the `src` has data for at least `num` elements, and won't do any
@@ -75,7 +75,7 @@ pub trait PlainDecoding {
     fn skip(src: &mut PlainDecoderInner, num: usize);
 }
 
-pub trait PlainDictDecoding {
+pub(crate) trait PlainDictDecoding {
     /// Eagerly decode vector `src` which must have dictionary associated. The decoded values are
     /// appended into `dst`.
     fn decode_dict(src: ParquetMutableVector, dst: &mut ParquetMutableVector, bit_width: usize) {

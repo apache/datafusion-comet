@@ -36,14 +36,14 @@ use std::{
 /// data types. As `UnKnownColumn` doesn't have data type, we implement this
 /// `UnboundColumn` to carry the data type.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct UnboundColumn {
+pub(crate) struct UnboundColumn {
     name: String,
     datatype: DataType,
 }
 
 impl UnboundColumn {
     /// Create a new unbound column expression
-    pub fn new(name: &str, datatype: DataType) -> Self {
+    pub(crate) fn new(name: &str, datatype: DataType) -> Self {
         Self {
             name: name.to_owned(),
             datatype,
@@ -51,7 +51,7 @@ impl UnboundColumn {
     }
 
     /// Get the column name
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
 }

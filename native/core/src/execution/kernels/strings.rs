@@ -33,7 +33,7 @@ use crate::errors::ExpressionError;
 /// # Preconditions
 ///
 /// - elements in `length` must not be negative
-pub fn string_space(length: &dyn Array) -> Result<ArrayRef, ExpressionError> {
+pub(crate) fn string_space(length: &dyn Array) -> Result<ArrayRef, ExpressionError> {
     match length.data_type() {
         DataType::Int32 => {
             let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -52,7 +52,11 @@ pub fn string_space(length: &dyn Array) -> Result<ArrayRef, ExpressionError> {
     }
 }
 
-pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, ExpressionError> {
+pub(crate) fn substring(
+    array: &dyn Array,
+    start: i64,
+    length: u64,
+) -> Result<ArrayRef, ExpressionError> {
     match array.data_type() {
         DataType::LargeUtf8 => substring_by_char(
             array
@@ -96,7 +100,7 @@ pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef,
 ///
 /// Note: this is different from arrow-rs `substring` kernel in that both `start` and `length` are
 /// `Int32Array` here.
-pub fn substring_with_array(
+pub(crate) fn substring_with_array(
     array: &dyn Array,
     start: &Int32Array,
     length: &Int32Array,

@@ -37,18 +37,18 @@ use std::{
 };
 
 #[derive(Debug, Hash)]
-pub struct Subquery {
+pub(crate) struct Subquery {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the
     /// subquery result.
     exec_context_id: i64,
     /// The ID of the subquery, we retrieve the subquery result from JVM using this ID.
-    pub id: i64,
+    pub(crate) id: i64,
     /// The data type of the subquery result.
-    pub data_type: DataType,
+    pub(crate) data_type: DataType,
 }
 
 impl Subquery {
-    pub fn new(exec_context_id: i64, id: i64, data_type: DataType) -> Self {
+    pub(crate) fn new(exec_context_id: i64, id: i64, data_type: DataType) -> Self {
         Self {
             exec_context_id,
             id,

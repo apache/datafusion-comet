@@ -30,7 +30,7 @@ const DEFAULT_ARRAY_LEN: usize = 4;
 ///
 /// TODO: unify the two structs in future
 #[derive(Debug)]
-pub struct ParquetMutableVector {
+pub(crate) struct ParquetMutableVector {
     /// The Arrow type for the elements of this vector.
     pub(crate) arrow_type: ArrowDataType,
 
@@ -64,12 +64,12 @@ pub struct ParquetMutableVector {
 }
 
 impl ParquetMutableVector {
-    pub fn new(capacity: usize, arrow_type: &ArrowDataType) -> Self {
+    pub(crate) fn new(capacity: usize, arrow_type: &ArrowDataType) -> Self {
         let bit_width = Self::bit_width(arrow_type);
         Self::new_with_bit_width(capacity, arrow_type.clone(), bit_width)
     }
 
-    pub fn new_with_bit_width(
+    pub(crate) fn new_with_bit_width(
         capacity: usize,
         arrow_type: ArrowDataType,
         bit_width: usize,
@@ -120,13 +120,13 @@ impl ParquetMutableVector {
 
     /// Whether the given value at `idx` of this vector is null.
     #[inline]
-    pub fn is_null(&self, idx: usize) -> bool {
+    pub(crate) fn is_null(&self, idx: usize) -> bool {
         unsafe { !bit::get_bit_raw(self.validity_buffer.as_ptr(), idx) }
     }
 
     /// Resets this vector to the initial state.
     #[inline]
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.num_values = 0;
         self.num_nulls = 0;
         self.validity_buffer.reset();
@@ -144,13 +144,13 @@ impl ParquetMutableVector {
 
     /// Appends a new null value to the end of this vector.
     #[inline]
-    pub fn put_null(&mut self) {
+    pub(crate) fn put_null(&mut self) {
         self.put_nulls(1)
     }
 
     /// Appends `n` null values to the end of this vector.
     #[inline]
-    pub fn put_nulls(&mut self, n: usize) {
+    pub(crate) fn put_nulls(&mut self, n: usize) {
         // We need to update offset buffer for binary.
         if Self::is_binary_type(&self.arrow_type) {
             let mut offset = self.num_values * 4;
@@ -168,18 +168,18 @@ impl ParquetMutableVector {
 
     /// Returns the number of total values (including both null and non-null) of this vector.
     #[inline]
-    pub fn num_values(&self) -> usize {
+    pub(crate) fn num_values(&self) -> usize {
         self.num_values
     }
 
     /// Returns the number of null values of this vector.
     #[inline]
-    pub fn num_nulls(&self) -> usize {
+    pub(crate) fn num_nulls(&self) -> usize {
         self.num_nulls
     }
 
     /// Sets the dictionary of this to be `dict`.
-    pub fn set_dictionary(&mut self, dict: ParquetMutableVector) {
+    pub(crate) fn set_dictionary(&mut self, dict: ParquetMutableVector) {
         self.dictionary = Some(Box::new(dict))
     }
 
@@ -192,7 +192,7 @@ impl ParquetMutableVector {
     /// This method is highly unsafe since it calls `CometBuffer::to_arrow` which leaks raw
     /// pointer to the memory region that are tracked by `CometBuffer`. Please see comments on
     /// `to_arrow` buffer to understand the motivation.
-    pub fn get_array_data(&mut self) -> ArrayData {
+    pub(crate) fn get_array_data(&mut self) -> ArrayData {
         unsafe {
             let data_type = if let Some(d) = &self.dictionary {
                 ArrowDataType::Dictionary(
@@ -223,7 +223,7 @@ impl ParquetMutableVector {
 
     /// Returns the number of bits it takes to store one element of `arrow_type` in the value buffer
     /// of this vector.
-    pub fn bit_width(arrow_type: &ArrowDataType) -> usize {
+    pub(crate) fn bit_width(arrow_type: &ArrowDataType) -> usize {
         match arrow_type {
             ArrowDataType::Boolean => 1,
             ArrowDataType::Int8 => 8,

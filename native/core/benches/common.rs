@@ -28,11 +28,11 @@ use rand::{
 use std::sync::Arc;
 
 /// Returns fixed seedable RNG
-pub fn seedable_rng() -> StdRng {
+pub(crate) fn seedable_rng() -> StdRng {
     StdRng::seed_from_u64(42)
 }
 
-pub fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) -> Int64Array {
+pub(crate) fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) -> Int64Array {
     let mut rng = seedable_rng();
     (0..size)
         .map(|_| {
@@ -46,7 +46,7 @@ pub fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) ->
 }
 
 #[allow(dead_code)]
-pub fn create_primitive_array<T>(size: usize, null_density: f32) -> PrimitiveArray<T>
+pub(crate) fn create_primitive_array<T>(size: usize, null_density: f32) -> PrimitiveArray<T>
 where
     T: ArrowPrimitiveType,
     Standard: Distribution<T::Native>,
@@ -66,7 +66,7 @@ where
 /// Creates a dictionary with random keys and values, with value type `T`.
 /// Note here the keys are the dictionary indices.
 #[allow(dead_code)]
-pub fn create_dictionary_array<T>(
+pub(crate) fn create_dictionary_array<T>(
     size: usize,
     value_size: usize,
     null_density: f32,

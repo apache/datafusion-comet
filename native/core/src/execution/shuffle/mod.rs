@@ -17,4 +17,4 @@
 
 mod list;
 mod map;
-pub mod row;
+pub(crate) mod row;

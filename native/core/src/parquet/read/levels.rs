@@ -35,7 +35,7 @@ enum Mode {
 }
 
 /// A decoder for Parquet definition & repetition levels.
-pub struct LevelDecoder {
+pub(crate) struct LevelDecoder {
     /// The descriptor of the column that this level decoder is associated to.
     desc: ColumnDescPtr,
     /// Number of bits used to represent the levels.
@@ -62,7 +62,7 @@ pub struct LevelDecoder {
 }
 
 impl LevelDecoder {
-    pub fn new(desc: ColumnDescPtr, bit_width: u8, need_length: bool) -> Self {
+    pub(crate) fn new(desc: ColumnDescPtr, bit_width: u8, need_length: bool) -> Self {
         Self {
             desc,
             bit_width,
@@ -79,7 +79,7 @@ impl LevelDecoder {
 
     /// Sets data for this level decoder, and returns total number of bytes consumed. This is used
     /// for reading DataPage v1 levels.
-    pub fn set_data(&mut self, page_value_count: usize, page_data: &Buffer) -> usize {
+    pub(crate) fn set_data(&mut self, page_value_count: usize, page_data: &Buffer) -> usize {
         self.num_values = page_value_count;
         if self.bit_width == 0 {
             // Special case where the page doesn't have encoded rl/dl data. Here we'll treat it as
@@ -101,7 +101,7 @@ impl LevelDecoder {
 
     /// Reads a batch of `total` values into `vector`. The value decoding is done by
     /// `value_decoder`.
-    pub fn read_batch(
+    pub(crate) fn read_batch(
         &mut self,
         total: usize,
         vector: &mut ParquetMutableVector,
@@ -149,7 +149,7 @@ impl LevelDecoder {
     }
 
     /// Skips a batch of `total` values. The value decoding is done by `value_decoder`.
-    pub fn skip_batch(
+    pub(crate) fn skip_batch(
         &mut self,
         total: usize,
         vector: &mut ParquetMutableVector,

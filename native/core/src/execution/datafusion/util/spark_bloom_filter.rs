@@ -28,12 +28,12 @@ const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 /// It's not a complete implementation of Spark's BloomFilter, but just add the minimum
 /// methods to support mightContainsLong in the native side.
 #[derive(Debug, Hash)]
-pub struct SparkBloomFilter {
+pub(crate) struct SparkBloomFilter {
     bits: SparkBitArray,
     num_hash_functions: u32,
 }
 
-pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
+pub(crate) fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
     cmp::max(
         1,
         ((num_bits as f64 / expected_items as f64) * 2.0_f64.ln()).round() as i32,
@@ -83,7 +83,7 @@ impl From<&[u8]> for SparkBloomFilter {
 impl SparkBloomFilter {
     /// Serializes a SparkBloomFilter to a byte array conforming to Spark's BloomFilter
     /// binary format version 1.
-    pub fn spark_serialization(&self) -> Vec<u8> {
+    pub(crate) fn spark_serialization(&self) -> Vec<u8> {
         // There might be a more efficient way to do this, even with all the endianness stuff.
         let mut spark_bloom_filter: Vec<u8> = 1_u32.to_be_bytes().to_vec();
         spark_bloom_filter.append(&mut self.num_hash_functions.to_be_bytes().to_vec());
@@ -98,7 +98,7 @@ impl SparkBloomFilter {
         spark_bloom_filter
     }
 
-    pub fn put_long(&mut self, item: i64) -> bool {
+    pub(crate) fn put_long(&mut self, item: i64) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
@@ -115,7 +115,7 @@ impl SparkBloomFilter {
         bit_changed
     }
 
-    pub fn put_binary(&mut self, item: &[u8]) -> bool {
+    pub(crate) fn put_binary(&mut self, item: &[u8]) -> bool {
         // Here we first hash the input long element into 2 int hash values, h1 and h2, then produce
         // n hash values by `h1 + i * h2` with 1 <= i <= num_hash_functions.
         let h1 = spark_compatible_murmur3_hash(item, 0);
@@ -132,7 +132,7 @@ impl SparkBloomFilter {
         bit_changed
     }
 
-    pub fn might_contain_long(&self, item: i64) -> bool {
+    pub(crate) fn might_contain_long(&self, item: i64) -> bool {
         let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), 0);
         let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
         let bit_size = self.bits.bit_size() as i32;
@@ -148,18 +148,18 @@ impl SparkBloomFilter {
         true
     }
 
-    pub fn might_contain_longs(&self, items: &Int64Array) -> BooleanArray {
+    pub(crate) fn might_contain_longs(&self, items: &Int64Array) -> BooleanArray {
         items
             .iter()
             .map(|v| v.map(|x| self.might_contain_long(x)))
             .collect()
     }
 
-    pub fn state_as_bytes(&self) -> Vec<u8> {
+    pub(crate) fn state_as_bytes(&self) -> Vec<u8> {
         self.bits.to_bytes()
     }
 
-    pub fn merge_filter(&mut self, other: &[u8]) {
+    pub(crate) fn merge_filter(&mut self, other: &[u8]) {
         assert_eq!(
             other.len(),
             self.bits.byte_size(),

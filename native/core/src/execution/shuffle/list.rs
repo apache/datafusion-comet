@@ -26,7 +26,7 @@ use arrow_array::builder::{
 };
 use arrow_schema::{DataType, TimeUnit};
 
-pub struct SparkUnsafeArray {
+pub(crate) struct SparkUnsafeArray {
     row_addr: i64,
     row_size: i32,
     num_elements: usize,
@@ -45,7 +45,7 @@ impl SparkUnsafeObject for SparkUnsafeArray {
 
 impl SparkUnsafeArray {
     /// Creates a `SparkUnsafeArray` which points to the given address and size in bytes.
-    pub fn new(addr: i64, size: i32) -> Self {
+    pub(crate) fn new(addr: i64, size: i32) -> Self {
         // Read the number of elements from the first 8 bytes.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, 8) };
         let num_elements = i64::from_le_bytes(slice.try_into().unwrap());
@@ -181,7 +181,7 @@ define_append_element!(
 /// Appending the given list stored in `SparkUnsafeArray` into `ListBuilder`.
 /// `element_dt` is the data type of the list element. `list_builder` is the list builder.
 /// `list` is the list stored in `SparkUnsafeArray`.
-pub fn append_list_element<T: ArrayBuilder>(
+pub(crate) fn append_list_element<T: ArrayBuilder>(
     element_dt: &DataType,
     list_builder: &mut ListBuilder<T>,
     list: &SparkUnsafeArray,

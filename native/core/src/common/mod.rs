@@ -16,7 +16,7 @@
 // under the License.
 
 #[macro_use]
-pub mod bit;
+pub(crate) mod bit;
 
 use crate::TypeTrait;
 
@@ -36,4 +36,4 @@ trait ValueSetter<T: TypeTrait> {
 }
 
 mod buffer;
-pub use buffer::*;
+pub(crate) use buffer::*;

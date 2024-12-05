@@ -32,7 +32,7 @@ use crate::{
 };
 use arrow::datatypes::DataType as ArrowDataType;
 
-pub fn get_decoder<T: DataType>(
+pub(crate) fn get_decoder<T: DataType>(
     value_data: Buffer,
     num_values: usize,
     encoding: Encoding,
@@ -54,7 +54,7 @@ pub fn get_decoder<T: DataType>(
 }
 
 /// A Parquet decoder for values within a Parquet data page.
-pub trait Decoder {
+pub(crate) trait Decoder {
     /// Consumes a single value from the decoder and stores it into `dst`.
     ///
     /// # Preconditions
@@ -99,7 +99,7 @@ const MICROS_PER_MILLIS: i64 = 1000;
 
 const MICROS_PER_DAY: i64 = 24_i64 * 60 * 60 * 1000 * 1000;
 
-pub struct PlainDecoder<T: DataType> {
+pub(crate) struct PlainDecoder<T: DataType> {
     /// Internal states for this decoder.
     inner: PlainDecoderInner,
 
@@ -108,7 +108,7 @@ pub struct PlainDecoder<T: DataType> {
 }
 
 impl<T: DataType> PlainDecoder<T> {
-    pub fn new(
+    pub(crate) fn new(
         value_data: Buffer,
         num_values: usize,
         desc: ColumnDescPtr,
@@ -561,7 +561,7 @@ macro_rules! write_null {
 
 macro_rules! generate_cast_to_unsigned {
     ($name: ident, $src_type:ty, $dst_type:ty, $zero_value:expr) => {
-        pub fn $name(src: &[u8], dst: &mut [u8], num: usize) {
+        pub(crate) fn $name(src: &[u8], dst: &mut [u8], num: usize) {
             debug_assert!(
                 src.len() >= num * std::mem::size_of::<$src_type>(),
                 "Source slice is too small"
@@ -590,7 +590,7 @@ generate_cast_to_unsigned!(copy_i32_to_u32, i32, u32, 0_u32);
 
 macro_rules! generate_cast_to_signed {
     ($name: ident, $src_type:ty, $dst_type:ty) => {
-        pub fn $name(src: &[u8], dst: &mut [u8], num: usize) {
+        pub(crate) fn $name(src: &[u8], dst: &mut [u8], num: usize) {
             debug_assert!(
                 src.len() >= num * std::mem::size_of::<$src_type>(),
                 "Source slice is too small"
@@ -934,7 +934,7 @@ impl<T: DataType> Decoder for PlainDecoder<T> {
 
 /// A decoder for Parquet dictionary indices, which is always of integer type, and encoded with
 /// RLE/BitPacked encoding.
-pub struct DictDecoder {
+pub(crate) struct DictDecoder {
     /// Number of bits used to represent dictionary indices. Must be between `[0, 64]`.
     bit_width: usize,
 
@@ -955,7 +955,7 @@ pub struct DictDecoder {
 }
 
 impl DictDecoder {
-    pub fn new(buf: Buffer, num_values: usize) -> Self {
+    pub(crate) fn new(buf: Buffer, num_values: usize) -> Self {
         let bit_width = buf.as_bytes()[0] as usize;
 
         Self {

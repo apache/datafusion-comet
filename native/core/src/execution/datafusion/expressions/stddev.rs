@@ -36,7 +36,7 @@ use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// to be consistent with Spark's implementation.
 #[derive(Debug)]
-pub struct Stddev {
+pub(crate) struct Stddev {
     name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
@@ -46,7 +46,7 @@ pub struct Stddev {
 
 impl Stddev {
     /// Create a new STDDEV aggregate function
-    pub fn new(
+    pub(crate) fn new(
         expr: Arc<dyn PhysicalExpr>,
         name: impl Into<String>,
         data_type: DataType,
@@ -137,19 +137,19 @@ impl PartialEq<dyn Any> for Stddev {
 
 /// An accumulator to compute the standard deviation
 #[derive(Debug)]
-pub struct StddevAccumulator {
+pub(crate) struct StddevAccumulator {
     variance: VarianceAccumulator,
 }
 
 impl StddevAccumulator {
     /// Creates a new `StddevAccumulator`
-    pub fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
+    pub(crate) fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             variance: VarianceAccumulator::try_new(s_type, null_on_divide_by_zero)?,
         })
     }
 
-    pub fn get_m2(&self) -> f64 {
+    pub(crate) fn get_m2(&self) -> f64 {
         self.variance.get_m2()
     }
 }

@@ -24,16 +24,16 @@ use jni::{
 };
 
 /// A struct that holds all the JNI methods and fields for JVM `CometBatchIterator` class.
-pub struct CometBatchIterator<'a> {
-    pub class: JClass<'a>,
-    pub method_next: JMethodID,
-    pub method_next_ret: ReturnType,
+pub(crate) struct CometBatchIterator<'a> {
+    pub(crate) class: JClass<'a>,
+    pub(crate) method_next: JMethodID,
+    pub(crate) method_next_ret: ReturnType,
 }
 
 impl<'a> CometBatchIterator<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/comet/CometBatchIterator";
+    pub(crate) const JVM_CLASS: &'static str = "org/apache/comet/CometBatchIterator";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometBatchIterator<'a>> {
+    pub(crate) fn new(env: &mut JNIEnv<'a>) -> JniResult<CometBatchIterator<'a>> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometBatchIterator {

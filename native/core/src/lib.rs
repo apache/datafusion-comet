@@ -40,18 +40,18 @@ use log4rs::{
 use mimalloc::MiMalloc;
 use once_cell::sync::OnceCell;
 
-pub use data_type::*;
+pub(crate) use data_type::*;
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 mod errors;
 #[macro_use]
-pub mod common;
+pub(crate) mod common;
 mod data_type;
-pub mod execution;
+pub(crate) mod execution;
 mod jvm_bridge;
-pub mod parquet;
+pub(crate) mod parquet;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -60,7 +60,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_NativeBase_init(
+pub(crate) extern "system" fn Java_org_apache_comet_NativeBase_init(
     e: JNIEnv,
     _: JClass,
     log_conf_path: JString,

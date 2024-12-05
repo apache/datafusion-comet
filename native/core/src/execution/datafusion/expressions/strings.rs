@@ -40,13 +40,13 @@ use std::{
 macro_rules! make_predicate_function {
     ($name: ident, $kernel: ident, $str_scalar_kernel: ident) => {
         #[derive(Debug, Hash)]
-        pub struct $name {
+        pub(crate) struct $name {
             left: Arc<dyn PhysicalExpr>,
             right: Arc<dyn PhysicalExpr>,
         }
 
         impl $name {
-            pub fn new(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Self {
+            pub(crate) fn new(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Self {
                 Self { left, right }
             }
         }
@@ -142,25 +142,25 @@ make_predicate_function!(EndsWith, ends_with_dyn, ends_with_utf8_scalar_dyn);
 make_predicate_function!(Contains, contains_dyn, contains_utf8_scalar_dyn);
 
 #[derive(Debug, Hash)]
-pub struct SubstringExpr {
-    pub child: Arc<dyn PhysicalExpr>,
-    pub start: i64,
-    pub len: u64,
+pub(crate) struct SubstringExpr {
+    pub(crate) child: Arc<dyn PhysicalExpr>,
+    pub(crate) start: i64,
+    pub(crate) len: u64,
 }
 
 #[derive(Debug, Hash)]
-pub struct StringSpaceExpr {
-    pub child: Arc<dyn PhysicalExpr>,
+pub(crate) struct StringSpaceExpr {
+    pub(crate) child: Arc<dyn PhysicalExpr>,
 }
 
 impl SubstringExpr {
-    pub fn new(child: Arc<dyn PhysicalExpr>, start: i64, len: u64) -> Self {
+    pub(crate) fn new(child: Arc<dyn PhysicalExpr>, start: i64, len: u64) -> Self {
         Self { child, start, len }
     }
 }
 
 impl StringSpaceExpr {
-    pub fn new(child: Arc<dyn PhysicalExpr>) -> Self {
+    pub(crate) fn new(child: Arc<dyn PhysicalExpr>) -> Self {
         Self { child }
     }
 }

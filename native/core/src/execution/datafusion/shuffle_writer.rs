@@ -77,7 +77,7 @@ enum AppendRowStatus {
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
 #[derive(Debug)]
-pub struct ShuffleWriterExec {
+pub(crate) struct ShuffleWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
@@ -179,7 +179,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 
 impl ShuffleWriterExec {
     /// Create a new ShuffleWriterExec
-    pub fn try_new(
+    pub(crate) fn try_new(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Partitioning,
         output_data_file: String,
@@ -653,7 +653,7 @@ impl ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         partition_id: usize,
         output_data_file: String,
         output_index_file: String,
@@ -1528,14 +1528,14 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
 }
 
 /// A stream that yields no record batches which represent end of output.
-pub struct EmptyStream {
+pub(crate) struct EmptyStream {
     /// Schema representing the data
     schema: SchemaRef,
 }
 
 impl EmptyStream {
     /// Create an iterator for a vector of record batches
-    pub fn try_new(schema: SchemaRef) -> Result<Self> {
+    pub(crate) fn try_new(schema: SchemaRef) -> Result<Self> {
         Ok(Self { schema })
     }
 }

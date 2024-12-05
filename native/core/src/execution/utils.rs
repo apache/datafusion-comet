@@ -45,7 +45,7 @@ impl From<ExpressionError> for ArrowError {
     }
 }
 
-pub trait SparkArrowConvert {
+pub(crate) trait SparkArrowConvert {
     /// Build Arrow Arrays from C data interface passed from Spark.
     /// It accepts a tuple (ArrowArray address, ArrowSchema address).
     fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError>
@@ -128,7 +128,7 @@ impl SparkArrowConvert for ArrayData {
 
 /// Converts a slice of bytes to i128. The bytes are serialized in big-endian order by
 /// `BigInteger.toByteArray()` in Java.
-pub fn bytes_to_i128(slice: &[u8]) -> i128 {
+pub(crate) fn bytes_to_i128(slice: &[u8]) -> i128 {
     let mut bytes = [0; 16];
     let mut i = 0;
     while i != 16 && i != slice.len() {

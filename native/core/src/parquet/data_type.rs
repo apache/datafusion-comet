@@ -17,11 +17,11 @@
 
 use super::read::{PlainDecoding, PlainDictDecoding};
 
-pub trait DataType: PlainDecoding + PlainDictDecoding + 'static {}
+pub(crate) trait DataType: PlainDecoding + PlainDictDecoding + 'static {}
 
 macro_rules! make_type {
     ($name:ident) => {
-        pub struct $name {}
+        pub(crate) struct $name {}
         impl DataType for $name {}
     };
 }
@@ -57,7 +57,7 @@ make_type!(Int64TimestampMillisType);
 make_type!(Int64TimestampMicrosType);
 make_type!(Int96TimestampMicrosType);
 
-pub trait AsBytes {
+pub(crate) trait AsBytes {
     /// Returns the slice of bytes for an instance of this data type.
     fn as_bytes(&self) -> &[u8];
 }

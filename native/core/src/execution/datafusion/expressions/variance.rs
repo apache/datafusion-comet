@@ -36,7 +36,7 @@ use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// to be consistent with Spark's implementation.
 #[derive(Debug)]
-pub struct Variance {
+pub(crate) struct Variance {
     name: String,
     signature: Signature,
     expr: Arc<dyn PhysicalExpr>,
@@ -46,7 +46,7 @@ pub struct Variance {
 
 impl Variance {
     /// Create a new VARIANCE aggregate function
-    pub fn new(
+    pub(crate) fn new(
         expr: Arc<dyn PhysicalExpr>,
         name: impl Into<String>,
         data_type: DataType,
@@ -131,7 +131,7 @@ impl PartialEq<dyn Any> for Variance {
 
 /// An accumulator to compute variance
 #[derive(Debug)]
-pub struct VarianceAccumulator {
+pub(crate) struct VarianceAccumulator {
     m2: f64,
     mean: f64,
     count: f64,
@@ -141,7 +141,7 @@ pub struct VarianceAccumulator {
 
 impl VarianceAccumulator {
     /// Creates a new `VarianceAccumulator`
-    pub fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
+    pub(crate) fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             m2: 0_f64,
             mean: 0_f64,
@@ -151,15 +151,15 @@ impl VarianceAccumulator {
         })
     }
 
-    pub fn get_count(&self) -> f64 {
+    pub(crate) fn get_count(&self) -> f64 {
         self.count
     }
 
-    pub fn get_mean(&self) -> f64 {
+    pub(crate) fn get_mean(&self) -> f64 {
         self.mean
     }
 
-    pub fn get_m2(&self) -> f64 {
+    pub(crate) fn get_m2(&self) -> f64 {
         self.m2
     }
 }

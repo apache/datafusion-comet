@@ -37,7 +37,7 @@ use crate::{
 
 /// A DataFusion `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
-pub struct CometMemoryPool {
+pub(crate) struct CometMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     used: AtomicUsize,
 }
@@ -51,7 +51,7 @@ impl Debug for CometMemoryPool {
 }
 
 impl CometMemoryPool {
-    pub fn new(task_memory_manager_handle: Arc<GlobalRef>) -> CometMemoryPool {
+    pub(crate) fn new(task_memory_manager_handle: Arc<GlobalRef>) -> CometMemoryPool {
         Self {
             task_memory_manager_handle,
             used: AtomicUsize::new(0),

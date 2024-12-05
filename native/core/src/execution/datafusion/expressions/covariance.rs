@@ -40,7 +40,7 @@ use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 /// we have our own implementation is that DataFusion has UInt64 for state_field count,
 /// while Spark has Double for count.
 #[derive(Debug, Clone)]
-pub struct Covariance {
+pub(crate) struct Covariance {
     name: String,
     signature: Signature,
     expr1: Arc<dyn PhysicalExpr>,
@@ -51,7 +51,7 @@ pub struct Covariance {
 
 impl Covariance {
     /// Create a new COVAR aggregate function
-    pub fn new(
+    pub(crate) fn new(
         expr1: Arc<dyn PhysicalExpr>,
         expr2: Arc<dyn PhysicalExpr>,
         name: impl Into<String>,
@@ -143,7 +143,7 @@ impl PartialEq<dyn Any> for Covariance {
 
 /// An accumulator to compute covariance
 #[derive(Debug)]
-pub struct CovarianceAccumulator {
+pub(crate) struct CovarianceAccumulator {
     algo_const: f64,
     mean1: f64,
     mean2: f64,
@@ -154,7 +154,7 @@ pub struct CovarianceAccumulator {
 
 impl CovarianceAccumulator {
     /// Creates a new `CovarianceAccumulator`
-    pub fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
+    pub(crate) fn try_new(s_type: StatsType, null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             algo_const: 0_f64,
             mean1: 0_f64,
@@ -165,19 +165,19 @@ impl CovarianceAccumulator {
         })
     }
 
-    pub fn get_count(&self) -> f64 {
+    pub(crate) fn get_count(&self) -> f64 {
         self.count
     }
 
-    pub fn get_mean1(&self) -> f64 {
+    pub(crate) fn get_mean1(&self) -> f64 {
         self.mean1
     }
 
-    pub fn get_mean2(&self) -> f64 {
+    pub(crate) fn get_mean2(&self) -> f64 {
         self.mean2
     }
 
-    pub fn get_algo_const(&self) -> f64 {
+    pub(crate) fn get_algo_const(&self) -> f64 {
         self.algo_const
     }
 }
