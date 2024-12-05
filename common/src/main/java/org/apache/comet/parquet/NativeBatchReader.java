@@ -19,11 +19,13 @@
 
 package org.apache.comet.parquet;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URISyntaxException;
+import java.nio.channels.Channels;
 import java.util.*;
 
 import scala.Option;
@@ -36,6 +38,9 @@ import org.slf4j.LoggerFactory;
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.ipc.WriteChannel;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -59,6 +64,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
@@ -254,6 +260,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     } ////// End get requested schema
 
+    String timeZoneId = conf.get("spark.sql.session.timeZone");
+    Schema arrowSchema = ArrowUtils.toArrowSchema(sparkSchema, timeZoneId);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
+    MessageSerializer.serialize(writeChannel, arrowSchema);
+    byte[] serializedRequestedArrowSchema = out.toByteArray();
+
     //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     int numColumns = columns.size();
@@ -339,7 +352,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     for (Type col : requestedSchema.asGroupType().getFields()) {
       requiredColumns.add(col.getName());
     }
-    this.handle = Native.initRecordBatchReader(filePath, start, length, requiredColumns.toArray());
+    this.handle =
+        Native.initRecordBatchReader(
+            filePath, start, length, requiredColumns.toArray(), serializedRequestedArrowSchema);
     totalRowCount = Native.numRowGroups(handle);
     isInitialized = true;
   }

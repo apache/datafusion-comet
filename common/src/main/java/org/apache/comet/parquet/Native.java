@@ -250,7 +250,7 @@ public final class Native extends NativeBase {
    * @return a handle to the record batch reader, used in subsequent calls.
    */
   public static native long initRecordBatchReader(
-      String filePath, long start, long length, Object[] required_columns);
+      String filePath, long start, long length, Object[] required_columns, byte[] requiredSchema);
 
   public static native int numRowGroups(long handle);
 

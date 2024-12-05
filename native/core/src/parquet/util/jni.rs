@@ -24,6 +24,8 @@ use jni::{
     JNIEnv,
 };
 
+use arrow::error::ArrowError;
+use arrow::ipc::reader::StreamReader;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
     format::{MicroSeconds, MilliSeconds, NanoSeconds},
@@ -197,4 +199,10 @@ fn fix_type_length(t: &PhysicalType, type_length: i32) -> i32 {
         PhysicalType::INT96 => 12,
         _ => type_length,
     }
+}
+
+pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, ArrowError> {
+    let reader = StreamReader::try_new(std::io::Cursor::new(ipc_bytes), None)?;
+    let schema = reader.schema().as_ref().clone();
+    Ok(schema)
 }

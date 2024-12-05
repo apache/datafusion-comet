@@ -42,17 +42,18 @@ use jni::{
 
 use crate::execution::operators::ExecutionError;
 use crate::execution::utils::SparkArrowConvert;
+use crate::parquet::data_type::AsBytes;
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
 use jni::objects::{
-    JBooleanArray, JLongArray, JObjectArray, JPrimitiveArray, JString, ReleaseMode,
+    JBooleanArray, JByteArray, JLongArray, JObjectArray, JPrimitiveArray, JString, ReleaseMode,
 };
 use jni::sys::jstring;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ProjectionMask;
 use read::ColumnReader;
 use url::Url;
-use util::jni::{convert_column_descriptor, convert_encoding};
+use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema};
 
 use self::util::jni::TypePromotionInfo;
 
@@ -631,6 +632,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     start: jlong,
     length: jlong,
     required_columns: jobjectArray,
+    required_schema: jbyteArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let path: String = env
@@ -678,6 +680,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
                     }
                 }
             }
+
+            // EXPERIMENTAL - BEGIN
+            // copy the input on-heap buffer to native
+            let required_schema_array = JByteArray::from_raw(required_schema);
+            let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
+            let _required_schema_arrow = deserialize_schema(required_schema_buffer.as_bytes())?;
+            // EXPERIMENTAL - END
+
             //TODO: (ARROW NATIVE) make this work for complex types (especially deeply nested structs)
             let mask =
                 ProjectionMask::leaves(metadata.file_metadata().schema_descr(), columns_to_read);
