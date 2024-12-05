@@ -46,11 +46,15 @@ public class CometBatchIterator {
    * @return Number of rows in next batch or -1 if no batches left.
    */
   public int hasNext() {
-    if (input.hasNext()) {
-      currentBatch = input.next();
-      return currentBatch.numRows();
-    } else {
+    if (currentBatch == null) {
+      if (input.hasNext()) {
+        currentBatch = input.next();
+      }
+    }
+    if (currentBatch == null) {
       return -1;
+    } else {
+      return currentBatch.numRows();
     }
   }
 

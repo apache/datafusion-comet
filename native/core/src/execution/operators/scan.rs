@@ -265,9 +265,9 @@ impl ScanExec {
         comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
         };
 
-        if num_rows == -1 {
-            return Ok(InputBatch::EOF);
-        }
+        // we already checked for end of results on call to has_next() so should always
+        // have a valid row count when calling next()
+        assert!(num_rows != -1);
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
 
