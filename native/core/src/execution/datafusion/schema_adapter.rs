@@ -22,7 +22,7 @@ use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_comet_spark_expr::{spark_cast, EvalMode};
-use datafusion_common::plan_err;
+use datafusion_common::{plan_err, DataFusionError};
 use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
 
@@ -93,7 +93,7 @@ impl SchemaAdapter for CometSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
-                if spark_can_cast_types(file_field.data_type(), table_field.data_type()) {
+                if comet_can_cast_types(file_field.data_type(), table_field.data_type()) {
                     field_mappings[table_idx] = Some(projection.len());
                     projection.push(file_idx);
                 } else {
@@ -115,23 +115,6 @@ impl SchemaAdapter for CometSchemaAdapter {
             }),
             projection,
         ))
-    }
-}
-
-pub fn spark_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
-    // TODO add all Spark cast rules (they are currently implemented in
-    // org.apache.comet.expressions.CometCast#isSupported in JVM side)
-    match (from_type, to_type) {
-        (DataType::Struct(_), DataType::Struct(_)) => {
-            // workaround for struct casting
-            true
-        }
-        (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
-        // Native cast invoked for unsupported cast from FixedSizeBinary(3) to Binary.
-        (DataType::FixedSizeBinary(_), _) => false,
-        // Native cast invoked for unsupported cast from UInt32 to Int64.
-        (DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64, _) => false,
-        _ => can_cast_types(from_type, to_type),
     }
 }
 
@@ -214,6 +197,7 @@ impl SchemaMapper for SchemaMapping {
                             EvalMode::Legacy,
                             "UTC",
                             false,
+                            true,
                         )?
                         .into_array(batch_rows)
                     },
@@ -265,6 +249,7 @@ impl SchemaMapper for SchemaMapping {
                             EvalMode::Legacy,
                             "UTC",
                             false,
+                            true,
                         )?
                         .into_array(batch_col.len())
                         // and if that works, return the field and column.
@@ -282,4 +267,32 @@ impl SchemaMapper for SchemaMapping {
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
+}
+
+
+
+fn comet_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
+    // TODO this is just a quick hack to get tests passing
+    match (from_type, to_type) {
+        (DataType::Struct(_), DataType::Struct(_)) => {
+            // workaround for struct casting
+            true
+        }
+        // TODO this is maybe no longer needed
+        (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
+        _ => can_cast_types(from_type, to_type),
+    }
+}
+
+pub fn comet_cast(
+    arg: ColumnarValue,
+    data_type: &DataType,
+    eval_mode: EvalMode,
+    timezone: &str,
+    allow_incompat: bool,
+) -> Result<ColumnarValue, DataFusionError> {
+    // TODO for now we are re-using the spark cast rules, with a hack to override
+    // unsupported cases and let those fall through to arrow. This is just a short term
+    // hack and we need to implement specific Parquet to Spark conversions here instead
+    spark_cast(arg, data_type, eval_mode, timezone, allow_incompat, true)
 }

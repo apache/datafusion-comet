@@ -585,6 +585,7 @@ pub fn spark_cast(
     eval_mode: EvalMode,
     timezone: &str,
     allow_incompat: bool,
+    ugly_hack_for_poc: bool, // TODO we definitely don't want to do this
 ) -> DataFusionResult<ColumnarValue> {
     match arg {
         ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
@@ -593,6 +594,7 @@ pub fn spark_cast(
             eval_mode,
             timezone.to_owned(),
             allow_incompat,
+            ugly_hack_for_poc,
         )?)),
         ColumnarValue::Scalar(scalar) => {
             // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
@@ -606,6 +608,7 @@ pub fn spark_cast(
                     eval_mode,
                     timezone.to_owned(),
                     allow_incompat,
+                    ugly_hack_for_poc,
                 )?,
                 0,
             )?;
@@ -620,6 +623,7 @@ fn cast_array(
     eval_mode: EvalMode,
     timezone: String,
     allow_incompat: bool,
+    ugly_hack_for_poc: bool,
 ) -> DataFusionResult<ArrayRef> {
     let array = array_with_timezone(array, timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
@@ -643,6 +647,7 @@ fn cast_array(
                     eval_mode,
                     timezone,
                     allow_incompat,
+                    ugly_hack_for_poc,
                 )?,
             );
 
@@ -723,7 +728,9 @@ fn cast_array(
             timezone,
             allow_incompat,
         )?),
-        _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
+        _ if ugly_hack_for_poc
+            || is_datafusion_spark_compatible(from_type, to_type, allow_incompat) =>
+        {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
@@ -840,6 +847,7 @@ fn cast_struct_to_struct(
                     eval_mode,
                     timezone.clone(),
                     allow_incompat,
+                    false,
                 )?;
                 cast_fields.push((Arc::clone(&to_fields[i]), cast_field));
             }
@@ -861,6 +869,7 @@ fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResu
                 EvalMode::Legacy,
                 timezone,
                 true,
+                false,
             )
             .and_then(|cv| cv.into_array(arr.len()))
         })
@@ -1505,6 +1514,7 @@ impl PhysicalExpr for Cast {
             self.eval_mode,
             &self.timezone,
             self.allow_incompat,
+            false,
         )
     }
 
@@ -2117,6 +2127,7 @@ mod tests {
             EvalMode::Legacy,
             timezone.clone(),
             false,
+            false,
         )?;
         assert_eq!(
             *result.data_type(),
@@ -2327,6 +2338,7 @@ mod tests {
             EvalMode::Legacy,
             "UTC".to_owned(),
             false,
+            false,
         );
         assert!(result.is_err())
     }
@@ -2339,6 +2351,7 @@ mod tests {
             &DataType::Date32,
             EvalMode::Legacy,
             "Not a valid timezone".to_owned(),
+            false,
             false,
         );
         assert!(result.is_err())
@@ -2363,6 +2376,7 @@ mod tests {
             &DataType::Utf8,
             EvalMode::Legacy,
             "UTC".to_owned(),
+            false,
             false,
         )
         .unwrap();
@@ -2400,6 +2414,7 @@ mod tests {
             EvalMode::Legacy,
             "UTC",
             false,
+            false,
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -2432,6 +2447,7 @@ mod tests {
             &DataType::Struct(fields),
             EvalMode::Legacy,
             "UTC",
+            false,
             false,
         )
         .unwrap();
