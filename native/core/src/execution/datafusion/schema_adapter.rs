@@ -21,8 +21,8 @@ use arrow::compute::can_cast_types;
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion_comet_spark_expr::{spark_cast, EvalMode};
-use datafusion_common::{plan_err, DataFusionError};
+use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
+use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
 
@@ -107,11 +107,14 @@ impl SchemaAdapter for CometSchemaAdapter {
             }
         }
 
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.is_adapting_schema = true;
         Ok((
             Arc::new(SchemaMapping {
                 required_schema: self.required_schema.clone(),
                 field_mappings,
                 table_schema: self.table_schema.clone(),
+                cast_options,
             }),
             projection,
         ))
@@ -162,6 +165,8 @@ pub struct SchemaMapping {
     /// This contains all fields in the table, regardless of if they will be
     /// projected out or not.
     table_schema: SchemaRef,
+
+    cast_options: SparkCastOptions,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -193,11 +198,7 @@ impl SchemaMapper for SchemaMapping {
                         spark_cast(
                             ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
                             field.data_type(),
-                            // TODO need to pass in configs here
-                            EvalMode::Legacy,
-                            "UTC",
-                            false,
-                            true,
+                            &self.cast_options,
                         )?
                         .into_array(batch_rows)
                     },
@@ -245,11 +246,7 @@ impl SchemaMapper for SchemaMapping {
                         spark_cast(
                             ColumnarValue::Array(Arc::clone(batch_col)),
                             table_field.data_type(),
-                            // TODO need to pass in configs here
-                            EvalMode::Legacy,
-                            "UTC",
-                            false,
-                            true,
+                            &self.cast_options,
                         )?
                         .into_array(batch_col.len())
                         // and if that works, return the field and column.
@@ -269,8 +266,6 @@ impl SchemaMapper for SchemaMapping {
     }
 }
 
-
-
 fn comet_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
     // TODO this is just a quick hack to get tests passing
     match (from_type, to_type) {
@@ -282,17 +277,4 @@ fn comet_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
         _ => can_cast_types(from_type, to_type),
     }
-}
-
-pub fn comet_cast(
-    arg: ColumnarValue,
-    data_type: &DataType,
-    eval_mode: EvalMode,
-    timezone: &str,
-    allow_incompat: bool,
-) -> Result<ColumnarValue, DataFusionError> {
-    // TODO for now we are re-using the spark cast rules, with a hack to override
-    // unsupported cases and let those fall through to arrow. This is just a short term
-    // hack and we need to implement specific Parquet to Spark conversions here instead
-    spark_cast(arg, data_type, eval_mode, timezone, allow_incompat, true)
 }
