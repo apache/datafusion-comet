@@ -19,9 +19,9 @@
 
 use arrow::compute::can_cast_types;
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion_comet_spark_expr::{spark_cast, EvalMode};
+use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
 use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
@@ -38,11 +38,11 @@ impl SchemaAdapterFactory for CometSchemaAdapterFactory {
     /// schema.
     fn create(
         &self,
-        projected_table_schema: SchemaRef,
+        required_schema: SchemaRef,
         table_schema: SchemaRef,
     ) -> Box<dyn SchemaAdapter> {
         Box::new(CometSchemaAdapter {
-            projected_table_schema,
+            required_schema,
             table_schema,
         })
     }
@@ -54,7 +54,7 @@ impl SchemaAdapterFactory for CometSchemaAdapterFactory {
 pub struct CometSchemaAdapter {
     /// The schema for the table, projected to include only the fields being output (projected) by the
     /// associated ParquetExec
-    projected_table_schema: SchemaRef,
+    required_schema: SchemaRef,
     /// The entire table schema for the table we're using this to adapt.
     ///
     /// This is used to evaluate any filters pushed down into the scan
@@ -69,7 +69,7 @@ impl SchemaAdapter for CometSchemaAdapter {
     ///
     /// Panics if index is not in range for the table schema
     fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
-        let field = self.projected_table_schema.field(index);
+        let field = self.required_schema.field(index);
         Some(file_schema.fields.find(field.name())?.0)
     }
 
@@ -87,42 +87,34 @@ impl SchemaAdapter for CometSchemaAdapter {
         file_schema: &Schema,
     ) -> datafusion_common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
         let mut projection = Vec::with_capacity(file_schema.fields().len());
-        let mut field_mappings = vec![None; self.projected_table_schema.fields().len()];
+        let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
             if let Some((table_idx, table_field)) =
-                self.projected_table_schema.fields().find(file_field.name())
+                self.required_schema.fields().find(file_field.name())
             {
-                // workaround for struct casting
-                match (file_field.data_type(), table_field.data_type()) {
-                    // TODO need to use Comet cast logic to determine which casts are supported,
-                    // but for now just add a hack to support casting between struct types
-                    (DataType::Struct(_), DataType::Struct(_)) => {
-                        field_mappings[table_idx] = Some(projection.len());
-                        projection.push(file_idx);
-                    }
-                    _ => {
-                        if can_cast_types(file_field.data_type(), table_field.data_type()) {
-                            field_mappings[table_idx] = Some(projection.len());
-                            projection.push(file_idx);
-                        } else {
-                            return plan_err!(
-                                "Cannot cast file schema field {} of type {:?} to table schema field of type {:?}",
-                                file_field.name(),
-                                file_field.data_type(),
-                                table_field.data_type()
-                            );
-                        }
-                    }
+                if comet_can_cast_types(file_field.data_type(), table_field.data_type()) {
+                    field_mappings[table_idx] = Some(projection.len());
+                    projection.push(file_idx);
+                } else {
+                    return plan_err!(
+                        "Cannot cast file schema field {} of type {:?} to required schema field of type {:?}",
+                        file_field.name(),
+                        file_field.data_type(),
+                        table_field.data_type()
+                    );
                 }
             }
         }
 
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.is_adapting_schema = true;
         Ok((
             Arc::new(SchemaMapping {
-                projected_table_schema: Arc::<Schema>::clone(&self.projected_table_schema),
+                required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
                 table_schema: Arc::<Schema>::clone(&self.table_schema),
+                cast_options
             }),
             projection,
         ))
@@ -161,7 +153,7 @@ impl SchemaAdapter for CometSchemaAdapter {
 pub struct SchemaMapping {
     /// The schema of the table. This is the expected schema after conversion
     /// and it should match the schema of the query result.
-    projected_table_schema: SchemaRef,
+    required_schema: SchemaRef,
     /// Mapping from field index in `projected_table_schema` to index in
     /// projected file_schema.
     ///
@@ -173,6 +165,8 @@ pub struct SchemaMapping {
     /// This contains all fields in the table, regardless of if they will be
     /// projected out or not.
     table_schema: SchemaRef,
+
+    cast_options: SparkCastOptions,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -185,7 +179,7 @@ impl SchemaMapper for SchemaMapping {
         let batch_cols = batch.columns().to_vec();
 
         let cols = self
-            .projected_table_schema
+            .required_schema
             // go through each field in the projected schema
             .fields()
             .iter()
@@ -204,10 +198,7 @@ impl SchemaMapper for SchemaMapping {
                         spark_cast(
                             ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
                             field.data_type(),
-                            // TODO need to pass in configs here
-                            EvalMode::Legacy,
-                            "UTC",
-                            false,
+                            &self.cast_options,
                         )?
                         .into_array(batch_rows)
                     },
@@ -218,7 +209,7 @@ impl SchemaMapper for SchemaMapping {
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
-        let schema = Arc::<Schema>::clone(&self.projected_table_schema);
+        let schema = Arc::<Schema>::clone(&self.required_schema);
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
@@ -255,10 +246,7 @@ impl SchemaMapper for SchemaMapping {
                         spark_cast(
                             ColumnarValue::Array(Arc::clone(batch_col)),
                             table_field.data_type(),
-                            // TODO need to pass in configs here
-                            EvalMode::Legacy,
-                            "UTC",
-                            false,
+                            &self.cast_options,
                         )?
                         .into_array(batch_col.len())
                         // and if that works, return the field and column.
@@ -275,5 +263,18 @@ impl SchemaMapper for SchemaMapping {
         let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
+    }
+}
+
+fn comet_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
+    // TODO this is just a quick hack to get tests passing
+    match (from_type, to_type) {
+        (DataType::Struct(_), DataType::Struct(_)) => {
+            // workaround for struct casting
+            true
+        }
+        // TODO this is maybe no longer needed
+        (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
+        _ => can_cast_types(from_type, to_type),
     }
 }

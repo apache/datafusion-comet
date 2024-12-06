@@ -19,7 +19,7 @@
 
 use super::expressions::EvalMode;
 use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
-use crate::execution::operators::{CopyMode, FilterExec};
+use crate::execution::operators::{CopyMode, FilterExec as CometFilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -55,6 +55,7 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -102,7 +103,7 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
-    ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    ListExtract, MinuteExpr, RLike, SecondExpr, SparkCastOptions, TimestampTruncExpr, ToJson,
 };
 use datafusion_common::config::TableParquetOptions;
 use datafusion_common::scalar::ScalarStructBuilder;
@@ -392,14 +393,11 @@ impl PhysicalPlanner {
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let timezone = expr.timezone.clone();
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    eval_mode,
-                    timezone,
-                    expr.allow_incompat,
+                    SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
                 )))
             }
             ExprStruct::Hour(expr) => {
@@ -767,24 +765,21 @@ impl PhysicalPlanner {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128
-                let left = Arc::new(Cast::new_without_timezone(
+                let left = Arc::new(Cast::new(
                     left,
                     DataType::Decimal256(p1, s1),
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
-                let right = Arc::new(Cast::new_without_timezone(
+                let right = Arc::new(Cast::new(
                     right,
                     DataType::Decimal256(p2, s2),
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new_without_timezone(
+                Ok(Arc::new(Cast::new(
                     child,
                     data_type,
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 )))
             }
             (
@@ -851,7 +846,11 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                Ok((scans, Arc::new(FilterExec::try_new(predicate, child)?)))
+                if can_reuse_input_batch(&child) {
+                    Ok((scans, Arc::new(CometFilterExec::try_new(predicate, child)?)))
+                } else {
+                    Ok((scans, Arc::new(FilterExec::try_new(predicate, child)?)))
+                }
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
