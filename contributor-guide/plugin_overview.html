@@ -177,7 +177,7 @@ under the License.
  </li>
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
-   Comet Plugin Overview
+   Comet Plugin Architecture
   </a>
  </li>
  <li class="toctree-l1">
@@ -281,54 +281,78 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#comet-sql-plugin">
-   Comet SQL Plugin
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#">
+   Comet Plugin Architecture
   </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#cometsparksessionextensions">
-   CometSparkSessionExtensions
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#cometscanrule">
-     CometScanRule
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#cometexecrule">
-     CometExecRule
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#overview">
+     Overview
     </a>
    </li>
   </ul>
  </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#query-execution">
-   Query Execution
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#plugin-components">
+   Plugin Components
   </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#arrow">
-   Arrow
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#comet-sql-plugin">
+     Comet SQL Plugin
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#cometsparksessionextensions">
+     CometSparkSessionExtensions
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#cometscanrule">
+       CometScanRule
+      </a>
+     </li>
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#cometexecrule">
+       CometExecRule
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#query-execution">
+     Query Execution
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#shuffle">
+     Shuffle
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#shuffle-writes">
+       Shuffle Writes
+      </a>
+     </li>
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#shuffle-reads">
+       Shuffle Reads
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
     <a class="reference internal nav-link" href="#arrow-ffi">
      Arrow FFI
     </a>
    </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#arrow-ipc">
-     Arrow IPC
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#end-to-end-flow">
+     End to End Flow
     </a>
    </li>
   </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#end-to-end-flow">
-   End to End Flow
-  </a>
  </li>
 </ul>
 
@@ -378,15 +402,24 @@ under the License.
 -->
 <section id="comet-plugin-architecture">
 <h1>Comet Plugin Architecture<a class="headerlink" href="#comet-plugin-architecture" title="Link to this heading">¶</a></h1>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
+<p>The Comet plugin enhances Spark SQL by introducing optimized query execution and shuffle mechanisms leveraging
+native code. It integrates with Spark’s plugin framework and extension API to replace or extend Spark’s
+default behavior.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="plugin-components">
+<h1>Plugin Components<a class="headerlink" href="#plugin-components" title="Link to this heading">¶</a></h1>
 <section id="comet-sql-plugin">
 <h2>Comet SQL Plugin<a class="headerlink" href="#comet-sql-plugin" title="Link to this heading">¶</a></h2>
-<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code> class, which can be registered with Spark by adding the
-following setting to the Spark configuration when launching <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code>:</p>
+<p>The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following
+configuration:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
 </pre></div>
 </div>
-<p>This class is loaded by Spark’s plugin framework. It will be instantiated in the Spark driver only. Comet does not
-provide any executor plugins.</p>
+<p>The plugin is loaded on the Spark driver and does not provide executor-side plugins.</p>
 <p>The plugin will update the current <code class="docutils literal notranslate"><span class="pre">SparkConf</span></code> with the extra configuration provided by Comet, such as executor memory
 configuration.</p>
 <p>The plugin also registers <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> with Spark’s extension API.</p>
@@ -440,27 +473,39 @@ a Spark exchange, or another native plan.</p>
 partitions. Each call to <code class="docutils literal notranslate"><span class="pre">CometExecIterator.next()</span></code> will invoke <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code>. Once the plan finishes
 executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.</p>
 </section>
-<section id="arrow">
-<h2>Arrow<a class="headerlink" href="#arrow" title="Link to this heading">¶</a></h2>
-<p>Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.</p>
-<p>Comet uses a combination of Arrow FFI and Arrow IPC to achieve this.</p>
+<section id="shuffle">
+<h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h2>
+<p>Comet integrates with Spark’s shuffle mechanism, optimizing both shuffle writes and reads. Comet’s shuffle manager
+must be registered with Spark using the following configuration:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
+</pre></div>
+</div>
+<section id="shuffle-writes">
+<h3>Shuffle Writes<a class="headerlink" href="#shuffle-writes" title="Link to this heading">¶</a></h3>
+<p>For shuffle writes, a <code class="docutils literal notranslate"><span class="pre">ShuffleMapTask</span></code> runs in the executors. This task contains a <code class="docutils literal notranslate"><span class="pre">ShuffleDependency</span></code> that is
+broadcast to all of the executors. It then passes the input RDD to <code class="docutils literal notranslate"><span class="pre">ShuffleWriteProcessor.write()</span></code> which
+requests a <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code> from the shuffle manager, and this is where it gets a Comet shuffle writer.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ShuffleWriteProcessor</span></code> then invokes the dependency RDD and fetches rows/batches and passes them to Comet’s
+shuffle writer, which writes batches to disk in Arrow IPC format.</p>
+<p>As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
+writing the batches to the shuffle file.</p>
+</section>
+<section id="shuffle-reads">
+<h3>Shuffle Reads<a class="headerlink" href="#shuffle-reads" title="Link to this heading">¶</a></h3>
+<p>For shuffle reads a <code class="docutils literal notranslate"><span class="pre">ShuffledRDD</span></code> requests a <code class="docutils literal notranslate"><span class="pre">ShuffleReader</span></code> from the shuffle manager. Comet provides a
+<code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> which is implemented in JVM and fetches blocks from Spark and then creates an
+<code class="docutils literal notranslate"><span class="pre">ArrowReaderIterator</span></code> to process the blocks using Arrow’s <code class="docutils literal notranslate"><span class="pre">StreamReader</span></code> for decoding IPC batches.</p>
+</section>
+</section>
 <section id="arrow-ffi">
-<h3>Arrow FFI<a class="headerlink" href="#arrow-ffi" title="Link to this heading">¶</a></h3>
+<h2>Arrow FFI<a class="headerlink" href="#arrow-ffi" title="Link to this heading">¶</a></h2>
+<p>Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.</p>
 <p>The foundation for Arrow FFI is the <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a>, which provides a stable ABI-compatible interface for
 accessing Arrow data structures from multiple languages.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> invokes native plans and uses Arrow FFI to read the output batches</p></li>
 <li><p>Native <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> operators call <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code> via JNI to fetch input batches from the JVM</p></li>
 </ul>
-</section>
-<section id="arrow-ipc">
-<h3>Arrow IPC<a class="headerlink" href="#arrow-ipc" title="Link to this heading">¶</a></h3>
-<p>Comet native shuffle uses Arrow IPC to write batches to the shuffle files.</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleWriteProcessor</span></code> invokes a native plan to fetch batches and then passes them to native <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> reads batches from shuffle files</p></li>
-</ul>
-</section>
 </section>
 <section id="end-to-end-flow">
 <h2>End to End Flow<a class="headerlink" href="#end-to-end-flow" title="Link to this heading">¶</a></h2>
