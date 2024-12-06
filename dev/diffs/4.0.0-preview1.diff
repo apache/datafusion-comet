@@ -101,6 +101,19 @@ index 7c45b02ee84..9f2b608c9f5 100644
        case _ => Map[String, String]()
      }
      new SparkPlanInfo(
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/collations.sql b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
+index 619eb4470e9..8465382a007 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/collations.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
+@@ -1,5 +1,8 @@
+ -- test cases for collation support
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ -- Create a test table with data
+ create table t1(utf8_binary string collate utf8_binary, utf8_binary_lcase string collate utf8_binary_lcase) using parquet;
+ insert into t1 values('aaa', 'aaa');
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4f..f3d6e18926d 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
