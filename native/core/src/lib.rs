@@ -40,15 +40,12 @@ use log4rs::{
 use mimalloc::MiMalloc;
 use once_cell::sync::OnceCell;
 
-pub(crate) use data_type::*;
-
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 mod errors;
 #[macro_use]
 pub(crate) mod common;
-mod data_type;
 pub(crate) mod execution;
 mod jvm_bridge;
 pub(crate) mod parquet;
