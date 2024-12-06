@@ -100,6 +100,8 @@ executing, the resulting Arrow batches are imported into the JVM using Arrow FFI
 Spark uses a shuffle mechanism to transfer data between query stages. The shuffle mechanism is part of Spark Core
 rather than Spark SQL and operates on RDDs.
 
+### Shuffle Writes
+
 For shuffle writes, a `ShuffleMapTask` runs in the executors. This task contains a `ShuffleDependency` that is
 broadcast to all of the executors. It then passes the input RDD to `ShuffleWriteProcessor.write()` which
 requests a `ShuffleWriter` from the shuffle manager, and this is where it gets a Comet shuffle writer.
@@ -108,6 +110,12 @@ requests a `ShuffleWriter` from the shuffle manager, and this is where it gets a
 
 As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
 writing the batches to the shuffle file.
+
+### Shuffle Reads
+
+For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle manager. Comet provides a 
+`CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an 
+`ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.
 
 ## Arrow
 
