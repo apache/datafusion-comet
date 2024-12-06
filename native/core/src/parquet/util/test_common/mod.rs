@@ -18,5 +18,3 @@
 pub(crate) mod file_util;
 pub(crate) mod page_util;
 pub(crate) mod rand_gen;
-
-pub(crate) use self::rand_gen::{random_bools, random_numbers, random_numbers_range};

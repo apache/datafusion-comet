@@ -31,7 +31,7 @@ use parquet::{
     schema::types::{ColumnDescPtr, SchemaDescPtr},
 };
 
-use super::random_numbers_range;
+use crate::parquet::util::test_common::rand_gen::random_numbers_range;
 use bytes::Bytes;
 use zstd::zstd_safe::WriteBuf;
 

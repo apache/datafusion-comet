@@ -46,6 +46,7 @@ const DECIMAL_MAX_INT_DIGITS: i32 = 9;
 /// Maximum number of decimal digits an i64 can represent
 const DECIMAL_MAX_LONG_DIGITS: i32 = 18;
 
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum ColumnReader {
     BoolColumnReader(TypedColumnReader<BoolType>),
     Int8ColumnReader(TypedColumnReader<Int8Type>),

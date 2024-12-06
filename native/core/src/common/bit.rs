@@ -23,6 +23,7 @@ use crate::{
     errors::CometResult as Result,
     likely,
     parquet::{data_type::AsBytes, util::bit_packing::unpack32},
+    parquet::util::test_common::rand_gen::{random_bools, random_numbers},
     unlikely,
 };
 
@@ -1019,7 +1020,6 @@ pub(crate) fn round_upto_power_of_2(num: usize, factor: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parquet::util::test_common::*;
 
     use rand::{
         distributions::{Distribution, Standard},
