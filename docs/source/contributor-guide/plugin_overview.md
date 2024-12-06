@@ -19,17 +19,26 @@ under the License.
 
 # Comet Plugin Architecture
 
+## Overview
+
+The Comet plugin enhances Spark SQL by introducing optimized query execution and shuffle mechanisms leveraging
+native code. It integrates with Spark's plugin framework and extension API to replace or extend Spark's
+default behavior.
+
+---
+
+# Plugin Components
+
 ## Comet SQL Plugin
 
-The entry point to Comet is the `org.apache.spark.CometPlugin` class, which can be registered with Spark by adding the
-following setting to the Spark configuration when launching `spark-shell` or `spark-submit`:
+The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following 
+configuration:
 
 ```
 --conf spark.plugins=org.apache.spark.CometPlugin
 ```
 
-This class is loaded by Spark's plugin framework. It will be instantiated in the Spark driver only. Comet does not
-provide any executor plugins.
+The plugin is loaded on the Spark driver and does not provide executor-side plugins.
 
 The plugin will update the current `SparkConf` with the extra configuration provided by Comet, such as executor memory
 configuration.
@@ -97,8 +106,12 @@ executing, the resulting Arrow batches are imported into the JVM using Arrow FFI
 
 ## Shuffle
 
-Spark uses a shuffle mechanism to transfer data between query stages. The shuffle mechanism is part of Spark Core
-rather than Spark SQL and operates on RDDs.
+Comet integrates with Spark's shuffle mechanism, optimizing both shuffle writes and reads. Comet's shuffle manager 
+must be registered with Spark using the following configuration:
+
+```
+--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
+```
 
 ### Shuffle Writes
 
@@ -106,7 +119,8 @@ For shuffle writes, a `ShuffleMapTask` runs in the executors. This task contains
 broadcast to all of the executors. It then passes the input RDD to `ShuffleWriteProcessor.write()` which
 requests a `ShuffleWriter` from the shuffle manager, and this is where it gets a Comet shuffle writer.
 
-`ShuffleWriteProcessor` then invokes the dependency RDD and fetches rows/batches and passes them to the shuffle writer.
+`ShuffleWriteProcessor` then invokes the dependency RDD and fetches rows/batches and passes them to Comet's 
+shuffle writer, which writes batches to disk in Arrow IPC format.
 
 As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
 writing the batches to the shuffle file.
@@ -117,13 +131,9 @@ For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle ma
 `CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an 
 `ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.
 
-## Arrow
+## Arrow FFI
 
 Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.
-
-Comet uses a combination of Arrow FFI and Arrow IPC to achieve this.
-
-### Arrow FFI
 
 The foundation for Arrow FFI is the [Arrow C Data Interface], which provides a stable ABI-compatible interface for
 accessing Arrow data structures from multiple languages.
@@ -132,13 +142,6 @@ accessing Arrow data structures from multiple languages.
 
 - `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
 - Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
-
-### Arrow IPC
-
-Comet native shuffle uses Arrow IPC to write batches to the shuffle files.
-
-- `CometShuffleWriteProcessor` invokes a native plan to fetch batches and then passes them to native `ShuffleWriterExec`
-- `CometBlockStoreShuffleReader` reads batches from shuffle files
 
 ## End to End Flow
 
