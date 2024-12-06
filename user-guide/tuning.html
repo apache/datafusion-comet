@@ -338,8 +338,18 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#shufflewriterexec">
-     ShuffleWriterExec
+    <a class="reference internal nav-link" href="#spark-sql-metrics">
+     Spark SQL Metrics
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-metrics">
+     Native Metrics
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#scanexec">
+     ScanExec
     </a>
    </li>
   </ul>
@@ -465,15 +475,23 @@ then any shuffle operations that cannot be supported in this mode will fall back
 </section>
 <section id="metrics">
 <h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
+<section id="spark-sql-metrics">
+<h3>Spark SQL Metrics<a class="headerlink" href="#spark-sql-metrics" title="Link to this heading">¶</a></h3>
 <p>Some Comet metrics are not directly comparable to Spark metrics in some cases:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
 milliseconds <em>per batch</em> which can result in a large loss of precision, making it difficult to compare scan times
 between Spark and Comet.</p></li>
 </ul>
-<p>Comet also adds some custom metrics:</p>
-<section id="shufflewriterexec">
-<h3>ShuffleWriterExec<a class="headerlink" href="#shufflewriterexec" title="Link to this heading">¶</a></h3>
+</section>
+<section id="native-metrics">
+<h3>Native Metrics<a class="headerlink" href="#native-metrics" title="Link to this heading">¶</a></h3>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled=true</span></code> will cause native plans to be logged in each executor. Metrics are
+logged for each native plan (and there is one plan per task, so this is very verbose).</p>
+<p>Here is a guide to some of the native metrics.</p>
+</section>
+<section id="scanexec">
+<h3>ScanExec<a class="headerlink" href="#scanexec" title="Link to this heading">¶</a></h3>
 <table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Metric</p></th>
@@ -481,8 +499,14 @@ between Spark and Comet.</p></li>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
-<td><p>Measure the time it takes for <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> to fetch batches from the JVM. Note that this does not include the execution time of the query that produced the input batches.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">elapsed_compute</span></code></p></td>
+<td><p>Total time spent in this operator, fetching batches from a JVM iterator.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
+<td><p>Time spent in the JVM fetching input batches to be read by this <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> instance.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrow_ffi_time</span></code></p></td>
+<td><p>Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM.</p></td>
 </tr>
 </tbody>
 </table>
