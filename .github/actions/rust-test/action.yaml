@@ -43,6 +43,12 @@ runs:
         cd native
         cargo install cargo-machete && cargo machete
 
+    - name: Check no public items in datafusion-comet crate
+      shell: bash
+      run: |
+        cd native/core
+        cargo rustc -- -D unreachable_pub
+
     - name: Cache Maven dependencies
       uses: actions/cache@v4
       with:

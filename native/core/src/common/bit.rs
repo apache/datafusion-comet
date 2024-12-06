@@ -22,7 +22,6 @@ use arrow::buffer::Buffer;
 use crate::{
     errors::CometResult as Result,
     likely,
-    parquet::util::test_common::rand_gen::{random_bools, random_numbers},
     parquet::{data_type::AsBytes, util::bit_packing::unpack32},
     unlikely,
 };
