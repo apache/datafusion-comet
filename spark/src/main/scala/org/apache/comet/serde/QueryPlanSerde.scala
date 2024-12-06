@@ -2909,7 +2909,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-        scanBuilder.setSource(op.simpleStringWithNodeId())
+        val source = op.simpleStringWithNodeId()
+        if (source.isEmpty) {
+          scanBuilder.setSource(op.getClass.getSimpleName)
+        } else {
+          scanBuilder.setSource(source)
+        }
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
