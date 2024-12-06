@@ -185,6 +185,7 @@ impl PhysicalPlanner {
             ExprStruct::Add(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
                 expr.right.as_ref().unwrap(),
+                expr.fail_on_error,
                 expr.return_type.as_ref(),
                 DataFusionOperator::Plus,
                 input_schema,
@@ -192,6 +193,7 @@ impl PhysicalPlanner {
             ExprStruct::Subtract(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
                 expr.right.as_ref().unwrap(),
+                expr.fail_on_error,
                 expr.return_type.as_ref(),
                 DataFusionOperator::Minus,
                 input_schema,
@@ -199,6 +201,7 @@ impl PhysicalPlanner {
             ExprStruct::Multiply(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
                 expr.right.as_ref().unwrap(),
+                expr.fail_on_error,
                 expr.return_type.as_ref(),
                 DataFusionOperator::Multiply,
                 input_schema,
@@ -206,6 +209,7 @@ impl PhysicalPlanner {
             ExprStruct::Divide(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
                 expr.right.as_ref().unwrap(),
+                expr.fail_on_error,
                 expr.return_type.as_ref(),
                 DataFusionOperator::Divide,
                 input_schema,
@@ -213,6 +217,7 @@ impl PhysicalPlanner {
             ExprStruct::Remainder(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
                 expr.right.as_ref().unwrap(),
+                expr.fail_on_error,
                 expr.return_type.as_ref(),
                 DataFusionOperator::Modulo,
                 input_schema,
@@ -777,6 +782,7 @@ impl PhysicalPlanner {
         &self,
         left: &Expr,
         right: &Expr,
+        fail_on_error: bool,
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
@@ -818,7 +824,8 @@ impl PhysicalPlanner {
                     EvalMode::Legacy,
                     false,
                 ));
-                let child = Arc::new(BinaryExpr::new(left, op, right));
+                let child =
+                    Arc::new(BinaryExpr::new(left, op, right).with_fail_on_overflow(fail_on_error));
                 Ok(Arc::new(Cast::new_without_timezone(
                     child,
                     data_type,
@@ -844,7 +851,9 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
-            _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
+            _ => Ok(Arc::new(
+                BinaryExpr::new(left, op, right).with_fail_on_overflow(fail_on_error),
+            )),
         }
     }
 
