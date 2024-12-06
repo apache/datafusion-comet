@@ -1019,6 +1019,7 @@ pub(crate) fn round_upto_power_of_2(num: usize, factor: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parquet::util::test_common::rand_gen::*;
 
     use rand::{
         distributions::{Distribution, Standard},
