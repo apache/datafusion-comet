@@ -26,6 +26,8 @@ use jni::{
 /// A struct that holds all the JNI methods and fields for JVM `CometBatchIterator` class.
 pub struct CometBatchIterator<'a> {
     pub class: JClass<'a>,
+    pub method_has_next: JMethodID,
+    pub method_has_next_ret: ReturnType,
     pub method_next: JMethodID,
     pub method_next_ret: ReturnType,
 }
@@ -38,6 +40,8 @@ impl<'a> CometBatchIterator<'a> {
 
         Ok(CometBatchIterator {
             class,
+            method_has_next: env.get_method_id(Self::JVM_CLASS, "hasNext", "()I")?,
+            method_has_next_ret: ReturnType::Primitive(Primitive::Int),
             method_next: env.get_method_id(Self::JVM_CLASS, "next", "([J[J)I")?,
             method_next_ret: ReturnType::Primitive(Primitive::Int),
         })
