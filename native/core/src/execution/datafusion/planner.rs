@@ -122,6 +122,7 @@ use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
+use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
@@ -993,14 +994,17 @@ impl PhysicalPlanner {
                         assert!(file.start + file.length <= file.file_size);
 
                         let mut partitioned_file = PartitionedFile::new_with_range(
-                            Url::parse(file.file_path.as_ref())
-                                .unwrap()
-                                .path()
-                                .to_string(),
+                            String::new(), // Dummy file path.
                             file.file_size as u64,
                             file.start,
                             file.start + file.length,
                         );
+
+                        // Spark sends the path over as URL-encoded, parse that first.
+                        let url = Url::parse(file.file_path.as_ref()).unwrap();
+                        // Convert that to a Path object to use in the PartitionedFile.
+                        let path = Path::from_url_path(url.path()).unwrap();
+                        partitioned_file.object_meta.location = path;
 
                         // Process partition values
                         // Create an empty input schema for partition values because they are all literals.
