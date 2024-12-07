@@ -1681,7 +1681,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               // `scale` must be Int64 type in DataFusion
               val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs)
               val optExpr =
-                scalarExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
+                scalarExprToProtoWithReturnTypeAnsi(
+                  "round",
+                  r.dataType,
+                  r.ansiEnabled,
+                  childExpr,
+                  scaleExpr)
               optExprWithInfo(optExpr, expr, r.child)
           }
 
@@ -2437,6 +2442,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
+    serializeDataType(returnType).flatMap { t =>
+      builder.setReturnType(t)
+      scalarExprToProto0(builder, args: _*)
+    }
+  }
+
+  def scalarExprToProtoWithReturnTypeAnsi(
+      funcName: String,
+      returnType: DataType,
+      failOnError: Boolean,
+      args: Option[Expr]*): Option[Expr] = {
+    val builder = ExprOuterClass.ScalarFunc.newBuilder()
+    builder.setFunc(funcName)
+    builder.setFailOnError(failOnError)
     serializeDataType(returnType).flatMap { t =>
       builder.setReturnType(t)
       scalarExprToProto0(builder, args: _*)
