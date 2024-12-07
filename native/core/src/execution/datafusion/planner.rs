@@ -33,7 +33,6 @@ use crate::{
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
                 unbound::UnboundColumn,
-                NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -91,17 +90,11 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
-use datafusion_comet_spark_expr::avg::Avg;
-use datafusion_comet_spark_expr::avg_decimal::AvgDecimal;
-use datafusion_comet_spark_expr::correlation::Correlation;
-use datafusion_comet_spark_expr::covariance::Covariance;
-use datafusion_comet_spark_expr::stddev::Stddev;
-use datafusion_comet_spark_expr::sum_decimal::SumDecimal;
-use datafusion_comet_spark_expr::variance::Variance;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr, SparkCastOptions,
-    TimestampTruncExpr, ToJson,
+    ArrayInsert, Avg, AvgDecimal, Cast, Correlation, Covariance, CreateNamedStruct, DateTruncExpr,
+    GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
+    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
+    TimestampTruncExpr, ToJson, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{

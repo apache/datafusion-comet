@@ -19,8 +19,6 @@
 
 pub mod bitwise_not;
 pub mod checkoverflow;
-mod normalize_nan;
-pub use normalize_nan::NormalizeNaNAndZero;
 
 use crate::errors::CometError;
 pub mod bloom_filter_agg;
