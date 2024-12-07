@@ -69,3 +69,8 @@ harness = false
 [[bench]]
 name = "decimal_div"
 harness = false
+
+[[bench]]
+name = "aggregate"
+harness = false
+
