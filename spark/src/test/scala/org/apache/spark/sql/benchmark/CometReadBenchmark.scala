@@ -65,6 +65,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
+            spark.sql(s"select $query from parquetV1Table").noop()
+          }
+        }
+
         sqlBenchmark.run()
       }
     }
@@ -90,6 +98,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
 
         sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
           withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql("select sum(id) from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
             spark.sql("select sum(id) from parquetV1Table").noop()
           }
         }
@@ -202,6 +218,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
+        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
+            spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
+          }
+        }
+
         benchmark.run()
       }
     }
@@ -240,6 +264,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
+            spark.sql("select sum(length(id)) from parquetV1Table").noop()
+          }
+        }
+
         sqlBenchmark.run()
       }
     }
@@ -274,6 +306,17 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
+        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
+            spark
+              .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
+                "not NULL and c2 is not NULL")
+              .noop()
+          }
+        }
+
         benchmark.run()
       }
     }
@@ -297,6 +340,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
 
         benchmark.addCase("SQL Parquet - Comet") { _ =>
           withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
             spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
           }
         }
@@ -332,6 +383,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
+        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
+            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
+          }
+        }
+
         benchmark.run()
       }
     }
@@ -359,6 +418,14 @@ object CometReadBenchmark extends CometBenchmarkBase {
 
         benchmark.addCase("SQL Parquet - Comet") { _ =>
           withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "true") {
             spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
           }
         }
