@@ -18,29 +18,19 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
         datafusion::{
             expressions::{
-                avg::Avg,
-                avg_decimal::AvgDecimal,
-                bitwise_not::BitwiseNotExpr,
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
-                correlation::Correlation,
-                covariance::Covariance,
                 negative,
-                stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
-                sum_decimal::SumDecimal,
                 unbound::UnboundColumn,
-                variance::Variance,
-                NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -82,6 +72,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_comet_spark_expr::create_comet_physical_fun;
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
@@ -99,9 +90,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr, SparkCastOptions,
-    TimestampTruncExpr, ToJson,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Correlation, Covariance, CreateNamedStruct,
+    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
+    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
+    TimestampTruncExpr, ToJson, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{

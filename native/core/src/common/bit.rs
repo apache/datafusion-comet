@@ -17,14 +17,12 @@
 
 use std::{cmp::min, mem::size_of};
 
-use arrow::buffer::Buffer;
-
 use crate::{
     errors::CometResult as Result,
-    likely,
     parquet::{data_type::AsBytes, util::bit_packing::unpack32},
-    unlikely,
 };
+use arrow::buffer::Buffer;
+use datafusion_comet_spark_expr::utils::{likely, unlikely};
 
 #[inline]
 pub fn from_ne_slice<T: FromBytes>(bs: &[u8]) -> T {

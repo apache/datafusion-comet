@@ -28,7 +28,7 @@ use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::checkoverflow::is_valid_decimal_precision;
+use crate::utils::is_valid_decimal_precision;
 use arrow_array::ArrowNativeTypeOp;
 use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use datafusion::logical_expr::Volatility::Immutable;

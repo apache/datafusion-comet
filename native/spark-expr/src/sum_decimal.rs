@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::expressions::checkoverflow::is_valid_decimal_precision;
-use crate::unlikely;
+use crate::utils::{is_valid_decimal_precision, unlikely};
 use arrow::{
     array::BooleanBufferBuilder,
     buffer::{BooleanBuffer, NullBuffer},
@@ -113,7 +112,6 @@ impl AggregateUDFImpl for SumDecimal {
         Ok(Box::new(SumDecimalGroupsAccumulator::new(
             self.result_type.clone(),
             self.precision,
-            self.scale,
         )))
     }
 
@@ -286,18 +284,16 @@ struct SumDecimalGroupsAccumulator {
     sum: Vec<i128>,
     result_type: DataType,
     precision: u8,
-    scale: i8,
 }
 
 impl SumDecimalGroupsAccumulator {
-    fn new(result_type: DataType, precision: u8, scale: i8) -> Self {
+    fn new(result_type: DataType, precision: u8) -> Self {
         Self {
             is_not_null: BooleanBufferBuilder::new(0),
             is_empty: BooleanBufferBuilder::new(0),
             sum: Vec::new(),
             result_type,
             precision,
-            scale,
         }
     }
 
@@ -488,11 +484,11 @@ mod tests {
     use arrow::datatypes::*;
     use arrow_array::builder::{Decimal128Builder, StringBuilder};
     use arrow_array::RecordBatch;
+    use datafusion::execution::TaskContext;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
     use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_common::Result;
-    use datafusion_execution::TaskContext;
     use datafusion_expr::AggregateUDF;
     use datafusion_physical_expr::aggregate::AggregateExprBuilder;
     use datafusion_physical_expr::expressions::{Column, Literal};
