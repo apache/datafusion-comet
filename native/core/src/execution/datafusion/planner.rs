@@ -25,8 +25,6 @@ use crate::{
     execution::{
         datafusion::{
             expressions::{
-                avg::Avg,
-                avg_decimal::AvgDecimal,
                 bitwise_not::BitwiseNotExpr,
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
@@ -37,7 +35,6 @@ use crate::{
                 stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
-                sum_decimal::SumDecimal,
                 unbound::UnboundColumn,
                 variance::Variance,
                 NormalizeNaNAndZero,
@@ -98,6 +95,9 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::avg::Avg;
+use datafusion_comet_spark_expr::avg_decimal::AvgDecimal;
+use datafusion_comet_spark_expr::sum_decimal::SumDecimal;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField,
     HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr, SparkCastOptions,

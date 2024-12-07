@@ -23,12 +23,15 @@ mod cast;
 mod error;
 mod if_expr;
 
+pub mod avg;
+pub mod avg_decimal;
 mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
 pub mod spark_hash;
 mod structs;
+pub mod sum_decimal;
 mod temporal;
 pub mod timezone;
 mod to_json;
