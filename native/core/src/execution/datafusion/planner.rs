@@ -25,7 +25,6 @@ use crate::{
     execution::{
         datafusion::{
             expressions::{
-                bitwise_not::BitwiseNotExpr,
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
@@ -91,8 +90,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, Correlation, Covariance, CreateNamedStruct, DateTruncExpr,
-    GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Correlation, Covariance, CreateNamedStruct,
+    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
     NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
     TimestampTruncExpr, ToJson, Variance,
 };

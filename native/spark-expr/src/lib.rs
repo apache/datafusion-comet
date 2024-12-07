@@ -25,6 +25,8 @@ mod if_expr;
 
 mod avg;
 pub use avg::Avg;
+mod bitwise_not;
+pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
 mod avg_decimal;
 pub use avg_decimal::AvgDecimal;
 mod correlation;

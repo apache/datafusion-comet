@@ -17,7 +17,6 @@
 
 //! Native DataFusion expressions
 
-pub mod bitwise_not;
 pub mod checkoverflow;
 
 use crate::errors::CometError;
