@@ -18,7 +18,6 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
@@ -73,6 +72,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_comet_spark_expr::create_comet_physical_fun;
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
