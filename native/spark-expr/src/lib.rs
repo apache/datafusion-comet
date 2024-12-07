@@ -25,17 +25,21 @@ mod if_expr;
 
 pub mod avg;
 pub mod avg_decimal;
+pub mod correlation;
+pub mod covariance;
 mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
 pub mod spark_hash;
+pub mod stddev;
 mod structs;
 pub mod sum_decimal;
 mod temporal;
 pub mod timezone;
 mod to_json;
 pub mod utils;
+pub mod variance;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use error::{SparkError, SparkResult};

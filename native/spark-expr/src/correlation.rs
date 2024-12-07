@@ -19,9 +19,8 @@ use arrow::compute::{and, filter, is_not_null};
 
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::expressions::{
-    covariance::CovarianceAccumulator, stddev::StddevAccumulator,
-};
+use crate::covariance::CovarianceAccumulator;
+use crate::stddev::StddevAccumulator;
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},

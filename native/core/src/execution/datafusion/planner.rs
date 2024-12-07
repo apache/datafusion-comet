@@ -29,14 +29,10 @@ use crate::{
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
-                correlation::Correlation,
-                covariance::Covariance,
                 negative,
-                stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
                 unbound::UnboundColumn,
-                variance::Variance,
                 NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
@@ -97,7 +93,11 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::avg::Avg;
 use datafusion_comet_spark_expr::avg_decimal::AvgDecimal;
+use datafusion_comet_spark_expr::correlation::Correlation;
+use datafusion_comet_spark_expr::covariance::Covariance;
+use datafusion_comet_spark_expr::stddev::Stddev;
 use datafusion_comet_spark_expr::sum_decimal::SumDecimal;
+use datafusion_comet_spark_expr::variance::Variance;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField,
     HourExpr, IfExpr, ListExtract, MinuteExpr, RLike, SecondExpr, SparkCastOptions,
