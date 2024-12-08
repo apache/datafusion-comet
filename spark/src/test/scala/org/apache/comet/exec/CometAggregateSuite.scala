@@ -1202,6 +1202,28 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("sum decimal and average decimal overflow with ansi true") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionary =>
+        withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "test"
+          withTable(table) {
+            sql(s"create table $table(col1 decimal(5, 2), col2 decimal(5, 2)) using parquet")
+            sql(s"""
+            insert into $table values
+            (-999.99, 999.99),
+            (-999.99, 999.99)
+          """)
+            checkSparkAnswer("SELECT SUM(col1), AVG(col1), SUM(col2), AVG(col2) FROM test")
+          }
+        }
+      }
+    }
+  }
+
   test("var_pop and var_samp") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>

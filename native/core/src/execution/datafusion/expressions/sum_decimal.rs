@@ -47,10 +47,16 @@ pub struct SumDecimal {
     precision: u8,
     /// Decimal scale
     scale: i8,
+    /// ANSI Mode
+    ansi_mode: bool,
 }
 
 impl SumDecimal {
-    pub fn try_new(expr: Arc<dyn PhysicalExpr>, data_type: DataType) -> DFResult<Self> {
+    pub fn try_new(
+        expr: Arc<dyn PhysicalExpr>,
+        data_type: DataType,
+        ansi_mode: bool,
+    ) -> DFResult<Self> {
         // The `data_type` is the SUM result type passed from Spark side
         let (precision, scale) = match data_type {
             DataType::Decimal128(p, s) => (p, s),
@@ -66,6 +72,7 @@ impl SumDecimal {
             result_type: data_type,
             precision,
             scale,
+            ansi_mode,
         })
     }
 }
@@ -129,8 +136,7 @@ impl AggregateUDFImpl for SumDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
-        true
+        !self.ansi_mode
     }
 }
 
@@ -501,7 +507,7 @@ mod tests {
     #[test]
     fn invalid_data_type() {
         let expr = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
-        assert!(SumDecimal::try_new(expr, DataType::Int32).is_err());
+        assert!(SumDecimal::try_new(expr, DataType::Int32, false).is_err());
     }
 
     #[tokio::test]
@@ -524,6 +530,7 @@ mod tests {
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             Arc::clone(&c1),
             data_type.clone(),
+            false,
         )?));
 
         let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])

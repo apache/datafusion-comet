@@ -46,16 +46,23 @@ pub struct AvgDecimal {
     expr: Arc<dyn PhysicalExpr>,
     sum_data_type: DataType,
     result_data_type: DataType,
+    ansi_mode: bool,
 }
 
 impl AvgDecimal {
     /// Create a new AVG aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>, result_type: DataType, sum_type: DataType) -> Self {
+    pub fn new(
+        expr: Arc<dyn PhysicalExpr>,
+        result_type: DataType,
+        sum_type: DataType,
+        ansi_mode: bool,
+    ) -> Self {
         Self {
             signature: Signature::user_defined(Immutable),
             expr,
             result_data_type: result_type,
             sum_data_type: sum_type,
+            ansi_mode,
         }
     }
 }
@@ -89,12 +96,12 @@ impl AggregateUDFImpl for AvgDecimal {
             Field::new(
                 format_state_name(self.name(), "sum"),
                 self.sum_data_type.clone(),
-                true,
+                self.is_nullable(),
             ),
             Field::new(
                 format_state_name(self.name(), "count"),
                 DataType::Int64,
-                true,
+                self.is_nullable(),
             ),
         ])
     }
@@ -105,6 +112,10 @@ impl AggregateUDFImpl for AvgDecimal {
 
     fn reverse_expr(&self) -> ReversedUDAF {
         ReversedUDAF::Identical
+    }
+
+    fn is_nullable(&self) -> bool {
+        !self.ansi_mode
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
