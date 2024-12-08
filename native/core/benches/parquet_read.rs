@@ -213,6 +213,6 @@ impl Iterator for TestColumnReader {
         }
         self.total_num_values_read += total;
 
-        Some(self.inner.current_batch())
+        Some(self.inner.current_batch().unwrap())
     }
 }

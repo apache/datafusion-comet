@@ -1084,6 +1084,9 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case ColumnarToRowExec(child) => CometColumnarToRowExec(child)
+        case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+          sparkToColumnar.child
         case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
         // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
         // shuffle takes row-based input.
@@ -1099,6 +1102,8 @@ class CometSparkSessionExtensions
 
       eliminatedPlan match {
         case ColumnarToRowExec(child: CometCollectLimitExec) =>
+          child
+        case CometColumnarToRowExec(child: CometCollectLimitExec) =>
           child
         case other =>
           other
