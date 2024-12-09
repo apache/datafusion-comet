@@ -45,14 +45,30 @@ pub struct CheckOverflow {
 }
 
 impl DynHash for CheckOverflow {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.child.dyn_hash(&mut s);
+        self.data_type.dyn_hash(&mut s);
+        self.fail_on_error.dyn_hash(&mut s);
     }
 }
 
 impl PartialEq for CheckOverflow {
     fn eq(&self, _other: &Self) -> bool {
         todo!()
+    }
+}
+
+impl PartialEq<dyn Any> for CheckOverflow {
+    fn eq(&self, other: &dyn Any) -> bool {
+        down_cast_any_ref(other)
+            .downcast_ref::<Self>()
+            .map(|x| {
+                self.child.eq(&x.child)
+                    && self.data_type.eq(&x.data_type)
+                    && self.fail_on_error.eq(&x.fail_on_error)
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -73,19 +89,6 @@ impl Display for CheckOverflow {
             "CheckOverflow [datatype: {}, fail_on_error: {}, child: {}]",
             self.data_type, self.fail_on_error, self.child
         )
-    }
-}
-
-impl PartialEq<dyn Any> for CheckOverflow {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.data_type.eq(&x.data_type)
-                    && self.fail_on_error.eq(&x.fail_on_error)
-            })
-            .unwrap_or(false)
     }
 }
 
@@ -174,12 +177,4 @@ impl PhysicalExpr for CheckOverflow {
             self.fail_on_error,
         )))
     }
-
-    // fn dyn_hash(&self, state: &mut dyn Hasher) {
-    //     let mut s = state;
-    //     self.child.hash(&mut s);
-    //     self.data_type.hash(&mut s);
-    //     self.fail_on_error.hash(&mut s);
-    //     self.hash(&mut s);
-    // }
 }

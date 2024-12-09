@@ -209,9 +209,4 @@ impl PhysicalExpr for Subquery {
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         Ok(self)
     }
-
-    // fn dyn_hash(&self, state: &mut dyn Hasher) {
-    //     let mut s = state;
-    //     self.hash(&mut s)
-    // }
 }

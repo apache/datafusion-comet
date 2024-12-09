@@ -178,6 +178,15 @@ impl PartialEq for StringSpaceExpr {
     }
 }
 
+impl PartialEq<dyn Any> for StringSpaceExpr {
+    fn eq(&self, other: &dyn Any) -> bool {
+        down_cast_any_ref(other)
+            .downcast_ref::<Self>()
+            .map(|x| self.child.eq(&x.child))
+            .unwrap_or(false)
+    }
+}
+
 impl SubstringExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>, start: i64, len: u64) -> Self {
         Self { child, start, len }
@@ -216,8 +225,12 @@ impl PartialEq<dyn Any> for SubstringExpr {
 }
 
 impl DynHash for SubstringExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.child.hash(&mut s);
+        self.start.hash(&mut s);
+        self.len.hash(&mut s);
+        // self.hash(&mut s);
     }
 }
 
@@ -268,23 +281,6 @@ impl PhysicalExpr for SubstringExpr {
             self.len,
         )))
     }
-
-    // fn dyn_hash(&self, state: &mut dyn Hasher) {
-    //     let mut s = state;
-    //     self.child.hash(&mut s);
-    //     self.start.hash(&mut s);
-    //     self.len.hash(&mut s);
-    //     self.hash(&mut s);
-    // }
-}
-
-impl PartialEq<dyn Any> for StringSpaceExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child))
-            .unwrap_or(false)
-    }
 }
 
 impl PhysicalExpr for StringSpaceExpr {
@@ -329,10 +325,4 @@ impl PhysicalExpr for StringSpaceExpr {
     ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(StringSpaceExpr::new(Arc::clone(&children[0]))))
     }
-
-    // fn dyn_hash(&self, state: &mut dyn Hasher) {
-    //     let mut s = state;
-    //     self.child.hash(&mut s);
-    //     self.hash(&mut s);
-    // }
 }

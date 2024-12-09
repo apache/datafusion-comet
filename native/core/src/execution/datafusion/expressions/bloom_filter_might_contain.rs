@@ -39,8 +39,11 @@ pub struct BloomFilterMightContain {
 }
 
 impl DynHash for BloomFilterMightContain {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.bloom_filter_expr.dyn_hash(&mut s);
+        self.value_expr.dyn_hash(&mut s);
+        self.bloom_filter.dyn_hash(&mut s);
     }
 }
 
@@ -152,11 +155,4 @@ impl PhysicalExpr for BloomFilterMightContain {
             Arc::clone(&children[1]),
         )?))
     }
-
-    // fn dyn_hash(&self, state: &mut dyn Hasher) {
-    //     let mut s = state;
-    //     self.bloom_filter_expr.hash(&mut s);
-    //     self.value_expr.hash(&mut s);
-    //     self.hash(&mut s);
-    // }
 }
