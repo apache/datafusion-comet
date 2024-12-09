@@ -104,30 +104,3 @@ fn default_logger_config() -> CometResult<Config> {
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
 }
-
-// These are borrowed from hashbrown crate:
-//   https://github.com/rust-lang/hashbrown/blob/master/src/raw/mod.rs
-
-// On stable we can use #[cold] to get a equivalent effect: this attributes
-// suggests that the function is unlikely to be called
-#[cfg(not(feature = "nightly"))]
-#[inline]
-#[cold]
-fn cold() {}
-
-#[cfg(not(feature = "nightly"))]
-#[inline]
-fn likely(b: bool) -> bool {
-    if !b {
-        cold();
-    }
-    b
-}
-#[cfg(not(feature = "nightly"))]
-#[inline]
-fn unlikely(b: bool) -> bool {
-    if b {
-        cold();
-    }
-    b
-}

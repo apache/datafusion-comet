@@ -28,9 +28,9 @@ use crate::write_val_or_null;
 use crate::{
     common::bit::{self, BitReader},
     parquet::{data_type::*, ParquetMutableVector},
-    unlikely,
 };
 use arrow::datatypes::DataType as ArrowDataType;
+use datafusion_comet_spark_expr::utils::unlikely;
 
 pub fn get_decoder<T: DataType>(
     value_data: Buffer,
