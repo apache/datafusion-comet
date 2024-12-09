@@ -39,13 +39,19 @@ import org.apache.comet.vector.NativeUtil
  *   The input iterators producing sequence of batches of Arrow Arrays.
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
+ * @param numParts
+ *   The number of partitions.
+ * @param partitionIndex
+ *   The index of the partition.
  */
 class CometExecIterator(
     val id: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
-    nativeMetrics: CometMetricNode)
+    nativeMetrics: CometMetricNode,
+    numParts: Int,
+    partitionIndex: Int)
     extends Iterator[ColumnarBatch] {
 
   private val nativeLib = new Native()
@@ -54,46 +60,29 @@ class CometExecIterator(
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
   private val plan = {
-    val configs = createNativeConf
     nativeLib.createPlan(
       id,
-      configs,
       cometBatchIterators,
       protobufQueryPlan,
       nativeMetrics,
-      new CometTaskMemoryManager(id))
+      new CometTaskMemoryManager(id),
+      batchSize = COMET_BATCH_SIZE.get(),
+      debug = COMET_DEBUG_ENABLED.get(),
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
-  /**
-   * Creates a new configuration map to be passed to the native side.
-   */
-  private def createNativeConf: java.util.HashMap[String, String] = {
-    val result = new java.util.HashMap[String, String]()
-    val conf = SparkEnv.get.conf
-
-    result.put("batch_size", String.valueOf(COMET_BATCH_SIZE.get()))
-    result.put("debug_native", String.valueOf(COMET_DEBUG_ENABLED.get()))
-    result.put("explain_native", String.valueOf(COMET_EXPLAIN_NATIVE_ENABLED.get()))
-
-    // Strip mandatory prefix spark. which is not required for DataFusion session params
-    conf.getAll.foreach {
-      case (k, v) if k.startsWith("spark.datafusion") =>
-        result.put(k.replaceFirst("spark\\.", ""), v)
-      case _ =>
-    }
-
-    result
-  }
-
   def getNextBatch(): Option[ColumnarBatch] = {
+    assert(partitionIndex >= 0 && partitionIndex < numParts)
+
     nativeUtil.getNextBatch(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
-        nativeLib.executePlan(plan, arrayAddrs, schemaAddrs)
+        val ctx = TaskContext.get()
+        nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
       })
   }
 
