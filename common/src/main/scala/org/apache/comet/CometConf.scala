@@ -97,6 +97,15 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_NATIVE_DF_SCAN_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.native.df.scan.enabled")
+    .internal()
+    .doc("Whether to enable the fully native datafusion based column readers in the scan. When " +
+      "this is turned on, Spark will use Comet to read Parquet files natively via the Datafusion " +
+      "ParquetExec operator. By default, this config is false.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .doc(

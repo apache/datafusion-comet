@@ -104,6 +104,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private InternalRow partitionValues;
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
+  private final boolean useDataFusionReader;
 
   private long rowsRead;
   private StructType sparkSchema;
@@ -171,6 +172,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     this.file = ShimBatchReader.newPartitionedFile(partitionValues, file);
     this.metrics = new HashMap<>();
+    this.useDataFusionReader = false;
 
     this.taskContext = TaskContext$.MODULE$.get();
   }
@@ -186,6 +188,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     isInitialized = true;
     this.taskContext = TaskContext$.MODULE$.get();
     this.metrics = new HashMap<>();
+    this.useDataFusionReader = false;
   }
 
   NativeBatchReader(
@@ -200,7 +203,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useLegacyDateTimestamp,
       StructType partitionSchema,
       InternalRow partitionValues,
-      Map<String, SQLMetric> metrics) {
+      Map<String, SQLMetric> metrics,
+      boolean useDataFusionReader) {
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
@@ -213,6 +217,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.file = inputSplit;
     this.footer = footer;
     this.metrics = metrics;
+    this.useDataFusionReader = useDataFusionReader;
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
@@ -360,7 +365,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             start,
             length,
             requiredColumns.toArray(),
-            serializedRequestedArrowSchema);
+            serializedRequestedArrowSchema,
+            useDataFusionReader);
     totalRowCount = Native.numRowGroups(handle);
     isInitialized = true;
   }

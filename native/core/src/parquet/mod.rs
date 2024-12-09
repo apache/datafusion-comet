@@ -24,6 +24,7 @@ pub mod util;
 pub mod read;
 
 use std::fs::File;
+use std::task::Poll;
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
 
 use crate::errors::{try_unwrap_or_throw, CometError};
@@ -51,7 +52,7 @@ use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use futures::StreamExt;
+use futures::{poll, StreamExt};
 use jni::objects::{
     JBooleanArray, JByteArray, JLongArray, JObjectArray, JPrimitiveArray, JString, ReleaseMode,
 };
@@ -608,6 +609,8 @@ enum ParquetReaderState {
 }
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
+    runtime: tokio::runtime::Runtime,
+    use_datafusion_reader: bool,
     batch_stream: SendableRecordBatchStream,
     batch_reader: ParquetRecordBatchReader,
     current_batch: Option<RecordBatch>,
@@ -642,8 +645,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     length: jlong,
     required_columns: jobjectArray,
     required_schema: jbyteArray,
+    use_datafusion: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        let use_datafusion_reader = use_datafusion != 0;
         let path: String = env
             .get_string(&JString::from_raw(file_path))
             .unwrap()
@@ -666,7 +671,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         let num_row_groups;
         let mut total_rows: i64 = 0;
-        let mut batch_stream: SendableRecordBatchStream;
+        let batch_stream: SendableRecordBatchStream;
+        // TODO: (ARROW NATIVE) Use the common global runtime
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
         //TODO: (ARROW NATIVE) if we can get the ParquetMetadata serialized, we need not do this.
         {
             let metadata = builder.metadata();
@@ -702,7 +711,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             let required_schema_array = JByteArray::from_raw(required_schema);
             let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
             let required_schema_arrow = deserialize_schema(required_schema_buffer.as_bytes())?;
-            // let object_store_url = ObjectStoreUrl::local_filesystem();
             let partitioned_file = PartitionedFile::new_with_range(
                 object_store_path.to_string(),
                 file_size as u64,
@@ -731,12 +739,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
             let scan = builder2.build();
             let ctx = TaskContext::default();
-            let partition_index: usize = 1;
-
+            let partition_index: usize = 0;
             batch_stream = scan.execute(partition_index, Arc::new(ctx))?;
-            // let batch = batch_stream.next().await.unwrap()?;
 
-            let batch = batch_stream.next().await.unwrap()?;
             // EXPERIMENTAL - END
 
             //TODO: (ARROW NATIVE) make this work for complex types (especially deeply nested structs)
@@ -764,6 +769,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let batch_reader = builder.build().unwrap();
 
         let ctx = BatchContext {
+            runtime,
+            use_datafusion_reader,
             batch_stream,
             batch_reader,
             current_batch: None,
@@ -810,24 +817,65 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
 ) -> jint {
     try_unwrap_or_throw(&e, |_env| {
         let context = get_batch_context(handle)?;
-        let batch_reader = &mut context.batch_reader;
-        // Read data
         let mut rows_read: i32 = 0;
-        let batch = batch_reader.next();
+        if context.use_datafusion_reader {
+            let batch_stream = &mut context.batch_stream;
+            let runtime = &context.runtime;
 
-        match batch {
-            Some(record_batch) => {
-                let batch = record_batch?;
-                rows_read = batch.num_rows() as i32;
-                context.current_batch = Some(batch);
-                context.reader_state = ParquetReaderState::Reading;
+            let mut stream = batch_stream.as_mut();
+            loop {
+                let next_item = stream.next();
+                let poll_batch: Poll<Option<datafusion_common::Result<RecordBatch>>> =
+                    runtime.block_on(async { poll!(next_item) });
+
+                match poll_batch {
+                    Poll::Ready(Some(batch)) => {
+                        let batch = batch?;
+                        rows_read = batch.num_rows() as i32;
+                        context.current_batch = Some(batch);
+                        context.reader_state = ParquetReaderState::Reading;
+                        break;
+                    }
+                    Poll::Ready(None) => {
+                        // EOF
+
+                        // TODO: (ARROW NATIVE) We can update metrics here
+                        // crate::execution::jni_api::update_metrics(&mut env, exec_context)?;
+
+                        context.current_batch = None;
+                        context.reader_state = ParquetReaderState::Complete;
+                        break;
+                    }
+                    // TODO: (ARROW NATIVE): Just keeping polling??
+                    // Ideally we want to yield to avoid consuming CPU while blocked on IO
+                    Poll::Pending => {
+                        // Update metrics ??
+                        // crate::execution::jni_api::update_metrics(&mut env, exec_context)?;
+                        // println!("pending");
+                        continue;
+                    }
+                }
             }
-            None => {
-                context.current_batch = None;
-                context.reader_state = ParquetReaderState::Complete;
+            Ok(rows_read)
+        } else {
+            let batch_reader = &mut context.batch_reader;
+            // Read data
+            let batch = batch_reader.next();
+
+            match batch {
+                Some(record_batch) => {
+                    let batch = record_batch?;
+                    rows_read = batch.num_rows() as i32;
+                    context.current_batch = Some(batch);
+                    context.reader_state = ParquetReaderState::Reading;
+                }
+                None => {
+                    context.current_batch = None;
+                    context.reader_state = ParquetReaderState::Complete;
+                }
             }
+            Ok(rows_read)
         }
-        Ok(rows_read)
     })
 }
 

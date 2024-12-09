@@ -101,6 +101,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
     val nativeArrowReaderEnabled = CometConf.COMET_NATIVE_ARROW_SCAN_ENABLED.get(sqlConf)
+    val useDatafusionReader = CometConf.COMET_NATIVE_DF_SCAN_ENABLED.get(sqlConf)
 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
@@ -149,7 +150,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             datetimeRebaseSpec.mode == CORRECTED,
             partitionSchema,
             file.partitionValues,
-            JavaConverters.mapAsJavaMap(metrics))
+            JavaConverters.mapAsJavaMap(metrics),
+            useDatafusionReader)
           batchReader.init()
           batchReader
         } else {

@@ -214,7 +214,8 @@ pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, String), ParseError
     // we define origin of a url as scheme + "://" + authority + ["/" + bucket]
     let url = Url::parse(url.as_ref()).unwrap();
     let mut object_store_origin = url.scheme().to_owned();
-    let mut object_store_path = url.to_file_path().unwrap().to_str().unwrap().to_string();
+    // let mut object_store_path = url.to_file_path().unwrap().to_str().unwrap().to_string();
+    let mut object_store_path = url.path().to_string();
     if object_store_origin == "s3a" {
         object_store_origin = "s3".to_string();
         object_store_origin.push_str("://");

@@ -255,7 +255,8 @@ public final class Native extends NativeBase {
       long start,
       long length,
       Object[] required_columns,
-      byte[] requiredSchema);
+      byte[] requiredSchema,
+      boolean useDataFusionReader);
 
   public static native int numRowGroups(long handle);
 
