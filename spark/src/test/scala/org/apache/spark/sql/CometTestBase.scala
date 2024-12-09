@@ -231,11 +231,9 @@ abstract class CometTestBase
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Option[Throwable] = None
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
-      expected = Try(dfSpark.collect()).failed.toOption
+      expected = Try(Dataset.ofRows(spark, df.logicalPlan).collect()).failed.toOption
     }
-    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
-    val actual = Try(dfComet.collect()).failed.toOption
+    val actual = Try(Dataset.ofRows(spark, df.logicalPlan).collect()).failed.toOption
     (expected, actual)
   }
 

@@ -18,29 +18,19 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
         datafusion::{
             expressions::{
-                avg::Avg,
-                avg_decimal::AvgDecimal,
-                bitwise_not::BitwiseNotExpr,
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain,
                 checkoverflow::CheckOverflow,
-                correlation::Correlation,
-                covariance::Covariance,
                 negative,
-                stddev::Stddev,
                 strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
                 subquery::Subquery,
-                sum_decimal::SumDecimal,
                 unbound::UnboundColumn,
-                variance::Variance,
-                NormalizeNaNAndZero,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -82,9 +72,11 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
+use datafusion_comet_spark_expr::create_comet_physical_fun;
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::datafusion::spark_plan::SparkPlan;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -98,8 +90,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    Cast, CreateNamedStruct, DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr,
-    ListExtract, MinuteExpr, RLike, SecondExpr, TimestampTruncExpr, ToJson,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Correlation, Covariance, CreateNamedStruct,
+    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
+    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
+    TimestampTruncExpr, ToJson, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -127,8 +121,8 @@ type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
 
 struct JoinParameters {
-    pub left: Arc<dyn ExecutionPlan>,
-    pub right: Arc<dyn ExecutionPlan>,
+    pub left: Arc<SparkPlan>,
+    pub right: Arc<SparkPlan>,
     pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
     pub join_filter: Option<JoinFilter>,
     pub join_type: DFJoinType,
@@ -387,14 +381,11 @@ impl PhysicalPlanner {
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let timezone = expr.timezone.clone();
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    eval_mode,
-                    timezone,
-                    expr.allow_incompat,
+                    SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
                 )))
             }
             ExprStruct::Hour(expr) => {
@@ -720,6 +711,22 @@ impl PhysicalPlanner {
                 )?;
                 Ok(Arc::new(case_expr))
             }
+            ExprStruct::ArrayInsert(expr) => {
+                let src_array_expr = self.create_expr(
+                    expr.src_array_expr.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+                let pos_expr =
+                    self.create_expr(expr.pos_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let item_expr =
+                    self.create_expr(expr.item_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                Ok(Arc::new(ArrayInsert::new(
+                    src_array_expr,
+                    pos_expr,
+                    item_expr,
+                    expr.legacy_negative_index,
+                )))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -789,24 +796,21 @@ impl PhysicalPlanner {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128
-                let left = Arc::new(Cast::new_without_timezone(
+                let left = Arc::new(Cast::new(
                     left,
                     DataType::Decimal256(p1, s1),
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
-                let right = Arc::new(Cast::new_without_timezone(
+                let right = Arc::new(Cast::new(
                     right,
                     DataType::Decimal256(p2, s2),
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new_without_timezone(
+                Ok(Arc::new(Cast::new(
                     child,
                     data_type,
-                    EvalMode::Legacy,
-                    false,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 )))
             }
             (
@@ -831,7 +835,13 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Create a DataFusion physical plan from Spark physical plan.
+    /// Create a DataFusion physical plan from Spark physical plan. There is a level of
+    /// abstraction where a tree of SparkPlan nodes is returned. There is a 1:1 mapping from a
+    /// protobuf Operator (that represents a Spark operator) to a native SparkPlan struct. We
+    /// need this 1:1 mapping so that we can report metrics back to Spark. The native execution
+    /// plan that is generated for each Operator is sometimes a single ExecutionPlan, but in some
+    /// cases we generate a tree of ExecutionPlans and we need to collect metrics for all of these
+    /// plans so we store references to them in the SparkPlan struct.
     ///
     /// `inputs` is a vector of input source IDs. It is used to create `ScanExec`s. Each `ScanExec`
     /// will be assigned a unique ID from `inputs` and the ID will be used to identify the input
@@ -845,11 +855,11 @@ impl PhysicalPlanner {
     ///
     /// Note that we return created `Scan`s which will be kept at JNI API. JNI calls will use it to
     /// feed in new input batch from Spark JVM side.
-    pub fn create_plan<'a>(
+    pub(crate) fn create_plan<'a>(
         &'a self,
         spark_plan: &'a Operator,
         inputs: &mut Vec<Arc<GlobalRef>>,
-    ) -> Result<(Vec<ScanExec>, Arc<dyn ExecutionPlan>), ExecutionError> {
+    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
@@ -864,7 +874,14 @@ impl PhysicalPlanner {
                             .map(|r| (r, format!("col_{}", idx)))
                     })
                     .collect();
-                Ok((scans, Arc::new(ProjectionExec::try_new(exprs?, child)?)))
+                let projection = Arc::new(ProjectionExec::try_new(
+                    exprs?,
+                    Arc::clone(&child.native_plan),
+                )?);
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
+                ))
             }
             OpStruct::Filter(filter) => {
                 assert!(children.len() == 1);
@@ -872,7 +889,14 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                Ok((scans, Arc::new(FilterExec::try_new(predicate, child)?)))
+                let filter = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                ))
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
@@ -904,13 +928,13 @@ impl PhysicalPlanner {
 
                 let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
-                let aggregate = Arc::new(
+                let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
                         aggr_expr,
                         vec![None; num_agg], // no filter expressions
-                        Arc::clone(&child),
+                        Arc::clone(&child.native_plan),
                         Arc::clone(&schema),
                     )?,
                 );
@@ -924,8 +948,11 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let exec: Arc<dyn ExecutionPlan> = if agg.result_exprs.is_empty() {
-                    aggregate
+                if agg.result_exprs.is_empty() {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                    ))
                 } else {
                     // For final aggregation, DF's hash aggregate exec doesn't support Spark's
                     // aggregate result expressions like `COUNT(col) + 1`, but instead relying
@@ -934,17 +961,34 @@ impl PhysicalPlanner {
                     //
                     // Note that `result_exprs` should only be set for final aggregation on the
                     // Spark side.
-                    Arc::new(ProjectionExec::try_new(result_exprs?, aggregate)?)
-                };
-
-                Ok((scans, exec))
+                    let projection = Arc::new(ProjectionExec::try_new(
+                        result_exprs?,
+                        Arc::clone(&aggregate),
+                    )?);
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            projection,
+                            vec![child],
+                            vec![aggregate],
+                        )),
+                    ))
+                }
             }
             OpStruct::Limit(limit) => {
                 assert!(children.len() == 1);
                 let num = limit.limit;
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
 
-                Ok((scans, Arc::new(LocalLimitExec::new(child, num as usize))))
+                let limit = Arc::new(LocalLimitExec::new(
+                    Arc::clone(&child.native_plan),
+                    num as usize,
+                ));
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
+                ))
             }
             OpStruct::Sort(sort) => {
                 assert!(children.len() == 1);
@@ -962,11 +1006,20 @@ impl PhysicalPlanner {
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
                 // https://github.com/apache/datafusion-comet/issues/963
-                let child = Self::wrap_in_copy_exec(child);
+                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
+
+                let sort = Arc::new(
+                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                        .with_fetch(fetch),
+                );
 
                 Ok((
                     scans,
-                    Arc::new(SortExec::new(LexOrdering::new(exprs?), child).with_fetch(fetch)),
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        sort,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -992,7 +1045,10 @@ impl PhysicalPlanner {
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
                     ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
-                Ok((vec![scan.clone()], Arc::new(scan)))
+                Ok((
+                    vec![scan.clone()],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
+                ))
             }
             OpStruct::ShuffleWriter(writer) => {
                 assert!(children.len() == 1);
@@ -1001,14 +1057,20 @@ impl PhysicalPlanner {
                 let partitioning = self
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
+                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    partitioning,
+                    writer.output_data_file.clone(),
+                    writer.output_index_file.clone(),
+                )?);
+
                 Ok((
                     scans,
-                    Arc::new(ShuffleWriterExec::try_new(
-                        child,
-                        partitioning,
-                        writer.output_data_file.clone(),
-                        writer.output_index_file.clone(),
-                    )?),
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::Expand(expand) => {
@@ -1052,15 +1114,18 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let child = if can_reuse_input_batch(&child) {
-                    Arc::new(CopyExec::new(child, CopyMode::UnpackOrDeepCopy))
+                let input = if can_reuse_input_batch(&child.native_plan) {
+                    Arc::new(CopyExec::new(
+                        Arc::clone(&child.native_plan),
+                        CopyMode::UnpackOrDeepCopy,
+                    ))
                 } else {
-                    child
+                    Arc::clone(&child.native_plan)
                 };
-
+                let expand = Arc::new(CometExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
-                    Arc::new(CometExpandExec::new(projections, child, schema)),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {
@@ -1088,8 +1153,8 @@ impl PhysicalPlanner {
                     .collect();
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    join_params.left,
-                    join_params.right,
+                    Arc::clone(&join_params.left.native_plan),
+                    Arc::clone(&join_params.right.native_plan),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,
@@ -1099,7 +1164,17 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
-                Ok((scans, join))
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
+                ))
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
@@ -1115,8 +1190,8 @@ impl PhysicalPlanner {
                 // to copy the input batch to avoid the data corruption from reusing the input
                 // batch. We also need to unpack dictionary arrays, because the join operators
                 // do not support them.
-                let left = Self::wrap_in_copy_exec(join_params.left);
-                let right = Self::wrap_in_copy_exec(join_params.right);
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1132,13 +1207,35 @@ impl PhysicalPlanner {
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
-                let hash_join = if join.build_side == BuildSide::BuildLeft as i32 {
-                    hash_join
+                if join.build_side == BuildSide::BuildLeft as i32 {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            hash_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
                 } else {
-                    swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?
-                };
+                    let swapped_hash_join =
+                        swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
 
-                Ok((scans, hash_join))
+                    let mut additional_native_plans = vec![];
+                    if swapped_hash_join.as_any().is::<ProjectionExec>() {
+                        // a projection was added to the hash join
+                        additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
+                    }
+
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            swapped_hash_join,
+                            vec![join_params.left, join_params.right],
+                            additional_native_plans,
+                        )),
+                    ))
+                }
             }
             OpStruct::Window(wnd) => {
                 let (scans, child) = self.create_plan(&children[0], inputs)?;
@@ -1171,14 +1268,15 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let window_agg = Arc::new(BoundedWindowAggExec::try_new(
+                    window_expr?,
+                    Arc::clone(&child.native_plan),
+                    partition_exprs.to_vec(),
+                    InputOrderMode::Sorted,
+                )?);
                 Ok((
                     scans,
-                    Arc::new(BoundedWindowAggExec::try_new(
-                        window_expr?,
-                        child,
-                        partition_exprs.to_vec(),
-                        InputOrderMode::Sorted,
-                    )?),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
         }
@@ -1315,8 +1413,8 @@ impl PhysicalPlanner {
 
         Ok((
             JoinParameters {
-                left,
-                right,
+                left: Arc::clone(&left),
+                right: Arc::clone(&right),
                 join_on,
                 join_type,
                 join_filter,
@@ -2183,6 +2281,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
+        spark_expression::Expr,
         spark_expression::{self, literal},
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
@@ -2191,6 +2290,7 @@ mod tests {
     #[test]
     fn test_unpack_dictionary_primitive() {
         let op_scan = Operator {
+            plan_id: 0,
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -2216,7 +2316,7 @@ mod tests {
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let mut stream = datafusion_plan.execute(0, task_ctx).unwrap();
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = mpsc::channel(1);
@@ -2263,6 +2363,7 @@ mod tests {
     #[test]
     fn test_unpack_dictionary_string() {
         let op_scan = Operator {
+            plan_id: 0,
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -2299,7 +2400,7 @@ mod tests {
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let mut stream = datafusion_plan.execute(0, task_ctx).unwrap();
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = mpsc::channel(1);
@@ -2348,19 +2449,7 @@ mod tests {
     #[tokio::test()]
     #[allow(clippy::field_reassign_with_default)]
     async fn to_datafusion_filter() {
-        let op_scan = spark_operator::Operator {
-            children: vec![],
-            op_struct: Some(spark_operator::operator::OpStruct::Scan(
-                spark_operator::Scan {
-                    fields: vec![spark_expression::DataType {
-                        type_id: 3,
-                        type_info: None,
-                    }],
-                    source: "".to_string(),
-                },
-            )),
-        };
-
+        let op_scan = create_scan();
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
@@ -2372,7 +2461,10 @@ mod tests {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
-        let stream = datafusion_plan.execute(0, Arc::clone(&task_ctx)).unwrap();
+        let stream = datafusion_plan
+            .native_plan
+            .execute(0, Arc::clone(&task_ctx))
+            .unwrap();
         let output = collect(stream).await.unwrap();
         assert!(output.is_empty());
     }
@@ -2426,10 +2518,76 @@ mod tests {
         };
 
         Operator {
+            plan_id: 0,
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
             })),
+        }
+    }
+
+    #[test]
+    fn spark_plan_metrics_filter() {
+        let op_scan = create_scan();
+        let op = create_filter(op_scan, 0);
+        let planner = PhysicalPlanner::default();
+
+        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![]).unwrap();
+
+        assert_eq!("FilterExec", filter_exec.native_plan.name());
+        assert_eq!(1, filter_exec.children.len());
+        assert_eq!(0, filter_exec.additional_native_plans.len());
+    }
+
+    #[test]
+    fn spark_plan_metrics_hash_join() {
+        let op_scan = create_scan();
+        let op_join = Operator {
+            plan_id: 0,
+            children: vec![op_scan.clone(), op_scan.clone()],
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: 0,
+                condition: None,
+                build_side: 0,
+            })),
+        };
+
+        let planner = PhysicalPlanner::default();
+
+        let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![]).unwrap();
+
+        assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
+        assert_eq!(2, hash_join_exec.children.len());
+        assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
+        assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    fn create_bound_reference(index: i32) -> Expr {
+        Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(create_proto_datatype()),
+            })),
+        }
+    }
+
+    fn create_scan() -> Operator {
+        Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![create_proto_datatype()],
+                source: "".to_string(),
+            })),
+        }
+    }
+
+    fn create_proto_datatype() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 3,
+            type_info: None,
         }
     }
 }
