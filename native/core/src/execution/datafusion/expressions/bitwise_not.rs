@@ -28,7 +28,7 @@ use arrow::{
 };
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
-use datafusion_common::Result;
+use datafusion_common::{Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
 macro_rules! compute_op {
@@ -133,6 +133,22 @@ impl PartialEq<dyn Any> for BitwiseNotExpr {
 
 pub fn bitwise_not(arg: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
     Ok(Arc::new(BitwiseNotExpr::new(arg)))
+}
+
+fn scalar_bitwise_not(scalar: ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None) => Ok(scalar),
+        ScalarValue::Int8(Some(v)) => Ok(ScalarValue::Int8(Some(!v))),
+        ScalarValue::Int16(Some(v)) => Ok(ScalarValue::Int16(Some(!v))),
+        ScalarValue::Int32(Some(v)) => Ok(ScalarValue::Int32(Some(!v))),
+        ScalarValue::Int64(Some(v)) => Ok(ScalarValue::Int64(Some(!v))),
+        value => Err(DataFusionError::Internal(format!(
+            "Can not run ! on scalar value {value:?}"
+        ))),
+    }
 }
 
 #[cfg(test)]

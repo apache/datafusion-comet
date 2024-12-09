@@ -51,10 +51,9 @@ object CometExecUtils {
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
       limit: Int): RDD[ColumnarBatch] = {
-    val numParts = childPlan.getNumPartitions
-    childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
+    childPlan.mapPartitionsInternal { iter =>
       val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit).get
-      CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
+      CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp)
     }
   }
 
@@ -88,7 +87,7 @@ object CometExecUtils {
    * child partition
    */
   def getLimitNativePlan(outputAttributes: Seq[Attribute], limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
@@ -118,7 +117,7 @@ object CometExecUtils {
       sortOrder: Seq[SortOrder],
       child: SparkPlan,
       limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>

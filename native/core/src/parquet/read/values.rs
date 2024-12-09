@@ -28,9 +28,9 @@ use crate::write_val_or_null;
 use crate::{
     common::bit::{self, BitReader},
     parquet::{data_type::*, ParquetMutableVector},
+    unlikely,
 };
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion_comet_spark_expr::utils::unlikely;
 
 pub fn get_decoder<T: DataType>(
     value_data: Buffer,
@@ -476,7 +476,7 @@ make_int_variant_impl!(Int32ToDoubleType, copy_i32_to_f64, 8);
 make_int_variant_impl!(FloatToDoubleType, copy_f32_to_f64, 8);
 
 // unsigned type require double the width and zeroes are written for the second half
-// because they are implemented as the next size up signed type
+// perhaps because they are implemented as the next size up signed type?
 make_int_variant_impl!(UInt8Type, copy_i32_to_u8, 2);
 make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
 make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
@@ -586,6 +586,8 @@ macro_rules! generate_cast_to_unsigned {
     };
 }
 
+generate_cast_to_unsigned!(copy_i32_to_u8, i32, u8, 0_u8);
+generate_cast_to_unsigned!(copy_i32_to_u16, i32, u16, 0_u16);
 generate_cast_to_unsigned!(copy_i32_to_u32, i32, u32, 0_u32);
 
 macro_rules! generate_cast_to_signed {
@@ -622,9 +624,6 @@ generate_cast_to_signed!(copy_i64_to_i64, i64, i64);
 generate_cast_to_signed!(copy_i64_to_i128, i64, i128);
 generate_cast_to_signed!(copy_u64_to_u128, u64, u128);
 generate_cast_to_signed!(copy_f32_to_f64, f32, f64);
-// even for u8/u16, need to copy full i16/i32 width for Spark compatibility
-generate_cast_to_signed!(copy_i32_to_u8, i32, i16);
-generate_cast_to_signed!(copy_i32_to_u16, i32, i32);
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
@@ -1097,7 +1096,7 @@ mod test {
         let source =
             hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
                 .unwrap();
-        let expected = hex::decode("8a00dbff180034ff30001d00abff37fff100").unwrap();
+        let expected = hex::decode("8a00db001800340030001d00ab003700f100").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
         copy_i32_to_u8(source.as_bytes(), dest.as_mut_slice(), num);

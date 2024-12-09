@@ -39,7 +39,6 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHas
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
@@ -1883,14 +1882,6 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
       }
     }
-  }
-
-  test("Supported file formats for CometScanExec") {
-    assert(CometScanExec.isFileFormatSupported(new ParquetFileFormat()))
-
-    class CustomParquetFileFormat extends ParquetFileFormat {}
-
-    assert(!CometScanExec.isFileFormatSupported(new CustomParquetFileFormat()))
   }
 }
 

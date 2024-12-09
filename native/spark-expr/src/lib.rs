@@ -23,41 +23,21 @@ mod cast;
 mod error;
 mod if_expr;
 
-mod avg;
-pub use avg::Avg;
-mod bitwise_not;
-pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
-mod avg_decimal;
-pub use avg_decimal::AvgDecimal;
-mod correlation;
-pub use correlation::Correlation;
-mod covariance;
-pub use covariance::Covariance;
 mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
 pub mod spark_hash;
-mod stddev;
-pub use stddev::Stddev;
 mod structs;
-mod sum_decimal;
-pub use sum_decimal::SumDecimal;
-mod normalize_nan;
 mod temporal;
 pub mod timezone;
 mod to_json;
 pub mod utils;
-pub use normalize_nan::NormalizeNaNAndZero;
 
-mod variance;
-pub use variance::Variance;
-mod comet_scalar_funcs;
-pub use cast::{spark_cast, Cast, SparkCastOptions};
-pub use comet_scalar_funcs::create_comet_physical_fun;
+pub use cast::{spark_cast, Cast};
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
-pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
+pub use list::{GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
@@ -67,7 +47,7 @@ pub use to_json::ToJson;
 /// the behavior when processing input values that are invalid or would result in an
 /// error, such as divide by zero errors, and also affects behavior when converting
 /// between types.
-#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Hash, PartialEq, Clone, Copy)]
 pub enum EvalMode {
     /// Legacy is the default behavior in Spark prior to Spark 4.0. This mode silently ignores
     /// or replaces errors during SQL operations. Operations resulting in errors (like

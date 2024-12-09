@@ -33,29 +33,10 @@ import org.apache.comet.vector.NativeUtil;
 public class CometBatchIterator {
   final Iterator<ColumnarBatch> input;
   final NativeUtil nativeUtil;
-  private ColumnarBatch currentBatch = null;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
     this.input = input;
     this.nativeUtil = nativeUtil;
-  }
-
-  /**
-   * Fetch the next input batch.
-   *
-   * @return Number of rows in next batch or -1 if no batches left.
-   */
-  public int hasNext() {
-    if (currentBatch == null) {
-      if (input.hasNext()) {
-        currentBatch = input.next();
-      }
-    }
-    if (currentBatch == null) {
-      return -1;
-    } else {
-      return currentBatch.numRows();
-    }
   }
 
   /**
@@ -66,11 +47,12 @@ public class CometBatchIterator {
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
   public int next(long[] arrayAddrs, long[] schemaAddrs) {
-    if (currentBatch == null) {
+    boolean hasBatch = input.hasNext();
+
+    if (!hasBatch) {
       return -1;
     }
-    int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
-    currentBatch = null;
-    return numRows;
+
+    return nativeUtil.exportBatch(arrayAddrs, schemaAddrs, input.next());
   }
 }

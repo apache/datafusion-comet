@@ -942,12 +942,10 @@ dependencies = [
  "datafusion-common",
  "datafusion-expr",
  "datafusion-physical-expr",
- "futures",
  "num",
  "rand",
  "regex",
  "thiserror",
- "tokio",
  "twox-hash 2.0.1",
 ]
 

@@ -37,9 +37,7 @@ class CometNativeSuite extends CometTestBase {
           override def next(): ColumnarBatch = throw new NullPointerException()
         }),
         1,
-        limitOp,
-        1,
-        0)
+        limitOp)
       cometIter.next()
       cometIter.close()
       value

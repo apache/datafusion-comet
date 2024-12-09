@@ -190,7 +190,7 @@ class CometSparkSessionExtensions
 
           // data source V1
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
+                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -199,15 +199,14 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometScanExec.isSchemaSupported(requiredSchema)
+              if CometScanExec.isSchemaSupported(requiredSchema)
                 && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
 
           // data source v1 not supported case
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
+                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -217,15 +216,12 @@ class CometSparkSessionExtensions
                 _,
                 _) =>
             val info1 = createMessage(
-              !CometScanExec.isFileFormatSupported(fileFormat),
-              s"File format $fileFormat is not supported")
-            val info2 = createMessage(
               !CometScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
-            val info3 = createMessage(
+            val info2 = createMessage(
               !CometScanExec.isSchemaSupported(partitionSchema),
               s"Partition schema $partitionSchema is not supported")
-            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString(","))
+            withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
             scanExec
         }
       }

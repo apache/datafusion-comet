@@ -15,6 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use futures::Stream;
+use itertools::Itertools;
+use std::rc::Rc;
+use std::{
+    any::Any,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
+
 use crate::{
     errors::CometError,
     execution::{
@@ -38,23 +48,12 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
-use futures::Stream;
-use itertools::Itertools;
 use jni::objects::JValueGen;
 use jni::objects::{GlobalRef, JObject};
 use jni::sys::jsize;
-use std::rc::Rc;
-use std::{
-    any::Any,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-};
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
-/// scan or the result of reading a broadcast or shuffle exchange. ScanExec isn't invoked
-/// until the data is already available in the JVM. When CometExecIterator invokes
-/// Native.executePlan, it passes in the memory addresses of the input batches.
+/// scan or the result of reading a broadcast or shuffle exchange.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
@@ -66,8 +65,6 @@ pub struct ScanExec {
     pub input_source_description: String,
     /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
-    /// Schema of first batch
-    pub schema: SchemaRef,
     /// The input batch of input data. Used to determine the schema of the input data.
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
@@ -75,12 +72,6 @@ pub struct ScanExec {
     cache: PlanProperties,
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
-    /// Baseline metrics
-    baseline_metrics: BaselineMetrics,
-    /// Time waiting for JVM input plan to execute and return batches
-    jvm_fetch_time: Time,
-    /// Time spent in FFI
-    arrow_ffi_time: Time,
 }
 
 impl ScanExec {
@@ -90,11 +81,6 @@ impl ScanExec {
         input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
-        let metrics_set = ExecutionPlanMetricsSet::default();
-        let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
-        let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
-        let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
-
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
         // first batch. The array may be dictionary-encoded in some batches and not others, and
@@ -102,16 +88,7 @@ impl ScanExec {
         // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
         // Dictionary-encoded primitive arrays are always unpacked.
         let first_batch = if let Some(input_source) = input_source.as_ref() {
-            let mut timer = baseline_metrics.elapsed_compute().timer();
-            let batch = ScanExec::get_next(
-                exec_context_id,
-                input_source.as_obj(),
-                data_types.len(),
-                &jvm_fetch_time,
-                &arrow_ffi_time,
-            )?;
-            timer.stop();
-            batch
+            ScanExec::get_next(exec_context_id, input_source.as_obj(), data_types.len())?
         } else {
             InputBatch::EOF
         };
@@ -119,7 +96,7 @@ impl ScanExec {
         let schema = scan_schema(&first_batch, &data_types);
 
         let cache = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&schema)),
+            EquivalenceProperties::new(schema),
             // The partitioning is not important because we are not using DataFusion's
             // query planner or optimizer
             Partitioning::UnknownPartitioning(1),
@@ -133,11 +110,7 @@ impl ScanExec {
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
-            metrics: metrics_set,
-            baseline_metrics,
-            jvm_fetch_time,
-            arrow_ffi_time,
-            schema,
+            metrics: ExecutionPlanMetricsSet::default(),
         })
     }
 
@@ -176,7 +149,6 @@ impl ScanExec {
             // This is a unit test. We don't need to call JNI.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
@@ -184,13 +156,9 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
-                &self.jvm_fetch_time,
-                &self.arrow_ffi_time,
             )?;
             *current_batch = Some(next_batch);
         }
-
-        timer.stop();
 
         Ok(())
     }
@@ -200,8 +168,6 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
-        jvm_fetch_time: &Time,
-        arrow_ffi_time: &Time,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -216,21 +182,6 @@ impl ScanExec {
         }
 
         let mut env = JVMClasses::get_env()?;
-
-        let mut timer = jvm_fetch_time.timer();
-
-        let num_rows: i32 = unsafe {
-            jni_call!(&mut env,
-        comet_batch_iterator(iter).has_next() -> i32)?
-        };
-
-        timer.stop();
-
-        if num_rows == -1 {
-            return Ok(InputBatch::EOF);
-        }
-
-        let mut timer = arrow_ffi_time.timer();
 
         let mut array_addrs = Vec::with_capacity(num_cols);
         let mut schema_addrs = Vec::with_capacity(num_cols);
@@ -265,9 +216,9 @@ impl ScanExec {
         comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
         };
 
-        // we already checked for end of results on call to has_next() so should always
-        // have a valid row count when calling next()
-        assert!(num_rows != -1);
+        if num_rows == -1 {
+            return Ok(InputBatch::EOF);
+        }
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
 
@@ -286,8 +237,6 @@ impl ScanExec {
                 Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
-
-        timer.stop();
 
         Ok(InputBatch::new(inputs, Some(num_rows as usize)))
     }
@@ -327,15 +276,11 @@ impl ExecutionPlan for ScanExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        if self.exec_context_id == TEST_EXEC_CONTEXT_ID {
-            // `unwrap` is safe because `schema` is only called during converting
-            // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
-            let binding = self.batch.try_lock().unwrap();
-            let input_batch = binding.as_ref().unwrap();
-            scan_schema(input_batch, &self.data_types)
-        } else {
-            Arc::clone(&self.schema)
-        }
+        // `unwrap` is safe because `schema` is only called during converting
+        // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
+        let binding = self.batch.try_lock().unwrap();
+        let input_batch = binding.as_ref().unwrap();
+        scan_schema(input_batch, &self.data_types)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -358,7 +303,6 @@ impl ExecutionPlan for ScanExec {
             self.clone(),
             self.schema(),
             partition,
-            self.baseline_metrics.clone(),
         )))
     }
 
@@ -408,12 +352,8 @@ struct ScanStream<'a> {
 }
 
 impl<'a> ScanStream<'a> {
-    pub fn new(
-        scan: ScanExec,
-        schema: SchemaRef,
-        partition: usize,
-        baseline_metrics: BaselineMetrics,
-    ) -> Self {
+    pub fn new(scan: ScanExec, schema: SchemaRef, partition: usize) -> Self {
+        let baseline_metrics = BaselineMetrics::new(&scan.metrics, partition);
         let cast_time = MetricBuilder::new(&scan.metrics).subset_time("cast_time", partition);
         Self {
             scan,
@@ -524,13 +464,5 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
-    }
-
-    /// Get the number of rows in this batch
-    fn num_rows(&self) -> usize {
-        match self {
-            Self::EOF => 0,
-            Self::Batch(_, num_rows) => *num_rows,
-        }
     }
 }

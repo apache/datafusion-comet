@@ -42,7 +42,7 @@ arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
 half = { version = "2.4.1", default-features = false }
-futures = { workspace = true }
+futures = "0.3.28"
 mimalloc = { version = "*", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 async-trait = "0.1"
@@ -88,6 +88,7 @@ hex = "0.4.3"
 
 [features]
 default = []
+nightly = []
 
 [lib]
 name = "comet"
@@ -120,6 +121,10 @@ harness = false
 
 [[bench]]
 name = "filter"
+harness = false
+
+[[bench]]
+name = "aggregate"
 harness = false
 
 [[bench]]
