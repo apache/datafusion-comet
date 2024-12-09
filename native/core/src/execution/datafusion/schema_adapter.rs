@@ -114,7 +114,7 @@ impl SchemaAdapter for CometSchemaAdapter {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
                 table_schema: Arc::<Schema>::clone(&self.table_schema),
-                cast_options
+                cast_options,
             }),
             projection,
         ))
