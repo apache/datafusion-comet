@@ -24,6 +24,7 @@ use jni::{
 };
 
 /// A struct that holds all the JNI methods and fields for JVM `CometBatchIterator` class.
+#[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct CometBatchIterator<'a> {
     pub class: JClass<'a>,
     pub method_has_next: JMethodID,
