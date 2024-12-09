@@ -26,11 +26,13 @@ use jni::{
 
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use datafusion_execution::object_store::ObjectStoreUrl;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
     format::{MicroSeconds, MilliSeconds, NanoSeconds},
     schema::types::{ColumnDescriptor, ColumnPath, PrimitiveTypeBuilder},
 };
+use url::{ParseError, Url};
 
 /// Convert primitives from Spark side into a `ColumnDescriptor`.
 #[allow(clippy::too_many_arguments)]
@@ -205,4 +207,30 @@ pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, 
     let reader = StreamReader::try_new(std::io::Cursor::new(ipc_bytes), None)?;
     let schema = reader.schema().as_ref().clone();
     Ok(schema)
+}
+
+// parses the url and returns a tuple of the scheme and file path name
+pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, String), ParseError> {
+    // we define origin of a url as scheme + "://" + authority + ["/" + bucket]
+    let url = Url::parse(url.as_ref()).unwrap();
+    let mut object_store_origin = url.scheme().to_owned();
+    let mut object_store_path = url.to_file_path().unwrap().to_str().unwrap().to_string();
+    if object_store_origin == "s3a" {
+        object_store_origin = "s3".to_string();
+        object_store_origin.push_str("://");
+        object_store_origin.push_str(url.authority());
+        object_store_origin.push('/');
+        let path_splits = url.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap();
+        object_store_origin.push_str(path_splits.first().unwrap());
+        object_store_path = path_splits[1..path_splits.len() - 1].join("/").to_string();
+    } else {
+        object_store_origin.push_str("://");
+        object_store_origin.push_str(url.authority());
+        object_store_origin.push('/');
+    }
+
+    Ok((
+        ObjectStoreUrl::parse(object_store_origin).unwrap(),
+        object_store_path,
+    ))
 }

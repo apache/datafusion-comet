@@ -230,6 +230,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     long start = file.start();
     long length = file.length();
     String filePath = file.filePath().toString();
+    long fileSize = file.fileSize();
 
     requestedSchema = footer.getFileMetaData().getSchema();
     MessageType fileSchema = requestedSchema;
@@ -354,7 +355,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
     this.handle =
         Native.initRecordBatchReader(
-            filePath, start, length, requiredColumns.toArray(), serializedRequestedArrowSchema);
+            filePath,
+            fileSize,
+            start,
+            length,
+            requiredColumns.toArray(),
+            serializedRequestedArrowSchema);
     totalRowCount = Native.numRowGroups(handle);
     isInitialized = true;
   }

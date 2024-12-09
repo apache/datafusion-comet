@@ -45,6 +45,13 @@ use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
+use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
+use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_common::config::TableParquetOptions;
+use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+use futures::StreamExt;
 use jni::objects::{
     JBooleanArray, JByteArray, JLongArray, JObjectArray, JPrimitiveArray, JString, ReleaseMode,
 };
@@ -53,7 +60,7 @@ use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchR
 use parquet::arrow::ProjectionMask;
 use read::ColumnReader;
 use url::Url;
-use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema};
+use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema, get_file_path};
 
 use self::util::jni::TypePromotionInfo;
 
@@ -601,6 +608,7 @@ enum ParquetReaderState {
 }
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
+    batch_stream: SendableRecordBatchStream,
     batch_reader: ParquetRecordBatchReader,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
@@ -629,6 +637,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     e: JNIEnv,
     _jclass: JClass,
     file_path: jstring,
+    file_size: jlong,
     start: jlong,
     length: jlong,
     required_columns: jobjectArray,
@@ -639,6 +648,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .get_string(&JString::from_raw(file_path))
             .unwrap()
             .into();
+
+        // EXPERIMENTAL  - BEGIN
+        let (object_store_url, object_store_path) = get_file_path(path.clone()).unwrap();
+        // EXPERIMENTAL  - END
+
         //TODO: (ARROW NATIVE) - this works only for 'file://' urls
         let path = Url::parse(path.as_ref()).unwrap().to_file_path().unwrap();
         let file = File::open(path).unwrap();
@@ -652,6 +666,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         let num_row_groups;
         let mut total_rows: i64 = 0;
+        let mut batch_stream: SendableRecordBatchStream;
         //TODO: (ARROW NATIVE) if we can get the ParquetMetadata serialized, we need not do this.
         {
             let metadata = builder.metadata();
@@ -682,10 +697,46 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             }
 
             // EXPERIMENTAL - BEGIN
+            // TODO: (ARROW NATIVE) - Remove code duplication between this and POC1
             // copy the input on-heap buffer to native
             let required_schema_array = JByteArray::from_raw(required_schema);
             let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
-            let _required_schema_arrow = deserialize_schema(required_schema_buffer.as_bytes())?;
+            let required_schema_arrow = deserialize_schema(required_schema_buffer.as_bytes())?;
+            // let object_store_url = ObjectStoreUrl::local_filesystem();
+            let partitioned_file = PartitionedFile::new_with_range(
+                object_store_path.to_string(),
+                file_size as u64,
+                start,
+                start + length,
+            );
+            // We build the file scan config with the *required* schema so that the reader knows
+            // the output schema we want
+            let file_scan_config = FileScanConfig::new(object_store_url, Arc::new(required_schema_arrow))
+                .with_file(partitioned_file)
+               // TODO: (ARROW NATIVE) - do partition columns in native
+               //   - will need partition schema and partition values to do so
+               // .with_table_partition_cols(partition_fields)
+            ;
+            let mut table_parquet_options = TableParquetOptions::new();
+            // TODO: Maybe these are configs?
+            table_parquet_options.global.pushdown_filters = true;
+            table_parquet_options.global.reorder_filters = true;
+
+            let builder2 = ParquetExecBuilder::new(file_scan_config)
+                .with_table_parquet_options(table_parquet_options)
+                .with_schema_adapter_factory(Arc::new(crate::execution::datafusion::schema_adapter::CometSchemaAdapterFactory::default()));
+
+            //TODO: (ARROW NATIVE) - predicate pushdown??
+            // builder = builder.with_predicate(filter);
+
+            let scan = builder2.build();
+            let ctx = TaskContext::default();
+            let partition_index: usize = 1;
+
+            batch_stream = scan.execute(partition_index, Arc::new(ctx))?;
+            // let batch = batch_stream.next().await.unwrap()?;
+
+            let batch = batch_stream.next().await.unwrap()?;
             // EXPERIMENTAL - END
 
             //TODO: (ARROW NATIVE) make this work for complex types (especially deeply nested structs)
@@ -713,6 +764,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let batch_reader = builder.build().unwrap();
 
         let ctx = BatchContext {
+            batch_stream,
             batch_reader,
             current_batch: None,
             reader_state: ParquetReaderState::Init,
