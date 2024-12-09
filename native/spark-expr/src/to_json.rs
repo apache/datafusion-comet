@@ -33,7 +33,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// to_json function
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct ToJson {
     /// The input to convert to JSON
     expr: Arc<dyn PhysicalExpr>,
@@ -102,12 +102,6 @@ impl PhysicalExpr for ToJson {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.expr.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 /// Convert an array into a JSON value string representation

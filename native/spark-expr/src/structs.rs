@@ -19,7 +19,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -29,7 +29,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct CreateNamedStruct {
     values: Vec<Arc<dyn PhysicalExpr>>,
     names: Vec<String>,
@@ -96,12 +96,6 @@ impl PhysicalExpr for CreateNamedStruct {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.values.hash(&mut s);
-        self.names.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 impl Display for CreateNamedStruct {
@@ -131,7 +125,7 @@ impl PartialEq<dyn Any> for CreateNamedStruct {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct GetStructField {
     child: Arc<dyn PhysicalExpr>,
     ordinal: usize,
@@ -204,12 +198,6 @@ impl PhysicalExpr for GetStructField {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.ordinal.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 impl Display for GetStructField {

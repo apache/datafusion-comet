@@ -26,19 +26,28 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::Result;
 use datafusion_physical_expr::{expressions::CaseExpr, PhysicalExpr};
 
 /// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
 /// `CASE WHEN a THEN b ELSE c END`.
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Eq)]
 pub struct IfExpr {
     if_expr: Arc<dyn PhysicalExpr>,
     true_expr: Arc<dyn PhysicalExpr>,
     false_expr: Arc<dyn PhysicalExpr>,
     // we delegate to case_expr for evaluation
     case_expr: Arc<CaseExpr>,
+}
+
+impl PartialEq for IfExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.if_expr.eq(&other.if_expr)
+            && self.true_expr.eq(&other.true_expr)
+            && self.false_expr.eq(&other.false_expr)
+            && self.case_expr.eq(&other.case_expr)
+    }
 }
 
 impl std::fmt::Display for IfExpr {
@@ -105,14 +114,6 @@ impl PhysicalExpr for IfExpr {
             Arc::clone(&children[1]),
             Arc::clone(&children[2]),
         )))
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.if_expr.hash(&mut s);
-        self.true_expr.hash(&mut s);
-        self.false_expr.hash(&mut s);
-        self.hash(&mut s);
     }
 }
 

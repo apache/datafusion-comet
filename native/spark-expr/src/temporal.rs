@@ -28,7 +28,7 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 
@@ -38,7 +38,7 @@ use crate::kernels::temporal::{
     date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
 };
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct HourExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -123,16 +123,9 @@ impl PhysicalExpr for HourExpr {
             self.timezone.clone(),
         )))
     }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct MinuteExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -218,15 +211,9 @@ impl PhysicalExpr for MinuteExpr {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct SecondExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -312,15 +299,9 @@ impl PhysicalExpr for SecondExpr {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct DateTruncExpr {
     /// An array with DataType::Date32
     child: Arc<dyn PhysicalExpr>,
@@ -399,15 +380,9 @@ impl PhysicalExpr for DateTruncExpr {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.format.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct TimestampTruncExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -525,11 +500,4 @@ impl PhysicalExpr for TimestampTruncExpr {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.format.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }

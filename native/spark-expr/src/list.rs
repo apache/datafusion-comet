@@ -26,7 +26,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
@@ -44,7 +44,7 @@ use std::{
 // https://github.com/apache/spark/blob/master/common/utils/src/main/java/org/apache/spark/unsafe/array/ByteArrayUtils.java
 const MAX_ROUNDED_ARRAY_LENGTH: usize = 2147483632;
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct ListExtract {
     child: Arc<dyn PhysicalExpr>,
     ordinal: Arc<dyn PhysicalExpr>,
@@ -176,16 +176,6 @@ impl PhysicalExpr for ListExtract {
             _ => internal_err!("ListExtract should have exactly two children"),
         }
     }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.ordinal.hash(&mut s);
-        self.default_value.hash(&mut s);
-        self.one_based.hash(&mut s);
-        self.fail_on_error.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 fn one_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
@@ -288,7 +278,7 @@ impl PartialEq<dyn Any> for ListExtract {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct GetArrayStructFields {
     child: Arc<dyn PhysicalExpr>,
     ordinal: usize,
@@ -380,12 +370,6 @@ impl PhysicalExpr for GetArrayStructFields {
         }
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.ordinal.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 fn get_array_struct_fields<O: OffsetSizeTrait>(
@@ -426,7 +410,7 @@ impl PartialEq<dyn Any> for GetArrayStructFields {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct ArrayInsert {
     src_array_expr: Arc<dyn PhysicalExpr>,
     pos_expr: Arc<dyn PhysicalExpr>,
@@ -554,15 +538,6 @@ impl PhysicalExpr for ArrayInsert {
             ))),
             _ => internal_err!("ArrayInsert should have exactly three childrens"),
         }
-    }
-
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        let mut s = _state;
-        self.src_array_expr.hash(&mut s);
-        self.pos_expr.hash(&mut s);
-        self.item_expr.hash(&mut s);
-        self.legacy_negative_index.hash(&mut s);
-        self.hash(&mut s);
     }
 }
 

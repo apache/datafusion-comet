@@ -21,7 +21,7 @@ use arrow_array::builder::BooleanBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
@@ -30,6 +30,7 @@ use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 
 /// Implementation of RLIKE operator.
 ///
@@ -50,6 +51,16 @@ pub struct RLike {
 impl Hash for RLike {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write(self.pattern_str.as_bytes());
+    }
+}
+
+impl DynEq for RLike {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        if let Some(other) = other.downcast_ref::<Self>() {
+            self.pattern_str == other.pattern_str
+        } else {
+            false
+        }
     }
 }
 
@@ -162,9 +173,4 @@ impl PhysicalExpr for RLike {
         )?))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        use std::hash::Hash;
-        let mut s = state;
-        self.hash(&mut s);
-    }
 }

@@ -25,7 +25,7 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{
     downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
 };

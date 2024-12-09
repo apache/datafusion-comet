@@ -29,10 +29,10 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_physical_expr::PhysicalExpr;
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct NormalizeNaNAndZero {
     pub data_type: DataType,
     pub child: Arc<dyn PhysicalExpr>,
@@ -90,12 +90,6 @@ impl PhysicalExpr for NormalizeNaNAndZero {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.data_type.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 fn eval_typed<V: FloatDouble, T: ArrayAccessor<Item = V>>(input: T) -> Vec<Option<V>> {

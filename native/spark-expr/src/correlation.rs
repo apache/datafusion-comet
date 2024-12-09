@@ -26,7 +26,7 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::NUMERICS;

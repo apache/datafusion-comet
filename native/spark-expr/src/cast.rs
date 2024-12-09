@@ -50,7 +50,8 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
+use crate::utils::down_cast_any_ref;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -134,7 +135,7 @@ impl TimeStampInfo {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Eq)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
@@ -1498,13 +1499,11 @@ impl PhysicalExpr for Cast {
             _ => internal_err!("Cast should have exactly one child"),
         }
     }
+}
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.data_type.hash(&mut s);
-        self.cast_options.hash(&mut s);
-        self.hash(&mut s);
+impl PartialEq for Cast {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
     }
 }
 

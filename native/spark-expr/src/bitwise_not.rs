@@ -26,10 +26,11 @@ use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use crate::utils::down_cast_any_ref;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
 use datafusion_common::Result;
 use datafusion_physical_expr::PhysicalExpr;
+use crate::IfExpr;
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
@@ -43,10 +44,16 @@ macro_rules! compute_op {
 }
 
 /// BitwiseNot expression
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Eq)]
 pub struct BitwiseNotExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
+}
+
+impl PartialEq for BitwiseNotExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.arg.eq(&other.arg)
+    }
 }
 
 impl BitwiseNotExpr {
@@ -115,11 +122,6 @@ impl PhysicalExpr for BitwiseNotExpr {
         Ok(Arc::new(BitwiseNotExpr::new(Arc::clone(&children[0]))))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.arg.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 impl PartialEq<dyn Any> for BitwiseNotExpr {
