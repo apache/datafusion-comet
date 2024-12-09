@@ -51,9 +51,7 @@ class Native extends NativeBase {
       taskMemoryManager: CometTaskMemoryManager,
       batchSize: Int,
       debug: Boolean,
-      explain: Boolean,
-      workerThreads: Int,
-      blockingThreads: Int): Long
+      explain: Boolean): Long
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
