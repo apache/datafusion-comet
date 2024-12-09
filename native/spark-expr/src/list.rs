@@ -36,7 +36,7 @@ use datafusion_physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Debug, Display, Formatter},
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::Arc,
 };
 

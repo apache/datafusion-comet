@@ -15,14 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{any::Any, hash::Hash, sync::Arc};
 
 use crate::utils::down_cast_any_ref;
-use crate::IfExpr;
 use arrow::{
     array::*,
     datatypes::{DataType, Schema},

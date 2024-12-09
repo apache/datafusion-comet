@@ -51,7 +51,6 @@ use std::{
 
 use crate::utils::down_cast_any_ref;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::physical_expr_common::physical_expr::DynEq;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -1502,7 +1501,7 @@ impl PhysicalExpr for Cast {
 }
 
 impl PartialEq for Cast {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

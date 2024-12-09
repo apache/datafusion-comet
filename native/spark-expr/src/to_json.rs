@@ -20,7 +20,7 @@
 // being able to specify Spark-compatible cast from all types to string)
 
 use crate::cast::SparkCastOptions;
-use crate::{spark_cast, EvalMode, TimestampTruncExpr};
+use crate::{spark_cast, EvalMode};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};

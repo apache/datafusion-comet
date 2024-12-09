@@ -24,7 +24,7 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use datafusion_common::types::{LogicalTypeRef, NativeType};
+use datafusion_common::types::NativeType;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};

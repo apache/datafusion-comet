@@ -18,12 +18,11 @@
 use std::{
     any::Any,
     fmt::{Display, Formatter},
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::Arc,
 };
 
 use crate::utils::down_cast_any_ref;
-use crate::GetStructField;
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
     datatypes::{ArrowNativeType, Float32Type, Float64Type},
