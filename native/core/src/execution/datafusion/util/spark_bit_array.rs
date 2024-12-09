@@ -22,7 +22,7 @@ use std::iter::zip;
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct SparkBitArray {
     data: Vec<u64>,
     bit_count: usize,

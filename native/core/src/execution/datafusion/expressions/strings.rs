@@ -17,7 +17,6 @@
 
 #![allow(deprecated)]
 
-use crate::execution::datafusion::expressions::checkoverflow::CheckOverflow;
 use crate::execution::kernels::strings::{string_space, substring};
 use arrow::{
     compute::{
@@ -28,18 +27,18 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynEq;
-use datafusion::physical_expr_common::physical_expr::DynHash;
+use datafusion::physical_expr_common::physical_expr::{DynEq, DynHash};
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
-use datafusion_comet_spark_expr::ToJson;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::Arc,
 };
+
 macro_rules! make_predicate_function {
     ($name: ident, $kernel: ident, $str_scalar_kernel: ident) => {
         #[derive(Debug, Hash)]
@@ -155,26 +154,26 @@ make_predicate_function!(EndsWith, ends_with_dyn, ends_with_utf8_scalar_dyn);
 
 make_predicate_function!(Contains, contains_dyn, contains_utf8_scalar_dyn);
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct SubstringExpr {
     pub child: Arc<dyn PhysicalExpr>,
     pub start: i64,
     pub len: u64,
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct StringSpaceExpr {
     pub child: Arc<dyn PhysicalExpr>,
 }
 
-impl DynEq for StringSpaceExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for StringSpaceExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for StringSpaceExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -216,14 +215,14 @@ impl PartialEq<dyn Any> for SubstringExpr {
     }
 }
 
-impl DynEq for SubstringExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for SubstringExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for SubstringExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

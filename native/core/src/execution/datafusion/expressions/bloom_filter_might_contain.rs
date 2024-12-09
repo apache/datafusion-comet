@@ -15,42 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::expressions::strings::SubstringExpr;
 use crate::{
     execution::datafusion::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes,
 };
 use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use std::{
-    any::Any,
-    fmt::Display,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::hash::Hasher;
+use std::{any::Any, fmt::Display, sync::Arc};
 
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
 /// Spark's `BloomFilterMightContain` expression.
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
     pub value_expr: Arc<dyn PhysicalExpr>,
     bloom_filter: Option<SparkBloomFilter>,
 }
 
-impl DynEq for BloomFilterMightContain {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for BloomFilterMightContain {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for BloomFilterMightContain {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

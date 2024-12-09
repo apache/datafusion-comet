@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, hash::Hash, sync::Arc};
-
 use crate::utils::down_cast_any_ref;
 use arrow::{
     array::*,
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
 use datafusion_common::Result;
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
+use std::{any::Any, sync::Arc};
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
@@ -39,10 +40,16 @@ macro_rules! compute_op {
 }
 
 /// BitwiseNot expression
-#[derive(Debug, Hash, Eq)]
+#[derive(Debug, Eq)]
 pub struct BitwiseNotExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
+}
+
+impl DynHash for BitwiseNotExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
+        todo!()
+    }
 }
 
 impl PartialEq for BitwiseNotExpr {

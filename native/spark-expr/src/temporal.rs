@@ -15,13 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    hash::Hash,
-    sync::Arc,
-};
-
 use crate::utils::down_cast_any_ref;
 use arrow::{
     compute::{date_part, DatePart},
@@ -29,32 +22,37 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
+use std::{
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    sync::Arc,
+};
 
 use crate::utils::array_with_timezone;
 
 use crate::kernels::temporal::{
     date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
 };
-use crate::NormalizeNaNAndZero;
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct HourExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
 }
 
-impl DynEq for HourExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for HourExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for HourExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -139,21 +137,21 @@ impl PhysicalExpr for HourExpr {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct MinuteExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
 }
 
-impl DynEq for MinuteExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for MinuteExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for MinuteExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -238,21 +236,21 @@ impl PhysicalExpr for MinuteExpr {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct SecondExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
 }
 
-impl DynEq for SecondExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for SecondExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for SecondExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -337,7 +335,7 @@ impl PhysicalExpr for SecondExpr {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct DateTruncExpr {
     /// An array with DataType::Date32
     child: Arc<dyn PhysicalExpr>,
@@ -345,14 +343,14 @@ pub struct DateTruncExpr {
     format: Arc<dyn PhysicalExpr>,
 }
 
-impl DynEq for DateTruncExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for DateTruncExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for DateTruncExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
@@ -429,7 +427,7 @@ impl PhysicalExpr for DateTruncExpr {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct TimestampTruncExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -444,14 +442,14 @@ pub struct TimestampTruncExpr {
     timezone: String,
 }
 
-impl DynEq for TimestampTruncExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for TimestampTruncExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for TimestampTruncExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

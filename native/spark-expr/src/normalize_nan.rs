@@ -15,13 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    fmt::{Display, Formatter},
-    hash::Hash,
-    sync::Arc,
-};
-
 use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
@@ -30,23 +23,35 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
+use std::{
+    any::Any,
+    fmt::{Display, Formatter},
+    sync::Arc,
+};
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct NormalizeNaNAndZero {
     pub data_type: DataType,
     pub child: Arc<dyn PhysicalExpr>,
 }
 
-impl DynEq for NormalizeNaNAndZero {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for NormalizeNaNAndZero {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
+// impl DynEq for NormalizeNaNAndZero {
+//     fn dyn_eq(&self, _other: &dyn Any) -> bool {
+//         todo!()
+//     }
+// }
+
 impl PartialEq for NormalizeNaNAndZero {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

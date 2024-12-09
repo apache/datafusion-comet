@@ -24,17 +24,17 @@ use crate::{spark_cast, EvalMode};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::Result;
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::sync::Arc;
 
 /// to_json function
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct ToJson {
     /// The input to convert to JSON
     expr: Arc<dyn PhysicalExpr>,
@@ -42,14 +42,14 @@ pub struct ToJson {
     timezone: String,
 }
 
-impl DynEq for ToJson {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for ToJson {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for ToJson {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

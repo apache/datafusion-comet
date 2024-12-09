@@ -21,7 +21,7 @@ use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeT
 use arrow_array::RecordBatch;
 use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
@@ -30,7 +30,8 @@ use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
-use std::{any::Any, hash::Hash, sync::Arc};
+use std::hash::Hasher;
+use std::{any::Any, sync::Arc};
 
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
@@ -40,21 +41,21 @@ pub fn create_negate_expr(
 }
 
 /// Negative expression
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct NegativeExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
 }
 
-impl DynEq for NegativeExpr {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for NegativeExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for NegativeExpr {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

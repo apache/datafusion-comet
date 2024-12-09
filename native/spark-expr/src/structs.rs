@@ -16,14 +16,14 @@
 // under the License.
 
 use crate::utils::down_cast_any_ref;
-use crate::ArrayInsert;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -126,20 +126,20 @@ impl PartialEq<dyn Any> for CreateNamedStruct {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct GetStructField {
     child: Arc<dyn PhysicalExpr>,
     ordinal: usize,
 }
 
-impl DynEq for GetStructField {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for GetStructField {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for GetStructField {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

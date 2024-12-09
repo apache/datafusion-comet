@@ -15,14 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    fmt::{Display, Formatter},
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
-
-use crate::execution::datafusion::expressions::strings::SubstringExpr;
 use arrow::{
     array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
     datatypes::{Decimal128Type, DecimalType},
@@ -30,30 +22,36 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
+use std::hash::Hasher;
+use std::{
+    any::Any,
+    fmt::{Display, Formatter},
+    sync::Arc,
+};
 
 /// This is from Spark `CheckOverflow` expression. Spark `CheckOverflow` expression rounds decimals
 /// to given scale and check if the decimals can fit in given precision. As `cast` kernel rounds
 /// decimals already, Comet `CheckOverflow` expression only checks if the decimals can fit in the
 /// precision.
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct CheckOverflow {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub fail_on_error: bool,
 }
 
-impl DynEq for CheckOverflow {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
+impl DynHash for CheckOverflow {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
         todo!()
     }
 }
 
 impl PartialEq for CheckOverflow {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }

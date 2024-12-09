@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{
         cast::AsArray,
@@ -35,27 +36,27 @@ use arrow::{
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Schema};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
-use std::str::FromStr;
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    hash::{Hash, Hasher},
-    num::Wrapping,
-    sync::Arc,
-};
-
-use crate::utils::down_cast_any_ref;
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
+use std::hash::Hasher;
+use std::str::FromStr;
+use std::{
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    hash::Hash,
+    num::Wrapping,
+    sync::Arc,
+};
 
 use crate::timezone;
 use crate::utils::array_with_timezone;
@@ -134,7 +135,7 @@ impl TimeStampInfo {
     }
 }
 
-#[derive(Debug, Hash, Eq)]
+#[derive(Debug, Eq)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
@@ -1447,6 +1448,16 @@ impl Display for Cast {
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
             self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
         )
+    }
+}
+
+impl DynHash for Cast {
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.type_id().hash(&mut s);
+        self.child.hash(&mut s);
+        self.data_type.hash(&mut s);
+        self.cast_options.hash(&mut s);
     }
 }
 

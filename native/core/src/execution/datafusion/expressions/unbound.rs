@@ -21,11 +21,7 @@ use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result};
 use datafusion_physical_expr::PhysicalExpr;
-use std::{
-    any::Any,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{any::Any, hash::Hash, sync::Arc};
 
 /// This is similar to `UnKnownColumn` in DataFusion, but it has data type.
 /// This is only used when the column is not bound to a schema, for example, the

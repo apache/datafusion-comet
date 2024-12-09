@@ -15,26 +15,33 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, hash::Hash, sync::Arc};
-
 use crate::utils::down_cast_any_ref;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::Result;
 use datafusion_physical_expr::{expressions::CaseExpr, PhysicalExpr};
+use std::hash::Hasher;
+use std::{any::Any, sync::Arc};
 
 /// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
 /// `CASE WHEN a THEN b ELSE c END`.
-#[derive(Debug, Hash, Eq)]
+#[derive(Debug, Eq)]
 pub struct IfExpr {
     if_expr: Arc<dyn PhysicalExpr>,
     true_expr: Arc<dyn PhysicalExpr>,
     false_expr: Arc<dyn PhysicalExpr>,
     // we delegate to case_expr for evaluation
     case_expr: Arc<CaseExpr>,
+}
+
+impl DynHash for IfExpr {
+    fn dyn_hash(&self, _state: &mut dyn Hasher) {
+        todo!()
+    }
 }
 
 impl PartialEq for IfExpr {
