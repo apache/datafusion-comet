@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::down_cast_any_ref;
 use crate::utils::{is_valid_decimal_precision, unlikely};
 use arrow::{
     array::BooleanBufferBuilder,
@@ -25,7 +26,6 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
-use crate::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::Volatility::Immutable;

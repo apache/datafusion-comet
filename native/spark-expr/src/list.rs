@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
     buffer::{NullBuffer, OffsetBuffer},
@@ -26,7 +27,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use crate::utils::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
@@ -44,13 +45,25 @@ use std::{
 // https://github.com/apache/spark/blob/master/common/utils/src/main/java/org/apache/spark/unsafe/array/ByteArrayUtils.java
 const MAX_ROUNDED_ARRAY_LENGTH: usize = 2147483632;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct ListExtract {
     child: Arc<dyn PhysicalExpr>,
     ordinal: Arc<dyn PhysicalExpr>,
     default_value: Option<Arc<dyn PhysicalExpr>>,
     one_based: bool,
     fail_on_error: bool,
+}
+
+impl DynEq for ListExtract {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for ListExtract {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl ListExtract {
@@ -278,10 +291,22 @@ impl PartialEq<dyn Any> for ListExtract {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct GetArrayStructFields {
     child: Arc<dyn PhysicalExpr>,
     ordinal: usize,
+}
+
+impl DynEq for GetArrayStructFields {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for GetArrayStructFields {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl GetArrayStructFields {
@@ -369,7 +394,6 @@ impl PhysicalExpr for GetArrayStructFields {
             _ => internal_err!("GetArrayStructFields should have exactly one child"),
         }
     }
-
 }
 
 fn get_array_struct_fields<O: OffsetSizeTrait>(
@@ -410,12 +434,24 @@ impl PartialEq<dyn Any> for GetArrayStructFields {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct ArrayInsert {
     src_array_expr: Arc<dyn PhysicalExpr>,
     pos_expr: Arc<dyn PhysicalExpr>,
     item_expr: Arc<dyn PhysicalExpr>,
     legacy_negative_index: bool,
+}
+
+impl DynEq for ArrayInsert {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for ArrayInsert {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl ArrayInsert {

@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
 use arrow_array::{
     cast::as_primitive_array,
     types::{Int32Type, TimestampMicrosecondType},
 };
 use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::timezone::Tz;

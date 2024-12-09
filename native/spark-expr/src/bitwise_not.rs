@@ -21,16 +21,16 @@ use std::{
     sync::Arc,
 };
 
+use crate::utils::down_cast_any_ref;
+use crate::IfExpr;
 use arrow::{
     array::*,
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
-use crate::utils::down_cast_any_ref;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
 use datafusion_common::Result;
 use datafusion_physical_expr::PhysicalExpr;
-use crate::IfExpr;
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
@@ -121,7 +121,6 @@ impl PhysicalExpr for BitwiseNotExpr {
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(BitwiseNotExpr::new(Arc::clone(&children[0]))))
     }
-
 }
 
 impl PartialEq<dyn Any> for BitwiseNotExpr {

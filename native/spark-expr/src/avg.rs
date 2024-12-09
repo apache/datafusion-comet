@@ -30,8 +30,8 @@ use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
-use arrow_array::ArrowNativeTypeOp;
 use crate::utils::down_cast_any_ref;
+use arrow_array::ArrowNativeTypeOp;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::Volatility::Immutable;
 use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};

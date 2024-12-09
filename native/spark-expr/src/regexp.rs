@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::down_cast_any_ref;
 use crate::SparkError;
 use arrow::compute::take;
 use arrow_array::builder::BooleanBuilder;
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Schema};
-use crate::utils::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_common::{internal_err, Result};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
@@ -30,7 +31,6 @@ use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use datafusion::physical_expr_common::physical_expr::DynEq;
 
 /// Implementation of RLIKE operator.
 ///
@@ -172,5 +172,4 @@ impl PhysicalExpr for RLike {
             &self.pattern_str,
         )?))
     }
-
 }

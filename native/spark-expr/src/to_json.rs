@@ -20,10 +20,11 @@
 // being able to specify Spark-compatible cast from all types to string)
 
 use crate::cast::SparkCastOptions;
-use crate::{spark_cast, EvalMode};
+use crate::{spark_cast, EvalMode, TimestampTruncExpr};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_common::Result;
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
@@ -33,12 +34,24 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// to_json function
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct ToJson {
     /// The input to convert to JSON
     expr: Arc<dyn PhysicalExpr>,
     /// Timezone to use when converting timestamps to JSON
     timezone: String,
+}
+
+impl DynEq for ToJson {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for ToJson {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl ToJson {
@@ -101,7 +114,6 @@ impl PhysicalExpr for ToJson {
             &self.timezone,
         )))
     }
-
 }
 
 /// Convert an array into a JSON value string representation

@@ -22,6 +22,8 @@ use std::{
     sync::Arc,
 };
 
+use crate::utils::down_cast_any_ref;
+use crate::GetStructField;
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
     datatypes::{ArrowNativeType, Float32Type, Float64Type},
@@ -29,13 +31,25 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use crate::utils::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_physical_expr::PhysicalExpr;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct NormalizeNaNAndZero {
     pub data_type: DataType,
     pub child: Arc<dyn PhysicalExpr>,
+}
+
+impl DynEq for NormalizeNaNAndZero {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for NormalizeNaNAndZero {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl NormalizeNaNAndZero {
@@ -89,7 +103,6 @@ impl PhysicalExpr for NormalizeNaNAndZero {
             Arc::clone(&children[0]),
         )))
     }
-
 }
 
 fn eval_typed<V: FloatDouble, T: ArrayAccessor<Item = V>>(input: T) -> Vec<Option<V>> {

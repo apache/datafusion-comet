@@ -21,19 +21,16 @@ use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeT
 use arrow_array::RecordBatch;
 use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
-use std::{
-    any::Any,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{any::Any, hash::Hash, sync::Arc};
 
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
@@ -48,6 +45,18 @@ pub struct NegativeExpr {
     /// Input expression
     arg: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
+}
+
+impl DynEq for NegativeExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for NegativeExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 macro_rules! check_overflow {
@@ -203,11 +212,6 @@ impl PhysicalExpr for NegativeExpr {
             Arc::clone(&children[0]),
             self.fail_on_error,
         )))
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.hash(&mut s);
     }
 
     /// Given the child interval of a NegativeExpr, it calculates the NegativeExpr's interval.

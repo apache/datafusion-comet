@@ -22,6 +22,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::execution::datafusion::expressions::strings::SubstringExpr;
 use arrow::{
     array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
     datatypes::{Decimal128Type, DecimalType},
@@ -29,7 +30,8 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 
@@ -42,6 +44,18 @@ pub struct CheckOverflow {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub fail_on_error: bool,
+}
+
+impl DynEq for CheckOverflow {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for CheckOverflow {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl CheckOverflow {
@@ -163,11 +177,11 @@ impl PhysicalExpr for CheckOverflow {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.data_type.hash(&mut s);
-        self.fail_on_error.hash(&mut s);
-        self.hash(&mut s);
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.child.hash(&mut s);
+    //     self.data_type.hash(&mut s);
+    //     self.fail_on_error.hash(&mut s);
+    //     self.hash(&mut s);
+    // }
 }

@@ -21,12 +21,12 @@ use std::{
     sync::Arc,
 };
 
+use crate::utils::down_cast_any_ref;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::logical_expr::ColumnarValue;
-use crate::utils::down_cast_any_ref;
 use datafusion_common::Result;
 use datafusion_physical_expr::{expressions::CaseExpr, PhysicalExpr};
 

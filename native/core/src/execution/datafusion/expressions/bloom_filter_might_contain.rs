@@ -15,14 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::datafusion::expressions::strings::SubstringExpr;
 use crate::{
     execution::datafusion::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes,
 };
 use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -39,6 +41,18 @@ pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
     pub value_expr: Arc<dyn PhysicalExpr>,
     bloom_filter: Option<SparkBloomFilter>,
+}
+
+impl DynEq for BloomFilterMightContain {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for BloomFilterMightContain {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl Display for BloomFilterMightContain {
@@ -144,10 +158,10 @@ impl PhysicalExpr for BloomFilterMightContain {
         )?))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.bloom_filter_expr.hash(&mut s);
-        self.value_expr.hash(&mut s);
-        self.hash(&mut s);
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.bloom_filter_expr.hash(&mut s);
+    //     self.value_expr.hash(&mut s);
+    //     self.hash(&mut s);
+    // }
 }

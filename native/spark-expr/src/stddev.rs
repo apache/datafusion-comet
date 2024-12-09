@@ -17,15 +17,15 @@
 
 use std::{any::Any, sync::Arc};
 
+use crate::utils::down_cast_any_ref;
 use crate::variance::VarianceAccumulator;
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use crate::utils::down_cast_any_ref;
-use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_common::types::{LogicalTypeRef, NativeType};
+use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
 use datafusion_physical_expr::expressions::StatsType;
@@ -58,7 +58,10 @@ impl Stddev {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
-            signature: Signature::coercible(vec![Arc::new(NativeType::Float64)], Volatility::Immutable),
+            signature: Signature::coercible(
+                vec![Arc::new(NativeType::Float64)],
+                Volatility::Immutable,
+            ),
             expr,
             stats_type,
             null_on_divide_by_zero,

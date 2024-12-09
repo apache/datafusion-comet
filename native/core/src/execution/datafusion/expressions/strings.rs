@@ -17,6 +17,7 @@
 
 #![allow(deprecated)]
 
+use crate::execution::datafusion::expressions::checkoverflow::CheckOverflow;
 use crate::execution::kernels::strings::{string_space, substring};
 use arrow::{
     compute::{
@@ -27,7 +28,10 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
+use datafusion::physical_expr_common::physical_expr::DynHash;
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
+use datafusion_comet_spark_expr::ToJson;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -36,7 +40,6 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
-
 macro_rules! make_predicate_function {
     ($name: ident, $kernel: ident, $str_scalar_kernel: ident) => {
         #[derive(Debug, Hash)]
@@ -54,6 +57,24 @@ macro_rules! make_predicate_function {
         impl Display for $name {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 write!(f, "$name [left: {}, right: {}]", self.left, self.right)
+            }
+        }
+
+        // impl DynHash for $name {
+        //     fn dyn_hash(&self, state: &mut dyn Hasher) {
+        //         let mut s = state;
+        //         self.left.hash(&mut s);
+        //         self.right.hash(&mut s);
+        //         self.hash(&mut s);
+        //     }
+        // }
+
+        impl DynEq for $name {
+            fn dyn_eq(&self, other: &dyn Any) -> bool {
+                down_cast_any_ref(other)
+                    .downcast_ref::<Self>()
+                    .map(|x| self.left.eq(&x.left) && self.right.eq(&x.right))
+                    .unwrap_or(false)
             }
         }
 
@@ -122,13 +143,6 @@ macro_rules! make_predicate_function {
                     children[1].clone(),
                 )))
             }
-
-            fn dyn_hash(&self, state: &mut dyn Hasher) {
-                let mut s = state;
-                self.left.hash(&mut s);
-                self.right.hash(&mut s);
-                self.hash(&mut s);
-            }
         }
     };
 }
@@ -151,6 +165,18 @@ pub struct SubstringExpr {
 #[derive(Debug, Hash)]
 pub struct StringSpaceExpr {
     pub child: Arc<dyn PhysicalExpr>,
+}
+
+impl DynEq for StringSpaceExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for StringSpaceExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl SubstringExpr {
@@ -187,6 +213,18 @@ impl PartialEq<dyn Any> for SubstringExpr {
             .downcast_ref::<Self>()
             .map(|x| self.child.eq(&x.child) && self.start.eq(&x.start) && self.len.eq(&x.len))
             .unwrap_or(false)
+    }
+}
+
+impl DynEq for SubstringExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for SubstringExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
     }
 }
 
@@ -232,13 +270,13 @@ impl PhysicalExpr for SubstringExpr {
         )))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.start.hash(&mut s);
-        self.len.hash(&mut s);
-        self.hash(&mut s);
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.child.hash(&mut s);
+    //     self.start.hash(&mut s);
+    //     self.len.hash(&mut s);
+    //     self.hash(&mut s);
+    // }
 }
 
 impl PartialEq<dyn Any> for StringSpaceExpr {
@@ -293,9 +331,9 @@ impl PhysicalExpr for StringSpaceExpr {
         Ok(Arc::new(StringSpaceExpr::new(Arc::clone(&children[0]))))
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.hash(&mut s);
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.child.hash(&mut s);
+    //     self.hash(&mut s);
+    // }
 }

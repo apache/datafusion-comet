@@ -22,7 +22,7 @@ use crate::{
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use jni::{
@@ -36,7 +36,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct Subquery {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the
     /// subquery result.
@@ -210,8 +210,8 @@ impl PhysicalExpr for Subquery {
         Ok(self)
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.hash(&mut s)
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.hash(&mut s)
+    // }
 }

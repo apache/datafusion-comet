@@ -28,11 +28,11 @@ use datafusion_common::{not_impl_err, Result, ScalarValue};
 use datafusion_physical_expr::{expressions::format_state_name, PhysicalExpr};
 use std::{any::Any, sync::Arc};
 
+use crate::utils::down_cast_any_ref;
 use crate::utils::is_valid_decimal_precision;
 use arrow_array::ArrowNativeTypeOp;
 use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use datafusion::logical_expr::Volatility::Immutable;
-use crate::utils::down_cast_any_ref;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::avg_return_type;
 use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};

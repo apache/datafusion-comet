@@ -17,8 +17,8 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -94,10 +94,10 @@ impl PhysicalExpr for UnboundColumn {
         Ok(self)
     }
 
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.hash(&mut s);
-    }
+    // fn dyn_hash(&self, state: &mut dyn Hasher) {
+    //     let mut s = state;
+    //     self.hash(&mut s);
+    // }
 }
 
 impl PartialEq<dyn Any> for UnboundColumn {

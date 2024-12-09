@@ -100,7 +100,6 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
@@ -1932,7 +1931,7 @@ impl PhysicalPlanner {
             window_func_name,
             &window_args,
             partition_by,
-            sort_exprs,
+            &LexOrdering::new(sort_exprs.to_vec()),
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -1982,15 +1981,11 @@ impl PhysicalPlanner {
 
     /// Find DataFusion's built-in window function by name.
     fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
-        if let Some(f) = find_df_window_func(name) {
-            Some(f)
-        } else {
-            let registry = &self.session_ctx.state();
-            registry
-                .udaf(name)
-                .map(WindowFunctionDefinition::AggregateUDF)
-                .ok()
-        }
+        let registry = &self.session_ctx.state();
+        registry
+            .udaf(name)
+            .map(WindowFunctionDefinition::AggregateUDF)
+            .ok()
     }
 
     /// Create a DataFusion physical partitioning from Spark physical partitioning

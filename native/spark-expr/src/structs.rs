@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::down_cast_any_ref;
+use crate::ArrayInsert;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use crate::utils::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -95,7 +97,6 @@ impl PhysicalExpr for CreateNamedStruct {
             self.names.clone(),
         )))
     }
-
 }
 
 impl Display for CreateNamedStruct {
@@ -125,10 +126,22 @@ impl PartialEq<dyn Any> for CreateNamedStruct {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct GetStructField {
     child: Arc<dyn PhysicalExpr>,
     ordinal: usize,
+}
+
+impl DynEq for GetStructField {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for GetStructField {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl GetStructField {
@@ -197,7 +210,6 @@ impl PhysicalExpr for GetStructField {
             self.ordinal,
         )))
     }
-
 }
 
 impl Display for GetStructField {

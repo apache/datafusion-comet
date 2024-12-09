@@ -19,13 +19,13 @@
 
 use std::{any::Any, sync::Arc};
 
+use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{ArrayRef, Float64Array},
     compute::cast,
     datatypes::{DataType, Field},
 };
 use datafusion::logical_expr::Accumulator;
-use crate::utils::down_cast_any_ref;
 use datafusion_common::{
     downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
 };

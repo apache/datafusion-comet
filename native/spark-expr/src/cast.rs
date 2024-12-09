@@ -49,9 +49,9 @@ use std::{
     sync::Arc,
 };
 
+use crate::utils::down_cast_any_ref;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::physical_expr_common::physical_expr::DynEq;
-use crate::utils::down_cast_any_ref;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,

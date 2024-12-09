@@ -22,13 +22,14 @@ use std::{
     sync::Arc,
 };
 
+use crate::utils::down_cast_any_ref;
 use arrow::{
     compute::{date_part, DatePart},
     record_batch::RecordBatch,
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
 use datafusion::logical_expr::ColumnarValue;
-use crate::utils::down_cast_any_ref;
+use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 
@@ -37,12 +38,25 @@ use crate::utils::array_with_timezone;
 use crate::kernels::temporal::{
     date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
 };
+use crate::NormalizeNaNAndZero;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct HourExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
+}
+
+impl DynEq for HourExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for HourExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl HourExpr {
@@ -125,11 +139,23 @@ impl PhysicalExpr for HourExpr {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct MinuteExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
+}
+
+impl DynEq for MinuteExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for MinuteExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl MinuteExpr {
@@ -210,14 +236,25 @@ impl PhysicalExpr for MinuteExpr {
             self.timezone.clone(),
         )))
     }
-
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct SecondExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
     timezone: String,
+}
+
+impl DynEq for SecondExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for SecondExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl SecondExpr {
@@ -298,15 +335,26 @@ impl PhysicalExpr for SecondExpr {
             self.timezone.clone(),
         )))
     }
-
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct DateTruncExpr {
     /// An array with DataType::Date32
     child: Arc<dyn PhysicalExpr>,
     /// Scalar UTF8 string matching the valid values in Spark SQL: https://spark.apache.org/docs/latest/api/sql/index.html#trunc
     format: Arc<dyn PhysicalExpr>,
+}
+
+impl DynEq for DateTruncExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for DateTruncExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl DateTruncExpr {
@@ -379,10 +427,9 @@ impl PhysicalExpr for DateTruncExpr {
             Arc::clone(&self.format),
         )))
     }
-
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash)]
 pub struct TimestampTruncExpr {
     /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
     child: Arc<dyn PhysicalExpr>,
@@ -395,6 +442,18 @@ pub struct TimestampTruncExpr {
     /// along with a single value for the associated TimeZone. The timezone offset is applied
     /// just before any operations on the timestamp
     timezone: String,
+}
+
+impl DynEq for TimestampTruncExpr {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        todo!()
+    }
+}
+
+impl PartialEq for TimestampTruncExpr {
+    fn eq(&self, other: &Self) -> bool {
+        todo!()
+    }
 }
 
 impl TimestampTruncExpr {
@@ -499,5 +558,4 @@ impl PhysicalExpr for TimestampTruncExpr {
             self.timezone.clone(),
         )))
     }
-
 }
