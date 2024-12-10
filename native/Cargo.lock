@@ -806,7 +806,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -849,7 +849,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow-schema",
  "async-trait",
@@ -947,7 +947,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -970,7 +970,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "log",
  "tokio",
@@ -979,12 +979,12 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 
 [[package]]
 name = "datafusion-execution"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "chrono",
@@ -1003,7 +1003,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1028,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1039,7 +1039,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -1067,7 +1067,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1088,7 +1088,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1101,7 +1101,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -1123,7 +1123,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1147,7 +1147,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "datafusion-common",
  "datafusion-expr",
@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -1170,7 +1170,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1180,7 +1180,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1199,7 +1199,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1223,7 +1223,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1236,7 +1236,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1252,7 +1252,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "ahash",
  "arrow",
@@ -1285,7 +1285,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "43.0.0"
-source = "git+https://github.com/apache/datafusion.git#d3cfc45cef28a2d707bdd4b14da33a4d38a209d6"
+source = "git+https://github.com/andygrove/datafusion.git?branch=comet-upgrade#e17342cc6801f341eba8ee8262785c21dd0a9c2a"
 dependencies = [
  "arrow",
  "arrow-array",
