@@ -485,23 +485,6 @@ where
     || f(t)
 }
 
-// This is a duplicate of `try_unwrap_or_throw`, which is used to work around Arrow's lack of
-// `UnwindSafe` handling.
-pub fn try_assert_unwind_safe_or_throw<T, F>(env: &JNIEnv, f: F) -> T
-where
-    T: JNIDefault,
-    F: FnOnce(JNIEnv) -> Result<T, CometError>,
-{
-    let mut env1 = unsafe { JNIEnv::from_raw(env.get_raw()).unwrap() };
-    let env2 = unsafe { JNIEnv::from_raw(env.get_raw()).unwrap() };
-    unwrap_or_throw_default(
-        &mut env1,
-        flatten(
-            catch_unwind(std::panic::AssertUnwindSafe(curry(f, env2))).map_err(CometError::from),
-        ),
-    )
-}
-
 // It is currently undefined behavior to unwind from Rust code into foreign code, so we can wrap
 // our JNI functions and turn these panics into a `RuntimeException`.
 pub fn try_unwrap_or_throw<T, F>(env: &JNIEnv, f: F) -> T
@@ -534,10 +517,7 @@ mod tests {
         AttachGuard, InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
     };
 
-    use assertables::{
-        assert_contains, assert_contains_as_result, assert_starts_with,
-        assert_starts_with_as_result,
-    };
+    use assertables::{assert_starts_with, assert_starts_with_as_result};
 
     pub fn jvm() -> &'static Arc<JavaVM> {
         static mut JVM: Option<Arc<JavaVM>> = None;
@@ -889,27 +869,5 @@ mod tests {
         // Since panics result in multi-line messages which include the backtrace, just use the
         // first line.
         assert_starts_with!(msg_rust, expected_message);
-    }
-
-    // Asserts that exception's message matches `expected_message`.
-    fn assert_exception_message_with_stacktrace(
-        env: &mut JNIEnv,
-        exception: JThrowable,
-        expected_message: &str,
-        stacktrace_contains: &str,
-    ) {
-        let message = env
-            .call_method(exception, "getMessage", "()Ljava/lang/String;", &[])
-            .unwrap()
-            .l()
-            .unwrap();
-        let message_string = message.into();
-        let msg_rust: String = env.get_string(&message_string).unwrap().into();
-        // Since panics result in multi-line messages which include the backtrace, just use the
-        // first line.
-        assert_starts_with!(msg_rust, expected_message);
-
-        // Check that the stacktrace is included by checking for a specific element
-        assert_contains!(msg_rust, stacktrace_contains);
     }
 }

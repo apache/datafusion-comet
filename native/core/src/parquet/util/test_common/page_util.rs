@@ -28,7 +28,7 @@ use parquet::{
         levels::{max_buffer_size, LevelEncoder},
     },
     errors::Result,
-    schema::types::{ColumnDescPtr, SchemaDescPtr},
+    schema::types::ColumnDescPtr,
 };
 
 use super::random_numbers_range;
@@ -201,20 +201,12 @@ impl<P: Iterator<Item = Page> + Send> Iterator for InMemoryPageReader<P> {
 /// A utility page iterator which stores page readers in memory, used for tests.
 #[derive(Clone)]
 pub struct InMemoryPageIterator<I: Iterator<Item = Vec<Page>>> {
-    schema: SchemaDescPtr,
-    column_desc: ColumnDescPtr,
     page_reader_iter: I,
 }
 
 impl<I: Iterator<Item = Vec<Page>>> InMemoryPageIterator<I> {
-    pub fn new(
-        schema: SchemaDescPtr,
-        column_desc: ColumnDescPtr,
-        pages: impl IntoIterator<Item = Vec<Page>, IntoIter = I>,
-    ) -> Self {
+    pub fn new(pages: impl IntoIterator<Item = Vec<Page>, IntoIter = I>) -> Self {
         Self {
-            schema,
-            column_desc,
             page_reader_iter: pages.into_iter(),
         }
     }

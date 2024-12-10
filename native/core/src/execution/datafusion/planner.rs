@@ -116,7 +116,6 @@ use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
-type ExecResult<T> = Result<T, ExecutionError>;
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
@@ -1773,10 +1772,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
-                    Arc::clone(&child),
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
-                    "bloom_filter_agg",
                     datatype,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)

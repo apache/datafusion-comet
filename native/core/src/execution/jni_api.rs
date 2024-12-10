@@ -207,14 +207,6 @@ fn prepare_datafusion_session_context(
     Ok(session_ctx)
 }
 
-fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
-    conf.get(name)
-        .map(String::as_str)
-        .unwrap_or("false")
-        .parse::<bool>()
-        .map_err(|e| CometError::Config(format!("Failed to parse boolean config {name}: {e}")))
-}
-
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
