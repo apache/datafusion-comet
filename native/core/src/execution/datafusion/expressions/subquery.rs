@@ -22,7 +22,6 @@ use crate::{
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use jni::{
@@ -60,19 +59,6 @@ impl Subquery {
 impl Display for Subquery {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Subquery [id: {}]", self.id)
-    }
-}
-
-impl PartialEq<dyn Any> for Subquery {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.id.eq(&x.id)
-                    && self.data_type.eq(&x.data_type)
-                    && self.exec_context_id.eq(&x.exec_context_id)
-            })
-            .unwrap_or(false)
     }
 }
 

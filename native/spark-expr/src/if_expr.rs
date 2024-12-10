@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
@@ -118,19 +117,6 @@ impl PhysicalExpr for IfExpr {
             Arc::clone(&children[1]),
             Arc::clone(&children[2]),
         )))
-    }
-}
-
-impl PartialEq<dyn Any> for IfExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.if_expr.eq(&x.if_expr)
-                    && self.true_expr.eq(&x.true_expr)
-                    && self.false_expr.eq(&x.false_expr)
-            })
-            .unwrap_or(false)
     }
 }
 

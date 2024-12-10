@@ -20,7 +20,6 @@ use arrow_array::{
     types::{Int32Type, TimestampMicrosecondType},
 };
 use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
-use std::any::Any;
 use std::sync::Arc;
 
 use crate::timezone::Tz;
@@ -30,7 +29,6 @@ use arrow::{
 };
 use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
 use chrono::{DateTime, Offset, TimeZone};
-use datafusion_physical_expr::PhysicalExpr;
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -214,18 +212,4 @@ pub fn unlikely(b: bool) -> bool {
         cold();
     }
     b
-}
-
-pub fn down_cast_any_ref(any: &dyn Any) -> &dyn Any {
-    if any.is::<Arc<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Arc<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else if any.is::<Box<dyn PhysicalExpr>>() {
-        any.downcast_ref::<Box<dyn PhysicalExpr>>()
-            .unwrap()
-            .as_any()
-    } else {
-        any
-    }
 }

@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{
         cast::AsArray,
@@ -153,19 +152,6 @@ impl Hash for Cast {
         self.child.hash(state);
         self.data_type.hash(state);
         self.cast_options.hash(state);
-    }
-}
-
-impl PartialEq<dyn Any> for Cast {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.cast_options.eq(&x.cast_options)
-                    && self.data_type.eq(&x.data_type)
-            })
-            .unwrap_or(false)
     }
 }
 

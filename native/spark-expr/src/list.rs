@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
     buffer::{NullBuffer, OffsetBuffer},
@@ -276,27 +275,6 @@ impl Display for ListExtract {
     }
 }
 
-impl PartialEq<dyn Any> for ListExtract {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.ordinal.eq(&x.ordinal)
-                    && (self.default_value.is_none() == x.default_value.is_none())
-                    && self
-                        .default_value
-                        .as_ref()
-                        .zip(x.default_value.as_ref())
-                        .map(|(s, x)| s.eq(x))
-                        .unwrap_or(true)
-                    && self.one_based.eq(&x.one_based)
-                    && self.fail_on_error.eq(&x.fail_on_error)
-            })
-            .unwrap_or(false)
-    }
-}
-
 #[derive(Debug, Eq)]
 pub struct GetArrayStructFields {
     child: Arc<dyn PhysicalExpr>,
@@ -428,15 +406,6 @@ impl Display for GetArrayStructFields {
             "GetArrayStructFields [child: {:?}, ordinal: {:?}]",
             self.child, self.ordinal
         )
-    }
-}
-
-impl PartialEq<dyn Any> for GetArrayStructFields {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.ordinal.eq(&x.ordinal))
-            .unwrap_or(false)
     }
 }
 
@@ -713,20 +682,6 @@ impl Display for ArrayInsert {
             "ArrayInsert [array: {:?}, pos: {:?}, item: {:?}]",
             self.src_array_expr, self.pos_expr, self.item_expr
         )
-    }
-}
-
-impl PartialEq<dyn Any> for ArrayInsert {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.src_array_expr.eq(&x.src_array_expr)
-                    && self.pos_expr.eq(&x.pos_expr)
-                    && self.item_expr.eq(&x.item_expr)
-                    && self.legacy_negative_index.eq(&x.legacy_negative_index)
-            })
-            .unwrap_or(false)
     }
 }
 

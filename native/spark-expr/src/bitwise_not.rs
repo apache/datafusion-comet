@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::{
     array::*,
     datatypes::{DataType, Schema},
@@ -121,15 +120,6 @@ impl PhysicalExpr for BitwiseNotExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(BitwiseNotExpr::new(Arc::clone(&children[0]))))
-    }
-}
-
-impl PartialEq<dyn Any> for BitwiseNotExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.arg.eq(&x.arg))
-            .unwrap_or(false)
     }
 }
 

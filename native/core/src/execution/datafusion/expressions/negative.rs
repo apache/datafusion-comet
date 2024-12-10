@@ -25,7 +25,6 @@ use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
@@ -259,14 +258,5 @@ impl PhysicalExpr for NegativeExpr {
     fn get_properties(&self, children: &[ExprProperties]) -> Result<ExprProperties> {
         let properties = children[0].clone().with_order(children[0].sort_properties);
         Ok(properties)
-    }
-}
-
-impl PartialEq<dyn Any> for NegativeExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.arg.eq(&x.arg))
-            .unwrap_or(false)
     }
 }

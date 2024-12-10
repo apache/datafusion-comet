@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
     datatypes::{ArrowNativeType, Float32Type, Float64Type},
@@ -122,15 +121,6 @@ fn eval_typed<V: FloatDouble, T: ArrayAccessor<Item = V>>(input: T) -> Vec<Optio
 impl Display for NormalizeNaNAndZero {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "FloatNormalize [child: {}]", self.child)
-    }
-}
-
-impl PartialEq<dyn Any> for NormalizeNaNAndZero {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.data_type.eq(&x.data_type))
-            .unwrap_or(false)
     }
 }
 

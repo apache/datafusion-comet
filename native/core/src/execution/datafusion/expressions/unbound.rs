@@ -18,10 +18,9 @@
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result};
 use datafusion_physical_expr::PhysicalExpr;
-use std::{any::Any, hash::Hash, sync::Arc};
+use std::{hash::Hash, sync::Arc};
 
 /// This is similar to `UnKnownColumn` in DataFusion, but it has data type.
 /// This is only used when the column is not bound to a schema, for example, the
@@ -88,14 +87,5 @@ impl PhysicalExpr for UnboundColumn {
         _children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(self)
-    }
-}
-
-impl PartialEq<dyn Any> for UnboundColumn {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self == x)
-            .unwrap_or(false)
     }
 }

@@ -22,7 +22,6 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -56,19 +55,6 @@ impl PartialEq for CheckOverflow {
         self.child.eq(&other.child)
             && self.data_type.eq(&other.data_type)
             && self.fail_on_error.eq(&other.fail_on_error)
-    }
-}
-
-impl PartialEq<dyn Any> for CheckOverflow {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.data_type.eq(&x.data_type)
-                    && self.fail_on_error.eq(&x.fail_on_error)
-            })
-            .unwrap_or(false)
     }
 }
 

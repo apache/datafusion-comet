@@ -22,7 +22,6 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -60,18 +59,6 @@ impl Display for BloomFilterMightContain {
             "BloomFilterMightContain [bloom_filter_expr: {}, value_expr: {}]",
             self.bloom_filter_expr, self.value_expr
         )
-    }
-}
-
-impl PartialEq<dyn Any> for BloomFilterMightContain {
-    fn eq(&self, _other: &dyn Any) -> bool {
-        down_cast_any_ref(_other)
-            .downcast_ref::<Self>()
-            .map(|other| {
-                self.bloom_filter_expr.eq(&other.bloom_filter_expr)
-                    && self.value_expr.eq(&other.value_expr)
-            })
-            .unwrap_or(false)
     }
 }
 

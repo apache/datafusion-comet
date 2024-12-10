@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use crate::utils::down_cast_any_ref;
 use arrow::{
     compute::{date_part, DatePart},
     record_batch::RecordBatch,
@@ -68,15 +67,6 @@ impl Display for HourExpr {
             "Hour [timezone:{}, child: {}]",
             self.timezone, self.child
         )
-    }
-}
-
-impl PartialEq<dyn Any> for HourExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.timezone.eq(&x.timezone))
-            .unwrap_or(false)
     }
 }
 
@@ -170,15 +160,6 @@ impl Display for MinuteExpr {
     }
 }
 
-impl PartialEq<dyn Any> for MinuteExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.timezone.eq(&x.timezone))
-            .unwrap_or(false)
-    }
-}
-
 impl PhysicalExpr for MinuteExpr {
     fn as_any(&self) -> &dyn Any {
         self
@@ -266,15 +247,6 @@ impl Display for SecondExpr {
             "Second (timezone:{}, child: {}]",
             self.timezone, self.child
         )
-    }
-}
-
-impl PartialEq<dyn Any> for SecondExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.timezone.eq(&x.timezone))
-            .unwrap_or(false)
     }
 }
 
@@ -366,15 +338,6 @@ impl Display for DateTruncExpr {
             "DateTrunc [child:{}, format: {}]",
             self.child, self.format
         )
-    }
-}
-
-impl PartialEq<dyn Any> for DateTruncExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.format.eq(&x.format))
-            .unwrap_or(false)
     }
 }
 
@@ -476,19 +439,6 @@ impl Display for TimestampTruncExpr {
             "TimestampTrunc [child:{}, format:{}, timezone: {}]",
             self.child, self.format, self.timezone
         )
-    }
-}
-
-impl PartialEq<dyn Any> for TimestampTruncExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.format.eq(&x.format)
-                    && self.timezone.eq(&x.timezone)
-            })
-            .unwrap_or(false)
     }
 }
 

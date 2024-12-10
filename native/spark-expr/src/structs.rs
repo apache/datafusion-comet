@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, StructArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -104,23 +103,6 @@ impl Display for CreateNamedStruct {
             "CreateNamedStruct [values: {:?}, names: {:?}]",
             self.values, self.names
         )
-    }
-}
-
-impl PartialEq<dyn Any> for CreateNamedStruct {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.values
-                    .iter()
-                    .zip(x.values.iter())
-                    .all(|(a, b)| a.eq(b))
-                    && self.values.len() == x.values.len()
-                    && self.names.iter().zip(x.names.iter()).all(|(a, b)| a.eq(b))
-                    && self.names.len() == x.names.len()
-            })
-            .unwrap_or(false)
     }
 }
 
@@ -217,15 +199,6 @@ impl Display for GetStructField {
             "GetStructField [child: {:?}, ordinal: {:?}]",
             self.child, self.ordinal
         )
-    }
-}
-
-impl PartialEq<dyn Any> for GetStructField {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.ordinal.eq(&x.ordinal))
-            .unwrap_or(false)
     }
 }
 

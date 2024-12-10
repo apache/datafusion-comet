@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::down_cast_any_ref;
 use crate::SparkError;
 use arrow::compute::take;
 use arrow_array::builder::BooleanBuilder;
@@ -101,15 +100,6 @@ impl Display for RLike {
             "RLike [child: {}, pattern: {}] ",
             self.child, self.pattern_str
         )
-    }
-}
-
-impl PartialEq<dyn Any> for RLike {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.pattern_str.eq(&x.pattern_str))
-            .unwrap_or(false)
     }
 }
 

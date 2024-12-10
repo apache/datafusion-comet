@@ -27,7 +27,6 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
@@ -175,15 +174,6 @@ impl PartialEq for StringSpaceExpr {
     }
 }
 
-impl PartialEq<dyn Any> for StringSpaceExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child))
-            .unwrap_or(false)
-    }
-}
-
 impl SubstringExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>, start: i64, len: u64) -> Self {
         Self { child, start, len }
@@ -209,15 +199,6 @@ impl Display for SubstringExpr {
 impl Display for StringSpaceExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "StringSpace [child: {}] ", self.child)
-    }
-}
-
-impl PartialEq<dyn Any> for SubstringExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.start.eq(&x.start) && self.len.eq(&x.len))
-            .unwrap_or(false)
     }
 }
 
