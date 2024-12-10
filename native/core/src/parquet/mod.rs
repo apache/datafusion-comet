@@ -610,9 +610,9 @@ enum ParquetReaderState {
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
     runtime: tokio::runtime::Runtime,
-    use_datafusion_reader: bool,
-    batch_stream: SendableRecordBatchStream,
-    batch_reader: ParquetRecordBatchReader,
+    use_datafusion: bool,
+    batch_stream: Option<SendableRecordBatchStream>,
+    batch_reader: Option<ParquetRecordBatchReader>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
     num_row_groups: i32,
@@ -628,10 +628,12 @@ fn get_batch_context<'a>(handle: jlong) -> Result<&'a mut BatchContext, CometErr
     }
 }
 
+/*
 #[inline]
 fn get_batch_reader<'a>(handle: jlong) -> Result<&'a mut ParquetRecordBatchReader, CometError> {
-    Ok(&mut get_batch_context(handle)?.batch_reader)
+    Ok(&mut get_batch_context(handle)?.batch_reader.unwrap())
 }
+*/
 
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
@@ -648,65 +650,24 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     use_datafusion: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let use_datafusion_reader = use_datafusion != 0;
+        let use_datafusion = use_datafusion != 0;
         let path: String = env
             .get_string(&JString::from_raw(file_path))
             .unwrap()
             .into();
-
-        // EXPERIMENTAL  - BEGIN
-        let (object_store_url, object_store_path) = get_file_path(path.clone()).unwrap();
-        // EXPERIMENTAL  - END
-
-        //TODO: (ARROW NATIVE) - this works only for 'file://' urls
-        let path = Url::parse(path.as_ref()).unwrap().to_file_path().unwrap();
-        let file = File::open(path).unwrap();
-
-        // Create a async parquet reader builder with batch_size.
-        // batch_size is the number of rows to read up to buffer once from pages, defaults to 1024
-        // TODO: (ARROW NATIVE) Use async reader ParquetRecordBatchStreamBuilder
-        let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .with_batch_size(8192); // TODO: (ARROW NATIVE) Use batch size configured in JVM
-
-        let num_row_groups;
+        let mut num_row_groups = 0;
         let mut total_rows: i64 = 0;
-        let batch_stream: SendableRecordBatchStream;
+        let mut batch_stream: Option<SendableRecordBatchStream> = None;
+        let mut batch_reader: Option<ParquetRecordBatchReader> = None;
         // TODO: (ARROW NATIVE) Use the common global runtime
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        //TODO: (ARROW NATIVE) if we can get the ParquetMetadata serialized, we need not do this.
-        {
-            let metadata = builder.metadata();
 
-            let mut columns_to_read: Vec<usize> = Vec::new();
-            let columns_to_read_array = JObjectArray::from_raw(required_columns);
-            let array_len = env.get_array_length(&columns_to_read_array)?;
-            let mut required_columns: Vec<String> = Vec::new();
-            for i in 0..array_len {
-                let p: JString = env
-                    .get_object_array_element(&columns_to_read_array, i)?
-                    .into();
-                required_columns.push(env.get_string(&p)?.into());
-            }
-            for (i, col) in metadata
-                .file_metadata()
-                .schema_descr()
-                .columns()
-                .iter()
-                .enumerate()
-            {
-                for required in required_columns.iter() {
-                    if col.name().to_uppercase().eq(&required.to_uppercase()) {
-                        columns_to_read.push(i);
-                        break;
-                    }
-                }
-            }
-
+        if use_datafusion {
             // EXPERIMENTAL - BEGIN
-            // TODO: (ARROW NATIVE) - Remove code duplication between this and POC1
+            let (object_store_url, object_store_path) = get_file_path(path.clone()).unwrap();
+            // TODO: (ARROW NATIVE) - Remove code duplication between this and POC 1
             // copy the input on-heap buffer to native
             let required_schema_array = JByteArray::from_raw(required_schema);
             let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
@@ -721,10 +682,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             // the output schema we want
             let file_scan_config = FileScanConfig::new(object_store_url, Arc::new(required_schema_arrow))
                 .with_file(partitioned_file)
-               // TODO: (ARROW NATIVE) - do partition columns in native
-               //   - will need partition schema and partition values to do so
-               // .with_table_partition_cols(partition_fields)
-            ;
+                // TODO: (ARROW NATIVE) - do partition columns in native
+                //   - will need partition schema and partition values to do so
+                // .with_table_partition_cols(partition_fields)
+                ;
             let mut table_parquet_options = TableParquetOptions::new();
             // TODO: Maybe these are configs?
             table_parquet_options.global.pushdown_filters = true;
@@ -740,37 +701,80 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             let scan = builder2.build();
             let ctx = TaskContext::default();
             let partition_index: usize = 0;
-            batch_stream = scan.execute(partition_index, Arc::new(ctx))?;
+            batch_stream = Some(scan.execute(partition_index, Arc::new(ctx))?);
 
             // EXPERIMENTAL - END
+        } else {
+            //TODO: (ARROW NATIVE) - this works only for 'file://' urls
+            let path_buf = Url::parse(path.as_ref()).unwrap().to_file_path().unwrap();
+            let file = File::open(path_buf).unwrap();
 
-            //TODO: (ARROW NATIVE) make this work for complex types (especially deeply nested structs)
-            let mask =
-                ProjectionMask::leaves(metadata.file_metadata().schema_descr(), columns_to_read);
-            // Set projection mask to read only root columns 1 and 2.
+            // Create a async parquet reader builder with batch_size.
+            // batch_size is the number of rows to read up to buffer once from pages, defaults to 1024
+            // TODO: (ARROW NATIVE) Use async reader ParquetRecordBatchStreamBuilder
+            let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .unwrap()
+                .with_batch_size(8192); // TODO: (ARROW NATIVE) Use batch size configured in JVM
 
-            let mut row_groups_to_read: Vec<usize> = Vec::new();
-            // get row groups -
-            for (i, rg) in metadata.row_groups().iter().enumerate() {
-                let rg_start = rg.file_offset().unwrap();
-                let rg_end = rg_start + rg.compressed_size();
-                if rg_start >= start && rg_end <= start + length {
-                    row_groups_to_read.push(i);
-                    total_rows += rg.num_rows();
+            //TODO: (ARROW NATIVE) if we can get the ParquetMetadata serialized, we need not do this.
+            {
+                let metadata = builder.metadata();
+
+                let mut columns_to_read: Vec<usize> = Vec::new();
+                let columns_to_read_array = JObjectArray::from_raw(required_columns);
+                let array_len = env.get_array_length(&columns_to_read_array)?;
+                let mut required_columns: Vec<String> = Vec::new();
+                for i in 0..array_len {
+                    let p: JString = env
+                        .get_object_array_element(&columns_to_read_array, i)?
+                        .into();
+                    required_columns.push(env.get_string(&p)?.into());
                 }
-            }
-            num_row_groups = row_groups_to_read.len();
-            builder = builder
-                .with_projection(mask)
-                .with_row_groups(row_groups_to_read.clone())
-        }
+                for (i, col) in metadata
+                    .file_metadata()
+                    .schema_descr()
+                    .columns()
+                    .iter()
+                    .enumerate()
+                {
+                    for required in required_columns.iter() {
+                        if col.name().to_uppercase().eq(&required.to_uppercase()) {
+                            columns_to_read.push(i);
+                            break;
+                        }
+                    }
+                }
 
-        // Build a sync parquet reader.
-        let batch_reader = builder.build().unwrap();
+                //TODO: (ARROW NATIVE) make this work for complex types (especially deeply nested structs)
+                let mask = ProjectionMask::leaves(
+                    metadata.file_metadata().schema_descr(),
+                    columns_to_read,
+                );
+                // Set projection mask to read only root columns 1 and 2.
+
+                let mut row_groups_to_read: Vec<usize> = Vec::new();
+                // get row groups -
+                for (i, rg) in metadata.row_groups().iter().enumerate() {
+                    let rg_start = rg.file_offset().unwrap();
+                    let rg_end = rg_start + rg.compressed_size();
+                    if rg_start >= start && rg_end <= start + length {
+                        row_groups_to_read.push(i);
+                        total_rows += rg.num_rows();
+                    }
+                }
+                num_row_groups = row_groups_to_read.len();
+                builder = builder
+                    .with_projection(mask)
+                    .with_row_groups(row_groups_to_read.clone())
+            }
+
+            // Build a sync parquet reader.
+            batch_reader = Some(builder.build().unwrap());
+        }
 
         let ctx = BatchContext {
             runtime,
-            use_datafusion_reader,
+            use_datafusion,
             batch_stream,
             batch_reader,
             current_batch: None,
@@ -818,13 +822,13 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
     try_unwrap_or_throw(&e, |_env| {
         let context = get_batch_context(handle)?;
         let mut rows_read: i32 = 0;
-        if context.use_datafusion_reader {
-            let batch_stream = &mut context.batch_stream;
+        if context.use_datafusion {
+            let batch_stream = context.batch_stream.as_mut().unwrap();
             let runtime = &context.runtime;
 
-            let mut stream = batch_stream.as_mut();
+            // let mut stream = batch_stream.as_mut();
             loop {
-                let next_item = stream.next();
+                let next_item = batch_stream.next();
                 let poll_batch: Poll<Option<datafusion_common::Result<RecordBatch>>> =
                     runtime.block_on(async { poll!(next_item) });
 
@@ -846,19 +850,16 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
                         context.reader_state = ParquetReaderState::Complete;
                         break;
                     }
-                    // TODO: (ARROW NATIVE): Just keeping polling??
-                    // Ideally we want to yield to avoid consuming CPU while blocked on IO
                     Poll::Pending => {
-                        // Update metrics ??
-                        // crate::execution::jni_api::update_metrics(&mut env, exec_context)?;
-                        // println!("pending");
+                        // TODO: (ARROW NATIVE): Just keeping polling??
+                        // Ideally we want to yield to avoid consuming CPU while blocked on IO ??
                         continue;
                     }
                 }
             }
             Ok(rows_read)
         } else {
-            let batch_reader = &mut context.batch_reader;
+            let batch_reader = context.batch_reader.as_mut().unwrap();
             // Read data
             let batch = batch_reader.next();
 

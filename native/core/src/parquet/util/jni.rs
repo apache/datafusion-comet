@@ -27,6 +27,7 @@ use jni::{
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use datafusion_execution::object_store::ObjectStoreUrl;
+use object_store::path::Path;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
     format::{MicroSeconds, MilliSeconds, NanoSeconds},
@@ -209,13 +210,13 @@ pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, 
     Ok(schema)
 }
 
-// parses the url and returns a tuple of the scheme and file path name
-pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, String), ParseError> {
+// parses the url and returns a tuple of the scheme and object store path
+pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, Path), ParseError> {
     // we define origin of a url as scheme + "://" + authority + ["/" + bucket]
     let url = Url::parse(url.as_ref()).unwrap();
     let mut object_store_origin = url.scheme().to_owned();
     // let mut object_store_path = url.to_file_path().unwrap().to_str().unwrap().to_string();
-    let mut object_store_path = url.path().to_string();
+    let mut object_store_path = Path::from_url_path(url.path()).unwrap();
     if object_store_origin == "s3a" {
         object_store_origin = "s3".to_string();
         object_store_origin.push_str("://");
@@ -223,13 +224,14 @@ pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, String), ParseError
         object_store_origin.push('/');
         let path_splits = url.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap();
         object_store_origin.push_str(path_splits.first().unwrap());
-        object_store_path = path_splits[1..path_splits.len() - 1].join("/").to_string();
+        let new_path = path_splits[1..path_splits.len() - 1].join("/");
+        //TODO: (ARROW NATIVE) check the use of unwrap here
+        object_store_path = Path::from_url_path(new_path.clone().as_str()).unwrap();
     } else {
         object_store_origin.push_str("://");
         object_store_origin.push_str(url.authority());
         object_store_origin.push('/');
     }
-
     Ok((
         ObjectStoreUrl::parse(object_store_origin).unwrap(),
         object_store_path,

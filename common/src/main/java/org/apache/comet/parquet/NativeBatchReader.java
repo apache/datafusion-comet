@@ -119,7 +119,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private ParquetMetadata footer;
 
   /** The total number of rows across all row groups of the input split. */
-  private long totalRowCount;
+  //  private long totalRowCount;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -367,7 +367,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             requiredColumns.toArray(),
             serializedRequestedArrowSchema,
             useDataFusionReader);
-    totalRowCount = Native.numRowGroups(handle);
+    //    totalRowCount = Native.numTotalRows(handle);
     isInitialized = true;
   }
 
@@ -402,7 +402,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   @Override
   public float getProgress() {
-    return (float) rowsRead / totalRowCount;
+    return 0;
+    //    return (float) rowsRead / totalRowCount;
   }
 
   /**
@@ -422,7 +423,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   public boolean nextBatch() throws IOException {
     Preconditions.checkState(isInitialized, "init() should be called first!");
 
-    if (rowsRead >= totalRowCount) return false;
+    //    if (rowsRead >= totalRowCount) return false;
     int batchSize;
 
     try {
@@ -484,6 +485,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     long startNs = System.nanoTime();
 
     int batchSize = Native.readNextRecordBatch(this.handle);
+    if (batchSize == 0) {
+      return batchSize;
+    }
     if (importer != null) importer.close();
     importer = new CometSchemaImporter(ALLOCATOR);
 
