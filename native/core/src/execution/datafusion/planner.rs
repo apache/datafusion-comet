@@ -2518,6 +2518,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `rust_psm_stack_pointer`
     fn spark_plan_metrics_hash_join() {
         let op_scan = create_scan();
         let op_join = Operator {
