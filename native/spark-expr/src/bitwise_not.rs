@@ -47,8 +47,9 @@ pub struct BitwiseNotExpr {
 }
 
 impl DynHash for BitwiseNotExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        let mut s = state;
+        self.arg.dyn_hash(&mut s);
     }
 }
 

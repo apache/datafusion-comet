@@ -23,9 +23,8 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -38,21 +37,16 @@ pub struct NormalizeNaNAndZero {
     pub child: Arc<dyn PhysicalExpr>,
 }
 
-impl DynHash for NormalizeNaNAndZero {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl PartialEq for NormalizeNaNAndZero {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.data_type.eq(&other.data_type)
     }
 }
 
-// impl DynEq for NormalizeNaNAndZero {
-//     fn dyn_eq(&self, _other: &dyn Any) -> bool {
-//         todo!()
-//     }
-// }
-
-impl PartialEq for NormalizeNaNAndZero {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+impl Hash for NormalizeNaNAndZero {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.data_type.hash(state);
     }
 }
 

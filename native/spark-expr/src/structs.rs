@@ -20,10 +20,8 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{Array, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -132,15 +130,15 @@ pub struct GetStructField {
     ordinal: usize,
 }
 
-impl DynHash for GetStructField {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for GetStructField {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.ordinal.hash(state);
     }
 }
-
 impl PartialEq for GetStructField {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.ordinal.eq(&other.ordinal)
     }
 }
 

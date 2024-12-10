@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::array_with_timezone;
 use crate::utils::down_cast_any_ref;
 use arrow::{
     compute::{date_part, DatePart},
@@ -22,17 +23,14 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{
     any::Any,
     fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
-
-use crate::utils::array_with_timezone;
 
 use crate::kernels::temporal::{
     date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
@@ -45,15 +43,15 @@ pub struct HourExpr {
     timezone: String,
 }
 
-impl DynHash for HourExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for HourExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.timezone.hash(state);
     }
 }
-
 impl PartialEq for HourExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.timezone.eq(&other.timezone)
     }
 }
 
@@ -144,15 +142,15 @@ pub struct MinuteExpr {
     timezone: String,
 }
 
-impl DynHash for MinuteExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for MinuteExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.timezone.hash(state);
     }
 }
-
 impl PartialEq for MinuteExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.timezone.eq(&other.timezone)
     }
 }
 
@@ -243,15 +241,15 @@ pub struct SecondExpr {
     timezone: String,
 }
 
-impl DynHash for SecondExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for SecondExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.timezone.hash(state);
     }
 }
-
 impl PartialEq for SecondExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.timezone.eq(&other.timezone)
     }
 }
 
@@ -343,15 +341,15 @@ pub struct DateTruncExpr {
     format: Arc<dyn PhysicalExpr>,
 }
 
-impl DynHash for DateTruncExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for DateTruncExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.format.hash(state);
     }
 }
-
 impl PartialEq for DateTruncExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.format.eq(&other.format)
     }
 }
 
@@ -442,15 +440,18 @@ pub struct TimestampTruncExpr {
     timezone: String,
 }
 
-impl DynHash for TimestampTruncExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for TimestampTruncExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.format.hash(state);
+        self.timezone.hash(state);
     }
 }
-
 impl PartialEq for TimestampTruncExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.format.eq(&other.format)
+            && self.timezone.eq(&other.timezone)
     }
 }
 

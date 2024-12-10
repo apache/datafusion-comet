@@ -27,13 +27,12 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{
     any::Any,
     fmt::{Debug, Display, Formatter},
@@ -54,15 +53,22 @@ pub struct ListExtract {
     fail_on_error: bool,
 }
 
-impl DynHash for ListExtract {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for ListExtract {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.ordinal.hash(state);
+        self.default_value.hash(state);
+        self.one_based.hash(state);
+        self.fail_on_error.hash(state);
     }
 }
-
 impl PartialEq for ListExtract {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.ordinal.eq(&other.ordinal)
+            && self.default_value.eq(&other.default_value)
+            && self.one_based.eq(&other.one_based)
+            && self.fail_on_error.eq(&other.fail_on_error)
     }
 }
 
@@ -297,15 +303,15 @@ pub struct GetArrayStructFields {
     ordinal: usize,
 }
 
-impl DynHash for GetArrayStructFields {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for GetArrayStructFields {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.ordinal.hash(state);
     }
 }
-
 impl PartialEq for GetArrayStructFields {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.ordinal.eq(&other.ordinal)
     }
 }
 
@@ -442,15 +448,20 @@ pub struct ArrayInsert {
     legacy_negative_index: bool,
 }
 
-impl DynHash for ArrayInsert {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for ArrayInsert {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.src_array_expr.hash(state);
+        self.pos_expr.hash(state);
+        self.item_expr.hash(state);
+        self.legacy_negative_index.hash(state);
     }
 }
-
 impl PartialEq for ArrayInsert {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.src_array_expr.eq(&other.src_array_expr)
+            && self.pos_expr.eq(&other.pos_expr)
+            && self.item_expr.eq(&other.item_expr)
+            && self.legacy_negative_index.eq(&other.legacy_negative_index)
     }
 }
 

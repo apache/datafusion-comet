@@ -21,10 +21,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_common::Result;
 use datafusion_physical_expr::{expressions::CaseExpr, PhysicalExpr};
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
 /// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
@@ -38,12 +37,14 @@ pub struct IfExpr {
     case_expr: Arc<CaseExpr>,
 }
 
-impl DynHash for IfExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for IfExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.if_expr.hash(state);
+        self.true_expr.hash(state);
+        self.false_expr.hash(state);
+        self.case_expr.hash(state);
     }
 }
-
 impl PartialEq for IfExpr {
     fn eq(&self, other: &Self) -> bool {
         self.if_expr.eq(&other.if_expr)
