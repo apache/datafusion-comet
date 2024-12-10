@@ -100,7 +100,6 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::expr::find_df_window_func;
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
@@ -1509,10 +1508,7 @@ impl PhysicalPlanner {
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(
-                            Arc::clone(&child),
-                            datatype,
-                        )?);
+                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(datatype)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
@@ -1537,11 +1533,8 @@ impl PhysicalPlanner {
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(AvgDecimal::new(
-                            Arc::clone(&child),
-                            datatype,
-                            input_datatype,
-                        ));
+                        let func =
+                            AggregateUDF::new_from_impl(AvgDecimal::new(datatype, input_datatype));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
@@ -1550,11 +1543,7 @@ impl PhysicalPlanner {
                         // failure since it should have already been checked at Spark side.
                         let child: Arc<dyn PhysicalExpr> =
                             Arc::new(CastExpr::new(Arc::clone(&child), datatype.clone(), None));
-                        let func = AggregateUDF::new_from_impl(Avg::new(
-                            Arc::clone(&child),
-                            "avg",
-                            datatype,
-                        ));
+                        let func = AggregateUDF::new_from_impl(Avg::new("avg", datatype));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                 };
@@ -1632,8 +1621,6 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Covariance::new(
-                            Arc::clone(&child1),
-                            Arc::clone(&child2),
                             "covariance",
                             datatype,
                             StatsType::Sample,
@@ -1649,8 +1636,6 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = AggregateUDF::new_from_impl(Covariance::new(
-                            Arc::clone(&child1),
-                            Arc::clone(&child2),
                             "covariance_pop",
                             datatype,
                             StatsType::Population,
@@ -1676,7 +1661,6 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Variance::new(
-                            Arc::clone(&child),
                             "variance",
                             datatype,
                             StatsType::Sample,
@@ -1687,7 +1671,6 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = AggregateUDF::new_from_impl(Variance::new(
-                            Arc::clone(&child),
                             "variance_pop",
                             datatype,
                             StatsType::Population,
@@ -1708,7 +1691,6 @@ impl PhysicalPlanner {
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Stddev::new(
-                            Arc::clone(&child),
                             "stddev",
                             datatype,
                             StatsType::Sample,
@@ -1719,7 +1701,6 @@ impl PhysicalPlanner {
                     }
                     1 => {
                         let func = AggregateUDF::new_from_impl(Stddev::new(
-                            Arc::clone(&child),
                             "stddev_pop",
                             datatype,
                             StatsType::Population,
@@ -1741,8 +1722,6 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = AggregateUDF::new_from_impl(Correlation::new(
-                    Arc::clone(&child1),
-                    Arc::clone(&child2),
                     "correlation",
                     datatype,
                     expr.null_on_divide_by_zero,
@@ -1929,7 +1908,7 @@ impl PhysicalPlanner {
             window_func_name,
             &window_args,
             partition_by,
-            sort_exprs,
+            &LexOrdering::new(sort_exprs.to_vec()),
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -1979,15 +1958,11 @@ impl PhysicalPlanner {
 
     /// Find DataFusion's built-in window function by name.
     fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
-        if let Some(f) = find_df_window_func(name) {
-            Some(f)
-        } else {
-            let registry = &self.session_ctx.state();
-            registry
-                .udaf(name)
-                .map(WindowFunctionDefinition::AggregateUDF)
-                .ok()
-        }
+        let registry = &self.session_ctx.state();
+        registry
+            .udaf(name)
+            .map(WindowFunctionDefinition::AggregateUDF)
+            .ok()
     }
 
     /// Create a DataFusion physical partitioning from Spark physical partitioning

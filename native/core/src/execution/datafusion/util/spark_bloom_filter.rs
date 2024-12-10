@@ -27,7 +27,7 @@ const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 /// A Bloom filter implementation that simulates the behavior of Spark's BloomFilter.
 /// It's not a complete implementation of Spark's BloomFilter, but just add the minimum
 /// methods to support mightContainsLong in the native side.
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct SparkBloomFilter {
     bits: SparkBitArray,
     num_hash_functions: u32,
