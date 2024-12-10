@@ -770,7 +770,7 @@ impl<T: DataType> TypedColumnReader<T> {
         // Create a new vector for dictionary values
         let mut value_vector = ParquetMutableVector::new(page_value_count, &self.arrow_type);
 
-        let mut dictionary = self.get_decoder(page_data, page_value_count, encoding);
+        let mut dictionary = self.get_decoder(page_data, encoding);
         dictionary.read_batch(&mut value_vector, page_value_count);
         value_vector.num_values = page_value_count;
 
@@ -812,7 +812,7 @@ impl<T: DataType> TypedColumnReader<T> {
         self.def_level_decoder = Some(dl_decoder);
         page_buffer = page_buffer.slice(offset);
 
-        let value_decoder = self.get_decoder(page_buffer, page_value_count, encoding);
+        let value_decoder = self.get_decoder(page_buffer, encoding);
         self.value_decoder = Some(value_decoder);
     }
 
@@ -838,7 +838,7 @@ impl<T: DataType> TypedColumnReader<T> {
         dl_decoder.set_data(page_value_count, &def_level_data);
         self.def_level_decoder = Some(dl_decoder);
 
-        let value_decoder = self.get_decoder(value_data, page_value_count, encoding);
+        let value_decoder = self.get_decoder(value_data, encoding);
         self.value_decoder = Some(value_decoder);
     }
 
@@ -977,15 +977,9 @@ impl<T: DataType> TypedColumnReader<T> {
         }
     }
 
-    fn get_decoder(
-        &self,
-        value_data: Buffer,
-        page_value_count: usize,
-        encoding: Encoding,
-    ) -> Box<dyn Decoder> {
+    fn get_decoder(&self, value_data: Buffer, encoding: Encoding) -> Box<dyn Decoder> {
         get_decoder::<T>(
             value_data,
-            page_value_count,
             encoding,
             Arc::clone(&self.desc),
             self.read_options,

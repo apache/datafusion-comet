@@ -189,6 +189,7 @@ pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
 
 /// The JVM classes that are used in the JNI calls.
+#[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct JVMClasses<'a> {
     /// Cached JClass for "java.lang.Object"
     java_lang_object: JClass<'a>,

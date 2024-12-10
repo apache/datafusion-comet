@@ -61,10 +61,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(agg_mode.0, |b| {
             let comet_bloom_filter_agg =
                 Arc::new(AggregateUDF::new_from_impl(BloomFilterAgg::new(
-                    Arc::clone(&c0),
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
-                    "bloom_filter_agg",
                     DataType::Binary,
                 )));
             b.to_async(&rt).iter(|| {
