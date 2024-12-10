@@ -27,11 +27,9 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::{DynEq, DynHash};
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue::Utf8};
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -41,7 +39,7 @@ use std::{
 
 macro_rules! make_predicate_function {
     ($name: ident, $kernel: ident, $str_scalar_kernel: ident) => {
-        #[derive(Debug, Hash)]
+        #[derive(Debug, Eq)]
         pub struct $name {
             left: Arc<dyn PhysicalExpr>,
             right: Arc<dyn PhysicalExpr>,
@@ -59,30 +57,16 @@ macro_rules! make_predicate_function {
             }
         }
 
-        // impl DynHash for $name {
-        //     fn dyn_hash(&self, state: &mut dyn Hasher) {
-        //         let mut s = state;
-        //         self.left.hash(&mut s);
-        //         self.right.hash(&mut s);
-        //         self.hash(&mut s);
-        //     }
-        // }
-
-        impl DynEq for $name {
-            fn dyn_eq(&self, other: &dyn Any) -> bool {
-                down_cast_any_ref(other)
-                    .downcast_ref::<Self>()
-                    .map(|x| self.left.eq(&x.left) && self.right.eq(&x.right))
-                    .unwrap_or(false)
+        impl Hash for $name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.left.hash(state);
+                self.right.hash(state);
             }
         }
 
-        impl PartialEq<dyn Any> for $name {
-            fn eq(&self, other: &dyn Any) -> bool {
-                down_cast_any_ref(other)
-                    .downcast_ref::<Self>()
-                    .map(|x| self.left.eq(&x.left) && self.right.eq(&x.right))
-                    .unwrap_or(false)
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.left.eq(&other.left) && self.right.eq(&other.right)
             }
         }
 
@@ -161,20 +145,33 @@ pub struct SubstringExpr {
     pub len: u64,
 }
 
+impl Hash for SubstringExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.start.hash(state);
+        self.len.hash(state);
+    }
+}
+
+impl PartialEq for SubstringExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child) && self.start.eq(&other.start) && self.len.eq(&other.len)
+    }
+}
 #[derive(Debug, Eq)]
 pub struct StringSpaceExpr {
     pub child: Arc<dyn PhysicalExpr>,
 }
 
-impl DynHash for StringSpaceExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for StringSpaceExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
     }
 }
 
 impl PartialEq for StringSpaceExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
     }
 }
 
@@ -221,22 +218,6 @@ impl PartialEq<dyn Any> for SubstringExpr {
             .downcast_ref::<Self>()
             .map(|x| self.child.eq(&x.child) && self.start.eq(&x.start) && self.len.eq(&x.len))
             .unwrap_or(false)
-    }
-}
-
-impl DynHash for SubstringExpr {
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.start.hash(&mut s);
-        self.len.hash(&mut s);
-        // self.hash(&mut s);
-    }
-}
-
-impl PartialEq for SubstringExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
     }
 }
 

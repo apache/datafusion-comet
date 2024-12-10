@@ -22,11 +22,10 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -44,18 +43,19 @@ pub struct CheckOverflow {
     pub fail_on_error: bool,
 }
 
-impl DynHash for CheckOverflow {
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.dyn_hash(&mut s);
-        self.data_type.dyn_hash(&mut s);
-        self.fail_on_error.dyn_hash(&mut s);
+impl Hash for CheckOverflow {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.data_type.hash(state);
+        self.fail_on_error.hash(state);
     }
 }
 
 impl PartialEq for CheckOverflow {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.data_type.eq(&other.data_type)
+            && self.fail_on_error.eq(&other.fail_on_error)
     }
 }
 

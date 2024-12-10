@@ -21,12 +21,11 @@ use crate::{
 use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{any::Any, fmt::Display, sync::Arc};
 
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
@@ -38,18 +37,19 @@ pub struct BloomFilterMightContain {
     bloom_filter: Option<SparkBloomFilter>,
 }
 
-impl DynHash for BloomFilterMightContain {
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.bloom_filter_expr.dyn_hash(&mut s);
-        self.value_expr.dyn_hash(&mut s);
-        self.bloom_filter.dyn_hash(&mut s);
+impl Hash for BloomFilterMightContain {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bloom_filter_expr.hash(state);
+        self.value_expr.hash(state);
+        self.bloom_filter.hash(state);
     }
 }
 
 impl PartialEq for BloomFilterMightContain {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.bloom_filter_expr.eq(&other.bloom_filter_expr)
+            && self.value_expr.eq(&other.value_expr)
+            && self.bloom_filter.eq(&other.bloom_filter)
     }
 }
 

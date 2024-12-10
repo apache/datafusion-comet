@@ -21,7 +21,6 @@ use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeT
 use arrow_array::RecordBatch;
 use arrow_buffer::IntervalDayTime;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
@@ -30,7 +29,7 @@ use datafusion_comet_spark_expr::utils::down_cast_any_ref;
 use datafusion_comet_spark_expr::SparkError;
 use datafusion_common::{Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
 pub fn create_negate_expr(
@@ -48,15 +47,16 @@ pub struct NegativeExpr {
     fail_on_error: bool,
 }
 
-impl DynHash for NegativeExpr {
-    fn dyn_hash(&self, _state: &mut dyn Hasher) {
-        todo!()
+impl Hash for NegativeExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.arg.hash(state);
+        self.fail_on_error.hash(state);
     }
 }
 
 impl PartialEq for NegativeExpr {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        self.arg.eq(&other.arg) && self.fail_on_error.eq(&other.fail_on_error)
     }
 }
 

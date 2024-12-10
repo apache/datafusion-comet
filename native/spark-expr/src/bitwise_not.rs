@@ -21,11 +21,10 @@ use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
-use datafusion::physical_expr_common::physical_expr::DynHash;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
 use datafusion_common::Result;
 use datafusion_physical_expr::PhysicalExpr;
-use std::hash::Hasher;
+use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
 macro_rules! compute_op {
@@ -46,10 +45,9 @@ pub struct BitwiseNotExpr {
     arg: Arc<dyn PhysicalExpr>,
 }
 
-impl DynHash for BitwiseNotExpr {
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.arg.dyn_hash(&mut s);
+impl Hash for BitwiseNotExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.arg.hash(state);
     }
 }
 
