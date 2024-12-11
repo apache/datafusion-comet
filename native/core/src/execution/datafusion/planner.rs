@@ -748,15 +748,7 @@ impl PhysicalPlanner {
                     args,
                     DataType::Boolean,
                 ));
-                let is_array_null: Arc<dyn PhysicalExpr> =
-                    Arc::new(IsNullExpr::new(src_array_expr));
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-                Ok(Arc::new(CaseExpr::try_new(
-                    None,
-                    vec![(is_array_null, null_literal_expr)],
-                    Some(array_has_expr),
-                )?))
+                Ok(array_has_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
