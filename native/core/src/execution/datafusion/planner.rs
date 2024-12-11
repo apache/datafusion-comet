@@ -737,7 +737,6 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::ArrayContains(expr) => {
-                println!("dharan code got executed");
                 let src_array_expr =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let key_expr =

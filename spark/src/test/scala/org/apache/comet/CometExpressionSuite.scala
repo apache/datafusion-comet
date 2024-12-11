@@ -2390,4 +2390,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
     }
   }
+
+  test("array_contains") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+    }
+  }
 }
