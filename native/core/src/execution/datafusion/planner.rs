@@ -2021,9 +2021,15 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    // TODO need to call `return_type_from_exprs` instead
-                    #[allow(deprecated)]
-                    let data_type = func.inner().return_type(&coerced_types)?;
+                    let data_type = match fun_name {
+                        // workaround for https://github.com/apache/datafusion/issues/13716
+                        "datepart" => DataType::Int32,
+                        _ => {
+                            // TODO need to call `return_type_from_exprs` instead
+                            #[allow(deprecated)]
+                            func.inner().return_type(&coerced_types)?
+                        }
+                    };
 
                     (data_type, coerced_types)
                 }
