@@ -113,6 +113,7 @@ use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
+use datafusion_functions_nested::array_has::ArrayHas;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -734,6 +735,29 @@ impl PhysicalPlanner {
                     item_expr,
                     expr.legacy_negative_index,
                 )))
+            }
+            ExprStruct::ArrayContains(expr) => {
+                println!("dharan code got executed");
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), key_expr];
+                let array_has_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_has",
+                    Arc::new(ScalarUDF::new_from_impl(ArrayHas::new())),
+                    args,
+                    DataType::Boolean,
+                ));
+                let is_array_null: Arc<dyn PhysicalExpr> =
+                    Arc::new(IsNullExpr::new(src_array_expr));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+                Ok(Arc::new(CaseExpr::try_new(
+                    None,
+                    vec![(is_array_null, null_literal_expr)],
+                    Some(array_has_expr),
+                )?))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
