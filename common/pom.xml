@@ -150,7 +150,6 @@ under the License.
                   <!-- We shade & relocation most of the Arrow classes, to prevent them from
                     conflicting with those in Spark -->
                   <include>org.apache.arrow:*</include>
-                  <include>com.google.flatbuffers:flatbuffers-java</include>
                 </includes>
               </artifactSet>
               <filters>
