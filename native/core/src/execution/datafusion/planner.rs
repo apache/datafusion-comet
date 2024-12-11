@@ -2021,11 +2021,9 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let data_type = func.inner().return_type_from_exprs(
-                        &args,
-                        &input_schema,
-                        &coerced_types,
-                    )?;
+                    // TODO need to call `return_type_from_exprs` instead
+                    #[allow(deprecated)]
+                    let data_type = func.inner().return_type(&coerced_types)?;
 
                     (data_type, coerced_types)
                 }
