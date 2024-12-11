@@ -63,6 +63,20 @@ use crate::execution::datafusion::spark_plan::SparkPlan;
 use crate::execution::operators::ScanExec;
 use log::info;
 
+use once_cell::sync::Lazy;
+
+static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime")
+});
+
+/// Function to get a handle to the global Tokio runtime
+pub fn get_runtime() -> &'static Runtime {
+    &TOKIO_RUNTIME
+}
+
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
@@ -77,8 +91,6 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// The Tokio runtime used for async.
-    pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
     /// The time it took to create the native plan and configure the context
@@ -108,8 +120,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     batch_size: jint,
     debug_native: jboolean,
     explain_native: jboolean,
-    worker_threads: jint,
-    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -122,13 +132,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
-
-        // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads as usize)
-            .max_blocking_threads(blocking_threads as usize)
-            .enable_all()
-            .build()?;
 
         let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -158,7 +161,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             scans: vec![],
             input_sources,
             stream: None,
-            runtime,
             metrics,
             plan_creation_time,
             session_ctx: Arc::new(session),
@@ -336,7 +338,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         loop {
             // Polling the stream.
             let next_item = exec_context.stream.as_mut().unwrap().next();
-            let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
+            let poll_output = get_runtime().block_on(async { poll!(next_item) });
 
             match poll_output {
                 Poll::Ready(Some(output)) => {

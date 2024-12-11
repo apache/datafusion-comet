@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -68,9 +68,7 @@ class CometExecIterator(
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
       debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      workerThreads = COMET_WORKER_THREADS.get(),
-      blockingThreads = COMET_BLOCKING_THREADS.get())
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
