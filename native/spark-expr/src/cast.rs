@@ -35,27 +35,25 @@ use arrow::{
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Schema};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
-use std::str::FromStr;
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    hash::{Hash, Hasher},
-    num::Wrapping,
-    sync::Arc,
-};
-
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
+use std::str::FromStr;
+use std::{
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    hash::Hash,
+    num::Wrapping,
+    sync::Arc,
+};
 
 use crate::timezone;
 use crate::utils::array_with_timezone;
@@ -134,11 +132,27 @@ impl TimeStampInfo {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub cast_options: SparkCastOptions,
+}
+
+impl PartialEq for Cast {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.data_type.eq(&other.data_type)
+            && self.cast_options.eq(&other.cast_options)
+    }
+}
+
+impl Hash for Cast {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.data_type.hash(state);
+        self.cast_options.hash(state);
+    }
 }
 
 macro_rules! cast_utf8_to_int {
@@ -1450,19 +1464,6 @@ impl Display for Cast {
     }
 }
 
-impl PartialEq<dyn Any> for Cast {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.cast_options.eq(&x.cast_options)
-                    && self.data_type.eq(&x.data_type)
-            })
-            .unwrap_or(false)
-    }
-}
-
 impl PhysicalExpr for Cast {
     fn as_any(&self) -> &dyn Any {
         self
@@ -1497,14 +1498,6 @@ impl PhysicalExpr for Cast {
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.data_type.hash(&mut s);
-        self.cast_options.hash(&mut s);
-        self.hash(&mut s);
     }
 }
 
