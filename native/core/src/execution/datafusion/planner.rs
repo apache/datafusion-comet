@@ -25,8 +25,8 @@ use crate::{
         datafusion::{
             expressions::{
                 bloom_filter_agg::BloomFilterAgg,
-                bloom_filter_might_contain::BloomFilterMightContain,
-                negative, subquery::Subquery, unbound::UnboundColumn,
+                bloom_filter_might_contain::BloomFilterMightContain, subquery::Subquery,
+                unbound::UnboundColumn,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -68,7 +68,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::create_comet_physical_fun;
+use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
@@ -86,11 +86,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Contains, Correlation, Covariance,
-    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
-    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
+    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
+    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, Variance,CheckOverflow
+    TimestampTruncExpr, ToJson, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -611,7 +611,7 @@ impl PhysicalPlanner {
             ExprStruct::UnaryMinus(expr) => {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let result = negative::create_negate_expr(child, expr.fail_on_error);
+                let result = create_negate_expr(child, expr.fail_on_error);
                 result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {

@@ -17,17 +17,9 @@
 
 //! Native DataFusion expressions
 
-use crate::errors::CometError;
 pub mod bloom_filter_agg;
 pub mod bloom_filter_might_contain;
-pub mod negative;
 pub mod subquery;
 pub mod unbound;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};
-
-fn arithmetic_overflow_error(from_type: &str) -> CometError {
-    CometError::Spark(SparkError::ArithmeticOverflow {
-        from_type: from_type.to_string(),
-    })
-}

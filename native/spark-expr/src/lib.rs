@@ -47,6 +47,8 @@ pub use stddev::Stddev;
 mod structs;
 mod sum_decimal;
 pub use sum_decimal::SumDecimal;
+mod negative;
+pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
 mod temporal;
 pub mod timezone;
@@ -84,4 +86,10 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
+    SparkError::ArithmeticOverflow {
+        from_type: from_type.to_string(),
+    }
 }
