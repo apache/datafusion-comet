@@ -17,7 +17,7 @@
 
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle_writer::ShuffleWriterExec;
+use comet::execution::shuffle::ShuffleWriterExec;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::{
     physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
