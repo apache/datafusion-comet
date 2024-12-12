@@ -122,6 +122,9 @@ under the License.
                     conflicting with those in Spark -->
                   <include>org.apache.arrow:*</include>
                 </includes>
+                <excludes>
+                  <exclude>org.apache.arrow.vector.types.pojo.Schema</exclude>
+                </excludes>
               </artifactSet>
               <filters>
                 <filter>
