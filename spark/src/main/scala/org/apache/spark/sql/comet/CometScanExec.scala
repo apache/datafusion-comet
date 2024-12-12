@@ -132,7 +132,7 @@ case class CometScanExec(
   lazy val bucketedScan: Boolean = wrapped.bucketedScan
 
   override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) =
-    (UnknownPartitioning(wrapped.inputRDD.getNumPartitions), wrapped.outputOrdering)
+    (wrapped.outputPartitioning, wrapped.outputOrdering)
 
   @transient
   private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
