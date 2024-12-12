@@ -17,7 +17,7 @@
 
 #![allow(deprecated)]
 
-use crate::execution::kernels::strings::{string_space, substring};
+use crate::kernels::strings::{string_space, substring};
 use arrow::{
     compute::{
         contains_dyn, contains_utf8_scalar_dyn, ends_with_dyn, ends_with_utf8_scalar_dyn, like_dyn,

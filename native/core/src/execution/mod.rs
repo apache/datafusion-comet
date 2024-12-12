@@ -18,9 +18,6 @@
 //! PoC of vectorization execution through JNI to Rust.
 pub mod datafusion;
 pub mod jni_api;
-
-pub mod kernels; // for benchmarking
-
 mod metrics;
 pub mod operators;
 pub mod serde;
