@@ -20,6 +20,5 @@
 pub mod bloom_filter_agg;
 pub mod bloom_filter_might_contain;
 pub mod subquery;
-pub mod unbound;
 
 pub use datafusion_comet_spark_expr::{EvalMode, SparkError};

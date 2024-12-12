@@ -53,6 +53,8 @@ mod normalize_nan;
 mod temporal;
 pub mod timezone;
 mod to_json;
+mod unbound;
+pub use unbound::UnboundColumn;
 pub mod utils;
 pub use normalize_nan::NormalizeNaNAndZero;
 
