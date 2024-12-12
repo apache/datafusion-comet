@@ -25,7 +25,7 @@ use crate::{
         datafusion::{
             expressions::{
                 bloom_filter_agg::BloomFilterAgg,
-                bloom_filter_might_contain::BloomFilterMightContain, checkoverflow::CheckOverflow,
+                bloom_filter_might_contain::BloomFilterMightContain,
                 negative, subquery::Subquery, unbound::UnboundColumn,
             },
             operators::expand::CometExpandExec,
@@ -90,7 +90,7 @@ use datafusion_comet_spark_expr::{
     CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
     IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, Variance,
+    TimestampTruncExpr, ToJson, Variance,CheckOverflow
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{

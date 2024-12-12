@@ -17,8 +17,6 @@
 
 //! Native DataFusion expressions
 
-pub mod checkoverflow;
-
 use crate::errors::CometError;
 pub mod bloom_filter_agg;
 pub mod bloom_filter_might_contain;

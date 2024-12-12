@@ -29,6 +29,8 @@ mod bitwise_not;
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
 mod avg_decimal;
 pub use avg_decimal::AvgDecimal;
+mod checkoverflow;
+pub use checkoverflow::CheckOverflow;
 mod correlation;
 pub use correlation::Correlation;
 mod covariance;
