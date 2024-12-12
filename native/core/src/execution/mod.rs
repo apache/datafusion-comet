@@ -16,7 +16,7 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
-pub(crate) mod expressions;
+pub mod expressions;
 pub mod jni_api;
 mod metrics;
 pub mod operators;
