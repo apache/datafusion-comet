@@ -18,8 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::planner::TEST_EXEC_CONTEXT_ID, operators::ExecutionError,
-        utils::SparkArrowConvert,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::SparkArrowConvert,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };

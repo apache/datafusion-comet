@@ -19,8 +19,8 @@ use arrow_schema::Field;
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::util::spark_bloom_filter;
-use crate::execution::datafusion::util::spark_bloom_filter::SparkBloomFilter;
+use crate::execution::util::spark_bloom_filter;
+use crate::execution::util::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::ArrayRef;
 use arrow_array::BinaryArray;
 use datafusion::error::Result;
