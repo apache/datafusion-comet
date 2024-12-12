@@ -25,15 +25,14 @@ use arrow::{
     compute::kernels::substring::{substring as arrow_substring, substring_by_char},
     datatypes::{DataType, Int32Type},
 };
-
-use crate::errors::ExpressionError;
+use datafusion_common::DataFusionError;
 
 /// Returns an ArrayRef with a string consisting of `length` spaces.
 ///
 /// # Preconditions
 ///
 /// - elements in `length` must not be negative
-pub fn string_space(length: &dyn Array) -> Result<ArrayRef, ExpressionError> {
+pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
     match length.data_type() {
         DataType::Int32 => {
             let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -52,7 +51,7 @@ pub fn string_space(length: &dyn Array) -> Result<ArrayRef, ExpressionError> {
     }
 }
 
-pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, ExpressionError> {
+pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, DataFusionError> {
     match array.data_type() {
         DataType::LargeUtf8 => substring_by_char(
             array
