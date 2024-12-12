@@ -15,4 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod expand;
+//! Native DataFusion expressions
+
+pub mod bloom_filter_agg;
+pub mod bloom_filter_might_contain;
+pub mod subquery;
+
+pub use datafusion_comet_spark_expr::EvalMode;

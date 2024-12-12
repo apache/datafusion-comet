@@ -20,10 +20,10 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::shuffle_writer::{write_ipc_compressed, Checksum},
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
+            shuffle_writer::{write_ipc_compressed, Checksum},
         },
         utils::bytes_to_i128,
     },
