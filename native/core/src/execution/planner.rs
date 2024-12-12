@@ -22,15 +22,13 @@ use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
-        datafusion::{
-            expressions::{
-                bloom_filter_agg::BloomFilterAgg,
-                bloom_filter_might_contain::BloomFilterMightContain, subquery::Subquery,
-            },
-            shuffle_writer::ShuffleWriterExec,
+        expressions::{
+            bloom_filter_agg::BloomFilterAgg, bloom_filter_might_contain::BloomFilterMightContain,
+            subquery::Subquery,
         },
         operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
+        shuffle::ShuffleWriterExec,
     },
 };
 use arrow::compute::CastOptions;
@@ -70,7 +68,7 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
-use crate::execution::datafusion::spark_plan::SparkPlan;
+use crate::execution::spark_plan::SparkPlan;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -2268,7 +2266,7 @@ mod tests {
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
-    use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
+    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{

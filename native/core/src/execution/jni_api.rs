@@ -45,8 +45,8 @@ use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
-        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        shuffle::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
@@ -59,8 +59,8 @@ use jni::{
 };
 use tokio::runtime::Runtime;
 
-use crate::execution::datafusion::spark_plan::SparkPlan;
 use crate::execution::operators::ScanExec;
+use crate::execution::spark_plan::SparkPlan;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.

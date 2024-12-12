@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::spark_plan::SparkPlan;
+use crate::execution::spark_plan::SparkPlan;
 use crate::jvm_bridge::jni_new_global_ref;
 use crate::{
     errors::CometError,

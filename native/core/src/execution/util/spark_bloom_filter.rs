@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::datafusion::util::spark_bit_array;
-use crate::execution::datafusion::util::spark_bit_array::SparkBitArray;
+use crate::execution::util::spark_bit_array;
+use crate::execution::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 use arrow_buffer::ToByteSlice;
 use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
