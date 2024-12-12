@@ -931,6 +931,7 @@ version = "0.5.0-apple"
 dependencies = [
  "arrow",
  "arrow-array",
+ "arrow-buffer",
  "arrow-data",
  "arrow-schema",
  "chrono",

@@ -19,7 +19,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow_array::builder::Int64Builder;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
-use comet::execution::datafusion::expressions::bloom_filter_agg::BloomFilterAgg;
+use comet::execution::expressions::bloom_filter_agg::BloomFilterAgg;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
