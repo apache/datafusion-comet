@@ -23,7 +23,6 @@ use crate::errors::CometError;
 pub mod bloom_filter_agg;
 pub mod bloom_filter_might_contain;
 pub mod negative;
-pub mod strings;
 pub mod subquery;
 pub mod unbound;
 
