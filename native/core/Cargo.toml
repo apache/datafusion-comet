@@ -103,10 +103,6 @@ name = "bit_util"
 harness = false
 
 [[bench]]
-name = "hash"
-harness = false
-
-[[bench]]
 name = "row_columnar"
 harness = false
 
