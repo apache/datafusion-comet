@@ -25,12 +25,8 @@ use crate::{
         datafusion::{
             expressions::{
                 bloom_filter_agg::BloomFilterAgg,
-                bloom_filter_might_contain::BloomFilterMightContain,
-                checkoverflow::CheckOverflow,
-                negative,
-                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
-                subquery::Subquery,
-                unbound::UnboundColumn,
+                bloom_filter_might_contain::BloomFilterMightContain, checkoverflow::CheckOverflow,
+                negative, subquery::Subquery, unbound::UnboundColumn,
             },
             operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
@@ -90,9 +86,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Correlation, Covariance, CreateNamedStruct,
-    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
-    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Contains, Correlation, Covariance,
+    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
+    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
