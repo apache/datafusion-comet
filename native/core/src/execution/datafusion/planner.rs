@@ -27,10 +27,9 @@ use crate::{
                 bloom_filter_agg::BloomFilterAgg,
                 bloom_filter_might_contain::BloomFilterMightContain, subquery::Subquery,
             },
-            operators::expand::CometExpandExec,
             shuffle_writer::ShuffleWriterExec,
         },
-        operators::{CopyExec, ExecutionError, ScanExec},
+        operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
     },
 };
@@ -1117,7 +1116,7 @@ impl PhysicalPlanner {
                 } else {
                     Arc::clone(&child.native_plan)
                 };
-                let expand = Arc::new(CometExpandExec::new(projections, input, schema));
+                let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
