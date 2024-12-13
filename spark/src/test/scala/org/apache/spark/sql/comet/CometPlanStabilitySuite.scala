@@ -89,9 +89,13 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       actualSimplifiedPlan: String,
       actualExplain: String): Boolean = {
     val simplifiedFile = new File(dir, "simplified.txt")
-    val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
-    lazy val explainFile = new File(dir, "explain.txt")
-    lazy val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+    var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
+    val explainFile = new File(dir, "explain.txt")
+    var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+    if (!CometConf.COMET_NATIVE_SCAN_ENABLED.get()) {
+      expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
+      expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
+    }
     expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
   }
 
