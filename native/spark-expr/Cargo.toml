@@ -33,7 +33,7 @@ arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
-datafusion = { workspace = true }
+datafusion = { workspace = true, features = ["parquet"] }
 datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-physical-expr = { workspace = true }
@@ -46,6 +46,7 @@ twox-hash = "2.0.0"
 
 [dev-dependencies]
 arrow-data = {workspace = true}
+parquet = { workspace = true, features = ["arrow"] }
 criterion = "0.5.1"
 rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }

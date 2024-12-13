@@ -147,7 +147,8 @@ pub fn cast_supported(
 ) -> bool {
     use DataType::*;
 
-    // TODO this duplicates logic in the Scala code
+    // TODO this duplicates logic in the Scala code (perhaps we can have Scala call
+    // into JNI and re-use this version?)
     // TODO review use of Date32 vs Date64
     // TODO add special case of converting Parquet types to Spark types (such
     // as unsigned ints, which are not supported in Spark)

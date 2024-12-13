@@ -286,9 +286,57 @@ impl SchemaMapper for SchemaMapping {
 
 #[cfg(test)]
 mod test {
+    use crate::{EvalMode, SparkCastOptions, SparkSchemaAdapterFactory};
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_common::DataFusionError;
+    use futures::StreamExt;
+    use parquet::arrow::ArrowWriter;
+    use std::fs::File;
+    use std::sync::Arc;
 
-    #[test]
-    fn parquet() {
-        // TODO write Parquet file with all types then read with schema adapter
+    #[tokio::test]
+    async fn parquet() -> Result<(), DataFusionError> {
+        // TODO test complex types: structs, maps, arrays
+        // TODO test edge cases such as unsigned ints
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let ids = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let names = Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"]))
+            as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(schema.clone(), vec![ids, names])?;
+
+        let file = File::create("output.parquet")?;
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        let file_scan_config = FileScanConfig::new(
+            ObjectStoreUrl::parse("file://output.parquet").unwrap(),
+            schema,
+        );
+        let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let parquet_exec = ParquetExec::builder(file_scan_config)
+            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+                spark_cast_options,
+            )))
+            .build();
+
+        let mut stream = parquet_exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
+        let x = stream.next().await.unwrap().unwrap();
+        println!("{:?}", x);
+
+        Ok(())
     }
 }
