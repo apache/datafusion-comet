@@ -528,7 +528,7 @@ object CometReadBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet Native Scan") { _ =>
+        benchmark.addCase("SQL Parquet - Comet Native Arrow Scan") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false",
