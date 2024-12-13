@@ -350,7 +350,7 @@ mod test {
         let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
         let file = File::create(&filename)?;
         let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)?;
-        writer.write(&batch)?;
+        writer.write(batch)?;
         writer.close()?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
