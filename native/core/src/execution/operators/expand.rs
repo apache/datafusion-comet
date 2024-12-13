@@ -37,14 +37,14 @@ use std::{
 /// A Comet native operator that expands a single row into multiple rows. This behaves as same as
 /// Spark Expand operator.
 #[derive(Debug)]
-pub struct CometExpandExec {
+pub struct ExpandExec {
     projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
     child: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
     cache: PlanProperties,
 }
 
-impl CometExpandExec {
+impl ExpandExec {
     /// Create a new ExpandExec
     pub fn new(
         projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
@@ -66,7 +66,7 @@ impl CometExpandExec {
     }
 }
 
-impl DisplayAs for CometExpandExec {
+impl DisplayAs for ExpandExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
@@ -87,7 +87,7 @@ impl DisplayAs for CometExpandExec {
     }
 }
 
-impl ExecutionPlan for CometExpandExec {
+impl ExecutionPlan for ExpandExec {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -104,7 +104,7 @@ impl ExecutionPlan for CometExpandExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
-        let new_expand = CometExpandExec::new(
+        let new_expand = ExpandExec::new(
             self.projections.clone(),
             Arc::clone(&children[0]),
             Arc::clone(&self.schema),

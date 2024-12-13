@@ -18,8 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::planner::TEST_EXEC_CONTEXT_ID, operators::ExecutionError,
-        utils::SparkArrowConvert,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::SparkArrowConvert,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -524,13 +523,5 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
-    }
-
-    /// Get the number of rows in this batch
-    fn num_rows(&self) -> usize {
-        match self {
-            Self::EOF => 0,
-            Self::Batch(_, num_rows) => *num_rows,
-        }
     }
 }

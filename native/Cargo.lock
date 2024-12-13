@@ -864,7 +864,6 @@ dependencies = [
 name = "datafusion-comet"
 version = "0.5.0"
 dependencies = [
- "ahash",
  "arrow",
  "arrow-array",
  "arrow-buffer",
@@ -886,7 +885,6 @@ dependencies = [
  "datafusion-physical-expr",
  "flate2",
  "futures",
- "half",
  "hex",
  "itertools 0.11.0",
  "jni",
@@ -926,6 +924,7 @@ version = "0.5.0"
 dependencies = [
  "arrow",
  "arrow-array",
+ "arrow-buffer",
  "arrow-data",
  "arrow-schema",
  "chrono",

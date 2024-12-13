@@ -70,6 +70,7 @@ impl SparkBitArray {
         self.data.len()
     }
 
+    #[allow(dead_code)] // this is only called from tests
     pub fn cardinality(&self) -> usize {
         self.bit_count
     }

@@ -19,8 +19,8 @@ use arrow_schema::Field;
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
-use crate::execution::datafusion::util::spark_bloom_filter;
-use crate::execution::datafusion::util::spark_bloom_filter::SparkBloomFilter;
+use crate::execution::util::spark_bloom_filter;
+use crate::execution::util::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::ArrayRef;
 use arrow_array::BinaryArray;
 use datafusion::error::Result;
@@ -34,9 +34,7 @@ use datafusion_physical_expr::expressions::Literal;
 
 #[derive(Debug, Clone)]
 pub struct BloomFilterAgg {
-    name: String,
     signature: Signature,
-    expr: Arc<dyn PhysicalExpr>,
     num_items: i32,
     num_bits: i32,
 }
@@ -53,15 +51,12 @@ fn extract_i32_from_literal(expr: Arc<dyn PhysicalExpr>) -> i32 {
 
 impl BloomFilterAgg {
     pub fn new(
-        expr: Arc<dyn PhysicalExpr>,
         num_items: Arc<dyn PhysicalExpr>,
         num_bits: Arc<dyn PhysicalExpr>,
-        name: impl Into<String>,
         data_type: DataType,
     ) -> Self {
         assert!(matches!(data_type, DataType::Binary));
         Self {
-            name: name.into(),
             signature: Signature::uniform(
                 1,
                 vec![
@@ -73,7 +68,6 @@ impl BloomFilterAgg {
                 ],
                 Volatility::Immutable,
             ),
-            expr,
             num_items: extract_i32_from_literal(num_items),
             num_bits: extract_i32_from_literal(num_bits),
         }

@@ -16,7 +16,7 @@
 // under the License.
 
 use super::arithmetic_overflow_error;
-use crate::errors::CometError;
+use crate::SparkError;
 use arrow::{compute::kernels::numeric::neg_wrapping, datatypes::IntervalDayTimeType};
 use arrow_array::RecordBatch;
 use arrow_buffer::IntervalDayTime;
@@ -25,8 +25,7 @@ use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
-use datafusion_comet_spark_expr::SparkError;
-use datafusion_common::{Result, ScalarValue};
+use datafusion_common::{DataFusionError, Result, ScalarValue};
 use datafusion_expr::sort_properties::ExprProperties;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
@@ -34,7 +33,7 @@ use std::{any::Any, sync::Arc};
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
     fail_on_error: bool,
-) -> Result<Arc<dyn PhysicalExpr>, CometError> {
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     Ok(Arc::new(NegativeExpr::new(expr, fail_on_error)))
 }
 

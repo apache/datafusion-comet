@@ -22,21 +22,13 @@ use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
-        datafusion::{
-            expressions::{
-                bloom_filter_agg::BloomFilterAgg,
-                bloom_filter_might_contain::BloomFilterMightContain,
-                checkoverflow::CheckOverflow,
-                negative,
-                strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr},
-                subquery::Subquery,
-                unbound::UnboundColumn,
-            },
-            operators::expand::CometExpandExec,
-            shuffle_writer::ShuffleWriterExec,
+        expressions::{
+            bloom_filter_agg::BloomFilterAgg, bloom_filter_might_contain::BloomFilterMightContain,
+            subquery::Subquery,
         },
-        operators::{CopyExec, ExecutionError, ScanExec},
+        operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
+        shuffle::ShuffleWriterExec,
     },
 };
 use arrow::compute::CastOptions;
@@ -72,11 +64,11 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::create_comet_physical_fun;
+use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
-use crate::execution::datafusion::spark_plan::SparkPlan;
+use crate::execution::spark_plan::SparkPlan;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -90,10 +82,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, Correlation, Covariance, CreateNamedStruct,
-    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
-    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, SumDecimal,
-    TimestampTruncExpr, ToJson, Variance,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
+    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
+    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
@@ -114,7 +107,6 @@ use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
-type ExecResult<T> = Result<T, ExecutionError>;
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
@@ -614,7 +606,7 @@ impl PhysicalPlanner {
             ExprStruct::UnaryMinus(expr) => {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let result = negative::create_negate_expr(child, expr.fail_on_error);
+                let result = create_negate_expr(child, expr.fail_on_error);
                 result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
@@ -1121,7 +1113,7 @@ impl PhysicalPlanner {
                 } else {
                     Arc::clone(&child.native_plan)
                 };
-                let expand = Arc::new(CometExpandExec::new(projections, input, schema));
+                let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
@@ -1737,10 +1729,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
-                    Arc::clone(&child),
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
-                    "bloom_filter_agg",
                     datatype,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
@@ -2259,7 +2249,7 @@ mod tests {
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
-    use crate::execution::{datafusion::planner::PhysicalPlanner, operators::InputBatch};
+    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
     use datafusion_comet_proto::{
